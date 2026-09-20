@@ -1,0 +1,16 @@
+# Build artifacts
+*.elf
+*.bin
+*.o
+
+# Emulator output captured during test runs
+*.out
+*.usart
+*.usartin
+*.ppm
+
+# Disk image created on demand by the test Makefile
+disk.img
+
+# Serial capture from boot/run.sh
+boot/out.txt

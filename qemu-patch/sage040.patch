@@ -1,0 +1,140 @@
+--- a/hw/display/sm501.c
++++ b/hw/display/sm501.c
+@@ -2164,6 +2164,13 @@
+     .instance_init = sm501_sysbus_init,
+ };
+ 
++/*
++ * The PCI variant is only buildable where the PCI core is present.
++ * Boards such as m68k/sage040 use the sysbus variant on a machine with
++ * no PCI bus at all, and must not drag the PCI subsystem into the link.
++ */
++#ifdef CONFIG_PCI
++
+ #define TYPE_PCI_SM501 "sm501"
+ OBJECT_DECLARE_SIMPLE_TYPE(SM501PCIState, PCI_SM501)
+ 
+@@ -2251,10 +2258,14 @@
+     },
+ };
+ 
++#endif /* CONFIG_PCI */
++
+ static void sm501_register_types(void)
+ {
+     type_register_static(&sm501_sysbus_info);
++#ifdef CONFIG_PCI
+     type_register_static(&sm501_pci_info);
++#endif
+ }
+ 
+ type_init(sm501_register_types)
+--- a/target/m68k/cpu.h
++++ b/target/m68k/cpu.h
+@@ -154,6 +154,18 @@
+ 
+     /* Fields from here on are preserved across CPU reset. */
+     uint64_t features;
++
++    /*
++     * Optional interrupt-acknowledge callback.  A vectored interrupt
++     * controller (e.g. the MC68901 MFP) registers this so it can perform
++     * the side effects real silicon performs during the IACK cycle -
++     * clearing the pending bit and flagging the channel in service.
++     *
++     * This must live below end_reset_fields: it is installed once when
++     * the controller is realized, and a CPU reset must not erase it.
++     */
++    void (*iack_handler)(void *opaque, int level);
++    void *iack_opaque;
+ } CPUM68KState;
+ 
+ /*
+@@ -472,6 +484,9 @@
+ #define MACSR_EV    0x001
+ 
+ void m68k_set_irq_level(M68kCPU *cpu, int level, uint8_t vector);
++void m68k_set_iack_handler(M68kCPU *cpu,
++                           void (*handler)(void *opaque, int level),
++                           void *opaque);
+ void m68k_switch_sp(CPUM68KState *env);
+ 
+ void do_m68k_semihosting(CPUM68KState *env, int nr);
+--- a/target/m68k/helper.c
++++ b/target/m68k/helper.c
+@@ -940,6 +940,14 @@
+  * the vector when the interrupt is acknowledged by the CPU.  For
+  * simplicity we calculate it when the interrupt is signalled.
+  */
++void m68k_set_iack_handler(M68kCPU *cpu,
++                           void (*handler)(void *opaque, int level),
++                           void *opaque)
++{
++    cpu->env.iack_handler = handler;
++    cpu->env.iack_opaque = opaque;
++}
++
+ void m68k_set_irq_level(M68kCPU *cpu, int level, uint8_t vector)
+ {
+     CPUState *cs = CPU(cpu);
+--- a/target/m68k/op_helper.c
++++ b/target/m68k/op_helper.c
+@@ -531,7 +531,16 @@
+          * first signalled.
+          */
+         cs->exception_index = env->pending_vector;
++        /*
++         * Exception entry first: do_interrupt_all() reads pending_level
++         * to set the new interrupt mask in SR, so the acknowledge
++         * callback must not disturb it until that has happened.
++         */
+         do_interrupt_m68k_hardirq(env);
++        if (env->iack_handler) {
++            env->iack_handler(env->iack_opaque,
++                              (env->sr & SR_I) >> SR_I_SHIFT);
++        }
+         return true;
+     }
+     return false;
+--- a/hw/m68k/Kconfig
++++ b/hw/m68k/Kconfig
+@@ -46,3 +46,13 @@
+     select GOLDFISH_TTY
+     select GOLDFISH_RTC
+     select VIRTIO_MMIO
++
++config SAGE040
++    bool
++    default y
++    depends on M68K
++    select MC68901          # MFP: timers + vectored interrupt controller
++    select SERIAL_MM        # NS16550A console
++    select IDE_MMIO         # ATA taskfile disk
++    select SMC91C111        # SMSC LAN91C111 ethernet
++    select SM501            # bitmapped video
+--- a/hw/m68k/meson.build
++++ b/hw/m68k/meson.build
+@@ -5,4 +5,6 @@
+ m68k_ss.add(when: 'CONFIG_Q800', if_true: files('q800.c', 'q800-glue.c'))
+ m68k_ss.add(when: 'CONFIG_M68K_VIRT', if_true: files('virt.c'))
+ 
++m68k_ss.add(when: 'CONFIG_SAGE040', if_true: files('sage040.c'))
++
+ hw_arch += {'m68k': m68k_ss}
+--- a/hw/misc/Kconfig
++++ b/hw/misc/Kconfig
+@@ -258,3 +258,7 @@
+     bool
+ 
+ source macio/Kconfig
++
++config MC68901
++    bool
++    depends on M68K
+--- a/hw/misc/meson.build
++++ b/hw/misc/meson.build
+@@ -1,3 +1,4 @@
++system_ss.add(when: 'CONFIG_MC68901', if_true: files('mc68901.c'))
+ system_ss.add(when: 'CONFIG_APPLESMC', if_true: files('applesmc.c'))
+ system_ss.add(when: 'CONFIG_EDU', if_true: files('edu.c'))
+ system_ss.add(when: 'CONFIG_FW_CFG_DMA', if_true: files('vmcoreinfo.c'))
