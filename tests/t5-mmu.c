@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 Jeff Francis */
 /*
  * t5-mmu.c - MC68040 paged memory management unit.
  *

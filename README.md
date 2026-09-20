@@ -281,7 +281,7 @@ The short version of the gotchas:
 | `qemu-patch/` | the emulator changes, reproducible from pristine source |
 | `tests/` | ten bare-metal device tests, `make run` |
 | `cube/` | a rotating wireframe cube — the first real program |
-| `boot/` | a 78-byte proof-of-life kernel |
+| `boot/` | a 78-byte proof-of-life kernel, for checking the toolchain before building the emulator (runs on stock QEMU's `virt`, not Sage040) |
 
 `tests/` doubles as a support library: `crt0.s`, `sage040.ld`, a 16550 console
 driver and the MFP interrupt plumbing are shared by everything else.
@@ -326,8 +326,18 @@ question of which TCP/IP stack to adapt.
 
 ---
 
-## Licensing
+## License
 
-`qemu-patch/` contains QEMU-derived work and carries `GPL-2.0-or-later`
-headers to match upstream. The rest of the tree has no licence declared yet —
-if you want to use it for something, open an issue and it can be sorted out.
+Copyright (C) 2026 Jeff Francis.
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the **GNU General Public License, version 3 or later**, as
+published by the Free Software Foundation. It comes with NO WARRANTY. See
+[LICENSE](LICENSE) for the full text.
+
+**One exception.** `qemu-patch/` is QEMU-derived work and stays
+`GPL-2.0-or-later`, matching upstream. That is deliberate: GPL-2.0-or-later
+can be used under GPL-3, so it sits happily inside this project, but
+relicensing it to GPL-3 would make it impossible to ever offer upstream —
+QEMU cannot take GPL-3 code. Each file in that directory carries its own SPDX
+header.

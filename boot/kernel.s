@@ -1,3 +1,5 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
+; Copyright (C) 2026 Jeff Francis
         org     $1000
 start:  lea     msg(pc),a0
         movea.l #$ff008000,a1       ; goldfish-tty REG_PUT_CHAR (32-bit only!)

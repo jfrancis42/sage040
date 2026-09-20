@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Jeff Francis
 # Build and boot the bare-metal 68030 test kernel on stock QEMU.
 set -e
 cd "$(dirname "$0")"

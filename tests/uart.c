@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 Jeff Francis */
 /*
  * uart.c - NS16550A console driver for the Sage040.
  *

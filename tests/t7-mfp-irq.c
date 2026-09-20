@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 Jeff Francis */
 /*
  * t7-mfp-irq.c - MC68901 MFP interrupt controller.
  *

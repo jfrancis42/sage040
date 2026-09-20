@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Jeff Francis
 # Makefile - Sage040 rotating wireframe cube
 #
 #   make        build cube.elf

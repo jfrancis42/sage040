@@ -1,6 +1,8 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
+ * Copyright (C) 2026 Jeff Francis
+ *
  * Motorola MC68901 Multi-Function Peripheral (MFP)
  *
  * Reference: Motorola MC68901 Multi-Function Peripheral datasheet.

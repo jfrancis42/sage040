@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 Jeff Francis */
 /*
  * t6-irq.c - a peripheral interrupt travelling the whole chain.
  *

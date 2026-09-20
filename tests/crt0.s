@@ -1,3 +1,5 @@
+| SPDX-License-Identifier: GPL-3.0-or-later
+| Copyright (C) 2026 Jeff Francis
 | crt0.s - Sage040 entry point.
 |
 | QEMU's sage040 machine loads a big-endian ELF32 and starts at the ELF

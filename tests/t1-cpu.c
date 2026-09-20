@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 Jeff Francis */
 /*
  * t1-cpu.c - MC68040 core: supervisor state, VBR, integer ops, on-chip FPU.
  *

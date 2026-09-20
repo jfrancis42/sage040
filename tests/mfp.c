@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 Jeff Francis */
 /*
  * mfp.c - MC68901 interrupt plumbing shared by the MFP tests.
  *

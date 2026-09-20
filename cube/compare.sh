@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Jeff Francis
 # compare.sh - fixed point vs the 68040 FPU, same program either way.
 #
 # Runs both variants under -icount so virtual time is deterministic and

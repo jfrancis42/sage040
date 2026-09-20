@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Jeff Francis
 # runtest.sh <test-name> - boot one test on the Sage040 and print its output.
 #
 # The guest ends with STOP, which halts the 68040 but does not make QEMU

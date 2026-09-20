@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Jeff Francis
 # shot.sh - run the cube headless and capture frames as PNGs.
 #
 # QEMU is driven through its monitor socket: let the cube tumble for a

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Jeff Francis
 """Wrap a raw m68k binary in a big-endian ELF32 that QEMU's -kernel can load."""
 import struct, sys
 raw, out = sys.argv[1], sys.argv[2]

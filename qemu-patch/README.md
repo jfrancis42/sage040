@@ -94,3 +94,14 @@ The `sm501.c` guard and the IACK callback are both the kind of change upstream
 would plausibly take — the first is a build fix, the second adds a facility
 whose absence upstream explicitly documents. The machine and the MFP model are
 new files and self-contained.
+
+## License
+
+These files are QEMU-derived and are **`GPL-2.0-or-later`**, matching
+upstream, rather than the GPL-3 that covers the rest of this repository.
+
+That is deliberate. GPL-2.0-or-later can be used under GPL-3, so it sits
+inside a GPL-3 project without friction — but relicensing it to GPL-3 would
+make it impossible to offer upstream, because QEMU cannot accept GPL-3 code.
+Since the `sm501.c` build fix and the interrupt-acknowledge callback are both
+plausibly upstreamable, keeping the option open costs nothing.

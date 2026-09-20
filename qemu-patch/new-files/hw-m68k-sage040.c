@@ -1,6 +1,8 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
+ * Copyright (C) 2026 Jeff Francis
+ *
  * Sage040 - a plain 68040 workstation built only from real, documented silicon.
  *
  * Every device here corresponds to a physical part with a publicly available
