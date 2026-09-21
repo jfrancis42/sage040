@@ -207,7 +207,7 @@ It grows one group per task, and a group is only added once its calls
 work — so a failure there is always a regression, never a thing not
 written yet.
 
-**255 checks across six suites now:** 12 device programs, 41 fs, 142
+**258 checks across six suites now:** 12 device programs, 41 fs, 145
 api, 29 edit, 18 vm, 13 net.
 
 ### 1. Grow the user address space — done
@@ -519,6 +519,23 @@ anywhere in the kernel touches the FPU. Two tasks using floating point
 share one set of FP registers and one rounding mode. It has not shown
 because the cube is the only FP program. A signal frame needs the same
 save, so it is fixed as part of this task.
+
+**Fixed:** every task has a 208-byte FPU area, and `schedule()` saves
+the outgoing task's FPU and restores the incoming one's: `fsave`, then
+`fmovem` of `fp0`–`fp7` and the three control registers unless the
+frame is null, and the reverse on the way in. **QEMU's `fsave` always
+writes an idle frame and its `frestore` does nothing**, so a new task
+starts with a fabricated idle frame and zeroed registers. A null frame
+would have let it inherit the previous task's registers under QEMU.
+
+**Test:** `apps/fptest N` fills all eight FP registers and `fpcr` with
+values derived from N, then for three seconds yields and spins,
+checking the registers as raw bits (a `double` comparison would use
+the registers it is checking). `apitest.sh` runs two at once. The
+first version ran a fixed number of rounds and **finished before the
+second copy started**, so it passed without testing anything. Timing
+by the clock fixed that. With the save removed, both copies report
+lost state, the background one exactly when the foreground one starts.
 
 ---
 

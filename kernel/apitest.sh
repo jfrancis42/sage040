@@ -74,6 +74,7 @@ mcopy -o -i "$MIMG" ../apps/hello ::/HELLO
 mcopy -o -i "$MIMG" ../apps/memtest ::/MEMTEST
 mcopy -o -i "$MIMG" ../apps/malloctest ::/MALLOCTE
 mcopy -o -i "$MIMG" ../apps/sigtest ::/SIGTEST
+mcopy -o -i "$MIMG" ../apps/fptest ::/FPTEST
 mmd -i "$MIMG" ::/ETC
 mmd -i "$MIMG" ::/BIN
 mcopy -o -i "$MIMG" ../system/env ::/BIN/ENV
@@ -143,6 +144,10 @@ done
 sleep 0.5
 {
     printf 'mallocte doublefree\r';     sleep 2
+    # Two programs using the FPU at once, with different values in every
+    # register: one in the background, one in the foreground.
+    printf 'fptest 1 &\r';              sleep 0.5
+    printf 'fptest 2\r';                sleep 5
     printf 'echo SHELL-SURVIVED\r'
 } >&3
 
@@ -259,6 +264,15 @@ check "  and free() said so" $?
 
 ! grep -q "NOT-CAUGHT" "$C"
 check "  and the program did not carry on" $?
+
+echo "=== checks: every task has its own FPU ==="
+
+grep -q "fptest 1: fpu state kept" "$C"
+check "a background task kept its FP registers and rounding mode" $?
+grep -q "fptest 2: fpu state kept" "$C"
+check "  and so did the foreground task running beside it" $?
+! grep -q "FPU STATE LOST" "$C"
+check "  and neither saw the other's" $?
 
 echo "=== checks: the kernel's own tasks take no signals ==="
 

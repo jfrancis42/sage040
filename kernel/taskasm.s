@@ -54,6 +54,42 @@ switch_context:
         rts
 
 | ------------------------------------------------------------------
+| void fpu_save(u32 *area) / void fpu_restore(const u32 *area)
+|
+| The FPU's state, in the order the 68040 requires: fsave first, which
+| captures whatever the FPU was in the middle of and leaves it idle, and
+| the programmer-visible registers only if the frame is not NULL -- a
+| null frame means the FPU has never been used and holds nothing. On the
+| way back the registers go in first and frestore last.
+|
+| Layout, matching struct task's fpu[]:
+|       0       the state frame, up to 96 bytes
+|      96       fp0-fp7, 12 bytes each
+|     192       fpcr, fpsr, fpiar
+| ------------------------------------------------------------------
+        .globl  fpu_save
+        .type   fpu_save,@function
+fpu_save:
+        move.l  4(%sp),%a0
+        fsave   (%a0)
+        tst.b   (%a0)
+        beq.s   1f
+        fmovem.x %fp0-%fp7,96(%a0)
+        fmovem.l %fpcr/%fpsr/%fpiar,192(%a0)
+1:      rts
+
+        .globl  fpu_restore
+        .type   fpu_restore,@function
+fpu_restore:
+        move.l  4(%sp),%a0
+        tst.b   (%a0)
+        beq.s   1f
+        fmovem.x 96(%a0),%fp0-%fp7
+        fmovem.l 192(%a0),%fpcr/%fpsr/%fpiar
+1:      frestore (%a0)
+        rts
+
+| ------------------------------------------------------------------
 | Where a new task begins.
 |
 | task_new() builds a kernel stack that looks exactly like one belonging

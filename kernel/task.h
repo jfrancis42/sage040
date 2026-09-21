@@ -117,6 +117,22 @@ struct task {
 
     /* Whoever is in task_wait() for one of this task's children. */
     struct waitq child_wait;
+
+    /*
+     * The FPU, while this task is not running. The 68040 has one set of
+     * FP registers and one rounding mode, so without this every task
+     * that used floating point would be sharing them with every other.
+     *
+     *     0   the fsave frame: 4 bytes idle, up to 96 busy
+     *    96   fp0-fp7, 12 bytes each
+     *   192   fpcr, fpsr, fpiar
+     *
+     * See taskasm.s. A new task starts with an IDLE frame and zeroed
+     * registers, rather than a null frame, because under QEMU restoring
+     * a null frame resets nothing and the new task would inherit the
+     * previous one's registers.
+     */
+    u32   fpu[52];
 };
 
 struct addrspace;

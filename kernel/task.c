@@ -24,6 +24,11 @@
 #include "string.h"
 
 extern void switch_context(u32 *save_sp, u32 new_sp);
+extern void fpu_save(u32 *area);
+extern void fpu_restore(const u32 *area);
+
+/* A 68040 idle state frame: version 0x41, no further state. */
+#define FPU_IDLE_FRAME  0x41000000UL
 extern void task_entry(void);
 
 struct task *current;
@@ -90,6 +95,7 @@ static struct task *alloc_task(const char *name)
             strncpy(t->name, name, TASK_NAME_MAX - 1);
             t->name[TASK_NAME_MAX - 1] = '\0';
             t->slice = TASK_SLICE;
+            t->fpu[0] = FPU_IDLE_FRAME;
             /* The root, until somebody inherits or chdirs. */
             t->cwd_ino = 0;
             strcpy(t->cwd_path, "/");
@@ -345,6 +351,15 @@ void schedule(void)
         vm_switch(next->as);
     }
 
+    /*
+     * The FPU goes with the task too. Nothing in the kernel uses it, so
+     * it holds exactly what `prev` left there, and it can be swapped
+     * here, outside switch_context, with no risk of the kernel's own
+     * state being caught in the middle.
+     */
+    fpu_save(prev->fpu);
+    fpu_restore(next->fpu);
+
     switch_context(&prev->ksp, next->ksp);
 
     /*
@@ -574,6 +589,7 @@ void task_init(void)
     current->pid = next_pid++;
     current->state = TASK_RUNNING;
     current->slice = TASK_SLICE;
+    current->fpu[0] = FPU_IDLE_FRAME;
     strcpy(current->name, "idle");
     strcpy(current->cmd, "idle");
     /* The root. Task 0 is built by hand rather than through
