@@ -46,40 +46,14 @@
  */
 int exec_spawn(const char *path, int argc, char **argv);
 
-/* Called by the exit() system call. Does not return if a program is
- * running; returns -ENOSYS if one is not, because the shell has nowhere
- * to exit to. */
-int exec_exit(int status);
-
 /*
- * End the running program from outside it: ctrl-C.
+ * Load `path` and start it as a task. Returns the new pid, or -errno.
  *
- * Safe to call from an interrupt handler, which exec_exit() is not --
- * the unwind behind this one puts the interrupt mask back, because
- * nothing is going to execute an RTE and do it. Never returns.
+ * This is still not execve(). execve replaces the caller; this makes a
+ * new task and leaves the caller running, which is fork and execve in
+ * one step. Whether to wait for it is the caller's decision, and that
+ * decision is what `&` is.
  */
-void exec_kill(int status) __attribute__((noreturn));
-
-/*
- * Resume a stopped job. Returns its exit status, or SPAWN_STOPPED if it
- * stopped again, or -errno.
- */
-int exec_continue(int id);
-
-/*
- * The context switch, in execasm.s.
- *
- * exec_stop() saves where the program is and returns to whoever is
- * waiting for it; exec_resume() does the reverse. Between them they are
- * the primitive a scheduler is built from, and they are here rather than
- * in a scheduler because ctrl-Z needed them first.
- */
-void exec_stop(u32 *saved_sp);
-int  exec_resume(u32 saved_sp);
-
-int exec_running(void);
-
-/* The address space of the running program, or null. */
-struct addrspace *exec_addrspace(void);
+int exec_spawn(const char *path, int argc, char **argv);
 
 #endif /* EXEC_H */

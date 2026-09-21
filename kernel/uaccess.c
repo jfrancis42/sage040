@@ -4,21 +4,38 @@
  * uaccess.c - the software table walk, and the copies built on it.
  */
 #include "uaccess.h"
+#include "task.h"
 #include "vm.h"
 #include "pmm.h"
 #include "errno.h"
 #include "string.h"
 
-static struct addrspace *current;
+/*
+ * Normally there is nothing to set: the memory a system call reaches
+ * into belongs to the task that made it, and `current->as` says which
+ * that is. The override exists for the one case that is not true -- the
+ * loader, filling an address space that no task is running in yet.
+ *
+ * This used to be the only mechanism, with exec setting it around the
+ * program's whole run. That worked while a program ran INSIDE the
+ * spawning call and stopped working the moment a program became a task
+ * of its own: nothing was setting it any more, every user pointer looked
+ * like a kernel pointer, and the first write() handed the terminal an
+ * address in a different address space.
+ */
+static struct addrspace *override;
 
 void uaccess_set(struct addrspace *as)
 {
-    current = as;
+    override = as;
 }
 
 struct addrspace *uaccess_current(void)
 {
-    return current;
+    if (override) {
+        return override;
+    }
+    return current ? current->as : 0;
 }
 
 /*
@@ -41,10 +58,12 @@ void *uaccess_chunk(u32 uva, u32 *len, int write)
 {
     u32 pa, n;
 
-    if (!current || !len || *len == 0) {
+    struct addrspace *as = uaccess_current();
+
+    if (!as || !len || *len == 0) {
         return 0;
     }
-    pa = vm_translate(current, uva, write);
+    pa = vm_translate(as, uva, write);
     if (!pa) {
         return 0;
     }
@@ -58,7 +77,9 @@ void *uaccess_chunk(u32 uva, u32 *len, int write)
 
 int uaccess_check(u32 uva, u32 len, int write)
 {
-    if (!current) {
+    struct addrspace *as = uaccess_current();
+
+    if (!as) {
         return -EFAULT;
     }
     if (len == 0) {
@@ -73,7 +94,7 @@ int uaccess_check(u32 uva, u32 len, int write)
     while (len > 0) {
         u32 n = chunk_len(uva, len);
 
-        if (!vm_translate(current, uva, write)) {
+        if (!vm_translate(as, uva, write)) {
             return -EFAULT;
         }
         uva += n;
@@ -86,7 +107,7 @@ int copy_from_user(void *dst, u32 uva, u32 len)
 {
     u8 *out = dst;
 
-    if (!current) {
+    if (!uaccess_current()) {
         return -EFAULT;
     }
     if (uva + len < uva) {
@@ -112,7 +133,7 @@ int copy_to_user(u32 uva, const void *src, u32 len)
 {
     const u8 *in = src;
 
-    if (!current) {
+    if (!uaccess_current()) {
         return -EFAULT;
     }
     if (uva + len < uva) {
@@ -138,7 +159,7 @@ int strncpy_from_user(char *dst, u32 uva, u32 max)
 {
     u32 done = 0;
 
-    if (!current || max == 0) {
+    if (!uaccess_current() || max == 0) {
         return -EFAULT;
     }
 

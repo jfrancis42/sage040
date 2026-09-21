@@ -41,7 +41,9 @@
 #include "tty.h"
 #include "dev.h"
 #include "vfs.h"
-#include "job.h"
+#include "task.h"
+#include "signal.h"
+#include "wait.h"
 #include "console.h"
 #include "errno.h"
 #include "string.h"
@@ -106,14 +108,34 @@ void tty_set_idle(void (*fn)(void))
 }
 
 /*
- * Set while a reader is inside next_char().
+ * Who ctrl-C and ctrl-Z are aimed at.
  *
- * The tick must not go poking at the same chip a foreground read is
- * already draining -- two readers of one FIFO lose characters between
- * them. While this is set the tick does not scan at all, which costs
- * nothing: if somebody is reading, the read will see the ctrl-C itself.
+ * The foreground task: the one the shell is waiting for, or the shell
+ * itself when it is not waiting for anything. A background task does not
+ * get them, which is the whole difference between running something with
+ * & and without.
  */
-static volatile int reader_active;
+static int fg_pid;
+
+void tty_set_foreground(int pid)
+{
+    fg_pid = pid;
+}
+
+int tty_foreground(void)
+{
+    return fg_pid;
+}
+
+/*
+ * Anything blocked waiting for a keystroke.
+ *
+ * This is what replaced the spin. The terminal's read used to go round a
+ * loop asking the UART whether anything had arrived, which was fine when
+ * there was nothing else for the processor to do -- and is not, now that
+ * there is.
+ */
+static struct waitq input_wait;
 
 /* ---------------------------------------------------------------- */
 /* Talking to the devices underneath                                 */
@@ -258,15 +280,28 @@ static int any_ready(void)
     return 0;
 }
 
-/* One character if there is one, or -1. Never waits. */
+/*
+ * One character if there is one, or -1. Never waits.
+ *
+ * MASKED, and that is not caution -- it is a bug that was observed.
+ * The timer interrupt runs tty_poll_signals(), which also takes a
+ * character and may put it in the pushback slot. If it lands between a
+ * reader checking that slot and the same reader taking one from the
+ * device, the reader gets the LATER character and the earlier one waits
+ * in pushback for the next call. The two come out in the wrong order --
+ * a line typed as SHELL arrives as SHLEL, once in a few thousand
+ * characters, which is exactly often enough to be baffling.
+ */
 static int poll_char(void)
 {
+    u16 sr = irq_save();
+    int c = -1;
     int i;
 
     if (pushback >= 0) {
-        int c = pushback;
-
+        c = pushback;
         pushback = -1;
+        irq_restore(sr);
         return c;
     }
     /*
@@ -277,42 +312,45 @@ static int poll_char(void)
      */
     for (i = 0; i < nsources; i++) {
         if (source_ready(sources[i])) {
-            int c = source_get(sources[i]);
+            c = source_get(sources[i]);
 
             if (c >= 0) {
+                irq_restore(sr);
                 return c;
             }
         }
     }
+    irq_restore(sr);
     return -1;
 }
 
-/* One character, waiting for it. */
+/*
+ * One character, waiting for it.
+ *
+ * Sleeps rather than spins. The UART and the keyboard are still POLLED
+ * -- neither interrupt is enabled -- so what wakes this is the timer,
+ * through tty_poll_signals(); the saving is not in how the character is
+ * noticed but in what the processor does while there is none, which is
+ * now "run something else" rather than "ask again".
+ *
+ * Returns -EINTR if a signal arrived instead of a character, which is
+ * what makes ctrl-C reach a program blocked on a read.
+ */
 static int next_char(void)
 {
-    int c;
-
-    reader_active = 1;
     for (;;) {
-        c = poll_char();
+        int c = poll_char();
+
         if (c >= 0) {
-            break;
+            return c;
         }
-        /*
-         * Nothing waiting. There is no scheduler to yield to and no
-         * interrupt to sleep on yet -- the UART's IRQ reaches MFP
-         * channel 7 and is not enabled -- so this spins. It is the last
-         * polling loop in the system and the one worth removing next.
-         *
-         * Until then it is also the system's idle time, and the network
-         * uses it to process what has arrived.
-         */
-        if (idle_fn) {
-            idle_fn();
+        if (signal_pending(current)) {
+            return -EINTR;
         }
+        /* A tenth of a second, so that a lost wakeup costs a small
+         * delay rather than a hang. */
+        sleep_on_timeout(&input_wait, 100);
     }
-    reader_active = 0;
-    return c;
 }
 
 /*
@@ -327,18 +365,34 @@ static int next_char(void)
  */
 static int signal_char(int c)
 {
+    int sig = 0;
+
     if (!(tio.c_lflag & ISIG)) {
         return 0;
     }
     if (tio.c_cc[VINTR] && c == tio.c_cc[VINTR]) {
-        job_signal_fg(SIGINT);
-        return SIGINT;
+        sig = SIGINT;
+    } else if (tio.c_cc[VSUSP] && c == tio.c_cc[VSUSP]) {
+        sig = SIGTSTP;
     }
-    if (tio.c_cc[VSUSP] && c == tio.c_cc[VSUSP]) {
-        job_signal_fg(SIGTSTP);
-        return SIGTSTP;
+    if (!sig) {
+        return 0;
     }
-    return 0;
+
+    /*
+     * To the foreground task, whoever that is. A background task is
+     * unaffected -- it is not connected to this keyboard in the sense
+     * that matters -- and that is the entire semantic difference between
+     * a job started with & and one without.
+     */
+    {
+        struct task *t = task_find(fg_pid);
+
+        if (t) {
+            signal_send(t, sig);
+        }
+    }
+    return sig;
 }
 
 /*
@@ -358,6 +412,9 @@ static s32 tty_read_raw(u8 *out, u32 len)
 
         if (c < 0) {
             break;              /* nothing more waiting */
+        }
+        if (c == -EINTR) {
+            return n > 0 ? (s32)n : -EINTR;
         }
         if (signal_char(c)) {
             /*
@@ -395,7 +452,7 @@ static s32 tty_read_canon(u8 *out, u32 len)
     for (;;) {
         int c = next_char();
 
-        if (signal_char(c)) {
+        if (c == -EINTR || signal_char(c)) {
             return -EINTR;
         }
 
@@ -478,22 +535,27 @@ static s32 tty_read(struct file *f, void *buf, u32 len)
  * It takes at most one character per tick and pushes back anything that
  * is not a signal, so ordinary typed-ahead input survives untouched.
  */
+/*
+ * Called from the timer interrupt.
+ *
+ * Two jobs. It looks for an interrupt or stop character, so that a
+ * program making no system calls can still be stopped -- and it wakes
+ * anything sleeping for input, because the UART and the keyboard are
+ * polled and nothing else would.
+ */
 void tty_poll_signals(void)
 {
     int c;
 
-    if (reader_active || pushback >= 0) {
-        return;
+    if (pushback < 0 && any_ready()) {
+        c = poll_char();
+        if (c >= 0 && !signal_char(c)) {
+            pushback = c;
+        }
     }
-    if (!any_ready()) {
-        return;
-    }
-    c = poll_char();
-    if (c < 0) {
-        return;
-    }
-    if (!signal_char(c)) {
-        pushback = c;
+
+    if (pushback >= 0 || any_ready()) {
+        wake_all(&input_wait);
     }
 }
 

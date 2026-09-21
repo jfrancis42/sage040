@@ -49,8 +49,8 @@ LDFLAGS  := $(CPUFLAGS) -ffreestanding -nostdlib -T kernel.ld \
 # the first group names a chip; everything in the second does, and only
 # there.
 SRCS := main.c version.c console.c trap.c syscall.c vfs.c dev.c \
-        time.c timer.c errno.c string.c exec.c job.c tty.c edit.c \
-        pmm.c vm.c uaccess.c fb.c fbcon.c \
+        time.c timer.c errno.c string.c exec.c tty.c edit.c \
+        pmm.c vm.c uaccess.c task.c wait.c signal.c fb.c fbcon.c \
         font8x16.c \
         probe.c shell.c \
         drivers/ns16550.c drivers/ata.c drivers/m48t59.c \
@@ -68,7 +68,7 @@ HDRS := kernel.h uapi.h dev.h vfs.h syscall.h console.h errno.h exec.h \
 
 all: kernel.rom
 
-ASMS := start.s memprobe.s execasm.s
+ASMS := start.s memprobe.s execasm.s taskasm.s
 
 # The layering rule is checked before the link, not documented and hoped
 # for. shell.c and edit.c are programs: they reach the system through

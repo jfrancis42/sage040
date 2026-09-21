@@ -80,8 +80,21 @@ _exc_common:
 |
         .globl  _trap0_entry
         .type   _trap0_entry,@function
+| The saved SR is passed as a seventh argument, because what happens on
+| the way out depends on where this call came from: a program returning
+| to user mode may be signalled or preempted, and the kernel calling the
+| gate on its own behalf may not. It is the first word of the exception
+| frame, which sits above the 52 bytes of registers and the 24 bytes of
+| arguments.
 _trap0_entry:
         movem.l %d1-%d7/%a0-%a6,-(%sp)  | 13 registers, 52 bytes
+        clr.l   -(%sp)
+        move.w  56(%sp),2(%sp)          | the saved SR, zero extended
+                                        | into the LOW half: a word
+                                        | written at (%sp) would land in
+                                        | the high half on a big-endian
+                                        | machine and arrive multiplied
+                                        | by 65536
         move.l  %d5,-(%sp)
         move.l  %d4,-(%sp)
         move.l  %d3,-(%sp)
@@ -89,7 +102,7 @@ _trap0_entry:
         move.l  %d1,-(%sp)
         move.l  %d0,-(%sp)
         jsr     syscall_dispatch
-        lea     24(%sp),%sp
+        lea     28(%sp),%sp
         movem.l (%sp)+,%d1-%d7/%a0-%a6
         rte
 

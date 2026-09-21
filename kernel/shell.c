@@ -297,7 +297,9 @@ static void cmd_help(void)
         "uptime               how long the machine has been up\n"
         "console [DEV on|off] show or change where console output goes\n"
         "sync                 flush pending writes to the disk\n"
-        "jobs                 list stopped and queued jobs\n"
+        "ps                   every task on the machine\n"
+        "kill [-SIG] PID      send a signal\n"
+        "jobs                 this shell's jobs\n"
         "fg [%N]              run a stopped or queued job\n"
         "bg [%N]              run one in the background (see below)\n"
         "history              the lines remembered so far\n"
@@ -1076,8 +1078,64 @@ static const char *state_word(int state)
     switch (state) {
     case JOB_S_NEW:     return "queued ";
     case JOB_S_RUNNING: return "running";
+    case JOB_S_BLOCKED: return "waiting";
     case JOB_S_STOPPED: return "stopped";
     default:            return "done   ";
+    }
+}
+
+static const char *ps_state(int s)
+{
+    switch (s) {
+    case JOB_S_RUNNING: return "run ";
+    case JOB_S_BLOCKED: return "wait";
+    case JOB_S_STOPPED: return "stop";
+    case JOB_S_DONE:    return "done";
+    default:            return "new ";
+    }
+}
+
+static void cmd_ps(void)
+{
+    struct job_info info;
+    int i;
+
+    out_puts("  PID  PPID  STATE  COMMAND\n");
+    for (i = 0; sys_jobctl(JOBCTL_ALL, i, &info) == 0; i++) {
+        out_putdec_pad((u32)info.id, 5);
+        out_putdec_pad((u32)info.ppid, 6);
+        out_puts("  ");
+        out_puts(ps_state(info.state));
+        out_puts("   ");
+        out_puts(info.cmd);
+        out_putc('\n');
+    }
+}
+
+static void cmd_kill(int argc, char **args)
+{
+    int pid = 0, sig = SIGTERM, i;
+    int err;
+
+    /* `kill -9 PID`, the way everybody types it. */
+    if (argc > 2 && args[1][0] == '-') {
+        sig = 0;
+        for (i = 1; args[1][i] >= '0' && args[1][i] <= '9'; i++) {
+            sig = sig * 10 + (args[1][i] - '0');
+        }
+        args++;
+        argc--;
+    }
+    for (i = 0; args[1][i] >= '0' && args[1][i] <= '9'; i++) {
+        pid = pid * 10 + (args[1][i] - '0');
+    }
+    if (pid <= 0 || sig <= 0) {
+        err_usage("kill [-SIG] PID");
+        return;
+    }
+    err = sys_kill(pid, sig);
+    if (err < 0) {
+        err_report("kill", err);
     }
 }
 
@@ -1135,6 +1193,7 @@ static int job_arg(int argc, char **args)
 }
 
 static void report_status(const char *what, int status);
+static int wait_for(int pid, const char *what);
 
 /* Find a job by id and copy out what it is. */
 static int job_lookup(int id, struct job_info *out)
@@ -1162,50 +1221,11 @@ static void cmd_fg(int argc, char **args)
         return;
     }
 
-    if (info.state == JOB_S_NEW) {
-        /*
-         * Queued with & and never started, so there is no context to
-         * return into -- the command line is all there is, and running
-         * it is the ordinary path. The job slot goes first so that the
-         * spawn does not trip over its own placeholder.
-         */
-        char cmdline[LINE_MAX];
-        int n;
-
-        strncpy(cmdline, info.cmd, sizeof(cmdline) - 1);
-        cmdline[sizeof(cmdline) - 1] = '\0';
-
-        /*
-         * Strip the & it was queued with. `fg` means run it in the
-         * foreground, and leaving the & on would put it straight back
-         * in the table it was just taken out of.
-         */
-        n = (int)strlen(cmdline);
-        while (n > 0 && (cmdline[n - 1] == ' ' || cmdline[n - 1] == '\t')) {
-            n--;
-        }
-        if (n > 0 && cmdline[n - 1] == '&') {
-            cmdline[n - 1] = '\0';
-        }
-
-        sys_jobctl(JOBCTL_DROP, id, 0);
-        out_puts(cmdline);
-        out_putc('\n');
-        out_flush();
-        run_command(cmdline);
-        return;
-    }
-
-    if (info.state != JOB_S_STOPPED) {
-        err_puts("fg: that job is not stopped\n");
-        return;
-    }
-
     out_puts(info.cmd);
     out_putc('\n');
     out_flush();
 
-    status = sys_jobctl(JOBCTL_FG, id, 0);
+    status = wait_for(id, info.cmd);
     if (status == SPAWN_STOPPED) {
         return;                 /* it stopped again; already announced */
     }
@@ -1228,16 +1248,15 @@ static void cmd_bg(int argc, char **args)
         return;
     }
     err = sys_jobctl(JOBCTL_BG, id, 0);
-    if (err == -ENOSYS) {
-        err_puts("bg: nothing can run in the background yet -- there is\n");
-        err_puts("    no scheduler. `fg ");
-        err_puts(args[0]);
-        err_puts("` will run it.\n");
-        return;
-    }
     if (err < 0) {
         err_report("bg", err);
+        return;
     }
+    out_putc('[');
+    out_putdec((u32)id);
+    out_puts("]  ");
+    out_puts(info.cmd);
+    out_puts(" &\n");
 }
 
 /* ---------------------------------------------------------------- */
@@ -1321,6 +1340,56 @@ static void report_status(const char *what, int status)
         }
     }
     err_puts("\n");
+}
+
+/*
+ * Wait for a foreground job, holding the terminal while it runs.
+ *
+ * The terminal's foreground task is what ctrl-C and ctrl-Z are aimed at,
+ * so it moves to the child for as long as the shell is waiting and comes
+ * back afterwards. Without that the shell would be signalling itself.
+ *
+ * Returns the child's exit status, or SPAWN_STOPPED if it stopped rather
+ * than finished -- in which case it is still there, and `fg` resumes it.
+ */
+static int wait_for(int pid, const char *what)
+{
+    int status = 0;
+    int got;
+
+    (void)what;
+    sys_jobctl(JOBCTL_FG, pid, 0);
+
+    got = sys_waitpid(pid, &status);
+    sys_jobctl(JOBCTL_FG, 0, 0);        /* the terminal comes back */
+
+    if (got == pid && status == 128 + SIGTSTP) {
+        /* ctrl-Z. It is still there, and `fg` resumes it. */
+        out_putc('\n');
+        out_putc('[');
+        out_putdec((u32)pid);
+        out_puts("]+  stopped\n");
+        out_flush();
+        return SPAWN_STOPPED;
+    }
+
+    if (got < 0) {
+        /*
+         * No child to wait for. The usual reason is that it stopped
+         * rather than exited -- a stopped task is not a zombie -- so
+         * look and see.
+         */
+        struct job_info info;
+        int i;
+
+        for (i = 0; sys_jobctl(JOBCTL_INFO, i, &info) == 0; i++) {
+            if (info.id == pid && info.state == JOB_S_STOPPED) {
+                return SPAWN_STOPPED;
+            }
+        }
+        return got;
+    }
+    return status;
 }
 
 /*
@@ -1495,6 +1564,14 @@ static void run_command(char *cmdline)
                 cmd_ping(argc, argv);
             }
 
+        } else if (strcmp(argv[0], "ps") == 0) {
+            cmd_ps();
+
+        } else if (strcmp(argv[0], "kill") == 0) {
+            if (need(argc, 2, "kill [-SIG] PID")) {
+                cmd_kill(argc, argv);
+            }
+
         } else if (strcmp(argv[0], "jobs") == 0) {
             cmd_jobs();
 
@@ -1522,32 +1599,29 @@ static void run_command(char *cmdline)
 
             out_flush();
 
-            if (background) {
-                /*
-                 * Nothing can run while the shell runs, so the job is
-                 * recorded and left ready rather than started. Saying so
-                 * is better than quietly running it in the foreground,
-                 * which is what `&` would otherwise appear to do -- and
-                 * the person would find out only from the fact that
-                 * their prompt never came back.
-                 */
-                int id = sys_jobctl(JOBCTL_QUEUE, 0, (void *)cmdline_saved);
-
-                if (id < 0) {
-                    err_report("&", id);
-                } else {
-                    out_putc('[');
-                    out_putdec((u32)id);
-                    out_puts("]  queued -- nothing runs in the background "
-                             "until there is a scheduler; `fg ");
-                    out_putdec((u32)id);
-                    out_puts("` runs it\n");
-                }
-                redirect_end();
-                return;
-            }
-
+            /*
+             * spawn STARTS it and returns its pid. Whether to wait is
+             * the shell's decision, and that decision is the whole of
+             * what & means: a foreground job is one the shell waits
+             * for, and a background job is one it does not.
+             */
             status = sys_spawn(argv[0], argc, argv);
+
+            if (status > 0) {
+                int pid = status;
+
+                if (background) {
+                    sys_jobctl(JOBCTL_BG, pid, 0);
+                    out_putc('[');
+                    out_putdec((u32)pid);
+                    out_puts("]  ");
+                    out_puts(cmdline_saved);
+                    out_putc('\n');
+                    redirect_end();
+                    return;
+                }
+                status = wait_for(pid, argv[0]);
+            }
 
             if (status == SPAWN_STOPPED) {
                 /* ctrl-Z. Already announced, and listed by `jobs`. */
@@ -1565,10 +1639,6 @@ static void run_command(char *cmdline)
             } else if (status == -ENOEXEC) {
                 err_puts(argv[0]);
                 err_puts(": not an executable\n");
-            } else if (status == -EBUSY) {
-                err_puts(argv[0]);
-                err_puts(": a stopped job is holding the program area -- "
-                         "finish it with fg first\n");
             } else if (status < 0) {
                 err_report(argv[0], status);
             } else {

@@ -19,8 +19,8 @@
  */
 #include "kernel.h"
 #include "console.h"
-#include "exec.h"
-#include "job.h"
+#include "task.h"
+#include "signal.h"
 #include "uapi.h"
 
 #define VEC_TRAP0   32          /* vectors 32..47 are TRAP #0..#15 */
@@ -134,7 +134,7 @@ void exception_handler(const u32 *regs, const u16 *frame)
      * demand paging, no swap -- so the only honest answer is to end the
      * program.
      */
-    if (from_user(frame) && exec_running()) {
+    if (from_user(frame) && current && current->as) {
         kputs("\n");
         kputs(exception_name(vec));
         if (fmt == 7) {
@@ -150,8 +150,14 @@ void exception_handler(const u32 *regs, const u16 *frame)
          * catches signals here, but the number a person sees should
          * still be the number they would see anywhere else.
          */
-        job_kill_fg(SIGSEGV);
-        exec_kill(128 + SIGSEGV);
+        /*
+         * Its own fault ends its own task and nothing else. The kernel
+         * is intact -- the exception came from user mode, so its stack
+         * is its own -- and the only thing that has to go is the address
+         * space of whatever ran off the end of itself.
+         */
+        current->signalled = SIGSEGV;
+        task_exit(128 + SIGSEGV);
     }
 
     kputs("\n*** exception ");

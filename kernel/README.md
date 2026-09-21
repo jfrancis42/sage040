@@ -217,6 +217,87 @@ for one saved context.
 
 See [`../user/`](../user/) for the programs themselves.
 
+## Tasks
+
+The machine runs several things at once, preemptively. `ps` shows them.
+
+```
+  PID  PPID  STATE  COMMAND
+    1     0  run    idle
+    2     1  run    sh
+    3     2  run    spin calls
+```
+
+**The context is the kernel stack pointer, and nothing else.** A task
+that is not running is sitting inside `schedule()`, called either
+because it blocked or from the tail of an interrupt -- and either way
+its registers are already on its own kernel stack. So saving a context
+is remembering one pointer and restoring it is putting that pointer
+back in A7; the ordinary function epilogue and the ordinary RTE do the
+rest.
+
+A brand new task therefore needs a kernel stack that has been made to
+look as though it had been suspended that way, and `build_stack()`
+fabricates exactly that: an exception frame claiming to come from user
+mode, zeroed registers under it, and a return address pointing at the
+stub that pops them. The first time it is scheduled it returns into
+that stub and RTEs into its entry point, having never run before.
+
+### Where a switch can happen
+
+**Only on the way back to user mode.** The tick marks the running task
+as having had its turn; the check happens at the end of an interrupt or
+a system call, once the kernel has finished what it was doing.
+
+That single rule is why there is no locking anywhere in this kernel. A
+task inside a system call cannot be preempted out of it, so only one
+task is ever inside the kernel at a time. The cost is real and worth
+knowing: a KERNEL task -- the shell -- is never preempted and must
+block or yield, and one that looped without doing either would stop the
+machine.
+
+A task may of course give up the processor at any time by blocking,
+which is `sleep_on()` rather than preemption, but it is the same switch
+underneath.
+
+### Waiting without spinning
+
+Every wait in this system used to be a spin. `wait.h` has queues,
+semaphores and mutexes, and the race they exist to close is the one
+where a driver's interrupt wakes a queue between a task deciding to
+wait and actually sleeping. `sleep_on()` masks across both, so the
+window does not exist. A caller always writes:
+
+```c
+while (!condition) {
+    sleep_on(&queue);
+}
+```
+
+because a wakeup means "look again", never "it is your turn".
+
+A mutex is a binary semaphore that remembers its owner, and neither can
+be used from an interrupt handler -- an interrupt cannot block, so a
+handler that must exclude a task masks instead.
+
+### Signals
+
+Any task can signal any task. There are no handlers: a signal here is
+something done TO a task, and the default actions cover what the
+machine needs -- ctrl-C ends a program, ctrl-Z stops it, `fg` continues
+it, a fault kills it, a parent learns a child finished. `sigaction()`
+is the next thing here rather than an omission, and it needs a frame
+built on the user stack and a trampoline to return through.
+
+**Delivery is at the boundary, never where the signal is raised.** The
+sender sets a bit, because the target may be halfway through a system
+call and ending it there would leave the work half done.
+
+ctrl-Z stopping a task is a state, not an unwind: the task stays
+exactly where it is, in the middle of whatever call it was making, and
+SIGCONT resumes it there. That is only possible because it has a kernel
+stack of its own to be left sitting on.
+
 ## Memory
 
 The MMU is on. Programs run in user mode, in an address space of their
@@ -868,6 +949,10 @@ command. Errors go to descriptor 2 even when output is redirected.
 | `pmm.c` | the physical page allocator |
 | `vm.c` | page tables, address spaces, and turning the MMU on |
 | `uaccess.c` | reaching into a program's memory, safely |
+| `task.c` | the scheduler, and what a task is |
+| `taskasm.s` | the context switch, and the way into a new task |
+| `wait.c` | wait queues, semaphores, mutexes |
+| `signal.c` | raising, and acting on |
 | `net/net.c` | frames in and out, and the receive ring |
 | `net/arp.c` | hardware addresses, and a cache |
 | `net/ip.c` | IPv4, and the internet checksum |

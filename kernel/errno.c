@@ -27,6 +27,7 @@ const char *strerror(int err)
     case EBADF:           return "bad file descriptor";
     case ECHILD:          return "no child processes";
     case EAGAIN:          return "resource temporarily unavailable";
+    case ESRCH:           return "no such process";
     case ENOMEM:          return "cannot allocate memory";
     case EACCES:          return "permission denied";
     case EFAULT:          return "bad address";

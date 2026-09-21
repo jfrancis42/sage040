@@ -19,6 +19,7 @@
 
 #define EPERM            1      /* operation not permitted            */
 #define ENOENT           2      /* no such file or directory          */
+#define ESRCH            3      /* no such process                    */
 #define EINTR            4      /* interrupted by a signal            */
 #define EIO              5      /* I/O error                          */
 #define ENXIO            6      /* no such device or address          */

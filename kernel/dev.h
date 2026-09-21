@@ -51,6 +51,7 @@ struct file {
     u32   pos;                  /* byte offset, for seekable things */
     int   flags;                /* the O_* flags it was opened with */
     int   used;
+    int   refs;                 /* how many descriptors point here  */
 };
 
 /* ---------------------------------------------------------------- */

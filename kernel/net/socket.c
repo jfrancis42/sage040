@@ -27,6 +27,8 @@
 #include "vfs.h"
 #include "dev.h"
 #include "timer.h"
+#include "task.h"
+#include "signal.h"
 #include "errno.h"
 #include "string.h"
 
@@ -132,9 +134,13 @@ static s32 sock_read(struct file *f, void *buf, u32 len)
         if (n != -EAGAIN) {
             return n;
         }
+        if (signal_pending(current)) {
+            return -EINTR;
+        }
         if ((s32)(timer_jiffies() - deadline) >= 0) {
             return -ETIMEDOUT;
         }
+        net_sleep(20);
     }
 }
 
@@ -182,9 +188,13 @@ static s32 sock_write(struct file *f, const void *buf, u32 len)
         }
         done += (u32)n;
         if (n == 0) {
+            if (signal_pending(current)) {
+                return done > 0 ? (s32)done : -EINTR;
+            }
             if ((s32)(timer_jiffies() - deadline) >= 0) {
                 return done > 0 ? (s32)done : -ETIMEDOUT;
             }
+            net_sleep(20);
         } else {
             deadline = timer_jiffies() + (SOCK_TIMEOUT_MS * HZ) / 1000;
         }
@@ -242,6 +252,7 @@ static int sock_close(struct file *f)
             while ((s32)(timer_jiffies() - deadline) < 0) {
                 net_poll();
                 tcp_timer();
+                net_sleep(20);
             }
         }
         tcp_free(s->tcp);
@@ -380,9 +391,13 @@ int sock_connect(int fd, const struct sockaddr_in *addr)
         if (s->tcp->state == TCP_CLOSED) {
             return -ETIMEDOUT;
         }
+        if (signal_pending(current)) {
+            return -EINTR;
+        }
         if ((s32)(timer_jiffies() - deadline) >= 0) {
             return -ETIMEDOUT;
         }
+        net_sleep(20);
     }
 }
 
@@ -428,6 +443,10 @@ int sock_accept(int fd, struct sockaddr_in *addr)
          * is inside a system call and the terminal's interrupt is
          * delivered at the boundary.
          */
+        if (signal_pending(current)) {
+            return -EINTR;
+        }
+        net_sleep(20);
     }
 
     c = sock_alloc();

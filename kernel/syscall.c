@@ -19,7 +19,8 @@
 #include "syscall.h"
 #include "vfs.h"
 #include "exec.h"
-#include "job.h"
+#include "task.h"
+#include "signal.h"
 #include "tty.h"
 #include "timer.h"
 #include "dev.h"
@@ -480,89 +481,123 @@ static int do_netctl(int cmd, u32 arg, u32 p)
     }
 }
 
-/* --- jobs ---------------------------------------------------------- */
+/* --- jobs, which are now just this task's children -------------------- */
 
 static int info_state(int state)
 {
     switch (state) {
-    case JOB_NEW:     return JOB_S_NEW;
-    case JOB_RUNNING: return JOB_S_RUNNING;
-    case JOB_STOPPED: return JOB_S_STOPPED;
-    default:          return JOB_S_DONE;
+    case TASK_READY:
+    case TASK_RUNNING: return JOB_S_RUNNING;
+    case TASK_BLOCKED: return JOB_S_BLOCKED;
+    case TASK_STOPPED: return JOB_S_STOPPED;
+    case TASK_ZOMBIE:  return JOB_S_DONE;
+    default:           return JOB_S_NEW;
     }
+}
+
+/* The Nth child of the calling task. */
+static struct task *nth_child(int n)
+{
+    struct task *t;
+    int i;
+
+    for (i = 0; (t = task_nth(i)) != 0; i++) {
+        if (t->parent != current) {
+            continue;
+        }
+        if (n-- == 0) {
+            return t;
+        }
+    }
+    return 0;
 }
 
 static int do_jobctl(int cmd, int arg, u32 p)
 {
-    struct job *j;
+    struct task *t;
 
     switch (cmd) {
+    case JOBCTL_ALL:
     case JOBCTL_INFO: {
         struct job_info out;
 
-        j = job_nth(arg);
-        if (!j) {
+        /* INFO walks this task's children, which is what `jobs` wants;
+         * ALL walks everything, which is what `ps` wants. */
+        t = (cmd == JOBCTL_ALL) ? task_nth(arg) : nth_child(arg);
+        if (!t) {
             return -ENOENT;
         }
         memset(&out, 0, sizeof(out));
-        out.id = j->id;
-        out.state = info_state(j->state);
-        out.background = j->background;
-        out.status = j->status;
-        out.signalled = j->signalled;
-        strncpy(out.cmd, j->cmd, sizeof(out.cmd) - 1);
+        out.id = t->pid;
+        out.state = info_state(t->state);
+        out.background = t->background;
+        out.status = t->exit_status;
+        out.signalled = t->signalled;
+        out.ppid = t->parent ? t->parent->pid : 0;
+        strncpy(out.cmd, t->cmd, sizeof(out.cmd) - 1);
         out.cmd[sizeof(out.cmd) - 1] = '\0';
         return store(p, &out, sizeof(out));
     }
 
     case JOBCTL_FG:
         /*
-         * Only a stopped job is resumed here. One that was queued with &
-         * has never run, so there is no context to return into -- the
-         * shell still has its command line and starts it the ordinary
-         * way, which is the same thing with less machinery.
+         * Bring it to the foreground: let it run again if it was
+         * stopped, take the terminal, and wait. The waiting is what
+         * makes it foreground -- everything else about the task is the
+         * same either way.
+         *
+         * Job 0 means the caller is taking the terminal back, which is
+         * what a shell does when whatever it was waiting for has
+         * finished.
          */
-        return exec_continue(arg);
-
-    case JOBCTL_BG:
-        j = job_get(arg);
-        if (!j) {
-            return -ENOENT;
+        if (arg == 0) {
+            tty_set_foreground(current->pid);
+            return 0;
         }
-        /*
-         * Running in the background means running while the shell also
-         * runs, and nothing here can do two things at once yet. The job
-         * keeps its place in the table and stays resumable with fg; what
-         * is missing is a scheduler, and saying so is more use than
-         * quietly running it in the foreground instead.
-         */
-        j->background = 1;
-        return -ENOSYS;
-
-    case JOBCTL_QUEUE: {
-        char cmd[JOB_CMD_MAX];
-        int err = fetch_str(cmd, p, sizeof(cmd));
-
-        if (err < 0) {
-            return err;
+        t = task_find(arg);
+        if (!t || t->parent != current) {
+            return -ECHILD;
         }
-        return job_create(cmd, 1);
-    }
-
-    case JOBCTL_REAP:
-        job_reap();
+        t->background = 0;
+        tty_set_foreground(t->pid);
+        signal_send(t, SIGCONT);
         return 0;
 
-    case JOBCTL_DROP:
-        j = job_get(arg);
-        if (!j) {
-            return -ENOENT;
+    case JOBCTL_BG:
+        t = task_find(arg);
+        if (!t || t->parent != current) {
+            return -ECHILD;
         }
-        if (j->state == JOB_RUNNING || j->state == JOB_STOPPED) {
+        t->background = 1;
+        /* The terminal goes back to whoever asked, because a background
+         * job is precisely one that does not have it. */
+        tty_set_foreground(current->pid);
+        signal_send(t, SIGCONT);
+        return 0;
+
+    case JOBCTL_REAP: {
+        int i;
+
+        for (i = 0; (t = task_nth(i)) != 0; ) {
+            if (t->parent == current && t->state == TASK_ZOMBIE) {
+                task_reap(t);
+                i = 0;          /* the table shifted under us */
+            } else {
+                i++;
+            }
+        }
+        return 0;
+    }
+
+    case JOBCTL_DROP:
+        t = task_find(arg);
+        if (!t || t->parent != current) {
+            return -ECHILD;
+        }
+        if (t->state != TASK_ZOMBIE) {
             return -EBUSY;
         }
-        j->state = JOB_FREE;
-        job_reap();
+        task_reap(t);
         return 0;
 
     default:
@@ -570,13 +605,6 @@ static int do_jobctl(int cmd, int arg, u32 p)
     }
 }
 
-/*
- * The table.
- *
- * Unimplemented numbers return -ENOSYS rather than doing something
- * approximate, because a call that silently does nothing is far harder
- * to find than one that says it does not exist.
- */
 static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
 {
     (void)a5;
@@ -696,17 +724,12 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
 
     case __NR_sysinfo: {
         struct sysinfo si;
-        struct job *j;
-        int i;
-
         memset(&si, 0, sizeof(si));
         si.uptime = timer_jiffies() / HZ;
         si.totalram = pmm_total();
         si.freeram = pmm_available();
         si.mem_unit = (u32)PAGE_SIZE;
-        for (i = 0; (j = job_nth(i)) != 0; i++) {
-            si.procs++;
-        }
+        si.procs = (u32)task_count();
         return store(a1, &si, sizeof(si));
     }
 
@@ -856,10 +879,35 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
     }
 
     case __NR_exit:
-        /* Returns only if nothing was spawned -- a program's exit()
-         * unwinds all the way back into exec_spawn() and never comes
-         * back here. */
-        return exec_exit((int)a1);
+        task_exit((int)a1);     /* does not return */
+        return 0;
+
+    case __NR_getpid:
+        return current->pid;
+
+    case __NR_kill:
+        return signal_kill((int)a1, (int)a2);
+
+    case __NR_sched_yield:
+        schedule();
+        return 0;
+
+    case __NR_waitpid: {
+        int status = 0;
+        int got = task_wait((int)a1, &status);
+
+        if (got < 0) {
+            return got;
+        }
+        if (a2) {
+            int err = store(a2, &status, sizeof(status));
+
+            if (err < 0) {
+                return err;
+            }
+        }
+        return got;
+    }
 
     default:
         return -ENOSYS;
@@ -867,76 +915,30 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
 }
 
 /* ---------------------------------------------------------------- */
-/* How deep in the kernel we are                                     */
+/* Leaving the kernel                                                */
 /*                                                                    */
-/* Counted because ctrl-C has to know. Killing a program means        */
-/* throwing its whole stack away, and doing that from the middle of   */
-/* a directory update leaves the directory half written. So a signal  */
-/* raised while the kernel is working waits for the boundary, which   */
-/* is a few instructions away, and one raised while the program is    */
-/* running its own code is delivered by the timer tick straight away. */
+/* The one place a signal is acted on and the one place a task can    */
+/* be preempted, and both for the same reason: the kernel has         */
+/* finished whatever it was doing, so its own state is consistent and */
+/* the task's stack is a place that can be left.                      */
 /*                                                                    */
-/* A count rather than a flag: the shell calls system calls too, and  */
-/* spawn runs a whole program from inside one.                        */
+/* This used to count how deep in the kernel it was, because a single */
+/* program was entered from inside the shell's own spawn and its      */
+/* boundaries were therefore invisible. Tasks removed the problem     */
+/* rather than solving it: every task has a kernel stack of its own,  */
+/* so a system call it makes is at depth one by definition.           */
 /* ---------------------------------------------------------------- */
 
-static volatile int depth;
-
-int syscall_in_kernel(void)
+s32 syscall_dispatch(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
+                     u32 saved_sr)
 {
-    return depth != 0;
-}
-
-/*
- * THE COUNT BELONGS TO THE PROGRAM, NOT TO THE MACHINE.
- *
- * A program is started from inside a system call -- the shell's spawn --
- * so the count is already 1 when the program begins. Every system call
- * the program then makes goes 1 to 2 and back to 1, and never reaches
- * zero: its boundaries are invisible, the tick thinks the kernel is
- * always busy, and neither ctrl-C nor ctrl-Z can ever be delivered.
- *
- * So entering a program swaps the count to zero and leaving it swaps the
- * caller's back. A stopped job keeps its own count with it, because it
- * is stopped in the middle of a system call and has to come back to
- * exactly that depth.
- *
- * This also replaces resetting the count after a program is killed: a
- * program that jumped out without returning left the count wherever it
- * was, and the swap on the way out puts back the right value rather than
- * guessing at zero.
- */
-int syscall_depth_swap(int d)
-{
-    int old = depth;
-
-    depth = d;
-    return old;
-}
-
-int syscall_depth(void)
-{
-    return depth;
-}
-
-s32 syscall_dispatch(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
-{
-    s32 r;
-
-    depth++;
-    r = do_syscall(nr, a1, a2, a3, a4, a5);
-    depth--;
+    s32 r = do_syscall(nr, a1, a2, a3, a4, a5);
 
     /*
-     * The boundary. The kernel has finished whatever it was doing and is
-     * about to hand control back, which makes this the one place a
-     * program can be killed or stopped without leaving anything half
-     * done. Note it happens on the way OUT: a read that was interrupted
-     * has already returned EINTR, and the program never sees it.
+     * Signals, then a possible switch -- and neither if this call came
+     * from the kernel itself, which the saved SR is what says.
      */
-    if (depth == 0) {
-        job_deliver(JOB_AT_SYSCALL);
-    }
+    task_ret_to_user(saved_sr);
     return r;
 }
 
@@ -1027,6 +1029,26 @@ int sys_spawn(const char *path, int argc, char **argv)
 int sys_jobctl(int cmd, int arg, void *p)
 {
     return (int)syscall3(__NR_jobctl, (u32)cmd, (u32)arg, (u32)p);
+}
+
+int sys_waitpid(int pid, int *status)
+{
+    return (int)syscall2(__NR_waitpid, (u32)pid, (u32)status);
+}
+
+int sys_kill(int pid, int sig)
+{
+    return (int)syscall2(__NR_kill, (u32)pid, (u32)sig);
+}
+
+int sys_getpid(void)
+{
+    return (int)syscall0(__NR_getpid);
+}
+
+void sys_yield(void)
+{
+    syscall0(__NR_sched_yield);
 }
 
 int sys_netctl(int cmd, u32 arg, void *p)

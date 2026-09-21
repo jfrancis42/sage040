@@ -7,8 +7,11 @@
 #include "dev.h"
 #include "tty.h"
 #include "tcp.h"
+#include "wait.h"
 #include "timer.h"
 #include "console.h"
+#include "task.h"
+#include "signal.h"
 #include "errno.h"
 #include "string.h"
 
@@ -39,29 +42,25 @@ static volatile u32 ring_head;          /* written by net_drain only */
 static volatile u32 ring_tail;          /* written by net_poll only  */
 
 /*
+ * Anything waiting for a packet.
+ *
+ * Woken by net_drain(), from the timer interrupt, as frames come off the
+ * card. Before there were tasks every wait here was a spin around
+ * net_poll(); what has changed is not how a packet is noticed but what
+ * the processor does while there is none.
+ */
+static struct waitq net_waitq;
+
+/*
  * The driver is not reentrant, and net_drain() runs in an interrupt.
  *
  * Receiving and transmitting both bank-switch the chip and both use its
  * pointer register, so an interrupt arriving in the middle of a
  * transmit would leave the chip pointed somewhere else when the
- * transmit resumed. Raising the mask for the length of one send is the
- * cheapest correct answer; the alternative is a flag the interrupt
- * checks, which is the same thing with more ways to be wrong.
+ * transmit resumed. irq_save/irq_restore come from wait.h, which is
+ * where the kernel's masking lives now that more than one thing needs
+ * it.
  */
-static u16 irq_off(void)
-{
-    u16 sr;
-
-    __asm__ volatile ("move.w %%sr,%0\n\t"
-                      "ori.w  #0x0700,%%sr"
-                      : "=d"(sr) :: "cc");
-    return sr;
-}
-
-static void irq_restore(u16 sr)
-{
-    __asm__ volatile ("move.w %0,%%sr" :: "d"(sr) : "cc");
-}
 
 static void net_poll_idle(void)
 {
@@ -138,7 +137,7 @@ int net_tx(const void *frame, u32 len)
         return -ENETDOWN;
     }
     {
-        u16 sr = irq_off();
+        u16 sr = irq_save();
 
         err = iface.dev->send(iface.dev, frame, len);
         irq_restore(sr);
@@ -210,6 +209,9 @@ void net_drain(void)
         }
         ring[ring_head].len = (u32)n;
         ring_head = next;
+
+        /* Somebody may be asleep waiting for exactly this. */
+        wake_all(&net_waitq);
     }
 }
 
@@ -231,17 +233,40 @@ int net_poll(void)
     return handled;
 }
 
+void net_sleep(u32 ms)
+{
+    sleep_on_timeout(&net_waitq, ms);
+}
+
 int net_wait(volatile int *flag, u32 ms)
 {
     u32 deadline = timer_jiffies() + (ms * HZ + 999) / 1000;
 
     for (;;) {
+        /*
+         * The protocol work happens HERE, in task context, and never in
+         * the interrupt -- which is what keeps the whole stack free of
+         * locking. The interrupt only moves frames into the ring.
+         */
         net_poll();
+        tcp_timer();
+
         if (*flag) {
             return 1;
         }
         if ((s32)(timer_jiffies() - deadline) >= 0) {
             return 0;
         }
+        if (signal_pending(current)) {
+            return 0;           /* ctrl-C reaches a waiting program */
+        }
+
+        /*
+         * A short sleep rather than a spin. Bounded at 20 ms so that a
+         * missed wakeup costs a small delay instead of a hang, and so
+         * that TCP's own timers get looked at regularly whether or not
+         * anything is arriving.
+         */
+        sleep_on_timeout(&net_waitq, 20);
     }
 }

@@ -22,6 +22,7 @@
  */
 #include "vfs.h"
 #include "errno.h"
+#include "task.h"
 #include "string.h"
 
 #define DEV_PREFIX     "/dev/"
@@ -30,7 +31,27 @@
 static struct fs_type *types;
 static struct fs_type *mounted_fs;
 static struct blockdev *mounted_dev;
-static struct file files[OPEN_MAX];
+/*
+ * Open files, and the descriptors that point at them.
+ *
+ * TWO TABLES, NOT ONE, and the split is what multitasking needed. A
+ * `struct file` is an open file -- its position, its flags, the device
+ * behind it -- and lives here, shared. A DESCRIPTOR is an index into a
+ * per-task array of pointers to those, and lives in `struct task`.
+ *
+ * That is what makes a program inherit its parent's descriptors: the
+ * child's array points at the same open files, so the two share a
+ * position, and writing to a redirected stdout appends where the last
+ * write left off instead of starting over. Conflating the two -- which
+ * is what this was before there was more than one task -- makes that
+ * impossible to express.
+ *
+ * Reference counted, because two tasks can hold the same open file and
+ * the last one to let go is the one that closes it.
+ */
+#define FILE_MAX  (OPEN_MAX * 2)
+
+static struct file files[FILE_MAX];
 
 /* ---------------------------------------------------------------- */
 /* Filesystem types                                                  */
@@ -98,7 +119,7 @@ int vfs_umount(void)
     }
     /* Refuse while anything is still open, rather than leaving
      * descriptors pointing at a filesystem that is no longer there. */
-    for (i = 0; i < OPEN_MAX; i++) {
+    for (i = 0; i < FILE_MAX; i++) {
         if (files[i].used && files[i].ops != 0 && files[i].priv != 0) {
             return -EBUSY;
         }
@@ -156,20 +177,58 @@ static const char *strip_root(const char *path)
 
 struct file *fd_get(int fd)
 {
-    if (fd < 0 || fd >= OPEN_MAX || !files[fd].used) {
+    if (fd < 0 || fd >= OPEN_MAX || !current || !current->fds[fd]) {
         return 0;
     }
-    return &files[fd];
+    return current->fds[fd];
 }
 
+/* An open file, not a descriptor. */
+static struct file *file_alloc(void)
+{
+    int i;
+
+    for (i = 0; i < FILE_MAX; i++) {
+        if (!files[i].used) {
+            memset(&files[i], 0, sizeof(files[i]));
+            files[i].used = 1;
+            files[i].refs = 1;
+            return &files[i];
+        }
+    }
+    return 0;
+}
+
+void file_get(struct file *f)
+{
+    if (f) {
+        f->refs++;
+    }
+}
+
+void file_put(struct file *f)
+{
+    if (!f || !f->used) {
+        return;
+    }
+    if (--f->refs > 0) {
+        return;             /* somebody else still has it */
+    }
+    if (f->ops && f->ops->close) {
+        f->ops->close(f);
+    }
+    f->used = 0;
+}
+
+/* The lowest free descriptor in the current task, as Unix requires --
+ * it is what makes `exec 2>&1`-style redirection work by closing a
+ * descriptor and reopening into the same number. */
 static int fd_alloc(void)
 {
     int i;
 
     for (i = 0; i < OPEN_MAX; i++) {
-        if (!files[i].used) {
-            memset(&files[i], 0, sizeof(files[i]));
-            files[i].used = 1;
+        if (!current->fds[i]) {
             return i;
         }
     }
@@ -178,28 +237,42 @@ static int fd_alloc(void)
 
 int fd_bind(int fd, const struct file_ops *ops, void *priv, int flags)
 {
+    struct file *f;
+
     if (fd < 0 || fd >= OPEN_MAX || !ops) {
         return -EINVAL;
     }
-    memset(&files[fd], 0, sizeof(files[fd]));
-    files[fd].used = 1;
-    files[fd].ops = ops;
-    files[fd].priv = priv;
-    files[fd].flags = flags;
+    f = file_alloc();
+    if (!f) {
+        return -ENFILE;
+    }
+    f->ops = ops;
+    f->priv = priv;
+    f->flags = flags;
+
+    if (current->fds[fd]) {
+        file_put(current->fds[fd]);
+    }
+    current->fds[fd] = f;
     return fd;
 }
 
 int fd_install(const struct file_ops *ops, void *priv, int flags)
 {
+    struct file *f;
     int fd = fd_alloc();
 
     if (fd < 0) {
         return fd;
     }
-    files[fd].ops = ops;
-    files[fd].priv = priv;
-    files[fd].flags = flags;
-    files[fd].pos = 0;
+    f = file_alloc();
+    if (!f) {
+        return -ENFILE;
+    }
+    f->ops = ops;
+    f->priv = priv;
+    f->flags = flags;
+    current->fds[fd] = f;
     return fd;
 }
 
@@ -220,14 +293,7 @@ int fd_open(const char *path, int flags)
      * has been looked at. */
     cd = resolve_dev(path);
     if (cd) {
-        fd = fd_alloc();
-        if (fd < 0) {
-            return fd;
-        }
-        files[fd].ops = cd->ops;
-        files[fd].priv = cd->priv;
-        files[fd].flags = flags;
-        return fd;
+        return fd_install(cd->ops, cd->priv, flags);
     }
     if (strncmp(path, DEV_PREFIX, DEV_PREFIX_LEN) == 0) {
         return -ENXIO;          /* under /dev, but no such device */
@@ -241,11 +307,19 @@ int fd_open(const char *path, int flags)
     if (fd < 0) {
         return fd;
     }
-    files[fd].flags = flags;
-    err = mounted_fs->open(strip_root(path), flags, &files[fd]);
-    if (err < 0) {
-        files[fd].used = 0;
-        return err;
+    {
+        struct file *f = file_alloc();
+
+        if (!f) {
+            return -ENFILE;
+        }
+        f->flags = flags;
+        err = mounted_fs->open(strip_root(path), flags, f);
+        if (err < 0) {
+            f->used = 0;
+            return err;
+        }
+        current->fds[fd] = f;
     }
     return fd;
 }
@@ -253,16 +327,81 @@ int fd_open(const char *path, int flags)
 int fd_close(int fd)
 {
     struct file *f = fd_get(fd);
-    int err = 0;
 
     if (!f) {
         return -EBADF;
     }
-    if (f->ops && f->ops->close) {
-        err = f->ops->close(f);
+    current->fds[fd] = 0;
+    file_put(f);
+    return 0;
+}
+
+int fd_dup(int fd)
+{
+    struct file *f = fd_get(fd);
+    int n;
+
+    if (!f) {
+        return -EBADF;
     }
-    f->used = 0;
-    return err;
+    n = fd_alloc();
+    if (n < 0) {
+        return n;
+    }
+    file_get(f);
+    current->fds[n] = f;
+    return n;
+}
+
+int fd_dup2(int oldfd, int newfd)
+{
+    struct file *f = fd_get(oldfd);
+
+    if (!f) {
+        return -EBADF;
+    }
+    if (newfd < 0 || newfd >= OPEN_MAX) {
+        return -EBADF;
+    }
+    if (oldfd == newfd) {
+        return newfd;
+    }
+    if (current->fds[newfd]) {
+        file_put(current->fds[newfd]);
+    }
+    file_get(f);
+    current->fds[newfd] = f;
+    return newfd;
+}
+
+/*
+ * Give a new task copies of these descriptors.
+ *
+ * The open files are SHARED, not copied -- both tasks point at the same
+ * struct file and therefore the same position. That is what a Unix
+ * child inherits, and it is why two processes writing to the same
+ * redirected output do not overwrite each other from the start.
+ */
+void fd_inherit(struct task *child, struct task *parent)
+{
+    int i;
+
+    for (i = 0; i < OPEN_MAX; i++) {
+        child->fds[i] = parent->fds[i];
+        file_get(child->fds[i]);
+    }
+}
+
+void fd_close_all(struct task *t)
+{
+    int i;
+
+    for (i = 0; i < OPEN_MAX; i++) {
+        if (t->fds[i]) {
+            file_put(t->fds[i]);
+            t->fds[i] = 0;
+        }
+    }
 }
 
 s32 fd_read(int fd, void *buf, u32 len)

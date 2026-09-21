@@ -39,6 +39,7 @@
 #include "fb.h"
 #include "fbcon.h"
 #include "tty.h"
+#include "task.h"
 #include "drivers/drivers.h"
 
 static void banner(void)
@@ -391,6 +392,21 @@ void kmain(void)
      * politely: the port is the console of last resort and the terminal
      * is what everything writes through.
      */
+    /*
+     * Tasks before anything else, and before the console in particular.
+     *
+     * Not because the scheduler is needed this early -- nothing is
+     * scheduled for a long time yet -- but because DESCRIPTORS LIVE IN A
+     * TASK. tty_init() binds 0, 1 and 2, and with no current task that
+     * wrote through a null pointer into the vector table, which is
+     * mapped and writable and therefore did not fault. The machine came
+     * up, printed its banner, and died at the first exception.
+     *
+     * This costs nothing: task_init() only claims the context the kernel
+     * is already running in, and allocates nothing.
+     */
+    task_init();
+
     if (ns16550_init() < 0) {
         halt();                 /* nothing could report this anyway */
     }
@@ -422,6 +438,41 @@ void kmain(void)
         mfp_interrupts_on();
     }
 
+    /*
+     * The shell becomes a task, and the startup code becomes the idle
+     * loop by falling into schedule().
+     *
+     * Note the order: task_init() first, because every task needs a
+     * kernel stack and the allocator has to be up, and the shell last,
+     * because it is the thing that expects everything else to work.
+     */
+
+
+    {
+        struct task *sh = task_create("sh", shell);
+
+        if (sh) {
+            tty_set_foreground(sh->pid);
+        }
+        if (!sh) {
+            kputln("could not start the shell");
+            halt();
+        }
+    }
+
     kputs("\nkernel ready.  'help' lists commands.\n\n");
-    shell();
+
+    /*
+     * And this becomes the idle loop.
+     *
+     * schedule() first, because something may already be ready; then
+     * STOP, which puts the processor to sleep until an interrupt, so an
+     * idle machine costs the host nothing and would cost real hardware
+     * no power. The interrupt that wakes it is also what marks a task
+     * ready, so the loop finds work waiting for it.
+     */
+    for (;;) {
+        schedule();
+        __asm__ volatile ("stop #0x2000");
+    }
 }

@@ -26,7 +26,7 @@
  */
 #include "exec.h"
 #include "vfs.h"
-#include "job.h"
+#include "task.h"
 #include "tty.h"
 #include "vm.h"
 #include "pmm.h"
@@ -75,64 +75,18 @@ static u32 be32(const u8 *p)
            ((u32)p[2] << 8) | (u32)p[3];
 }
 
-/* --- the one running program --------------------------------------- */
-
-extern int exec_enter(u32 entry, u32 usp, u32 kstack_top);
-extern void exec_longjmp(int status) __attribute__((noreturn));
-extern void exec_abort(int status) __attribute__((noreturn));
-
-static int running;
-
-/* The address space of the program that is running, so that killing it
- * from an interrupt has something to take apart afterwards. */
-static struct addrspace *running_as;
-
-int exec_running(void)
-{
-    return running;
-}
-
-int exec_exit(int status)
-{
-    if (!running) {
-        /*
-         * The shell has nowhere to exit to. Saying so is better than
-         * halting the machine, which is what a program calling exit()
-         * with no parent would otherwise amount to.
-         */
-        return -ENOSYS;
-    }
-    running = 0;
-    exec_longjmp(status);
-    return 0;                   /* not reached */
-}
+/* --- running a program is making a task ------------------------------ */
 
 /*
- * Killed rather than exited: ctrl-C.
+ * There is no "the running program" any more.
  *
- * Goes out through exec_abort rather than exec_longjmp because the
- * caller may be the timer interrupt handler, where the interrupt mask
- * has to be put back by hand -- nothing is going to execute an RTE and
- * restore it. The two are otherwise the same unwind.
+ * exec.c used to own a single flag, a single saved context and a single
+ * program area, and every one of those was a consequence of there being
+ * nothing else to run. What it does now is build an address space, load
+ * an image into it, and hand the result to the scheduler as a task --
+ * after which this file has no further interest in it. The shell waits
+ * for it, or does not, and both are the shell's business.
  */
-void exec_kill(int status)
-{
-    running = 0;
-    /*
-     * The address space is NOT torn down here. This can be called from
-     * the timer interrupt, and vm_destroy walks page tables and frees
-     * pages -- work that has no business happening inside an interrupt
-     * handler, on a stack that is about to be discarded. exec_spawn
-     * cleans up when it gets control back, a few instructions later,
-     * standing on its own stack.
-     */
-    exec_abort(status);
-}
-
-struct addrspace *exec_addrspace(void)
-{
-    return running_as;
-}
 
 /* --- loading -------------------------------------------------------- */
 
@@ -422,71 +376,6 @@ static void describe(char *out, u32 max, int argc, char **argv)
 }
 
 /*
- * Is a stopped job holding something a new program would need?
- *
- * It used to be the program area: one image at a fixed address, so a
- * second program loaded straight over a stopped one. That is gone --
- * every program has its own address space now and two of them cannot
- * collide. What is left is narrower: execasm.s holds ONE saved kernel
- * context, so one program can be part-way through at a time, and
- * starting a second while one is stopped would leave the first with no
- * way home.
- *
- * The restriction survives, in other words, but for a different reason,
- * and the reason it survives for now is the scheduler rather than the
- * MMU.
- */
-static int area_held(void)
-{
-    struct job *j;
-    int i;
-
-    for (i = 0; (j = job_nth(i)) != 0; i++) {
-        if (j->state == JOB_STOPPED) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-/*
- * A supervisor stack for one program, with a hole underneath it.
- *
- * Three pages: a guard page and then two of stack. The guard is taken
- * out of the KERNEL's map, not the program's -- it is the kernel that
- * would overflow, running the program's system calls -- so an overflow
- * is an access fault at the instruction that did it, rather than a
- * quiet corruption of whatever page happened to be next. A kernel stack
- * that overruns and keeps going is close to the worst failure a system
- * can have, because the damage surfaces somewhere else entirely.
- */
-#define KSTACK_PAGES    2
-#define KSTACK_TOTAL    (KSTACK_PAGES + 1)
-
-static u32 kstack_alloc(u32 *top)
-{
-    u32 base = pmm_alloc_pages(KSTACK_TOTAL);
-
-    if (!base) {
-        return 0;
-    }
-    vm_kernel_present(base, 0);         /* the guard */
-    *top = base + KSTACK_TOTAL * (u32)PAGE_SIZE;
-    return base;
-}
-
-static void kstack_free(u32 base)
-{
-    if (!base) {
-        return;
-    }
-    /* Put the guard page back before the block goes into the pool, or
-     * the next thing to be handed that page finds it unmapped. */
-    vm_kernel_present(base, 1);
-    pmm_free_pages(base, KSTACK_TOTAL);
-}
-
-/*
  * Build the address space a program will run in: its image, its stack,
  * and its arguments. Everything it will be able to reach.
  */
@@ -526,22 +415,21 @@ static int build(struct addrspace *as, const char *path,
     return setup_stack(argc, argv, sp);
 }
 
+/*
+ * Load a program and start it as a task.
+ *
+ * Returns the new task's pid. IT DOES NOT WAIT: waiting is task_wait(),
+ * and whether to do it is what separates a foreground job from a
+ * background one. That separation is the whole of what `&` needed.
+ */
 int exec_spawn(const char *path, int argc, char **argv)
 {
     char cmd[JOB_CMD_MAX];
     struct addrspace *as;
-    struct job *j;
-    u32 entry = 0, sp = 0, kstack, ktop = 0;
-    int err, status, id, prev_fg, prev_depth;
+    struct task *t;
+    u32 entry = 0, sp = 0;
+    int err;
 
-    if (running) {
-        /* One at a time: execasm.s has room for one saved context, and a
-         * second spawn would overwrite the first's way home. */
-        return -EBUSY;
-    }
-    if (area_held()) {
-        return -EBUSY;
-    }
     if (argc < 0 || argc > EXEC_MAX_ARGS) {
         return -E2BIG;
     }
@@ -556,10 +444,19 @@ int exec_spawn(const char *path, int argc, char **argv)
      * filling it means copying the arguments in -- and copy_to_user is
      * how anything gets into a program's memory, including the arguments
      * it was started with.
+     *
+     * Saved and restored rather than simply cleared: the caller is a
+     * task of its own with its own address space, and a spawn from
+     * inside a program must not leave that program unable to reach its
+     * own memory.
      */
-    uaccess_set(as);
-    err = build(as, path, argc, argv, &entry, &sp);
-    uaccess_set(0);
+    {
+        struct addrspace *saved = uaccess_current();
+
+        uaccess_set(as);
+        err = build(as, path, argc, argv, &entry, &sp);
+        uaccess_set(saved);
+    }
 
     if (err < 0) {
         vm_destroy(as);
@@ -567,140 +464,35 @@ int exec_spawn(const char *path, int argc, char **argv)
     }
 
     describe(cmd, sizeof(cmd), argc, argv);
-    kstack = kstack_alloc(&ktop);
-    if (!kstack) {
+
+    t = task_create_user(argv[0] ? argv[0] : path, entry, sp, as);
+    if (!t) {
         vm_destroy(as);
-        return -ENOMEM;
+        return -EAGAIN;
     }
-
-    id = job_create(cmd, 0);
-    if (id < 0) {
-        kstack_free(kstack);
-        vm_destroy(as);
-        return id;
-    }
-    j = job_get(id);
-    j->state = JOB_RUNNING;
-    j->as = as;
-    j->kstack = kstack;
-
-    /* From here the terminal's ctrl-C and ctrl-Z mean this program. */
-    prev_fg = job_foreground();
-    job_set_foreground(id);
-
-    running = 1;
-    running_as = as;
-    uaccess_set(as);
-    vm_switch(as);
-
-    /* The program's own count starts at zero, whatever depth the caller
-     * was at when it asked for this. */
-    prev_depth = syscall_depth_swap(0);
-
-    status = exec_enter(entry, sp, ktop);
-
-    syscall_depth_swap(prev_depth);
-    vm_switch(0);
-    uaccess_set(0);
-    running_as = 0;
-    running = 0;
-    job_set_foreground(prev_fg);
+    strncpy(t->cmd, cmd, JOB_CMD_MAX - 1);
+    t->cmd[JOB_CMD_MAX - 1] = '\0';
+    t->parent = current;
 
     /*
-     * Put the terminal back. A program that set raw mode and was then
-     * killed by ctrl-C never got the chance to, and a console left with
-     * echo off looks exactly like a machine that has crashed.
+     * The child gets its parent's descriptors, pointing at the same open
+     * files. That is what makes `prog > file` work: the shell opens the
+     * file, points descriptor 1 at it, spawns, and the program writes
+     * there without knowing anything happened.
      */
-    tty_reset();
+    fd_inherit(t, current);
 
     /*
-     * Whatever the program left on the disk should be on the disk. It
-     * may have been stopped partway through by exit(), with buffers
-     * still held, and the shell is about to prompt as though nothing
-     * happened.
+     * The terminal is handed over HERE, not by the shell after this
+     * returns. Loading an image takes long enough to read a disk, and a
+     * ctrl-C arriving in that window went to a foreground task that did
+     * not exist yet and was simply lost -- which looked exactly like
+     * ctrl-C not working.
+     *
+     * A background job gives it straight back; that is the shell's
+     * decision and it makes it as soon as it knows.
      */
-    vfs_sync();
+    tty_set_foreground(t->pid);
 
-    if (j->state == JOB_STOPPED) {
-        /* Still alive, its address space intact and still holding its
-         * pages, listed by `jobs` and resumable with `fg`. Nothing went
-         * wrong, so this is not an errno. */
-        return SPAWN_STOPPED;
-    }
-
-    if (j->state == JOB_DONE) {
-        status = j->status;     /* killed: 128 + the signal */
-    } else {
-        j->state = JOB_DONE;
-        j->status = status;
-    }
-
-    /* Every page it was given goes back, including the ones holding its
-     * tables and the stack its system calls ran on. This is the whole of
-     * "the program is gone". */
-    vm_destroy(as);
-    kstack_free(j->kstack);
-    j->as = 0;
-    j->kstack = 0;
-    return status;
-}
-
-/*
- * Resume a stopped job. Returns its exit status, or SPAWN_STOPPED if it
- * stopped again.
- */
-int exec_continue(int id)
-{
-    struct job *j = job_get(id);
-    int status, prev_fg, prev_depth;
-
-    if (!j) {
-        return -ENOENT;
-    }
-    if (j->state != JOB_STOPPED) {
-        return -EINVAL;
-    }
-    if (running) {
-        return -EBUSY;
-    }
-
-    prev_fg = job_foreground();
-    job_set_foreground(id);
-    j->state = JOB_RUNNING;
-    j->signalled = 0;
-
-    running = 1;
-    running_as = j->as;
-    uaccess_set(j->as);
-    vm_switch(j->as);
-
-    /* Back to the depth it stopped at, in the middle of a system call. */
-    prev_depth = syscall_depth_swap(j->depth);
-
-    status = exec_resume(j->saved_sp);
-
-    syscall_depth_swap(prev_depth);
-    vm_switch(0);
-    uaccess_set(0);
-    running_as = 0;
-    running = 0;
-    job_set_foreground(prev_fg);
-
-    tty_reset();
-    vfs_sync();
-
-    if (j->state == JOB_STOPPED) {
-        return SPAWN_STOPPED;
-    }
-    if (j->state == JOB_DONE) {
-        status = j->status;
-    } else {
-        j->state = JOB_DONE;
-        j->status = status;
-    }
-    vm_destroy(j->as);
-    kstack_free(j->kstack);
-    j->as = 0;
-    j->kstack = 0;
-    return status;
+    return t->pid;
 }

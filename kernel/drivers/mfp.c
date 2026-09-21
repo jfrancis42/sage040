@@ -109,16 +109,30 @@ void mfp_dispatch(u32 vector)
 __asm__(
 "       .text                               \n"
 "       .globl _mfp_stub                    \n"
+/*
+ * EVERY register is saved, not just the scratch ones.
+ *
+ * The timer's handler can decide that the running task has had its turn,
+ * and the switch that follows happens by swapping the kernel stack
+ * pointer -- so whatever the interrupted task was holding has to be ON
+ * that stack, or it is lost when another task's stack takes its place.
+ * A stub that saved only d0-d1/a0-a1 was correct for a machine that
+ * never switched and is not for one that does.
+ */
 "_mfp_stub:                                 \n"
-"       movem.l %d0-%d1/%a0-%a1,-(%sp)      \n"
+"       movem.l %d0-%d7/%a0-%a6,-(%sp)      \n"   /* 60 bytes           */
 "       moveq   #0,%d0                      \n"
-"       move.w  22(%sp),%d0                 \n"   /* format/vector word */
+"       move.w  66(%sp),%d0                 \n"   /* format/vector word */
 "       andi.l  #0xfff,%d0                  \n"   /* vector offset      */
 "       lsr.l   #2,%d0                      \n"   /* -> vector number   */
 "       move.l  %d0,-(%sp)                  \n"
 "       jsr     mfp_dispatch                \n"
 "       addq.l  #4,%sp                      \n"
-"       movem.l (%sp)+,%d0-%d1/%a0-%a1      \n"
+"       clr.l   -(%sp)                      \n"
+"       move.w  64(%sp),2(%sp)              \n"   /* saved SR, low half */
+"       jsr     task_ret_to_user            \n"
+"       addq.l  #4,%sp                      \n"
+"       movem.l (%sp)+,%d0-%d7/%a0-%a6      \n"
 "       rte                                 \n"
 );
 extern void _mfp_stub(void);

@@ -38,7 +38,15 @@ QEMU=${QEMU:-$SAGE_QEMU/bin/qemu-system-m68k}
 # through the tree with names that looked like part of it. They are all
 # under scratch/ now, which `make clean` removes and git ignores.
 #
-SCRATCH=${SAGE_SCRATCH:-$(cd "$(dirname "$0")/.." && pwd)/scratch}
+#
+# Computed AFTER the cd above, from the working directory rather than
+# from $0 -- which has already been used once and is relative to where
+# the script was invoked from, not to where it now is. Deriving it from
+# $0 a second time worked when the script was run as ./edittest.sh and
+# failed when it was run by path, which is a difference nobody should
+# have to notice.
+#
+SCRATCH=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}
 mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-edit.img"
 PART_LBA=2048
@@ -99,8 +107,18 @@ mcopy -o -i "$MIMG" ../user/shutdown ::/SHUTDOWN
 #   \022 ctrl-R   \023 ctrl-S   \025 ctrl-U   \027 ctrl-W
 #   \032 ctrl-Z   \033 escape
 #
-: > "$SCRATCH/session.tmp"
-{
+#
+# THE SLEEPS HAVE TO HAPPEN WHILE SENDING, not while building.
+#
+# This was a block that wrote to a file, so every sleep in it delayed the
+# construction of the file and none of them delayed the guest -- the
+# whole session then arrived in one burst. It did not matter until
+# signals became precise: a ctrl-Z typed "two seconds after" a command
+# actually landed before that command's program existed, went to the
+# shell, and was ignored. A person typing at a terminal does not do
+# that, so neither should this.
+#
+feed() {
     # --- ctrl-A: go to the start and type in front of what is there ---
     printf 'ok-ctrl-a\001echo \r'
 
@@ -187,15 +205,23 @@ mcopy -o -i "$MIMG" ../user/shutdown ::/SHUTDOWN
     printf 'echo ok-resumed-then-killed\r'
     sleep 1
 
-    # --- & queues a job and says why it cannot run it ---
-    printf 'hello queued-by-ampersand &\r'
+    # --- & runs a job alongside the shell, which is the point of it ---
+    #
+    # `spin calls` never ends on its own, so if the prompt comes back and
+    # another command runs, the two were genuinely running at once.
+    printf 'spin calls &\r'
+    sleep 2
+    printf 'echo ok-shell-alive-with-background\r'
+    sleep 2
     printf 'jobs\r'
-    printf 'fg\r'
+    sleep 2
+    printf 'hello alongside\r'
+    sleep 3
 
     # --- and the machine stops itself ---
     printf 'echo ok-about-to-shut-down\r'
     printf 'shutdown\r'
-} >> "$SCRATCH/session.tmp"
+}
 
 rm -f "$SCRATCH/in.fifo"
 mkfifo "$SCRATCH/in.fifo"
@@ -214,7 +240,8 @@ qemu_pid=$!
 
 exec 3> "$SCRATCH/in.fifo"
 sleep "$BOOT_WAIT"
-cat "$SCRATCH/session.tmp" >&3
+feed >&3 &
+feeder=$!
 
 #
 # The session contains sleeps, so it takes a while to feed. Wait for the
@@ -319,7 +346,7 @@ check "ctrl-C ended one that was making them, at the boundary" $?
 
 echo "=== checks: jobs ==="
 
-contains "$SCRATCH/clean.tmp" "[1]+  stopped"
+grep -qE '\]\+  stopped' "$SCRATCH/clean.tmp"
 check "ctrl-Z stopped the running program" $?
 
 contains "$SCRATCH/clean.tmp" "ok-stopped-and-listed"
@@ -333,11 +360,14 @@ check "fg resumed the stopped job and it was still killable" $?
 ! grep -q "exception" "$SCRATCH/clean.tmp"
 check "  and nothing faulted doing it" $?
 
-contains "$SCRATCH/clean.tmp" "queued -- nothing runs in the background"
-check "& queued a job rather than pretending to run it" $?
+contains "$SCRATCH/clean.tmp" "ok-shell-alive-with-background"
+check "& returned immediately and the shell kept working" $?
 
-contains "$SCRATCH/clean.tmp" "argv[1] = queued-by-ampersand"
-check "fg ran the job that & had queued" $?
+grep -qE '^\[[0-9]+\]  running  spin calls' "$SCRATCH/clean.tmp"
+check "  and the background job really was running" $?
+
+contains "$SCRATCH/clean.tmp" "argv[1] = alongside"
+check "  a second program ran at the same time as it" $?
 
 echo "=== checks: shutdown ==="
 

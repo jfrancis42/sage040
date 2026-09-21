@@ -81,6 +81,23 @@ int  fd_bind(int fd, const struct file_ops *ops, void *priv, int flags);
  */
 int  fd_install(const struct file_ops *ops, void *priv, int flags);
 
+/*
+ * An OPEN FILE, which is not the same thing as a descriptor.
+ *
+ * Several descriptors -- in one task or in several -- may point at one
+ * of these and share its position. Reference counted, so the last one to
+ * let go is the one that actually closes it.
+ */
+void file_get(struct file *f);
+void file_put(struct file *f);
+
+int  fd_dup(int fd);
+int  fd_dup2(int oldfd, int newfd);
+
+struct task;
+void fd_inherit(struct task *child, struct task *parent);
+void fd_close_all(struct task *t);
+
 /* Operations that name a path rather than a descriptor. */
 int  vfs_unlink(const char *path);
 int  vfs_rename(const char *from, const char *to);

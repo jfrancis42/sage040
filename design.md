@@ -243,10 +243,62 @@ if interrupt-driven is wanted.
 | **4.4BSD-Lite networking** | Historically authentic for a workstation of this vintage | mbufs, `splnet()`, deep entanglement with a BSD kernel that does not exist here. This is the "port NetBSD instead" path arriving by another route |
 | **Write it** | ARP, ICMP echo and UDP are a few hundred lines, and `t4-net.c` has already started | TCP is where it stops being educational: retransmission, windowing, congestion control, and the state machine's edge cases |
 
-### Recommendation
+### What was actually done, and why it differs
 
-lwIP in `NO_SYS` mode. Ping, then UDP echo, then TCP. Writing the easy layers
-by hand first is worthwhile for its own sake; bring lwIP in at TCP.
+The easy layers were written by hand, as recommended — and then TCP was
+too, which the recommendation above did not expect. The reason the advice
+changed is that it was written when nothing existed: by the time TCP was
+due, ARP, IPv4, ICMP and UDP were here, documented, and wired into the
+device model and the shell. **lwIP is not a TCP.** It is a whole stack
+with its own ARP, its own IP and its own idea of what an interface is, so
+adopting it meant discarding all of that rather than slotting a layer on
+top.
+
+`net/socket.c` is what keeps the decision reversible. A program calls
+`socket()`, `connect()` and `read()`; which implementation answers is
+not its business, so lwIP can still replace what is underneath without a
+program changing.
+
+### What the TCP does not do
+
+Each of these is a decision, written down so that it is a to-do rather
+than a surprise. They are roughly in the order they would be worth
+doing.
+
+- **A random initial sequence number.** The ISN comes from the tick,
+  which is guessable. On a LAN that is theoretical; on the open
+  internet it lets an off-path attacker inject data into a connection.
+  This is the only one on the list that is a security bug rather than a
+  performance limit, and it should be fixed first. It needs a source of
+  randomness the machine does not yet have — the obvious one is to hash
+  the clock, the MAC and a counter, which is weak but enormously better
+  than a multiplication.
+- **Out-of-order reassembly.** A segment arriving ahead of a gap is
+  dropped and the sender retransmits it. That is legal, and it costs
+  throughput rather than correctness — but on any path that loses
+  packets it turns one loss into a stall for a whole round trip. A
+  reassembly queue is the single largest piece of TCP left undone.
+- **Congestion control.** No slow start, no congestion window, no fast
+  retransmit or recovery. The send window is whatever the peer
+  advertised. A machine that only talks to its own LAN is not where the
+  internet's congestion is decided, but anything going through a real
+  path should not be sending a full window into a link it has not
+  measured.
+- **Round trip time estimation.** The retransmission timeout starts at
+  500 ms and doubles, rather than being derived from measured RTT the
+  way RFC 6298 describes. On a fast LAN that is far too slow to recover
+  from a single loss; on a slow path it is too eager.
+- **Window scaling, SACK and timestamps.** All are options and all are
+  negotiated, so a peer that offers them works perfectly well with a
+  stack that declines. Window scaling is what a transfer needs to go
+  faster than about 64 KB in flight; SACK is what makes recovery from
+  multiple losses in one window cheap. Neither matters until the two
+  above are done.
+- **Delayed and duplicate ACK handling.** Every segment is acknowledged
+  immediately, which doubles the packet count on a bulk transfer.
+- **Keepalives, and a real TIME_WAIT.** TIME_WAIT is ten seconds rather
+  than twice the maximum segment lifetime, which is safe on a LAN where
+  a segment cannot survive that long and is not on a long-haul path.
 
 **Unverified:** whether a usable m68k reference port exists to crib a `cc.h`
 from. ColdFire is 68k-family and was a common lwIP target under uClinux, so
@@ -636,7 +688,34 @@ memory probe walking off the end of RAM, faulting address in `a0`.
    directory, which FAT16 has and this kernel does not yet use -- so
    the two are worth doing together.
 
-5. **Configuration from files, and a startup script.** Everything the
+5. **The network tools should be programs, not builtins.** `ifconfig`,
+   `ping`, `arp` and `arping` are commands inside the shell, which was
+   right when there was no way for a program to reach the network and is
+   not now that there are sockets. `netstat` does not exist at all and
+   wants the same information the shell's `jobs` gets -- a listing of
+   what the kernel is holding, which means `netctl` growing a way to
+   walk the socket and connection tables rather than just the interface.
+
+   Moving them out is not cosmetic. A builtin runs in the kernel with
+   the kernel's privileges; a program runs unprivileged in an address
+   space of its own and can only do what the system call interface
+   allows. Anything that can be a program should be one, and the ones
+   that cannot are the argument for a system call that is missing.
+
+6. **Split the system software from the applications.** `user/` holds
+   the shell, ping, ifconfig and shutdown alongside cube and fbtest,
+   which puts a graphics demo and the program that stops the machine in
+   the same place. They are not the same kind of thing: one set is part
+   of the system and expected to be there, the other is what somebody
+   chose to run on it.
+
+   The split wants the same subdirectories `PATH` and `/etc` want --
+   `/bin` for the system's own programs and somewhere else for
+   everything else -- and it is the reason PATH is worth having at all,
+   since with one directory there is nothing for a search order to
+   choose between.
+
+7. **Configuration from files, and a startup script.** Everything the
    machine knows about itself is currently either compiled in or typed
    at the prompt: the IP address is `ifconfig` every boot, the console
    layout is `console` every boot, and none of it survives a restart.

@@ -6,9 +6,8 @@
 #include "timer.h"
 #include "dev.h"
 #include "tty.h"
-#include "job.h"
-#include "exec.h"
-#include "syscall.h"
+#include "task.h"
+#include "tty.h"
 #include "net.h"
 #include "errno.h"
 
@@ -45,11 +44,25 @@ void timer_tick(void)
      */
     net_drain();
 
-    if (!exec_running() || syscall_in_kernel()) {
-        return;
-    }
+    /*
+     * The terminal is polled here too: the UART and the keyboard have
+     * interrupt lines that are not enabled, so this is what notices a
+     * keystroke at all. It is also what spots ctrl-C while a program is
+     * running -- the program is not reading, so nothing else would --
+     * and what wakes anything asleep waiting for input.
+     */
     tty_poll_signals();
-    job_deliver(JOB_AT_TICK);
+
+    /* Anything whose sleep has run out of time. */
+    task_timeouts();
+
+    /*
+     * And the running task's turn. This only MARKS it -- the switch
+     * happens at the next return to user mode, because switching from
+     * inside an interrupt would mean switching out of whatever the
+     * kernel was in the middle of.
+     */
+    task_tick();
 }
 
 u32 timer_jiffies(void)

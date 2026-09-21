@@ -76,6 +76,16 @@ void tty_poll_signals(void);
  */
 void tty_set_idle(void (*fn)(void));
 
+/*
+ * Which task ctrl-C and ctrl-Z are aimed at.
+ *
+ * The shell sets it to whatever it is waiting for, and back to itself
+ * afterwards. A background task is never the foreground one, which is
+ * exactly what `&` means from the terminal's point of view.
+ */
+void tty_set_foreground(int pid);
+int  tty_foreground(void);
+
 /* Canonical mode, echo on, signals on: the state a shell hands to a
  * program, and the state to put back after one that changed it was
  * killed before it could. */

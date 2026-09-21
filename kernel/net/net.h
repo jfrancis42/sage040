@@ -131,6 +131,10 @@ void net_drain(void);
  */
 int  net_wait(volatile int *flag, u32 ms);
 
+/* Sleep for up to `ms`, waking early if a packet arrives. What every
+ * wait in the stack does instead of spinning. */
+void net_sleep(u32 ms);
+
 /* Send one complete ethernet frame. */
 int  net_tx(const void *frame, u32 len);
 

@@ -291,6 +291,11 @@ struct statfs {
  * for the stream case. That is not economy: it is what lets a program
  * be pointed at a socket instead of a file without knowing.
  */
+#define __NR_kill       37
+#define __NR_waitpid     7
+#define __NR_getpid     20
+#define __NR_sched_yield 158
+
 #define __NR_socket    359
 #define __NR_bind      361
 #define __NR_connect   362
@@ -358,6 +363,7 @@ struct sockaddr_in {
 #define JOBCTL_QUEUE   3        /* a2 = command line; create JOB_NEW */
 #define JOBCTL_REAP    4        /* forget the finished ones          */
 #define JOBCTL_DROP    5        /* forget one by id                  */
+#define JOBCTL_ALL     6        /* every task, not just this one's    */
 
 /*
  * netctl() - ask about, or configure, the network interface.
@@ -408,13 +414,18 @@ struct arpinfo {
 #define JOB_S_RUNNING  2
 #define JOB_S_STOPPED  3
 #define JOB_S_DONE     4
+#define JOB_S_BLOCKED  5
+
+/* How much of a command line is kept, for `jobs` and for `fg`. */
+#define JOB_CMD_MAX    128
 
 struct job_info {
-    int  id;
+    int  id;                    /* the pid                            */
     int  state;
     int  background;
     int  status;
     int  signalled;
+    int  ppid;
     char cmd[128];
 };
 
@@ -494,6 +505,8 @@ struct utsname {
 #define SIGILL          4
 #define SIGFPE          8
 #define SIGSEGV        11
+#define SIGPIPE        13
+#define SIGCHLD        17
 #define SIGKILL         9
 #define SIGTERM         15
 #define SIGCONT         18

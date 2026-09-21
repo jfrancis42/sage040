@@ -34,7 +34,15 @@ QEMU=${QEMU:-$SAGE_QEMU/bin/qemu-system-m68k}
 # through the tree with names that looked like part of it. They are all
 # under scratch/ now, which `make clean` removes and git ignores.
 #
-SCRATCH=${SAGE_SCRATCH:-$(cd "$(dirname "$0")/.." && pwd)/scratch}
+#
+# Computed AFTER the cd above, from the working directory rather than
+# from $0 -- which has already been used once and is relative to where
+# the script was invoked from, not to where it now is. Deriving it from
+# $0 a second time worked when the script was run as ./edittest.sh and
+# failed when it was run by path, which is a difference nobody should
+# have to notice.
+#
+SCRATCH=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}
 mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-net.img"
 PART_LBA=2048
