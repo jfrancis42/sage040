@@ -639,9 +639,9 @@ an address space for the child to discard immediately.
 **No signal handlers.** Default actions only. No `signal`, no `sigaction`,
 no `sigprocmask` from user mode.
 
-**No `mmap` yet, and no `malloc`.** The address space is 256 MB and
-`brk`/`sbrk` grow a heap in it; `mmap` and an allocator are
-`progress.md` tasks 3 and 4.
+**No `malloc` yet.** The address space is 256 MB, with `brk`/`sbrk`,
+and `mmap`/`munmap`/`mprotect` for anonymous memory and file copies;
+the allocator is `progress.md` task 4.
 
 **No pipes, no `dup2`, no `fcntl`, no `select` or `poll`.** So no shell
 pipelines, and no input redirection.

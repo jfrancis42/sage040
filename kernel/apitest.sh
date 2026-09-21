@@ -95,9 +95,16 @@ mcopy -o -i "$MIMG" "$SCRATCH/rc.tmp" ::/ETC/RC
     printf '/BIN/ENV\r';                sleep 1
     printf 'cd /\r';                    sleep 1
 
-    # --- memory: brk and sbrk ---
-    printf 'memtest\r';                 sleep 3
+    # --- memory: brk, sbrk, mmap, munmap, mprotect ---
+    printf 'echo FREE-BEFORE\r';        sleep 0.5
+    printf 'free\r';                    sleep 0.5
+    printf 'memtest\r';                 sleep 4
+    printf 'echo FREE-AFTER\r';         sleep 0.5
+    printf 'free\r';                    sleep 0.5
     printf 'memtest past\r';            sleep 2
+    printf 'memtest unmapped\r';        sleep 2
+    printf 'memtest readonly\r';        sleep 2
+    printf 'memtest none\r';            sleep 2
 
     printf 'echo SHELL-SURVIVED\r'
 } >> "$SCRATCH/session.tmp"
@@ -140,7 +147,7 @@ sed 's/^/  | /' "$C"
 # each `FAIL` line is a failure, reported here under its own name so
 # that a break says which call stopped working.
 # ---------------------------------------------------------------
-echo "=== checks: the programs' own (fstat, access, dup, isatty, brk, sbrk) ==="
+echo "=== checks: the programs' own (descriptors, brk, mmap, mprotect) ==="
 
 grep -q "statfs: done" "$C"
 check "statfs ran to the end" $?
@@ -191,8 +198,28 @@ check "memtest shrank its heap and reached past the end" $?
 ! grep -q "NOT-PROTECTED" "$C"
 check "  and the access was refused" $?
 
-grep -q "^memtest: segmentation fault" "$C"
+test "$(grep -c "^memtest: segmentation fault" "$C")" -eq 4
 check "  and the program was killed for it" $?
+
+for mode in unmapped readonly none; do
+    grep -q "memtest: abusing a $mode page" "$C"
+    check "memtest touched a $mode page" $?
+done
+check "  and all four were killed, none got through" \
+    "$(grep -c "NOT-PROTECTED" "$C")"
+grep -q "memtest: read-only page still reads" "$C"
+check "a read-only page was readable up to the write" $?
+
+echo "=== checks: exit gives back every page, mapped or not ==="
+
+used_after() {
+    awk -v m="$1" '$0 == m { f = 1 } f && $1 == "used" { print $2; exit }' "$C"
+}
+before=$(used_after FREE-BEFORE)
+after=$(used_after FREE-AFTER)
+echo "  used pages: before=${before:-?} after=${after:-?}"
+test -n "$before" && test -n "$after" && [ "$before" -eq "$after" ]
+check "memtest left mappings, PROT_NONE pages and a file behind, and none leaked" $?
 
 echo "=== checks: nothing broke ==="
 

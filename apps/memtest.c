@@ -3,19 +3,27 @@
 /*
  * memtest - exercise the calls that give a program memory.
  *
- * brk and sbrk today. Each check compares against something the program
- * can see for itself -- the address of its own data, the free page
+ * brk, sbrk, mmap, munmap and mprotect. Each check compares against
+ * something the program can see for itself -- the address of its own data, the free page
  * count, the contents of the memory -- so a wrong answer is a wrong
  * line, not a program that quietly does the wrong thing.
  *
- * `memtest past` does one thing: shrinks the heap and then touches the
- * page it just gave back. That must be a segmentation fault, and only
- * the shell can report one, so the harness checks it rather than this
- * program.
+ * The other modes each do one thing that must be a segmentation fault,
+ * and only the shell can report one, so the harness checks them:
+ *
+ *   past      touch the page a heap shrink gave back
+ *   unmapped  touch a page after munmap
+ *   readonly  write to a page after mprotect(PROT_READ)
+ *   none      read a page after mprotect(PROT_NONE)
+ *
+ * Plain `memtest` leaves a PROT_NONE page, a read-only file mapping and
+ * an anonymous mapping in place when it exits, so the harness can check
+ * with `free` that exit gives every one of them back.
  */
 #include "ulib.h"
 
 #define PAGE    4096UL
+#define PAGE_ALIGN(p) (((u32)(p) + PAGE - 1) & ~(PAGE - 1))
 
 static int image_data = 1;      /* somewhere in the image, to compare */
 
@@ -63,6 +71,229 @@ static void touch_past(void)
     puts("NOT-PROTECTED\n");
 }
 
+#define ANON    (MAP_PRIVATE | MAP_ANONYMOUS)
+
+/* One mapping, set up and then abused in the way `mode` names. */
+static void abuse(const char *mode)
+{
+    volatile u8 *p = mmap(0, PAGE, PROT_READ | PROT_WRITE, ANON, -1, 0);
+    u8 v;
+
+    if (p == MAP_FAILED) {
+        puts("memtest: mmap failed\n");
+        return;
+    }
+    p[0] = 7;
+    if (strcmp(mode, "unmapped") == 0) {
+        munmap((void *)p, PAGE);
+    } else if (strcmp(mode, "readonly") == 0) {
+        mprotect((void *)p, PAGE, PROT_READ);
+        v = p[0];
+        puts(v == 7 ? "memtest: read-only page still reads\n"
+                    : "memtest: read-only page reads WRONG\n");
+    } else {
+        mprotect((void *)p, PAGE, PROT_NONE);
+    }
+    puts("memtest: abusing a ");
+    puts(mode);
+    puts(" page\n");
+    if (strcmp(mode, "readonly") == 0) {
+        p[0] = 8;
+    } else {
+        v = p[0];
+        (void)v;
+    }
+    puts("NOT-PROTECTED\n");
+}
+
+static void test_mmap(void)
+{
+    u8 *a, *b, *c, *heap;
+    u32 before, i;
+    s32 r;
+    int fd, ok;
+    struct stat st;
+    static u8 buf[PAGE];
+
+    /* --- anonymous ------------------------------------------------- */
+
+    before = free_pages();
+    a = mmap(0, 16 * PAGE, PROT_READ | PROT_WRITE, ANON, -1, 0);
+    report("mmap of 64 KB anonymous memory works", a != MAP_FAILED);
+    report("  on a page boundary", ((u32)a & (PAGE - 1)) == 0);
+    report("  above the heap and below the stack",
+           (u32)a > (u32)sbrk(0) && (u32)a + 16 * PAGE <= 0x1ff00000UL);
+    report("  and took 16 pages", before - free_pages() >= 16);
+    report("  reads as zero", all_zero(a, 16 * PAGE));
+    for (i = 0; i < 16 * PAGE; i++) {
+        a[i] = (u8)(i ^ 0x55);
+    }
+    ok = 1;
+    for (i = 0; i < 16 * PAGE; i++) {
+        ok &= a[i] == (u8)(i ^ 0x55);
+    }
+    report("  and holds what is written", ok);
+
+    b = mmap(0, 3 * PAGE, PROT_READ | PROT_WRITE, ANON, -1, 0);
+    report("a second mapping does not overlap the first",
+           b != MAP_FAILED && (b + 3 * PAGE <= a || b >= a + 16 * PAGE));
+
+    before = free_pages();
+    report("munmap of the middle of a mapping works",
+           munmap(a + 4 * PAGE, 4 * PAGE) == 0);
+    report("  and gave its pages back", free_pages() - before >= 4);
+    report("  and both ends survive it",
+           a[4 * PAGE - 1] == (u8)((4 * PAGE - 1) ^ 0x55) &&
+           a[8 * PAGE] == (u8)((8 * PAGE) ^ 0x55));
+
+    /* --- protection ------------------------------------------------- */
+
+    report("mprotect to read-only works",
+           mprotect(a, PAGE, PROT_READ) == 0);
+    report("  and the page still reads", a[1] == (u8)(1 ^ 0x55));
+    fd = open("/MEMTEST", O_RDONLY);
+    report("  and the kernel will not read() into it",
+           read(fd, a, 16) == -EFAULT);
+    close(fd);
+
+    before = free_pages();
+    report("mprotect to PROT_NONE works",
+           mprotect(a + PAGE, PAGE, PROT_NONE) == 0);
+    report("  and the kernel will not write() from it",
+           write(1, a + PAGE, 1) == -EFAULT);
+    report("  and the page is still the program's, not freed",
+           free_pages() == before);
+    report("mprotect back to read-write works",
+           mprotect(a, 2 * PAGE, PROT_READ | PROT_WRITE) == 0);
+    report("  and the contents came through intact",
+           a[PAGE + 5] == (u8)((PAGE + 5) ^ 0x55));
+    a[0] = 1;
+    report("  and it is writable again", a[0] == 1);
+    report("mprotect of an unmapped page is refused with ENOMEM",
+           mprotect(a + 4 * PAGE, PAGE, PROT_READ) == -ENOMEM);
+
+    /* --- placement --------------------------------------------------- */
+
+    c = mmap(a + 4 * PAGE, PAGE, PROT_READ | PROT_WRITE, ANON, -1, 0);
+    report("a free hint is honoured", c == a + 4 * PAGE);
+    c = mmap(a + 8 * PAGE, PAGE, PROT_READ | PROT_WRITE, ANON, -1, 0);
+    report("  and a hint that is taken is not",
+           c != MAP_FAILED && c != a + 8 * PAGE);
+    c = mmap(a + 8 * PAGE, PAGE, PROT_READ | PROT_WRITE,
+             ANON | MAP_FIXED, -1, 0);
+    report("MAP_FIXED over an existing page works", c == a + 8 * PAGE);
+    report("  and replaces it with zeroes", all_zero(c, PAGE));
+    r = syscall(__NR_mmap2, (u32)(a + 9 * PAGE), PAGE,
+                PROT_READ | PROT_WRITE, ANON | MAP_FIXED_NOREPLACE, -1, 0);
+    report("MAP_FIXED_NOREPLACE over one is refused with EEXIST",
+           r == -EEXIST);
+    r = syscall(__NR_mmap2, (u32)(a + 9 * PAGE) + 1, PAGE,
+                PROT_READ, ANON | MAP_FIXED, -1, 0);
+    report("MAP_FIXED at an unaligned address is refused", r == -EINVAL);
+
+    /* The heap may not grow over a mapping. */
+    heap = sbrk(0);
+    c = mmap((u8 *)PAGE_ALIGN(heap) + 2 * PAGE, PAGE,
+             PROT_READ | PROT_WRITE, ANON | MAP_FIXED, -1, 0);
+    report("a page can be mapped just above the break",
+           c == (u8 *)PAGE_ALIGN(heap) + 2 * PAGE);
+    report("  and the heap will not grow over it",
+           sbrk(4 * PAGE) == (void *)-1 && sbrk(0) == heap);
+    munmap(c, PAGE);
+    report("  until it is unmapped", sbrk(4 * PAGE) == heap);
+    sbrk(-(s32)(4 * PAGE));
+
+    /* --- refusals --------------------------------------------------- */
+
+    r = syscall(__NR_mmap2, 0, 0, PROT_READ, ANON, -1, 0);
+    report("mmap of zero bytes is refused with EINVAL", r == -EINVAL);
+    r = syscall(__NR_mmap2, 0, PAGE, PROT_READ,
+                MAP_ANONYMOUS | MAP_SHARED | MAP_PRIVATE, -1, 0);
+    report("SHARED and PRIVATE together are refused", r == -EINVAL);
+    r = syscall(__NR_mmap2, 0, PAGE, PROT_READ, MAP_ANONYMOUS, -1, 0);
+    report("  and neither is refused", r == -EINVAL);
+    before = free_pages();
+    r = syscall(__NR_mmap2, 0, 200UL * 1024 * 1024, PROT_READ, ANON, -1, 0);
+    report("more memory than exists is refused with ENOMEM", r == -ENOMEM);
+    report("  and cost nothing", free_pages() == before);
+    report("munmap at an unaligned address is refused",
+           munmap(a + 1, PAGE) == -EINVAL);
+
+    /* --- files ------------------------------------------------------ */
+
+    fd = open("/MEMTEST", O_RDONLY);
+    fstat(fd, &st);
+    lseek(fd, 100, SEEK_SET);
+    c = mmap(0, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    report("a file can be mapped", c != MAP_FAILED);
+    report("  and the descriptor's position did not move",
+           lseek(fd, 0, SEEK_CUR) == 100);
+    lseek(fd, 0, SEEK_SET);
+    read(fd, buf, PAGE);
+    ok = c != MAP_FAILED;
+    for (i = 0; ok && i < PAGE; i++) {
+        ok &= c[i] == buf[i];
+    }
+    report("  and its first page is the file's", ok);
+    report("  and past the end of the file is zero",
+           c != MAP_FAILED &&
+           all_zero(c + st.st_size, PAGE_ALIGN(st.st_size) - st.st_size));
+
+    a = mmap(0, PAGE, PROT_READ, MAP_PRIVATE, fd, PAGE);
+    lseek(fd, PAGE, SEEK_SET);
+    read(fd, buf, PAGE);
+    ok = a != MAP_FAILED;
+    for (i = 0; ok && i < PAGE; i++) {
+        ok &= a[i] == buf[i];
+    }
+    report("a file can be mapped from an offset", ok);
+
+    b = mmap(0, PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+    b[0] = 'X';
+    lseek(fd, 0, SEEK_SET);
+    read(fd, buf, 1);
+    report("a private mapping can be written without touching the file",
+           b[0] == 'X' && buf[0] == 0x7f);
+    munmap(b, PAGE);
+
+    r = syscall(__NR_mmap2, 0, PAGE, PROT_READ, MAP_SHARED, fd, 0);
+    report("MAP_SHARED read-only is allowed", r > 0);
+    r = syscall(__NR_mmap2, 0, PAGE, PROT_READ | PROT_WRITE, MAP_SHARED,
+                fd, 0);
+    report("MAP_SHARED with PROT_WRITE is refused with ENODEV",
+           r == -ENODEV);
+    r = syscall(__NR_mmap2, 0, PAGE, PROT_READ, MAP_PRIVATE, 0, 0);
+    report("mapping a terminal is refused with ENODEV", r == -ENODEV);
+    r = syscall(__NR_mmap2, 0, PAGE, PROT_READ, MAP_PRIVATE, 29, 0);
+    report("mapping a descriptor that is not open is EBADF", r == -EBADF);
+    close(fd);
+    report("a mapping outlives its descriptor", c[0] == 0x7f && c[1] == 'E');
+
+    /* --- the old interface ------------------------------------------ */
+    {
+        struct mmap_arg_struct m;
+
+        m.addr = 0;
+        m.len = PAGE;
+        m.prot = PROT_READ | PROT_WRITE;
+        m.flags = ANON;
+        m.fd = (u32)-1;
+        m.offset = 0;
+        r = syscall(__NR_mmap, (u32)&m);
+        report("old_mmap (90) through an argument block works",
+               r > 0 && all_zero((u8 *)r, PAGE));
+        m.offset = 100;
+        report("  and refuses an unaligned offset",
+               syscall(__NR_mmap, (u32)&m) == -EINVAL);
+    }
+
+    /* Left for exit to clean up: a PROT_NONE page and the file. */
+    a = mmap(0, 2 * PAGE, PROT_NONE, ANON, -1, 0);
+    report("mmap with PROT_NONE works", a != MAP_FAILED);
+    report("  and the kernel cannot read it either",
+           write(1, a, 1) == -EFAULT);
+}
+
 int main(int argc, char **argv)
 {
     u8 *start, *p, *q;
@@ -71,6 +302,10 @@ int main(int argc, char **argv)
 
     if (argc > 1 && strcmp(argv[1], "past") == 0) {
         touch_past();
+        return 1;
+    }
+    if (argc > 1) {
+        abuse(argv[1]);
         return 1;
     }
 
@@ -164,6 +399,8 @@ int main(int argc, char **argv)
         report("  and both ends of it are usable",
                p[0] == 1 && p[8L * 1024 * 1024 - 1] == 2);
     }
+
+    test_mmap();
 
     puts("memtest: done\n");
     return 0;

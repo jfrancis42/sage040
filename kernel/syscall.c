@@ -29,6 +29,7 @@
 #include "uaccess.h"
 #include "pmm.h"
 #include "vm.h"
+#include "mmap.h"
 #include "net.h"
 #include "tcp.h"
 #include "errno.h"
@@ -692,9 +693,9 @@ static int do_jobctl(int cmd, int arg, u32 p)
     }
 }
 
-static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
+static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
+                      u32 a6)
 {
-    (void)a5;
 
     switch (nr) {
     case __NR_open: {
@@ -1064,6 +1065,31 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
          * break can not be mistaken for an errno on the way back. */
         return (s32)vm_brk(current->as, a1);
 
+    case __NR_mmap2:
+        /* The offset is in pages, which is the point of mmap2: it
+         * reaches past 4 GB of file on a 32-bit machine. Not a concern
+         * here, but the conversion must not overflow either. */
+        if (a6 > 0xffffffffUL / PAGE_SIZE) {
+            return -EINVAL;
+        }
+        return do_mmap(a1, a2, a3, a4, (int)a5, a6 * PAGE_SIZE);
+
+    case __NR_mmap: {
+        struct mmap_arg_struct m;
+        int err = fetch(&m, a1, sizeof(m));
+
+        if (err < 0) {
+            return err;
+        }
+        return do_mmap(m.addr, m.len, m.prot, m.flags, (int)m.fd, m.offset);
+    }
+
+    case __NR_munmap:
+        return do_munmap(a1, a2);
+
+    case __NR_mprotect:
+        return do_mprotect(a1, a2, a3);
+
     case __NR_kill:
         return signal_kill((int)a1, (int)a2);
 
@@ -1109,9 +1135,9 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
 /* ---------------------------------------------------------------- */
 
 s32 syscall_dispatch(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
-                     u32 saved_sr)
+                     u32 a6, u32 saved_sr)
 {
-    s32 r = do_syscall(nr, a1, a2, a3, a4, a5);
+    s32 r = do_syscall(nr, a1, a2, a3, a4, a5, a6);
 
     /*
      * Signals, then a possible switch -- and neither if this call came

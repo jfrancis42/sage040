@@ -59,6 +59,19 @@
 #define DESC_CM_NC      0x060           /* noncachable                  */
 #define DESC_SUPER      0x080           /* supervisor only              */
 
+/*
+ * A page a program owns but may not touch: mprotect(PROT_NONE).
+ *
+ * The hardware has no such state -- a page descriptor is resident or it
+ * is not -- so it is an INVALID descriptor (type 00) that still carries
+ * the physical address, marked with this bit. An invalid descriptor is
+ * ignored by the MMU apart from its type field, so every other bit is
+ * software's to use, and an access to the page faults exactly as an
+ * unmapped one would. The memory stays owned: it is counted, freed on
+ * exit, and comes back intact when the protection is lifted.
+ */
+#define DESC_SW_NONE    0x800
+
 #define PTR_TABLE_MASK  0xfffffe00UL    /* root descriptor -> pointer table */
 #define PAGE_TABLE_MASK 0xffffff00UL    /* pointer descriptor -> page table */
 #define PAGE_ADDR_MASK  0xfffff000UL    /* page descriptor -> the page      */
@@ -150,6 +163,12 @@ static u32 *table(u32 pa)
 }
 
 /* --- building a mapping -------------------------------------------- */
+
+/* Does this descriptor hold a page the address space owns? */
+static int desc_owned(u32 d)
+{
+    return (d & PDT_RESIDENT) || (d & DESC_SW_NONE);
+}
 
 static u32 page_bits(int flags)
 {
@@ -523,13 +542,47 @@ u32 vm_mapped_pages(struct addrspace *as)
             continue;
         }
         for (i = 0; i < PAGE_ENTRIES; i++) {
-            if (table(pt_pa)[i] & PDT_RESIDENT) {
+            if (desc_owned(table(pt_pa)[i])) {
                 n++;
             }
         }
         va += PAGE_ENTRIES * PAGE_SIZE;
     }
     return n;
+}
+
+int vm_is_mapped(struct addrspace *as, u32 va)
+{
+    u32 pt_pa = as_pagetable(as, va, 0);
+
+    return pt_pa && desc_owned(table(pt_pa)[PAGE_INDEX(va)]);
+}
+
+int vm_protect(struct addrspace *as, u32 va, int flags)
+{
+    u32 pt_pa = as_pagetable(as, va, 0);
+    u32 *pt, d, pa;
+
+    if (!pt_pa) {
+        return -1;
+    }
+    pt = table(pt_pa);
+    d = pt[PAGE_INDEX(va)];
+    if (!desc_owned(d)) {
+        return -1;
+    }
+    pa = d & PAGE_ADDR_MASK;
+    if (flags & VM_NONE) {
+        pt[PAGE_INDEX(va)] = pa | DESC_SW_NONE;
+    } else {
+        pt[PAGE_INDEX(va)] = pa | page_bits(flags | VM_USER);
+    }
+
+    /* Without this the old descriptor stays in the ATC and the change
+     * takes effect at some later, unrelated moment -- the hardest
+     * failure in this tree to find. */
+    pflusha();
+    return 0;
 }
 
 void vm_unmap(struct addrspace *as, u32 va)
@@ -542,7 +595,7 @@ void vm_unmap(struct addrspace *as, u32 va)
     }
     pt = table(pt_pa);
     d = pt[PAGE_INDEX(va)];
-    if (!(d & PDT_RESIDENT)) {
+    if (!desc_owned(d)) {
         return;
     }
     pt[PAGE_INDEX(va)] = 0;
@@ -608,7 +661,7 @@ u32 vm_brk(struct addrspace *as, u32 addr)
             return as->brk_cur;
         }
         for (va = old_end; va < new_end; va += PAGE_SIZE) {
-            if (vm_translate(as, va, 0)) {
+            if (vm_is_mapped(as, va)) {
                 return as->brk_cur;
             }
         }
@@ -655,7 +708,7 @@ void vm_destroy(struct addrspace *as)
         for (i = 0; i < PAGE_ENTRIES; i++) {
             u32 d = table(pt_pa)[i];
 
-            if (d & PDT_RESIDENT) {
+            if (desc_owned(d)) {
                 pmm_free(d & PAGE_ADDR_MASK);
                 table(pt_pa)[i] = 0;
             }

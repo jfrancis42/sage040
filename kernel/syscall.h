@@ -27,7 +27,7 @@
 
 /* The dispatcher, called from _trap0_entry in start.s. */
 s32 syscall_dispatch(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
-                     u32 saved_sr);
+                     u32 a6, u32 saved_sr);
 
 /*
  * Is the kernel inside a system call right now?

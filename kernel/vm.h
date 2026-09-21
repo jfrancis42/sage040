@@ -124,6 +124,7 @@
 #define VM_USER     0x01        /* reachable from user mode        */
 #define VM_WRITE    0x02        /* writable                        */
 #define VM_NOCACHE  0x04        /* device memory, not cached       */
+#define VM_NONE     0x08        /* owned but inaccessible: vm_protect */
 
 struct addrspace {
     u32 root;                   /* physical address of the root table  */
@@ -194,6 +195,17 @@ u32  vm_mapped_pages(struct addrspace *as);
 
 /* Remove one page, giving its memory back. Nothing if it was not mapped. */
 void vm_unmap(struct addrspace *as, u32 va);
+
+/* Does the address space own the page at `va`, accessible or not? */
+int  vm_is_mapped(struct addrspace *as, u32 va);
+
+/*
+ * Change what may be done to an owned page: VM_WRITE for read-write,
+ * 0 for read-only, VM_NONE for nothing at all. There is no execute
+ * permission to change, because the 68040 has no bit for it. Returns 0,
+ * or -1 if the page is not owned.
+ */
+int  vm_protect(struct addrspace *as, u32 va, int flags);
 
 /*
  * The highest address the heap may reach: one guard page below the

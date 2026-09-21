@@ -810,12 +810,13 @@ Four things, in dependency order:
    Linux's return convention (the old break on failure, never an
    errno).
 
-3. **`mmap`/`munmap`/`mprotect`.** The real interface, and what anything
-   modern expects. Anonymous mappings first; file-backed mappings need a
-   page cache to be worth having, and shared mappings need the reverse
-   mapping that paging also wants. `MAP_FIXED`, the placement policy for
-   everything else, and unmapping part of a mapping are each their own
-   small decision.
+3. **`mmap`/`munmap`/`mprotect`. Done,** with Linux/m68k's numbers and
+   shapes (`mmap2` at 192 with the sixth argument in `a0`, `old_mmap`
+   at 90). Anonymous mappings, and file mappings as eager copies:
+   exact for `MAP_PRIVATE`, read-only only for `MAP_SHARED`. A real
+   shared file mapping still needs a page cache and the reverse mapping
+   that paging wants. There is no table of mappings: the page tables are
+   the record, which is why partial `munmap` needs no splitting.
 
 4. **`malloc`/`free`/`realloc`/`calloc`.** Once there is a way to get
    pages this is ordinary user-space code — and the right move is not to

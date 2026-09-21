@@ -975,6 +975,17 @@ New heap memory is always zero. `sbrk(n)` returns where the break
 back by shrinking is unmapped, so touching it afterwards is a
 segmentation fault rather than a quiet read of stale data.
 
+**`mmap` works, with Linux's meaning** and one honest limit. Anonymous
+memory is placed top down from just below the stack, so the heap and
+your mappings share the gap without meeting. A file mapping is a
+*copy* made when you call `mmap`: exact for `MAP_PRIVATE`; `MAP_SHARED`
+is allowed only read-only and does not see later writes to the file;
+`MAP_SHARED` with `PROT_WRITE` is refused with `-ENODEV` rather than
+quietly not writing the file. `PROT_EXEC` means nothing because the
+68040 cannot tell execute from read. `mprotect` works on any page you
+own, including `PROT_NONE`. `mmap()` in `ulib` returns `MAP_FAILED`;
+`syscall(__NR_mmap2, ...)` gives you the errno.
+
 **A pointer you pass to a system call is checked.** The kernel cannot
 dereference your addresses -- they mean nothing in its own space -- so
 it walks your page tables and copies. A bad pointer comes back as
@@ -1300,13 +1311,13 @@ older copy should know which way round it is now.
 - **Catch a signal.** There is no `sigaction()`. Signals have default
   actions only; ctrl-C and ctrl-Z are things done *to* a program, not
   events it can handle.
-- **Map memory, or call `malloc`.** `brk` and `sbrk` work; `mmap` and
-  an allocator are not written yet (`progress.md` tasks 3 and 4). Until
-  then a program that wants memory moves its own break.
+- **Call `malloc`.** `brk`, `sbrk`, `mmap`, `munmap` and `mprotect`
+  work; the allocator above them is `progress.md` task 4.
 - **Use a C library.** `ulib` is a syscall wrapper plus a handful of
   string helpers. No `stdio`, no `printf`, no `setjmp`, no math.
-- **Map the framebuffer.** No `mmap`, so drawing goes through the
-  `FBIO_*` ioctls rather than through the memory itself.
+- **Map the framebuffer.** `mmap` exists, but `/dev/fb0` does not
+  support it yet, so drawing goes through the `FBIO_*` ioctls rather
+  than through the memory itself.
 - **Wait on more than one thing.** There is no `select` or `poll`.
 - **Use a pipe.** No `pipe`, `dup2` or `fcntl`, so no shell pipelines
   and no input redirection. Output redirection with `>` works for the

@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: 3 of 23 complete.**
+**Status: 4 of 23 complete.**
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -32,7 +32,7 @@ drive almost all of it:
 | 0 | Groundwork: bigger RAM and disk, per-task cwd, `fstat`/`access`/`dup` | small things everything else trips over | **done** |
 | 1 | Grow the user address space | nothing else fits until this | **done** |
 | 2 | `brk`/`sbrk` | the smaller half of memory; enough for `malloc` | **done** |
-| 3 | `mmap`/`munmap`/`mprotect` | what a runtime and a libc expect | todo |
+| 3 | `mmap`/`munmap`/`mprotect` | what a runtime and a libc expect | **done** |
 | 4 | `malloc` in `lib/` | so tasks 5–12 have something to test against | todo |
 | 5 | Signals: `sigaction`, handlers, `sigreturn` | the largest kernel item; editors need it | todo |
 | 6 | `select`/`poll` | the other half of an event loop | todo |
@@ -207,7 +207,7 @@ It grows one group per task, and a group is only added once its calls
 work — so a failure there is always a regression, never a thing not
 written yet.
 
-**164 checks across six suites now:** 12 device programs, 41 fs, 51
+**220 checks across six suites now:** 12 device programs, 41 fs, 107
 api, 29 edit, 18 vm, 13 net.
 
 ### 1. Grow the user address space — done
@@ -334,6 +334,76 @@ program touching the page its own shrink gave back and dying for it.
 With the up-front refusal disabled, the "every page returned" check
 fails, so it tests something real.
 
+### 3. `mmap`/`munmap`/`mprotect` — done
+
+**The ABI is Linux/m68k's, shapes as well as numbers.** The design note
+here said to depart from Linux at 90, on the grounds that six
+arguments do not fit in `d1`–`d5`. That was wrong: Linux/m68k passes a
+sixth argument in **`a0`**, and 90 on Linux/m68k *is* `old_mmap` with a
+pointer to an argument block. So both exist, as Linux has them:
+`mmap2` (192), six registers with the offset in pages, and `old_mmap`
+(90), a `struct mmap_arg_struct` pointer with the offset in bytes. The
+trap gate now passes `a0` to every call as the sixth argument, which
+cost one push and four bytes of stack. `munmap` is 91 and `mprotect`
+125. That glibc's m68k `sysdep.h` uses `a0` this way is from memory,
+not verified against a copy here.
+
+**There is no table of mappings.** The note planned a 32-entry table
+per address space, with splitting on partial `munmap`. The page tables
+already record, for every page, whether it is owned and what may be
+done to it, so a second record would only be something to disagree
+with. Partial `munmap` and partial `mprotect` need no splitting, and
+`vm_destroy` frees mapped pages exactly as before. The cost: nothing
+can list which `mmap()` call a page came from. Nothing asks yet.
+
+**The one state the hardware has no descriptor for is `PROT_NONE`:** a
+page the program owns but may not touch. It is an invalid descriptor
+(type 00) that keeps the physical address and sets a software bit
+(`DESC_SW_NONE`, bit 11). The MMU ignores everything in an invalid
+descriptor except its type, so the page faults like an unmapped one,
+while `vm_destroy`, `vm_mapped_pages` and `vm_unmap` still treat it as
+owned. The contents survive a round trip through `PROT_NONE`.
+
+**Placement is top down from just below the stack's guard page**, and
+never below the current break, the layout Linux uses for the same
+reason: the heap grows up, mappings grow down, and each gets the whole
+gap. A free hint is honoured. `MAP_FIXED` discards what was there, and
+`MAP_FIXED_NOREPLACE` refuses with `EEXIST`.
+
+*Decision, reversing the note:* **`MAP_SHARED` on a file is allowed
+read-only**, and refused with `-ENODEV` only when `PROT_WRITE` is
+asked for. File mappings are copies made at `mmap` time (no demand
+paging until task 21). A writable shared copy would silently not write
+the file, and that is the lie worth refusing. A read-only one differs
+only in not seeing somebody else's later writes, and reading a file
+through `MAP_SHARED|PROT_READ` is common enough that refusing it would
+break ported programs for no real gain. Anonymous `MAP_SHARED` is
+accepted and is private in effect. That is exact until there is
+`fork` (task 9), which has to revisit it.
+
+`PROT_EXEC` is accepted and means nothing. **The 68040 page descriptor
+has no execute bit**, so anything readable is executable. That also
+corrects a claim in the task 5 note below.
+
+**Tests:** `memtest` now makes 77 checks, and `apitest.sh` has 107 in
+all. They cover anonymous and file mappings, partial `munmap`,
+`mprotect` both ways including `PROT_NONE` with contents preserved,
+the kernel refusing to `read()` into a read-only page or `write()` from
+a `PROT_NONE` one (`EFAULT`), hints, `MAP_FIXED` and
+`MAP_FIXED_NOREPLACE`, the heap refusing to grow over a mapping, every
+refusal and its errno, `old_mmap` through its block, a file mapping
+outliving its descriptor, and the descriptor's file position left
+alone. Three deliberate faults are checked from the shell: touching an
+unmapped page, writing a read-only one, reading a `PROT_NONE` one.
+`free` is checked before and after a `memtest` that exits with a
+`PROT_NONE` mapping and a file mapping still in place: 37 pages used
+both times.
+
+**The flush is tested.** With the `pflusha` removed from
+`vm_protect()`, the write to a read-only page goes through and three
+checks fail. That is exactly the stale-descriptor failure the working notes
+warns about, now caught by a test instead of by an afternoon.
+
 ---
 
 ## Design notes for the tasks not yet started
@@ -341,35 +411,6 @@ fails, so it tests something real.
 Written while the shell was down, because thinking does not need one.
 These are decisions, not code — the point is that the next session
 starts by typing rather than by deciding.
-
-### 3. `mmap`/`munmap`/`mprotect`
-
-Numbers: **90**, **91**, **125**. Note that Linux's i386 `mmap` at 90
-takes a *pointer to an argument block* rather than six registers —
-`old_mmap`. Do not copy that: this ABI has `d1`–`d5` and six arguments
-do not fit, so pass a pointer to a small struct and **say so in
-`uapi.h`**, since it is a deliberate divergence from a number that is
-otherwise Linux's.
-
-Anonymous memory first — that is what an allocator and a runtime
-actually use. `MAP_FIXED` honoured; without it, place the mapping in
-the gap between the break and the stack, searching upward from a
-per-address-space hint.
-
-File-backed mappings **read-only and eager**: read the file's pages at
-`mmap` time rather than faulting them in, because there is no demand
-paging (task 21). `MAP_SHARED` on a file should be **refused with
-`-ENODEV`**, not quietly treated as `MAP_PRIVATE` — a shared mapping
-that does not share is the kind of lie that costs somebody a day.
-
-A per-address-space table of mappings is needed so `munmap` can find
-one and so `vm_destroy` can free them. 32 entries is plenty. `munmap`
-of part of a mapping has to split it.
-
-**`mprotect` must `pflusha`.** A missing flush does not fail at the
-`mprotect` — it fails several accesses later on a page whose old
-descriptor is still cached, which is the hardest failure in this tree
-to diagnose and is already written up in the working notes.
 
 ### 4. `malloc` in `lib/`
 
@@ -405,10 +446,14 @@ trampoline, and `rte` to the handler in user mode. The trampoline calls
 runs on the user stack, in user mode, and can itself be interrupted.
 
 *Decision:* **the trampoline belongs in `lib/crt0.s`**, with its
-address passed to the kernel by `sigaction` — not written onto the
-user's stack by the kernel. Writing instructions to the stack would
-require the stack to be executable, and this MMU can mark it not;
-giving that up to save eight bytes of `crt0.s` is a bad trade.
+address passed to the kernel by `sigaction` (Linux's `sa_restorer`),
+not written onto the user's stack by the kernel. This note used to
+justify that with "this MMU can mark the stack non-executable". **It
+cannot:** the 68040 page descriptor has no execute bit (found during
+task 3). The decision stands for other reasons. It is what Linux does
+on architectures with `sa_restorer`. Code written to the stack needs
+cache pushes on a real 68040, whose instruction and data caches are
+separate. And a trampoline in the library can be read in the source.
 
 `SA_RESTART` matters more than it looks: without it every ported
 program needs `EINTR` handling on every call, and most do not have it.
@@ -430,6 +475,13 @@ This also lets the shell stop reaping at the prompt and reap on
 - **Nothing is on a "deliberately not doing" list any more.**
 
 ## Notes for later
+
+- **`mmap` of `/dev/fb0`.** Three documents give `mmap` as the reason a
+  program cannot draw into the framebuffer directly. `mmap` exists now;
+  what is missing is a `file_ops` hook through which a device offers
+  physical pages, plus a descriptor marking for pages that are *not*
+  owned, so that `vm_destroy` never hands VRAM to the page allocator.
+  Not on the editor's path, so not done under task 3.
 
 - `hello > /OUT.TXT` must work by the end of task 8, and there must be a
   regression test for it. It is the clearest example in the tree of a

@@ -44,6 +44,19 @@ int    dup2(int oldfd, int newfd);
  */
 int    brk(void *addr);
 
+/*
+ * Mapping memory, with Linux's meaning. mmap() returns MAP_FAILED on
+ * any error; it has no errno to say which, so a program that needs to
+ * know calls syscall(__NR_mmap2, ...) and reads the negated errno. See
+ * uapi.h for what the flags do and do not do here.
+ */
+void  *mmap(void *addr, u32 len, int prot, int flags, int fd, u32 offset);
+int    munmap(void *addr, u32 len);
+int    mprotect(void *addr, u32 len, int prot);
+
+/* Any system call by number: the result, or a negated errno. */
+s32    syscall(u32 nr, ...);
+
 /* Memory and uptime, in pages of mem_unit bytes. */
 int    sysinfo(struct sysinfo *si);
 void  *sbrk(s32 incr);

@@ -294,6 +294,53 @@ struct statfs {
 #define __NR_brk        45
 
 /*
+ * Mapping memory. The numbers AND the shapes are Linux/m68k's:
+ *
+ *   mmap2    192  six arguments in d1-d5 and a0, the offset in PAGES.
+ *                 This is the one a program should use.
+ *   mmap      90  ONE argument, a pointer to struct mmap_arg_struct,
+ *                 the offset in bytes. The old interface, from before
+ *                 there was a sixth register convention; kept because
+ *                 it is what number 90 means on Linux/m68k.
+ *
+ * Addresses returned are always below 0x80000000, so a result can never
+ * be mistaken for a negated errno.
+ */
+#define __NR_mmap       90
+#define __NR_munmap     91
+#define __NR_mprotect  125
+#define __NR_mmap2     192
+
+struct mmap_arg_struct {
+    u32 addr;
+    u32 len;
+    u32 prot;
+    u32 flags;
+    u32 fd;
+    u32 offset;                 /* bytes, and page aligned */
+};
+
+/*
+ * PROT_EXEC is accepted and means nothing: the 68040 has no execute
+ * permission bit, so anything readable can be executed. PROT_WRITE
+ * without PROT_READ gives read-write, because there is no write-only
+ * page either. Both are what Linux does on hardware that cannot tell.
+ */
+#define PROT_NONE       0x0
+#define PROT_READ       0x1
+#define PROT_WRITE      0x2
+#define PROT_EXEC       0x4
+
+#define MAP_SHARED      0x01
+#define MAP_PRIVATE     0x02
+#define MAP_FIXED       0x10
+#define MAP_ANONYMOUS   0x20
+#define MAP_ANON        MAP_ANONYMOUS
+#define MAP_FIXED_NOREPLACE 0x100000
+
+#define MAP_FAILED      ((void *)-1)
+
+/*
  * Above 400 are calls Linux does not have, numbered well clear of it so
  * that nothing here can be mistaken for the real thing.
  *

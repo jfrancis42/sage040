@@ -71,8 +71,10 @@ _exc_common:
 | TRAP #0 - the system call gate.
 |
 | The convention is Linux/m68k's, unchanged: d0 holds the call number,
-| d1 through d5 the arguments, and d0 comes back holding the result or a
-| negated errno.  d0 is deliberately not restored for that reason.
+| d1 through d5 the first five arguments and a0 the sixth, and d0 comes
+| back holding the result or a negated errno.  d0 is deliberately not
+| restored for that reason.  Only mmap2 takes six; a0 is Linux/m68k's
+| sixth-argument register, as glibc's m68k sysdep.h uses it.
 |
 | Linux picked the obvious convention for this architecture and there is
 | nothing to improve on, so a program written against one will work
@@ -80,12 +82,11 @@ _exc_common:
 |
         .globl  _trap0_entry
         .type   _trap0_entry,@function
-| The saved SR is passed as a seventh argument, because what happens on
+| The saved SR is passed as an eighth argument, because what happens on
 | the way out depends on where this call came from: a program returning
 | to user mode may be signalled or preempted, and the kernel calling the
 | gate on its own behalf may not. It is the first word of the exception
-| frame, which sits above the 52 bytes of registers and the 24 bytes of
-| arguments.
+| frame, which sits above the 52 bytes of registers.
 _trap0_entry:
         movem.l %d1-%d7/%a0-%a6,-(%sp)  | 13 registers, 52 bytes
         clr.l   -(%sp)
@@ -95,6 +96,7 @@ _trap0_entry:
                                         | the high half on a big-endian
                                         | machine and arrive multiplied
                                         | by 65536
+        move.l  %a0,-(%sp)
         move.l  %d5,-(%sp)
         move.l  %d4,-(%sp)
         move.l  %d3,-(%sp)
@@ -102,7 +104,7 @@ _trap0_entry:
         move.l  %d1,-(%sp)
         move.l  %d0,-(%sp)
         jsr     syscall_dispatch
-        lea     28(%sp),%sp
+        lea     32(%sp),%sp
         movem.l (%sp)+,%d1-%d7/%a0-%a6
         rte
 

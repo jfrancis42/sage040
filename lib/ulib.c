@@ -66,6 +66,67 @@ static s32 sc4(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4)
     return (s32)d0;
 }
 
+/* Six arguments: d1-d5 and a0, as Linux/m68k passes them. Only mmap2
+ * and syscall() need it. */
+static s32 sc6(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6)
+{
+    register u32 d0 __asm__("d0") = nr;
+    register u32 d1 __asm__("d1") = a1;
+    register u32 d2 __asm__("d2") = a2;
+    register u32 d3 __asm__("d3") = a3;
+    register u32 d4 __asm__("d4") = a4;
+    register u32 d5 __asm__("d5") = a5;
+    register u32 a0 __asm__("a0") = a6;
+
+    __asm__ volatile ("trap #0"
+                      : "+d"(d0)
+                      : "d"(d1), "d"(d2), "d"(d3), "d"(d4), "d"(d5), "a"(a0)
+                      : "memory", "cc");
+    return (s32)d0;
+}
+
+/*
+ * Any call by number, the way Linux's libc offers it. Always passes six
+ * arguments; a call that takes fewer ignores the rest.
+ */
+s32 syscall(u32 nr, ...)
+{
+    __builtin_va_list ap;
+    u32 a[6];
+    int i;
+
+    __builtin_va_start(ap, nr);
+    for (i = 0; i < 6; i++) {
+        a[i] = __builtin_va_arg(ap, u32);
+    }
+    __builtin_va_end(ap);
+    return sc6(nr, a[0], a[1], a[2], a[3], a[4], a[5]);
+}
+
+void *mmap(void *addr, u32 len, int prot, int flags, int fd, u32 offset)
+{
+    s32 r;
+
+    /* mmap2 takes the offset in pages; one that is not whole pages is
+     * refused here, as the kernel would refuse it through mmap. */
+    if (offset & 4095) {
+        return MAP_FAILED;
+    }
+    r = sc6(__NR_mmap2, (u32)addr, len, (u32)prot, (u32)flags, (u32)fd,
+            offset / 4096);
+    return r < 0 ? MAP_FAILED : (void *)r;
+}
+
+int munmap(void *addr, u32 len)
+{
+    return (int)sc2(__NR_munmap, (u32)addr, len);
+}
+
+int mprotect(void *addr, u32 len, int prot)
+{
+    return (int)sc3(__NR_mprotect, (u32)addr, len, (u32)prot);
+}
+
 int socket(int domain, int type, int protocol)
 {
     return (int)sc3(__NR_socket, (u32)domain, (u32)type, (u32)protocol);
