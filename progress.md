@@ -74,10 +74,9 @@ database already knows, so nothing has to be invented to describe it.
 
 ## Log
 
-### 0. Groundwork — in progress
+### 0. Groundwork — done
 
-**The machine is bigger, and the caps that hid it are gone.** Done and
-measured; this part is finished.
+**The machine is bigger, and the caps that hid it are gone.**
 
 RAM is **64 MB** and the disk is **512 MB**. Raising the emulator's `-m`
 alone did nothing, because three separate limits capped what the kernel
