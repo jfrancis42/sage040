@@ -121,6 +121,17 @@ static void wake_task(struct task *t)
     t->woken = 1;
 }
 
+void wake_signalled(struct task *t)
+{
+    u16 sr = irq_save();
+
+    if (t->queue) {
+        dequeue(t->queue, t);
+    }
+    wake_task(t);
+    irq_restore(sr);
+}
+
 void wake_one(struct waitq *q)
 {
     u16 sr = irq_save();

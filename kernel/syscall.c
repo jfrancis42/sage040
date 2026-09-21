@@ -695,7 +695,7 @@ static int do_jobctl(int cmd, int arg, u32 p)
 }
 
 static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
-                      u32 a6)
+                      u32 a6, struct pt_regs *regs)
 {
 
     switch (nr) {
@@ -1094,6 +1094,55 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
     case __NR_kill:
         return signal_kill((int)a1, (int)a2);
 
+    case __NR_sigaction: {
+        struct sigaction act, old;
+        int err;
+
+        if (a2) {
+            err = fetch(&act, a2, sizeof(act));
+            if (err < 0) {
+                return err;
+            }
+        }
+        err = signal_set_action((int)a1, a2 ? &act : 0, &old);
+        if (err < 0) {
+            return err;
+        }
+        return a3 ? store(a3, &old, sizeof(old)) : 0;
+    }
+
+    case __NR_sigprocmask: {
+        u32 set, old;
+        int err;
+
+        if (a2) {
+            err = fetch(&set, a2, sizeof(set));
+            if (err < 0) {
+                return err;
+            }
+        }
+        err = signal_procmask((int)a1, a2 ? &set : 0, &old);
+        if (err < 0) {
+            return err;
+        }
+        return a3 ? store(a3, &old, sizeof(old)) : 0;
+    }
+
+    case __NR_sigpending: {
+        u32 set = signal_pending_set();
+
+        return store(a1, &set, sizeof(set));
+    }
+
+    case __NR_sigsuspend:
+        return signal_suspend(a1);
+
+    case __NR_pause:
+        return signal_pause();
+
+    case __NR_sigreturn:
+        return signal_return(regs);
+
     case __NR_sched_yield:
         schedule();
         return 0;
@@ -1144,13 +1193,16 @@ void syscall_dispatch(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
      * these registers for sigreturn to restore -- and what it restores
      * has to include what this call returned.
      */
-    regs->d[0] = (u32)do_syscall(nr, a1, a2, a3, a4, a5, a6);
+    current->syscall_nr = (int)nr;
+    regs->d[0] = (u32)do_syscall(nr, a1, a2, a3, a4, a5, a6, regs);
 
     /*
      * Signals, then a possible switch -- and neither if this call came
-     * from the kernel itself, which the saved SR is what says.
+     * from the kernel itself, which the saved SR is what says. A signal
+     * that interrupted the call may restart it; see signal.c.
      */
     task_ret_to_user(regs);
+    current->syscall_nr = -1;
 }
 
 /* ---------------------------------------------------------------- */

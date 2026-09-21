@@ -75,6 +75,7 @@ mcopy -o -i "$MIMG" ../apps/memtest ::/MEMTEST
 mcopy -o -i "$MIMG" ../apps/malloctest ::/MALLOCTE
 mcopy -o -i "$MIMG" ../apps/sigtest ::/SIGTEST
 mcopy -o -i "$MIMG" ../apps/fptest ::/FPTEST
+mcopy -o -i "$MIMG" ../apps/spin ::/SPIN
 mmd -i "$MIMG" ::/ETC
 mmd -i "$MIMG" ::/BIN
 mcopy -o -i "$MIMG" ../system/env ::/BIN/ENV
@@ -99,7 +100,9 @@ mcopy -o -i "$MIMG" "$SCRATCH/rc.tmp" ::/ETC/RC
     printf 'cd /\r';                    sleep 1
 
     # --- the gate, and signals ---
-    printf 'sigtest\r';                 sleep 2
+    printf 'sigtest\r';                 sleep 6
+    printf 'sigtest badstack\r';        sleep 1.5
+    printf 'sigtest forge\r';           sleep 1.5
     printf 'kill 2\r';                  sleep 1
     printf 'kill -9 2\r';               sleep 1
 
@@ -143,6 +146,42 @@ for _ in $(seq 1 600); do
 done
 sleep 0.5
 {
+    # Stop a job with SIGSTOP, then kill it while it is stopped.
+    printf 'spin &\r';                  sleep 1
+    printf 'ps\r';                      sleep 1
+} >&3
+# Send once `text` is in the log -- for keys that must arrive while a
+# particular program is running, which a pre-built session cannot time.
+send_after() {
+    for _ in $(seq 1 100); do
+        if grep -qF "$1" "$LOG" 2>/dev/null; then break; fi
+        sleep 0.2
+    done
+    sleep 0.3
+    printf '%b' "$2" >&3
+}
+printf 'sigtest catchint\r' >&3
+send_after "sigtest: waiting in pause for ctrl-C" '\003'
+sleep 1
+printf 'sigtest spincatch\r' >&3
+send_after "sigtest: computing until ctrl-C" '\003'
+sleep 1
+
+spin_pid=
+for _ in $(seq 1 50); do
+    spin_pid=$(tr -d '\r' < "$LOG" |
+               awk '$1 ~ /^[0-9]+$/ && $NF == "spin" { p = $1 } END { print p }')
+    [ -n "$spin_pid" ] && break
+    sleep 0.2
+done
+{
+    printf 'kill -19 %s\r' "${spin_pid:-0}";  sleep 1
+    printf 'echo PS-STOPPED\r';              sleep 0.5
+    printf 'ps\r';                           sleep 1
+    printf 'kill -9 %s\r' "${spin_pid:-0}";   sleep 1
+    printf '\r';                             sleep 0.5
+    printf 'echo PS-KILLED\r';               sleep 0.5
+    printf 'ps\r';                           sleep 1
     printf 'mallocte doublefree\r';     sleep 2
     # Two programs using the FPU at once, with different values in every
     # register: one in the background, one in the foreground.
@@ -273,6 +312,43 @@ grep -q "fptest 2: fpu state kept" "$C"
 check "  and so did the foreground task running beside it" $?
 ! grep -q "FPU STATE LOST" "$C"
 check "  and neither saw the other's" $?
+
+echo "=== checks: signals reach handlers from everywhere ==="
+
+grep -q "sigtest: nap slept its full time" "$C"
+check "a signal to one sleeping task does not wake the others" $?
+
+grep -q "sigtest: caught SIGINT in pause" "$C"
+check "ctrl-C reached a handler in a program waiting in pause()" $?
+
+grep -q "sigtest: caught SIGINT while computing" "$C"
+check "ctrl-C reached a handler in a program making no system calls" $?
+
+grep -q "sigtest: taking a signal with an unusable stack" "$C" &&
+    ! grep -q "SIGNAL DELIVERED ONTO NOTHING" "$C"
+check "a signal that cannot be given a frame does not return" $?
+
+# Proved by the privilege violation, not by the absence of a message:
+# a forgery that worked could take the machine down before printing.
+grep -A3 "sigtest: sigreturn to a context that asks for supervisor" "$C" |
+    grep -q "privilege violation" && ! grep -q "SUPERVISOR MODE REACHED" "$C"
+check "a forged sigreturn cannot reach supervisor mode" $?
+
+test "$(grep -c "^sigtest: segmentation fault" "$C")" -eq 2
+check "  and both of those programs were killed for it" $?
+
+echo "=== checks: stopping, and killing what is stopped ==="
+
+# The line for spin in the ps listing after each marker.
+spin_state() {
+    awk -v m="$1" -v p="$spin_pid" '$0 == m { f = 1 }
+        f && $1 == p { print $3; exit }
+        f && /PS-/ && $0 != m { exit }' "$C"
+}
+test -n "$spin_pid" && [ "$(spin_state PS-STOPPED)" = "stop" ]
+check "kill -19 (SIGSTOP) stopped a job" $?
+test -n "$spin_pid" && [ -z "$(spin_state PS-KILLED)" ]
+check "  and kill -9 ended it while it was stopped" $?
 
 echo "=== checks: the kernel's own tasks take no signals ==="
 

@@ -47,7 +47,13 @@ struct addrspace;
  * so a uaccess call made on its behalf is a bug rather than a special
  * case to accommodate.
  */
-void uaccess_set(struct addrspace *as);
+/*
+ * Point uaccess at `as` until further notice, and return what it was
+ * pointed at before -- the raw setting, null when none -- so that a
+ * caller can put back EXACTLY that. Restoring uaccess_current() instead
+ * is the bug this return value exists to prevent: see uaccess.c.
+ */
+struct addrspace *uaccess_set(struct addrspace *as);
 struct addrspace *uaccess_current(void);
 
 /* 0, or -EFAULT if any part of the range is not mapped, or is not

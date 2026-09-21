@@ -57,6 +57,30 @@ void  *mmap(void *addr, u32 len, int prot, int flags, int fd, u32 offset);
 int    munmap(void *addr, u32 len);
 int    mprotect(void *addr, u32 len, int prot);
 
+/*
+ * Processes and signals, with Linux's meanings. sigaction() always
+ * installs the library's return trampoline; signal() is sigaction with
+ * SA_RESTART, as glibc's is. A handler is an ordinary function of one
+ * argument, the signal number. spawn() starts a program and returns its
+ * pid without waiting; it is not fork().
+ */
+int    getpid(void);
+int    kill(int pid, int sig);
+int    raise(int sig);
+int    waitpid(int pid, int *status, int options);
+int    spawn(const char *path, int argc, char **argv, char **envp);
+int    sigaction(int sig, const struct sigaction *act, struct sigaction *old);
+sighandler_t signal(int sig, sighandler_t handler);
+int    sigprocmask(int how, const sigset_t *set, sigset_t *old);
+int    sigpending(sigset_t *set);
+int    sigsuspend(const sigset_t *mask);
+int    pause(void);
+int    sigemptyset(sigset_t *s);
+int    sigfillset(sigset_t *s);
+int    sigaddset(sigset_t *s, int sig);
+int    sigdelset(sigset_t *s, int sig);
+int    sigismember(const sigset_t *s, int sig);
+
 /* Any system call by number: the result, or a negated errno. */
 s32    syscall(u32 nr, ...);
 

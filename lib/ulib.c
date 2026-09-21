@@ -127,6 +127,118 @@ int mprotect(void *addr, u32 len, int prot)
     return (int)sc3(__NR_mprotect, (u32)addr, len, (u32)prot);
 }
 
+/* --- processes and signals ------------------------------------------ */
+
+int getpid(void)
+{
+    return (int)sc1(__NR_getpid, 0);
+}
+
+int kill(int pid, int sig)
+{
+    return (int)sc2(__NR_kill, (u32)pid, (u32)sig);
+}
+
+int raise(int sig)
+{
+    return kill(getpid(), sig);
+}
+
+int waitpid(int pid, int *status, int options)
+{
+    (void)options;              /* no WNOHANG yet */
+    return (int)sc2(__NR_waitpid, (u32)pid, (u32)status);
+}
+
+int spawn(const char *path, int argc, char **argv, char **envp)
+{
+    return (int)sc4(__NR_spawn, (u32)path, (u32)argc, (u32)argv, (u32)envp);
+}
+
+extern void __sigreturn_trampoline(void);
+
+int sigaction(int sig, const struct sigaction *act, struct sigaction *old)
+{
+    struct sigaction k;
+
+    if (!act) {
+        return (int)sc3(__NR_sigaction, (u32)sig, 0, (u32)old);
+    }
+    /* Every handler returns through the library's trampoline. */
+    k = *act;
+    k.sa_flags |= SA_RESTORER;
+    k.sa_restorer = __sigreturn_trampoline;
+    return (int)sc3(__NR_sigaction, (u32)sig, (u32)&k, (u32)old);
+}
+
+/*
+ * The BSD and glibc meaning: the handler stays installed, and a system
+ * call it interrupts is restarted. System V's one-shot signal() is what
+ * sigaction with SA_RESETHAND is for.
+ */
+sighandler_t signal(int sig, sighandler_t handler)
+{
+    struct sigaction act, old;
+
+    act.sa_handler = handler;
+    act.sa_mask = 0;
+    act.sa_flags = SA_RESTART;
+    act.sa_restorer = 0;
+    if (sigaction(sig, &act, &old) < 0) {
+        return SIG_ERR;
+    }
+    return old.sa_handler;
+}
+
+int sigprocmask(int how, const sigset_t *set, sigset_t *old)
+{
+    return (int)sc3(__NR_sigprocmask, (u32)how, (u32)set, (u32)old);
+}
+
+int sigpending(sigset_t *set)
+{
+    return (int)sc1(__NR_sigpending, (u32)set);
+}
+
+int sigsuspend(const sigset_t *mask)
+{
+    return (int)sc1(__NR_sigsuspend, *mask);
+}
+
+int pause(void)
+{
+    return (int)sc1(__NR_pause, 0);
+}
+
+int sigemptyset(sigset_t *s)          { *s = 0; return 0; }
+int sigfillset(sigset_t *s)           { *s = 0xffffffffUL; return 0; }
+
+int sigaddset(sigset_t *s, int sig)
+{
+    if (sig < 1 || sig >= NSIG) {
+        return -EINVAL;
+    }
+    *s |= 1UL << (sig - 1);
+    return 0;
+}
+
+int sigdelset(sigset_t *s, int sig)
+{
+    if (sig < 1 || sig >= NSIG) {
+        return -EINVAL;
+    }
+    *s &= ~(1UL << (sig - 1));
+    return 0;
+}
+
+int sigismember(const sigset_t *s, int sig)
+{
+    if (sig < 1 || sig >= NSIG) {
+        return -EINVAL;
+    }
+    return (*s >> (sig - 1)) & 1;
+}
+
 int socket(int domain, int type, int protocol)
 {
     return (int)sc3(__NR_socket, (u32)domain, (u32)type, (u32)protocol);

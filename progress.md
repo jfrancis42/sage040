@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: 5 of 23 complete.**
+**Status: 6 of 23 complete.**
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -34,7 +34,7 @@ drive almost all of it:
 | 2 | `brk`/`sbrk` | the smaller half of memory; enough for `malloc` | **done** |
 | 3 | `mmap`/`munmap`/`mprotect` | what a runtime and a libc expect | **done** |
 | 4 | `malloc` in `lib/` | so tasks 5–12 have something to test against | **done** |
-| 5 | Signals: `sigaction`, handlers, `sigreturn` | the largest kernel item; editors need it | in progress |
+| 5 | Signals: `sigaction`, handlers, `sigreturn` | the largest kernel item; editors need it | **done** |
 | 6 | `select`/`poll` | the other half of an event loop | todo |
 | 7 | Interval timers | depends on 5 | todo |
 | 8 | Pipes, `dup2`, real redirection | see the note below — `>` is broken today | todo |
@@ -207,7 +207,7 @@ It grows one group per task, and a group is only added once its calls
 work — so a failure there is always a regression, never a thing not
 written yet.
 
-**258 checks across six suites now:** 12 device programs, 41 fs, 145
+**296 checks across six suites now:** 12 device programs, 41 fs, 183
 api, 29 edit, 18 vm, 13 net.
 
 ### 1. Grow the user address space — done
@@ -462,7 +462,7 @@ because how long 40,000 allocations take depends on the host. With
 backward merging disabled in `coalesce()`, `malloc_check()` reports
 "two free blocks are adjacent" and six checks fail.
 
-### 5. Signals — in progress
+### 5. Signals — done
 
 #### Found first: the system call gate read `a6` as the status register
 
@@ -537,6 +537,117 @@ second copy started**, so it passed without testing anything. Timing
 by the clock fixed that. With the save removed, both copies report
 lost state, the background one exactly when the foreground one starts.
 
+
+#### Handlers
+
+**The ABI is Linux/m68k's old signal interface:** all 31 signal numbers;
+`sigaction` (67) with m68k's field order (handler, mask, flags,
+restorer); `sigprocmask` (126), `sigpending` (73), `sigsuspend` (72,
+one argument), `pause` (29) and `sigreturn` (119); 32-bit masks with
+signal N in bit N−1. The kernel's own `SIGMASK()` changed to that layout
+so masks cross the boundary unconverted. The `rt_` calls with 64-bit
+masks are not here. Nothing has more than 31 signals to describe, and
+the libc will get whichever stubs task 13 writes. Which form of
+`sigsuspend` m68k uses (one argument or three) is **not verified**;
+modern libcs use `rt_sigsuspend`, so it matters little.
+
+**The frame** on the user stack is: return address (the restorer), the
+signal number, a code of 0, a pointer to the context, then a `struct
+sigcontext` holding every register, the old mask, the user stack
+pointer, sr, pc and the whole FPU state. A handler is an ordinary
+one-argument function. It returns to `__sigreturn_trampoline` in
+`crt0.s`, and that trampoline's `sigreturn` restores everything. **Only
+the condition codes of the saved sr are honoured.** The S bit in
+particular is the kernel's, which is what stops a forged frame reaching
+supervisor mode. `sa_restorer` is **required** for a handler, and the
+library always supplies it; the kernel will not write code onto a stack.
+
+*Correction to the note that planned this:* it gave "this MMU can mark
+the stack non-executable" as the reason for the trampoline. The 68040
+has no execute bit. The trampoline stays in `crt0.s` for other reasons:
+it is what Linux does with `sa_restorer`, code on the stack needs cache
+pushes on a real 68040, and a trampoline in source can be read.
+
+**Restarting an interrupted call.** Blocking calls return `-EINTR`, and
+`pause`/`sigsuspend` return an internal `-ERESTARTNOHAND`. On the way
+out, if no handler ran (a stop and continue, say), the call is
+restarted invisibly: the number goes back in d0 and the pc steps back
+over the 2-byte trap. After a handler it restarts only with
+`SA_RESTART`, and never for `pause`/`sigsuspend`. So a `read` suspended
+by ctrl-Z and resumed by `fg` carries on reading, as on Linux. The
+dispatcher records the call number in `current->syscall_nr` so this is
+decided once, only for calls.
+
+**Also fixed or added on the way:** SIGKILL resumes a stopped task (it
+used to sit pending in a task that would never run); SIGSTOP, SIGTTIN
+and SIGTTOU stop; SIGCONT resumes when *sent*, even if caught or
+ignored; a child's exit now sends SIGCHLD (only stops used to);
+`SA_NOCLDSTOP`, `SA_NODEFER` and `SA_RESETHAND` work; `kill(pid, 0)`
+reports whether a task exists. In `ulib`: `sigaction`, `signal` (with
+`SA_RESTART`, as glibc), the mask calls, `pause`, `kill`, `raise`,
+`getpid`, `waitpid`, `spawn` and the `sigset` helpers.
+
+**Not supported, and refused rather than half done:** `SA_SIGINFO` and
+`SA_ONSTACK`, both `EINVAL`. **A fault's own signal cannot be caught**:
+an access fault pushes a format-7 frame that re-runs the access on
+`rte`, and it cannot be redirected to a handler in place. Faults still
+end the program.
+
+#### Two more bugs found by the tests, both older than this task
+
+**A signal to one sleeping task woke every task in `nanosleep`.** All of
+them sleep on one shared queue, and `signal_send` woke the target with
+`wake_all(t->queue)`. The others found no signal and returned 0 with
+their sleep cut short, silently. `wake_signalled()` in `wait.c` now
+takes exactly one task off its queue.
+
+**A program that spawned another made every task read the wrong
+memory.** `exec_spawn` saved `uaccess_current()` and restored it
+afterwards, but for a *program* that is its own address space, not "no
+override". So the restore installed the spawning program's address
+space as a global override. From then on every task's system calls,
+including the shell's, read and wrote the spawner's memory. The child's
+output was the parent's data, and its `nanosleep` read a time off the
+parent's stack: a twelve-hour sleep. It healed the next time the shell
+spawned anything, which is why nothing had noticed: until now no
+program spawned another. Found by bisecting across three kernels: it is
+present at the task 0 commit. `uaccess_set()` now returns the raw
+previous setting, and that is what gets put back.
+
+**Also found:** `exec_spawn` gives the terminal to every child it
+starts, which is a shell's decision built into the kernel. A program
+that spawns a helper loses its own terminal to it. **And nothing reaps
+an orphan:** a program that exits without waiting for its children
+leaves them as zombies holding task slots for ever. Both are for task 9
+(`fork`/`execve`), noted there.
+
+**Tests:** `apps/sigtest`, 32 checks. They cover handlers, the mask
+while a handler runs and with `SA_NODEFER`, `sa_mask`, `SA_RESETHAND`,
+blocking and `sigpending` and unblocking, ignore discarding a pending
+signal, the refusals, `kill(pid, 0)`, and a hand-written trap whose
+every integer and FP register (and `fpcr`) must survive a handler that
+wrecks them all. Then `pause`, `SA_RESTART` against a real interrupted
+`nanosleep` (EINTR at 200 ms without it, a full 1 s with it),
+`sigsuspend` with its mask put back, and SIGCHLD from a child's exit,
+all using a helper that signals from another task. `apitest.sh` adds:
+a second sleeper that must sleep its full time, ctrl-C reaching a
+handler both in `pause` and in a loop that makes no system calls, a
+signal whose frame cannot be written ending the program, a forged
+`sigreturn` asking for supervisor mode ending in a privilege
+violation, and SIGSTOP then SIGKILL on a stopped job.
+
+**Negative control on the forgery check:** with `sigreturn` honouring
+the whole saved sr, the forged context ran in supervisor mode and took
+the machine down. The first version of the check **passed anyway**,
+because it only looked for the absence of a message that the crash
+prevented from printing. It now requires the privilege violation.
+
+**The harness trap in the working notes bit again:** ctrl-C was written into
+the pre-built session and arrived, in the same burst as everything
+else, while an earlier program was running. Keys that must arrive at a
+particular moment are now sent by `send_after`, which waits for the
+program to say it is ready.
+
 ---
 
 ## Design notes for the tasks not yet started
@@ -544,36 +655,6 @@ lost state, the background one exactly when the foreground one starts.
 Written while the shell was down, because thinking does not need one.
 These are decisions, not code — the point is that the next session
 starts by typing rather than by deciding.
-
-### 5. Signals: `sigaction`, handlers, `sigreturn`
-
-The largest kernel item on the list, and the one that changes the most.
-
-Numbers: `sigaction` **67**, `sigreturn` **119**, and prefer
-`rt_sigaction` **174** if the mask needs to be wider than 32 bits — it
-does not here, so 67 is enough and simpler.
-
-Delivery: build a frame on the **user** stack holding the saved
-registers and the old mask, point the return address at a small
-trampoline, and `rte` to the handler in user mode. The trampoline calls
-`sigreturn`, which restores everything from that frame. The handler
-runs on the user stack, in user mode, and can itself be interrupted.
-
-*Decision:* **the trampoline belongs in `lib/crt0.s`**, with its
-address passed to the kernel by `sigaction` (Linux's `sa_restorer`),
-not written onto the user's stack by the kernel. This note used to
-justify that with "this MMU can mark the stack non-executable". **It
-cannot:** the 68040 page descriptor has no execute bit (found during
-task 3). The decision stands for other reasons. It is what Linux does
-on architectures with `sa_restorer`. Code written to the stack needs
-cache pushes on a real 68040, whose instruction and data caches are
-separate. And a trampoline in the library can be read in the source.
-
-`SA_RESTART` matters more than it looks: without it every ported
-program needs `EINTR` handling on every call, and most do not have it.
-
-This also lets the shell stop reaping at the prompt and reap on
-`SIGCHLD` instead, which is where task 1's leak fix really belongs.
 
 ## Decisions worth knowing about
 
@@ -589,6 +670,16 @@ This also lets the shell stop reaping at the prompt and reap on
 - **Nothing is on a "deliberately not doing" list any more.**
 
 ## Notes for later
+
+- **Task 9 must take the terminal out of `exec_spawn`**, which today
+  hands the foreground to every child it starts: a shell's decision
+  built into the kernel. And it must **reap orphans**. A program that
+  exits without waiting for its children leaves them as zombies holding
+  task slots for ever; Linux reparents them to init.
+- **Kernel stack use is unmeasured.** `do_syscall`'s frame is 1,840
+  bytes because `do_spawn` is inlined into it, against an 8 KB stack.
+  It is fine today. A stack high-water mark, painting the stack and
+  checking it at exit, would say how fine.
 
 - **`mmap` of `/dev/fb0`.** Three documents give `mmap` as the reason a
   program cannot draw into the framebuffer directly. `mmap` exists now;

@@ -201,13 +201,14 @@ catch a byte-order error, because both directions swap.
 | **User mode** — programs run unprivileged, faults kill only the program | ✅ done — proven by `vmtest.sh` |
 | **Tasks and preemption** — round-robin scheduler, context switch | ✅ done — `task.c`, `taskasm.s` |
 | **Blocking** — wait queues, counting semaphores, mutexes | ✅ done — `wait.c` |
-| **Signals** — default actions, delivered at the user boundary and the tick | ✅ done — `signal.c` |
+| **Signals** — Linux's numbers and `sigaction`, handlers, masks, restart | ✅ done — `signal.c` |
 | **Job control** — `&`, `jobs`, `fg`, `bg`, `ps`, `kill`, ctrl-Z | ✅ done |
 | Ethernet driver — `struct netdev`, registered as `eth0` | ✅ done, and exercised end to end |
 | **TCP/IP (§8)** — ARP, IP, ICMP, UDP, DHCP, TCP, sockets | ✅ done — `kernel/net/` |
 | Filesystem (§9) — subdirectories, cwd, `mkdir`/`rmdir`/`chdir` | ✅ done |
 | Long file names | ✗ open — §11 |
-| `mmap`/`brk`, pipes and redirection, paging, shared libraries | ✗ open — §11 |
+| `mmap`/`brk` | ✅ done — `vm.c`, `mmap.c` |
+| Pipes and redirection, paging, shared libraries | ✗ open — §11 |
 
 **Every hardware dependency is satisfied**, and has been for some time.
 What the machine now runs is described in **[`os.md`](os.md)**; what is
@@ -721,11 +722,11 @@ machine being small. The machine is not small now — 64 MB of RAM and a
 | | |
 |---|---|
 | Near-term | interrupt-driven input, DNS, NTP, the NVRAM, static limits |
-| **Memory** | `mmap`, `brk`, `sbrk`, `malloc`, and a bigger address space |
+| **Memory** | ✅ `mmap`, `brk`, `sbrk`, `malloc`, and a 256 MB address space |
 | **A C library** | picolibc or newlib over a dozen syscall stubs |
 | Pipelines | `pipe`, `dup2`, `SIGPIPE`, and `\|` `>` `>>` `<` in the shell |
 | The console | VT102 emulation, `TIOCGWINSZ`, termcap, curses |
-| POSIX surface | signal handlers, `select`, timers, subprocesses, and a dozen small calls |
+| POSIX surface | `select`, timers, subprocesses, and a dozen small calls (signal handlers ✅) |
 | Sockets | the rest of the Linux socket API, and fixing the signatures |
 | Long file names | VFAT, and why not a different filesystem |
 | `fsck` | and a clean-unmount flag to say when it is needed |

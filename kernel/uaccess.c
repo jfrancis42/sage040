@@ -25,9 +25,22 @@
  */
 static struct addrspace *override;
 
-void uaccess_set(struct addrspace *as)
+/*
+ * exec_spawn used to save uaccess_current() and restore it. When a
+ * PROGRAM spawns, that is the program's own address space, not "no
+ * override" -- so the restore installed it as a permanent override, and
+ * from then on every task's system calls read and wrote the spawning
+ * program's memory. The child's output was the parent's data and its
+ * nanosleep read a time from the parent's stack. It healed the next
+ * time the shell spawned anything, which is why nothing had noticed:
+ * until signals, no program spawned another.
+ */
+struct addrspace *uaccess_set(struct addrspace *as)
 {
+    struct addrspace *was = override;
+
     override = as;
+    return was;
 }
 
 struct addrspace *uaccess_current(void)

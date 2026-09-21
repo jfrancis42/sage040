@@ -1123,9 +1123,10 @@ not know or care which one it is reading.
 
 #### ctrl-C and ctrl-Z
 
-The terminal raises them on your program; there is no `sigaction()` and
-nothing to catch. ctrl-C ends it with status 130, and it works even if
-you never call the kernel at all — the timer interrupt notices. ctrl-Z
+The terminal raises SIGINT and SIGTSTP on your program. By default
+ctrl-C ends it with status 130, and it works even if you never call the
+kernel at all, because the timer interrupt notices. Install a handler
+with `signal()` or `sigaction()` to do something else. ctrl-Z
 stops it, and `fg` resumes it from the system call it was in. A `read()`
 interrupted by ctrl-C returns `-EINTR`, exactly as it would on Linux.
 
@@ -1310,8 +1311,11 @@ older copy should know which way round it is now.
   and the `-EBUSY` from a nested `spawn` are both gone.
 - **Run in the background.** `&` and `bg` really run things, `jobs`
   lists them and `fg` brings one back.
-- **Signal another program.** `kill(2)`, `getpid(2)` and `waitpid(2)`
-  exist.
+- **Signal another program, and catch signals.** `kill`, `raise`,
+  `getpid` and `waitpid`; `sigaction`, `signal`, `sigprocmask`,
+  `sigpending`, `sigsuspend` and `pause`, all with Linux's numbers and
+  meanings. A handler is an ordinary function of one argument. `signal()`
+  sets `SA_RESTART`, as glibc's does.
 - **Open a network socket.** `socket`, `connect`, `bind`, `listen`,
   `accept`, `sendto` and `recvfrom` all work, and a socket is a
   descriptor, so `read()` and `write()` work on one.
@@ -1320,9 +1324,9 @@ older copy should know which way round it is now.
 
 ### What a program cannot do yet
 
-- **Catch a signal.** There is no `sigaction()`. Signals have default
-  actions only; ctrl-C and ctrl-Z are things done *to* a program, not
-  events it can handle.
+- **Take a three-argument handler, or an alternate stack.** `SA_SIGINFO`
+  and `SA_ONSTACK` are refused with `EINVAL`. Nor can a program catch the
+  signal from its own access fault: that one still ends it.
 - **Use a C library.** `ulib` is a syscall wrapper plus a handful of
   string helpers. No `stdio`, no `printf`, no `setjmp`, no math.
 - **Map the framebuffer.** `mmap` exists, but `/dev/fb0` does not

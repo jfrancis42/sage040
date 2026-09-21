@@ -96,6 +96,7 @@ static struct task *alloc_task(const char *name)
             t->name[TASK_NAME_MAX - 1] = '\0';
             t->slice = TASK_SLICE;
             t->fpu[0] = FPU_IDLE_FRAME;
+            t->syscall_nr = -1;
             /* The root, until somebody inherits or chdirs. */
             t->cwd_ino = 0;
             strcpy(t->cwd_path, "/");
@@ -201,12 +202,10 @@ struct task *task_create(const char *name, void (*entry)(void))
     task_cwd_inherit(t, current);
 
     /*
-     * A kernel task is the shell or something like it, and a shell must
-     * not die of the key that is meant to interrupt what it is running.
-     * Ignoring rather than blocking, so that a stray one is discarded
-     * instead of arriving later at a confusing moment.
+     * A kernel task takes no signals at all (see signal_send), which is
+     * what keeps the shell alive through the key that is meant to
+     * interrupt what it is running.
      */
-    t->sig_ignored = SIGMASK(SIGINT) | SIGMASK(SIGTSTP);
 
     t->state = TASK_READY;
     return t;
@@ -445,7 +444,7 @@ void task_ret_to_user(struct pt_regs *regs)
 
     /* Signals first: one may end the task, in which case there is
      * nothing to schedule it back to. */
-    signal_deliver();
+    signal_deliver(regs);
 
     if (need_resched) {
         schedule();
@@ -486,8 +485,11 @@ void task_exit(int status)
      */
     t->state = TASK_ZOMBIE;
 
-    /* Anything waiting for a child to finish wants to know. */
+    /* Anything waiting for a child to finish wants to know -- by the
+     * wait queue, and by SIGCHLD, which is discarded unless the parent
+     * has a handler for it. */
     if (t->parent) {
+        signal_send(t->parent, SIGCHLD);
         wake_all(&t->parent->child_wait);
     }
 
@@ -590,6 +592,7 @@ void task_init(void)
     current->state = TASK_RUNNING;
     current->slice = TASK_SLICE;
     current->fpu[0] = FPU_IDLE_FRAME;
+    current->syscall_nr = -1;
     strcpy(current->name, "idle");
     strcpy(current->cmd, "idle");
     /* The root. Task 0 is built by hand rather than through

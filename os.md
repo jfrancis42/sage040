@@ -290,32 +290,42 @@ return instantly, reporting a wakeup that had already been consumed.
 
 ## Signals and job control
 
-Signals have default actions and no handlers. A program cannot install one.
-The table in `signal.c` is the entire policy: `SIGTSTP` stops, `SIGCONT`
-continues, `SIGCHLD` is ignored, everything else terminates. `SIGKILL`
-cannot be blocked or ignored, which is the one guarantee that makes it
-worth having.
+Signals are Linux's: the same 31 numbers, the old 32-bit `sigaction`
+with m68k's field order, `sigprocmask`, `sigpending`, `sigsuspend`,
+`pause` and `sigreturn`. The default-action table in `signal.c` is short:
+the four stop signals stop, `SIGCONT` continues, `SIGCHLD`, `SIGURG` and
+`SIGWINCH` are ignored, and everything else terminates. `SIGKILL` and
+`SIGSTOP` cannot be caught, blocked or ignored.
 
-**Delivery happens at two sites and they are not interchangeable.**
+**Delivery is on the way back to user mode, and only there.** Raising a
+signal sets a bit. Every way into the kernel, whether a system call, a
+device interrupt or an exception, saves the same `struct pt_regs`. The
+last thing before returning to a program is `signal_deliver()` with
+those registers. So a program making no system calls is still reached,
+by the timer interrupt's return, and nothing is ever torn down halfway
+through a call.
 
-`JOB_AT_SYSCALL` runs at the boundary of a system call, where the kernel
-has finished whatever it was doing. `JOB_AT_TICK` runs from the timer
-interrupt with the program in its own code, and is the only reason a
-program that makes no system calls can be interrupted at all.
+**A handler runs by rewriting the return.** Every register, the old mask,
+the user stack pointer and the FPU state go into a frame on the user
+stack. The pc is pointed at the handler and the stack at the frame, and
+the handler returns to `__sigreturn_trampoline` in `crt0.s`. That
+trampoline's `sigreturn` puts everything back. Only the condition codes
+of the saved SR are honoured, so a forged frame cannot return to user
+code in supervisor mode.
 
-An unwind from *inside* a system call would leave the filesystem half
-updated, so `syscall.c` counts the depth and the tick checks it. **That
-counter is per program and must be swapped on entry and exit** — a program
-is started from inside the shell's own `spawn` call, so the count is
-already 1 when it begins; its own calls then go 1→2→1 and never reach
-zero, and neither ctrl-C nor ctrl-Z can ever be delivered.
+**An interrupted call is restarted when no handler ran** (after ctrl-Z
+and `fg`, for instance), restarted after a handler with `SA_RESTART`,
+and otherwise returns `-EINTR`. `pause` and `sigsuspend` always return
+`-EINTR` after a handler. Restarting puts the call number back in d0 and
+steps the pc back over the trap.
 
-ctrl-Z is only ever delivered at the syscall site, because **stopping is a
-state, not an unwind**. A stopped task sits exactly where it was, in the
-middle of whatever system call it was making, and a later `SIGCONT` resumes
-it there. That is only possible because it has a kernel stack of its own to
-be left sitting on. Interrupting an instruction stream instead would need a
-full register save, which is the scheduler's job and not a signal's.
+**Kernel tasks take no signals.** They never return to user mode, so a
+signal to one could never be acted on, and `kill` of one is refused with
+`EPERM`. **An ignored signal is discarded when it is sent**, not left
+pending to interrupt every later sleep.
+
+Stopping is a state, not an unwind: a stopped task sits where it was,
+and `SIGCONT` resumes it there.
 
 `waitpid` reports a stopped child, not only a zombie — otherwise ctrl-Z
 stops a program and the shell waits forever for something that is never
@@ -636,8 +646,10 @@ Named, so that nobody has to discover them by trying:
 **No `fork`.** `spawn` instead. Without copy-on-write, a `fork` would copy
 an address space for the child to discard immediately.
 
-**No signal handlers.** Default actions only. No `signal`, no `sigaction`,
-no `sigprocmask` from user mode.
+**Signals are complete except for `SA_SIGINFO` and `sigaltstack`**, both
+refused with `EINVAL` rather than half supported. A fault's own signal
+(SIGSEGV from an access fault, for instance) cannot be caught: the 68040
+access-fault frame cannot be redirected to a handler in place.
 
 **Memory is Linux-shaped.** A 256 MB address space with `brk`/`sbrk`,
 `mmap`/`munmap`/`mprotect` for anonymous memory and file copies, and

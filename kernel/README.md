@@ -352,12 +352,17 @@ handler that must exclude a task masks instead.
 
 ### Signals
 
-Any task can signal any task. There are no handlers: a signal here is
-something done TO a task, and the default actions cover what the
-machine needs -- ctrl-C ends a program, ctrl-Z stops it, `fg` continues
-it, a fault kills it, a parent learns a child finished. `sigaction()`
-is the next thing here rather than an omission, and it needs a frame
-built on the user stack and a trampoline to return through.
+Any task can signal any user task, and a program can block, ignore or
+catch what it chooses: Linux's numbers, the old `sigaction` with
+m68k's layout, `sigprocmask`, `sigpending`, `sigsuspend`, `pause` and
+`sigreturn`. A handler is started by saving every register, the mask
+and the FPU in a frame on the user stack and rewriting the saved
+`pt_regs` to return into it. The handler returns through
+`__sigreturn_trampoline` in `lib/crt0.s`. See `signal.c`, which also
+decides when an interrupted system call is restarted.
+
+Kernel tasks take no signals. They never return to user mode, so one
+could never be acted on.
 
 **Delivery is at the boundary, never where the signal is raised.** The
 sender sets a bit, because the target may be halfway through a system

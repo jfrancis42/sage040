@@ -579,27 +579,121 @@ struct utsname {
 };
 
 /*
- * Signals.
- *
- * Only the ones the terminal can raise, with Linux's numbers. There is
- * no sigaction() and no handler: a signal here is something the kernel
- * does TO a job, not something a program catches. That is enough for
- * what a terminal needs -- interrupt, stop, continue -- and it is the
- * part that has to exist before ctrl-C can mean anything.
+ * Signals, with Linux's numbers -- all 31 of them, because a ported
+ * program names whichever it likes and must get the number it expects.
  *
  * A program killed by one exits with 128 + the number, which is the
  * convention every Unix shell reports and the one `echo $?` would show.
  */
-#define SIGINT          2
-#define SIGILL          4
-#define SIGFPE          8
-#define SIGSEGV        11
-#define SIGPIPE        13
-#define SIGCHLD        17
-#define SIGKILL         9
+#define SIGHUP           1
+#define SIGINT           2
+#define SIGQUIT          3
+#define SIGILL           4
+#define SIGTRAP          5
+#define SIGABRT          6
+#define SIGBUS           7
+#define SIGFPE           8
+#define SIGKILL          9
+#define SIGUSR1         10
+#define SIGSEGV         11
+#define SIGUSR2         12
+#define SIGPIPE         13
+#define SIGALRM         14
 #define SIGTERM         15
+#define SIGSTKFLT       16
+#define SIGCHLD         17
 #define SIGCONT         18
+#define SIGSTOP         19
 #define SIGTSTP         20      /* ctrl-Z */
+#define SIGTTIN         21
+#define SIGTTOU         22
+#define SIGURG          23
+#define SIGXCPU         24
+#define SIGXFSZ         25
+#define SIGVTALRM       26
+#define SIGPROF         27
+#define SIGWINCH        28
+#define SIGIO           29
+#define SIGPWR          30
+#define SIGSYS          31
+#define NSIG            32      /* one more than the highest */
+
+/*
+ * Catching them. The old, 32-bit-mask interface, with Linux/m68k's
+ * numbers and its layout of struct sigaction -- handler, mask, flags,
+ * restorer, in that order, which is m68k's and not i386's.
+ *
+ * A mask has signal N in bit N-1, as Linux's old_sigset_t does.
+ *
+ * sa_restorer is REQUIRED for a handler: it is where the handler
+ * returns to, and it must make the sigreturn call. The library supplies
+ * one (lib/crt0.s) and sets SA_RESTORER. The kernel does not write
+ * code onto the stack for a caller that leaves it out; it refuses with
+ * EINVAL.
+ *
+ * NOT SUPPORTED YET, and refused rather than half done: SA_SIGINFO
+ * (three-argument handlers) and SA_ONSTACK (there is no sigaltstack).
+ * The rt_ family of calls, with 64-bit masks, is not here either;
+ * nothing here has more than 31 signals to describe.
+ */
+#define __NR_pause          29
+#define __NR_sigaction      67
+#define __NR_sigsuspend     72  /* one argument: the mask to wait with */
+#define __NR_sigpending     73
+#define __NR_sigreturn     119
+#define __NR_sigprocmask   126
+
+typedef void (*sighandler_t)(int);
+typedef u32 sigset_t;
+
+#define SIG_DFL         ((sighandler_t)0)
+#define SIG_IGN         ((sighandler_t)1)
+#define SIG_ERR         ((sighandler_t)-1)
+
+struct sigaction {
+    sighandler_t sa_handler;
+    sigset_t     sa_mask;
+    u32          sa_flags;
+    void       (*sa_restorer)(void);
+};
+
+#define SA_NOCLDSTOP    0x00000001
+#define SA_SIGINFO      0x00000004      /* refused: not supported yet */
+#define SA_RESTORER     0x04000000
+#define SA_ONSTACK      0x08000000      /* refused: no sigaltstack */
+#define SA_RESTART      0x10000000
+#define SA_NODEFER      0x40000000
+#define SA_RESETHAND    0x80000000
+
+#define SIG_BLOCK       0
+#define SIG_UNBLOCK     1
+#define SIG_SETMASK     2
+
+/*
+ * What a handler finds on its stack, from the lowest address up:
+ *
+ *   return address   -> sa_restorer
+ *   int sig
+ *   int code         always 0 here
+ *   struct sigcontext *
+ *   struct sigcontext
+ *
+ * so a handler is an ordinary function of one argument. The context is
+ * everything the interrupted code had -- every register, the mask, the
+ * FPU -- and sigreturn puts it all back. Only the condition codes of
+ * the saved sr are honoured on the way back; the rest of it is not the
+ * program's to set.
+ */
+struct sigcontext {
+    u32 sc_mask;
+    u32 sc_usp;
+    u32 sc_d[8];
+    u32 sc_a[7];
+    u16 sc_sr;
+    u32 sc_pc;
+    u16 sc_format;
+    u32 sc_fpu[52];             /* fsave frame, fp0-fp7, fpcr/fpsr/fpiar */
+} __attribute__((packed));
 
 /* reboot() commands, Linux's magic values cut down to what is useful. */
 #define RB_HALT_SYSTEM  0xcdef0123

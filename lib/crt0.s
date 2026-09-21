@@ -41,6 +41,28 @@ _start:
 
 | Where getenv() looks. Set before main so that a program may call it
 | from a constructor-like path as well as from main's arguments.
+|
+| Where every signal handler returns to. The kernel put the address here
+| as the handler's return address (sigaction's sa_restorer, which the
+| library always supplies), and the handler's rts has popped it, so the
+| stack now holds the signal number and above it the saved context.
+| sigreturn finds that context from the stack pointer and puts back
+| everything the handler interrupted; it does not return here.
+|
+| It lives in the library rather than being written onto the stack by
+| the kernel, as Linux does with sa_restorer. The 68040 could not have
+| refused to run code on the stack -- it has no execute permission bit
+| -- but code written there needs the caches pushed on real hardware,
+| and a trampoline in the source can be read.
+|
+        .text
+        .globl  __sigreturn_trampoline
+        .type   __sigreturn_trampoline,@function
+__sigreturn_trampoline:
+        moveq   #119,%d0                | __NR_sigreturn
+        trap    #0
+        bra.s   __sigreturn_trampoline  | not reached
+
         .bss
         .align  4
         .globl  environ

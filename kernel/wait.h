@@ -71,6 +71,17 @@ int  sleep_on_timeout(struct waitq *q, u32 ms);
  * next scheduling point rather than inside the interrupt.
  */
 void wake_one(struct waitq *q);
+
+/*
+ * Wake exactly `t`, from whatever queue it is on, for a signal.
+ *
+ * Not wake_all(t->queue): a queue is often shared -- every task in
+ * nanosleep() waits on the same one -- and waking all of it for one
+ * task's signal cut every other sleeper's sleep short, silently, with
+ * a return of 0.
+ */
+struct task;
+void wake_signalled(struct task *t);
 void wake_all(struct waitq *q);
 
 /* --- semaphores ------------------------------------------------------ */

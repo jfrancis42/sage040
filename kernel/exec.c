@@ -496,15 +496,14 @@ int exec_spawn(const char *path, int argc, char **argv, char **envp)
      * how anything gets into a program's memory, including the arguments
      * it was started with.
      *
-     * Saved and restored rather than simply cleared: the caller is a
-     * task of its own with its own address space, and a spawn from
-     * inside a program must not leave that program unable to reach its
-     * own memory.
+     * The RAW setting is saved and put back -- null, normally -- not
+     * uaccess_current(). A program reaches its own memory through
+     * current->as without any override; restoring its address space as
+     * an override made every other task reach into it too.
      */
     {
-        struct addrspace *saved = uaccess_current();
+        struct addrspace *saved = uaccess_set(as);
 
-        uaccess_set(as);
         err = build(as, path, argc, argv, envp, &entry, &sp);
         uaccess_set(saved);
     }

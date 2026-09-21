@@ -82,10 +82,27 @@ struct task {
     int   signalled;            /* the signal that ended it, or 0      */
     struct task *parent;
 
-    /* Signals. A bitmask each, because there are fewer than 32. */
+    /*
+     * Signals. A bitmask each, signal N in bit N-1 (SIGMASK), because
+     * there are fewer than 32 -- and that is also the user's layout, so
+     * a mask crosses the system call boundary unconverted.
+     */
     volatile u32 sig_pending;
     u32   sig_blocked;
-    u32   sig_ignored;
+    struct sigaction sigact[NSIG];  /* [0] unused; SIG_DFL when zero   */
+
+    /* sigsuspend() swaps the mask for the length of the wait, and the
+     * old one comes back when the handler returns -- see signal.c. */
+    u32   sig_saved_mask;
+    int   sig_restore_mask;
+
+    /*
+     * The system call this task is in, while it is in one, or -1.
+     * Signal delivery needs it: a call interrupted by a signal is
+     * restarted by putting its number back in d0 and stepping back
+     * over the trap, and that is only right for a call.
+     */
+    int   syscall_nr;
 
     int   slice;                /* ticks left in this turn             */
     int   background;
