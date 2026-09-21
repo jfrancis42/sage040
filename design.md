@@ -600,6 +600,12 @@ memory probe walking off the end of RAM, faulting address in `a0`.
      polling loop in the system -- `tty.c`'s `next_char()` above all --
      becomes a sleep on a queue that the driver's interrupt wakes,
      which is also what finally removes the spin loops.
+   - **Semaphores**, which are the more basic of the two: a counting
+     semaphore is what a wait queue is made of, and the binary case is
+     what a driver uses to say "the transfer you asked for has
+     finished". Worth having before mutexes rather than after, because
+     a mutex is a semaphore with an owner and the owner is the part
+     that only matters once priorities do.
    - **Mutexes**, once more than one task can be inside the kernel at
      once. The VFS, the block layer and the terminal all hold state
      that is currently safe only because nothing else can run.
@@ -629,6 +635,36 @@ memory probe walking off the end of RAM, faulting address in `a0`.
    `PATH` itself then needs the filesystem to have more than one
    directory, which FAT16 has and this kernel does not yet use -- so
    the two are worth doing together.
+
+5. **Configuration from files, and a startup script.** Everything the
+   machine knows about itself is currently either compiled in or typed
+   at the prompt: the IP address is `ifconfig` every boot, the console
+   layout is `console` every boot, and none of it survives a restart.
+   The answer is the one Unix settled on -- a directory of small text
+   files that the system reads at startup -- and it arrives in three
+   pieces that depend on each other in this order:
+
+   - **Subdirectories in the filesystem.** `/etc` has to be able to
+     exist before anything can live in it. FAT16 has directories and
+     `fs/fat16.c` looks only in the root, so this is the same
+     prerequisite `PATH` has.
+   - **Shell scripting.** A startup file is only worth having if the
+     shell can run one: reading a file as a sequence of commands,
+     comments, and enough conditional to let a script cope with a
+     machine where something is absent. `run_command()` is already
+     separated from the prompt loop for exactly this reason -- `fg` on
+     a queued job needed to run a command line with no prompt
+     involved, and a script is the same need repeated.
+   - **The files themselves.** `/etc/rc.local` run at startup once
+     there is a shell that can run it, and `/etc/network` or similar
+     read by the network code. Worth resisting the temptation to
+     invent a parser per subsystem: one "key value per line" reader,
+     used by everything, is the difference between configuration and a
+     collection of formats.
+
+   Note the ordering against DHCP. A machine that gets its address
+   from the network needs no address in a file -- but it does need to
+   be told whether to ask, and that is itself configuration.
 
    **Two thirds of the context-switch plumbing is already there, and it
    was put there by ctrl-Z rather than planned.** `job.c` holds a table of jobs with

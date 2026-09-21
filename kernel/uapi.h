@@ -283,6 +283,7 @@ struct statfs {
  */
 #define __NR_spawn     400
 #define __NR_jobctl    401
+#define __NR_netctl    402
 
 /*
  * What spawn() returns when the program was stopped by ctrl-Z rather
@@ -311,6 +312,50 @@ struct statfs {
 #define JOBCTL_QUEUE   3        /* a2 = command line; create JOB_NEW */
 #define JOBCTL_REAP    4        /* forget the finished ones          */
 #define JOBCTL_DROP    5        /* forget one by id                  */
+
+/*
+ * netctl() - ask about, or configure, the network interface.
+ *
+ * Local, like spawn and jobctl. Linux does this with ioctls on a socket
+ * -- SIOCGIFADDR and friends -- which needs sockets to exist first, and
+ * they do not yet. When they do, this becomes those ioctls and the
+ * shell's commands keep their shape.
+ */
+#define NETCTL_INFO    0        /* p = struct netinfo *               */
+#define NETCTL_SETADDR 1        /* p = struct netaddr *               */
+#define NETCTL_ARPING  2        /* arg = IPv4 address, host order     */
+#define NETCTL_ARP     3        /* arg = index, p = struct arpinfo *  */
+#define NETCTL_PING    6        /* arg = address; p = u32 *rtt_ms     */
+#define NETCTL_DHCP    7        /* p = struct netaddr * (filled in)   */
+#define NETCTL_UP      4
+#define NETCTL_DOWN    5
+
+struct netinfo {
+    char name[8];
+    u8   mac[6];
+    u8   pad[2];
+    u32  ip;
+    u32  netmask;
+    u32  gateway;
+    u32  up;
+    u32  rx_packets;
+    u32  tx_packets;
+    u32  rx_dropped;
+    u32  tx_errors;
+};
+
+struct netaddr {
+    u32 ip;
+    u32 netmask;
+    u32 gateway;
+};
+
+struct arpinfo {
+    u32 ip;
+    u8  mac[6];
+    u8  pad[2];
+    u32 age_ms;
+};
 
 /* Job states, as JOBCTL_INFO reports them. */
 #define JOB_S_NEW      1

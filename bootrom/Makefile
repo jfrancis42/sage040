@@ -105,7 +105,7 @@ fsck: disk-fsck
 # Boot the machine. The ROM is loaded by -kernel; everything after that
 # comes off the disk.
 boot: bootrom.elf $(DISK)
-	$(QEMU) $(MACHINE) -no-reboot -kernel bootrom.elf \
+	../tools/qemu-net.sh $(QEMU) $(MACHINE) -no-reboot -kernel bootrom.elf \
 	    -drive file=$(DISK),format=raw,if=ide \
 	    -serial stdio
 

@@ -47,6 +47,15 @@ const char *strerror(int err)
     case ENAMETOOLONG:    return "file name too long";
     case ENOSYS:          return "function not implemented";
     case ENOTEMPTY:       return "directory not empty";
+    case EADDRINUSE:      return "address already in use";
+    case EMSGSIZE:        return "message too long";
+    case EADDRNOTAVAIL:   return "cannot assign requested address";
+    case ENETDOWN:        return "network is down";
+    case ENETUNREACH:     return "network is unreachable";
+    case ECONNRESET:      return "connection reset by peer";
+    case ETIMEDOUT:       return "connection timed out";
+    case ECONNREFUSED:    return "connection refused";
+    case EHOSTUNREACH:    return "no route to host";
     case ENOMEDIUM:       return "no medium found";
     default:              return "unknown error";
     }

@@ -29,6 +29,7 @@
 #include "console.h"
 #include "pmm.h"
 #include "vm.h"
+#include "net.h"
 #include "dev.h"
 #include "vfs.h"
 #include "syscall.h"
@@ -288,6 +289,32 @@ static void start_drivers(void)
  * -- reporting one source and then acquiring another is how a boot log
  * ends up disagreeing with the machine.
  */
+/*
+ * Bring the interface up.
+ *
+ * After the drivers, because it needs one; before the root filesystem
+ * only so that the report reads in a sensible order. No address is
+ * configured -- that is `ifconfig`, or DHCP when there is some -- so
+ * what this does is enable the receiver and start answering ARP for
+ * nothing at all.
+ */
+static void start_network(void)
+{
+    struct netif *n;
+    int err = net_init();
+
+    status("net");
+    if (err < 0) {
+        kputs("none: ");
+        kputs(strerror(err));
+        kputc('\n');
+        return;
+    }
+    n = net_if();
+    kputs(n->dev->name);
+    kputs(" up, ethernet + ARP, no address yet (try `ifconfig`)\n");
+}
+
 static void report_console(void)
 {
     struct chardev *d;
@@ -383,6 +410,7 @@ void kmain(void)
     start_memory();
     start_drivers();
     report_console();
+    start_network();
     mount_root();
 
     /*

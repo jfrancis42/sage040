@@ -9,6 +9,7 @@
 #include "job.h"
 #include "exec.h"
 #include "syscall.h"
+#include "net.h"
 #include "errno.h"
 
 volatile u32 jiffies;
@@ -30,6 +31,19 @@ volatile u32 jiffies;
 void timer_tick(void)
 {
     jiffies++;
+
+    /*
+     * Empty the network card, whatever else is going on.
+     *
+     * Not protocol work -- that happens in net_poll(), in ordinary
+     * kernel context. This only moves frames off the card into memory,
+     * and it has to happen continuously rather than when something is
+     * waiting: the LAN91C111 allocates transmit buffers from the same
+     * pool that holds arriving frames, so a receiver that is never
+     * drained stops the machine being able to SEND. On a real LAN that
+     * takes seconds.
+     */
+    net_drain();
 
     if (!exec_running() || syscall_in_kernel()) {
         return;

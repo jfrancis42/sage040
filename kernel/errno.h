@@ -47,6 +47,15 @@
 #define ENAMETOOLONG    36      /* file name too long                 */
 #define ENOSYS          38      /* function not implemented           */
 #define ENOTEMPTY       39      /* directory not empty                */
+#define EADDRINUSE      98      /* address already in use             */
+#define EMSGSIZE        90      /* message too long                   */
+#define EADDRNOTAVAIL   99      /* cannot assign requested address    */
+#define ENETDOWN       100      /* network is down                    */
+#define ENETUNREACH    101      /* network is unreachable             */
+#define ECONNRESET     104      /* connection reset by peer           */
+#define ETIMEDOUT      110      /* connection timed out               */
+#define ECONNREFUSED   111      /* connection refused                 */
+#define EHOSTUNREACH   113      /* no route to host                   */
 #define ENOMEDIUM       123     /* no medium found                    */
 
 const char *strerror(int err);  /* takes either sign */

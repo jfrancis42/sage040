@@ -63,6 +63,19 @@ struct chardev *tty_device(void);
  */
 void tty_poll_signals(void);
 
+/*
+ * Something to do while waiting for a keystroke.
+ *
+ * The terminal's read spins, and that spin is the only place in the
+ * system that reliably runs with nothing else to do. The network hangs
+ * its packet processing off it, so that a machine sitting at a prompt
+ * still answers a ping -- which is the difference between being on a
+ * network and merely being able to start a conversation.
+ *
+ * It becomes the idle task the day there is a scheduler.
+ */
+void tty_set_idle(void (*fn)(void));
+
 /* Canonical mode, echo on, signals on: the state a shell hands to a
  * program, and the state to put back after one that changed it was
  * killed before it could. */

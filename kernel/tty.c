@@ -97,6 +97,14 @@ static struct termios tio = {
  */
 static int pushback = -1;
 
+/* What to do while nothing is being typed. See tty.h. */
+static void (*idle_fn)(void);
+
+void tty_set_idle(void (*fn)(void))
+{
+    idle_fn = fn;
+}
+
 /*
  * Set while a reader is inside next_char().
  *
@@ -295,7 +303,13 @@ static int next_char(void)
          * interrupt to sleep on yet -- the UART's IRQ reaches MFP
          * channel 7 and is not enabled -- so this spins. It is the last
          * polling loop in the system and the one worth removing next.
+         *
+         * Until then it is also the system's idle time, and the network
+         * uses it to process what has arrived.
          */
+        if (idle_fn) {
+            idle_fn();
+        }
     }
     reader_active = 0;
     return c;

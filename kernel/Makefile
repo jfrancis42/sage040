@@ -41,7 +41,7 @@ CPUFLAGS := -mcpu=68040
 CFLAGS   := $(CPUFLAGS) -ffreestanding -nostdlib -nostdinc -O2 \
             -Wall -Wextra -Werror -fno-builtin -fno-stack-protector \
             -DSAGE040_NO_TESTLIB \
-            -I. -I.. -Idrivers -I$(SUP)
+            -I. -I.. -Idrivers -Inet -I$(SUP)
 LDFLAGS  := $(CPUFLAGS) -ffreestanding -nostdlib -T kernel.ld \
             -Wl,--build-id=none -Wl,--no-warn-rwx-segments -Wl,-Map=kernel.map
 
@@ -56,6 +56,7 @@ SRCS := main.c version.c console.c trap.c syscall.c vfs.c dev.c \
         drivers/ns16550.c drivers/ata.c drivers/m48t59.c \
         drivers/mfp.c drivers/sm501.c drivers/i8042.c \
         drivers/smc91c111.c \
+        net/net.c net/arp.c net/ip.c net/icmp.c net/udp.c net/dhcp.c \
         fs/fat16.c
 
 HDRS := kernel.h uapi.h dev.h vfs.h syscall.h console.h errno.h exec.h \
@@ -94,8 +95,20 @@ kernel.rom: kernel.elf
 # has; without this the emulator would dutifully reset and start over,
 # and the one command whose whole job is getting out would be the one
 # that could not.
+#
+# ../tools/qemu-net.sh works out how THIS host is connected and puts the
+# guest on the real network if it can -- a bridge if one exists, a
+# macvtap on a wired interface otherwise, and QEMU's user-mode NAT if
+# neither is possible (a laptop on Wi-Fi, for one: 802.11 cannot carry a
+# second machine's MAC). Override with SAGE_NET=slirp, lan or none.
+#
+# The test suites deliberately do not use it: they run on slirp so they
+# need no privileges and touch nothing outside the emulator.
+#
+NET := ../tools/qemu-net.sh
+
 run: kernel.elf $(DISK)
-	$(QEMU) $(MACHINE) -no-reboot -kernel kernel.elf \
+	$(NET) $(QEMU) $(MACHINE) -no-reboot -kernel kernel.elf \
 	    -drive file=$(DISK),format=raw,if=ide \
 	    -serial mon:stdio
 

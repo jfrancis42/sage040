@@ -285,6 +285,11 @@ static void cmd_help(void)
         "stat FILE            size, mode and modification time\n"
         "df                   space used and available\n"
         "free                 physical memory, in pages\n"
+        "ifconfig [A M [G]]   show or set the interface address\n"
+        "arp                  the address cache\n"
+        "arping ADDR          ask who has an address\n"
+        "ping ADDR [N]        ICMP echo\n"
+        "dhcp                 ask the network for an address\n"
         "echo TEXT            print a line\n"
         "date                 show the date and time\n"
         "date -s DATE [TIME]  set them: YYYY-MM-DD and HH:MM[:SS]\n"
@@ -810,6 +815,249 @@ static void cmd_console(int argc, char **args)
 }
 
 /* ---------------------------------------------------------------- */
+/* The network                                                       */
+/* ---------------------------------------------------------------- */
+
+static void out_ip(u32 a)
+{
+    out_putdec((a >> 24) & 0xff); out_putc('.');
+    out_putdec((a >> 16) & 0xff); out_putc('.');
+    out_putdec((a >> 8) & 0xff);  out_putc('.');
+    out_putdec(a & 0xff);
+}
+
+static void out_mac(const u8 *m)
+{
+    int i;
+
+    for (i = 0; i < 6; i++) {
+        if (i) {
+            out_putc(':');
+        }
+        out_puthex8(m[i]);
+    }
+}
+
+/* "10.1.0.11" -> host-order u32. Returns 0 on anything malformed, which
+ * is also 0.0.0.0 -- a distinction nothing here needs to make. */
+static u32 parse_ip(const char *s)
+{
+    u32 a = 0;
+    int part, i;
+
+    for (i = 0; i < 4; i++) {
+        int n = 0, digits = 0;
+
+        while (*s >= '0' && *s <= '9') {
+            n = n * 10 + (*s++ - '0');
+            digits++;
+        }
+        if (!digits || n > 255) {
+            return 0;
+        }
+        a = (a << 8) | (u32)n;
+        if (i < 3) {
+            if (*s != '.') {
+                return 0;
+            }
+            s++;
+        }
+    }
+    (void)part;
+    return *s == '\0' ? a : 0;
+}
+
+static void cmd_ifconfig(int argc, char **args)
+{
+    struct netinfo ni;
+    int err;
+
+    if (argc >= 4) {
+        struct netaddr a;
+
+        a.ip = parse_ip(args[1]);
+        a.netmask = parse_ip(args[2]);
+        a.gateway = argc > 3 ? parse_ip(args[3]) : 0;
+        if (!a.ip || !a.netmask) {
+            err_usage("ifconfig [ADDR NETMASK [GATEWAY]]");
+            return;
+        }
+        err = sys_netctl(NETCTL_SETADDR, 0, &a);
+        if (err < 0) {
+            err_report("ifconfig", err);
+            return;
+        }
+    } else if (argc != 1) {
+        err_usage("ifconfig [ADDR NETMASK [GATEWAY]]");
+        return;
+    }
+
+    err = sys_netctl(NETCTL_INFO, 0, &ni);
+    if (err < 0) {
+        err_report("ifconfig", err);
+        return;
+    }
+
+    out_puts(ni.name);
+    out_puts("  hwaddr ");
+    out_mac(ni.mac);
+    out_puts(ni.up ? "  UP\n" : "  DOWN\n");
+
+    out_puts("      inet ");
+    out_ip(ni.ip);
+    out_puts("  netmask ");
+    out_ip(ni.netmask);
+    out_puts("  gateway ");
+    out_ip(ni.gateway);
+    out_putc('\n');
+
+    out_puts("      RX ");
+    out_putdec(ni.rx_packets);
+    out_puts(" packets, ");
+    out_putdec(ni.rx_dropped);
+    out_puts(" dropped    TX ");
+    out_putdec(ni.tx_packets);
+    out_puts(" packets, ");
+    out_putdec(ni.tx_errors);
+    out_puts(" errors\n");
+}
+
+static void cmd_dhcp(void)
+{
+    struct netaddr a;
+    int err;
+
+    out_puts("requesting a lease...\n");
+    out_flush();
+
+    err = sys_netctl(NETCTL_DHCP, 0, &a);
+    if (err < 0) {
+        err_report("dhcp", err);
+        return;
+    }
+    out_puts("got ");
+    out_ip(a.ip);
+    out_puts("  netmask ");
+    out_ip(a.netmask);
+    out_puts("  gateway ");
+    out_ip(a.gateway);
+    out_putc('\n');
+}
+
+static void cmd_arp(void)
+{
+    struct arpinfo ai;
+    int i, any = 0;
+
+    for (i = 0; sys_netctl(NETCTL_ARP, (u32)i, &ai) == 0; i++) {
+        any = 1;
+        out_ip(ai.ip);
+        out_puts("  at ");
+        out_mac(ai.mac);
+        out_puts("  (");
+        out_putdec(ai.age_ms / 1000);
+        out_puts("s ago)\n");
+    }
+    if (!any) {
+        out_puts("no entries\n");
+    }
+}
+
+static void cmd_arping(const char *who)
+{
+    u32 ip = parse_ip(who);
+    int err;
+
+    if (!ip) {
+        err_puts("arping: not an address: ");
+        err_puts(who);
+        err_puts("\n");
+        return;
+    }
+
+    out_puts("who has ");
+    out_ip(ip);
+    out_puts("? ");
+    out_flush();
+
+    err = sys_netctl(NETCTL_ARPING, ip, 0);
+    if (err < 0) {
+        out_putc('\n');
+        err_report(who, err);
+        return;
+    }
+
+    {
+        struct arpinfo ai;
+        int i;
+
+        for (i = 0; sys_netctl(NETCTL_ARP, (u32)i, &ai) == 0; i++) {
+            if (ai.ip == ip) {
+                out_mac(ai.mac);
+                out_putc('\n');
+                return;
+            }
+        }
+    }
+    out_puts("resolved\n");
+}
+
+static void cmd_ping(int argc, char **args)
+{
+    u32 ip, rtt;
+    int count = 4, i, ok = 0, err;
+
+    ip = parse_ip(args[1]);
+    if (!ip) {
+        err_puts("ping: not an address: ");
+        err_puts(args[1]);
+        err_puts("\n");
+        return;
+    }
+    if (argc > 2) {
+        count = 0;
+        for (i = 0; args[2][i] >= '0' && args[2][i] <= '9'; i++) {
+            count = count * 10 + (args[2][i] - '0');
+        }
+        if (count <= 0 || count > 100) {
+            count = 4;
+        }
+    }
+
+    for (i = 0; i < count; i++) {
+        err = sys_netctl(NETCTL_PING, ip, &rtt);
+        if (err == 0) {
+            ok++;
+            out_puts("reply from ");
+            out_ip(ip);
+            out_puts(": seq=");
+            out_putdec((u32)i + 1);
+            out_puts(" time=");
+            out_putdec(rtt);
+            out_puts(" ms\n");
+        } else if (err == -ETIMEDOUT) {
+            out_puts("no reply from ");
+            out_ip(ip);
+            out_puts(" (seq=");
+            out_putdec((u32)i + 1);
+            out_puts(")\n");
+        } else {
+            err_report("ping", err);
+            return;
+        }
+        out_flush();
+    }
+
+    out_putc('\n');
+    out_putdec((u32)count);
+    out_puts(" sent, ");
+    out_putdec((u32)ok);
+    out_puts(" received, ");
+    out_putdec((u32)((count - ok) * 100 / count));
+    out_puts("% loss\n");
+}
+
+/* ---------------------------------------------------------------- */
 /* Jobs                                                              */
 /* ---------------------------------------------------------------- */
 
@@ -1227,6 +1475,25 @@ static void run_command(char *cmdline)
             out_puts("halting.\n");
             out_flush();
             sys_reboot(RB_HALT_SYSTEM);
+
+        } else if (strcmp(argv[0], "ifconfig") == 0) {
+            cmd_ifconfig(argc, argv);
+
+        } else if (strcmp(argv[0], "dhcp") == 0) {
+            cmd_dhcp();
+
+        } else if (strcmp(argv[0], "arp") == 0) {
+            cmd_arp();
+
+        } else if (strcmp(argv[0], "arping") == 0) {
+            if (need(argc, 2, "arping ADDR")) {
+                cmd_arping(argv[1]);
+            }
+
+        } else if (strcmp(argv[0], "ping") == 0) {
+            if (need(argc, 2, "ping ADDR [COUNT]")) {
+                cmd_ping(argc, argv);
+            }
 
         } else if (strcmp(argv[0], "jobs") == 0) {
             cmd_jobs();

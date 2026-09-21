@@ -26,6 +26,7 @@
 #include "console.h"
 #include "uaccess.h"
 #include "pmm.h"
+#include "net.h"
 #include "errno.h"
 #include "string.h"
 
@@ -380,6 +381,105 @@ static int do_spawn(u32 upath, int argc, u32 uargv)
     return exec_spawn(path, argc, argv);
 }
 
+/* --- the network --------------------------------------------------- */
+
+static int do_netctl(int cmd, u32 arg, u32 p)
+{
+    struct netif *n = net_if();
+
+    switch (cmd) {
+    case NETCTL_INFO: {
+        struct netinfo out;
+
+        memset(&out, 0, sizeof(out));
+        if (!n->dev) {
+            return -ENODEV;
+        }
+        strncpy(out.name, n->dev->name, sizeof(out.name) - 1);
+        memcpy(out.mac, n->mac, 6);
+        out.ip = n->ip;
+        out.netmask = n->netmask;
+        out.gateway = n->gateway;
+        out.up = (u32)n->up;
+        out.rx_packets = n->rx_packets;
+        out.tx_packets = n->tx_packets;
+        out.rx_dropped = n->rx_dropped;
+        out.tx_errors = n->tx_errors;
+        return store(p, &out, sizeof(out));
+    }
+
+    case NETCTL_SETADDR: {
+        struct netaddr a;
+        int err = fetch(&a, p, sizeof(a));
+
+        if (err < 0) {
+            return err;
+        }
+        net_set_addr(a.ip, a.netmask, a.gateway);
+        return 0;
+    }
+
+    case NETCTL_ARPING: {
+        u8 mac[6];
+
+        if (!n->dev) {
+            return -ENODEV;
+        }
+        return arp_resolve(arg, mac);
+    }
+
+    case NETCTL_PING: {
+        u32 rtt = 0;
+        int err;
+
+        if (!n->dev) {
+            return -ENODEV;
+        }
+        err = icmp_ping(arg, 2000, &rtt);
+        if (err < 0) {
+            return err;
+        }
+        return store(p, &rtt, sizeof(rtt));
+    }
+
+    case NETCTL_DHCP: {
+        struct netaddr out;
+        int err;
+
+        if (!n->dev) {
+            return -ENODEV;
+        }
+        err = dhcp_configure();
+        if (err < 0) {
+            return err;
+        }
+        out.ip = n->ip;
+        out.netmask = n->netmask;
+        out.gateway = n->gateway;
+        return store(p, &out, sizeof(out));
+    }
+
+    case NETCTL_ARP: {
+        struct arpinfo out;
+        ip4_t ip;
+        u8 mac[6];
+        u32 age;
+
+        memset(&out, 0, sizeof(out));
+        if (!arp_entry((int)arg, &ip, mac, &age)) {
+            return -ENOENT;
+        }
+        out.ip = ip;
+        memcpy(out.mac, mac, 6);
+        out.age_ms = age;
+        return store(p, &out, sizeof(out));
+    }
+
+    default:
+        return -EINVAL;
+    }
+}
+
 /* --- jobs ---------------------------------------------------------- */
 
 static int info_state(int state)
@@ -631,6 +731,9 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
     case __NR_jobctl:
         return do_jobctl((int)a1, (int)a2, a3);
 
+    case __NR_netctl:
+        return do_netctl((int)a1, a2, a3);
+
     case __NR_times:
         return (s32)timer_jiffies();
 
@@ -839,6 +942,11 @@ int sys_spawn(const char *path, int argc, char **argv)
 int sys_jobctl(int cmd, int arg, void *p)
 {
     return (int)syscall3(__NR_jobctl, (u32)cmd, (u32)arg, (u32)p);
+}
+
+int sys_netctl(int cmd, u32 arg, void *p)
+{
+    return (int)syscall3(__NR_netctl, (u32)cmd, arg, (u32)p);
 }
 
 u32 sys_times(void)
