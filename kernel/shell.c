@@ -468,13 +468,55 @@ static void print_stamp(time_t when)
     out_put2((u32)t.tm_min);
 }
 
+/*
+ * ls, optionally somewhere else.
+ *
+ * `getdents` reads the CURRENT directory and takes no path, so listing
+ * another one means going there and coming back. That is not elegant,
+ * and the alternative -- a path argument on the system call -- is a
+ * change to the ABI for the benefit of one caller.
+ *
+ * It is worth the ugliness because the previous behaviour was to accept
+ * `ls /bin`, ignore the argument, and list the current directory
+ * instead. Silently answering a different question than the one asked is
+ * the worst failure mode available: nothing looks wrong.
+ */
 static void cmd_ls(int argc, char **args)
 {
     struct dirent de;
-    int long_form = (argc > 1 && strcmp(args[1], "-l") == 0);
+    int argi = 1;
+    int long_form = 0;
+    const char *where = 0;
+    char saved[PATH_MAX];
+    int moved = 0;
     int i = 0;
     int col = 0;
     u32 bytes = 0;
+
+    for (; argi < argc; argi++) {
+        if (strcmp(args[argi], "-l") == 0) {
+            long_form = 1;
+        } else if (!where) {
+            where = args[argi];
+        } else {
+            out_puts("ls: one directory at a time\n");
+            return;
+        }
+    }
+
+    if (where) {
+        if (sys_getcwd(saved, sizeof(saved)) < 0) {
+            out_puts("ls: cannot find the current directory\n");
+            return;
+        }
+        if (sys_chdir(where) < 0) {
+            out_puts("ls: ");
+            out_puts(where);
+            out_puts(": no such directory\n");
+            return;
+        }
+        moved = 1;
+    }
 
     while (sys_getdents(i, &de) == 0) {
         int n;
@@ -502,6 +544,10 @@ static void cmd_ls(int argc, char **args)
         }
         bytes += de.d_size;
         i++;
+    }
+
+    if (moved) {
+        sys_chdir(saved);
     }
 
     if (!long_form) {

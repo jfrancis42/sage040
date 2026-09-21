@@ -712,20 +712,14 @@ than kept here as history.
    sleeps on a wait queue with a timeout rather than spinning — so it is
    now a tidiness item rather than a correctness one.
 
-2. **`ls` ignores a path argument.** `cmd_ls` calls `getdents` on the
-   current directory and silently ignores `args[1]` unless it is `-l`, so
-   `ls /bin` lists the cwd and looks like it worked. Silently wrong output
-   is the worst failure mode available; it should either take a path or
-   refuse one.
-
-3. **A resolver.** Addresses are numeric everywhere. DNS over UDP is a
+2. **A resolver.** Addresses are numeric everywhere. DNS over UDP is a
    few hundred lines and the UDP layer beneath it is done.
 
-4. **Use the NVRAM.** The M48T59 brings 8 KiB of it and nothing writes a
+3. **Use the NVRAM.** The M48T59 brings 8 KiB of it and nothing writes a
    byte. It is the natural home for the network configuration that
    `/etc/rc` currently carries.
 
-5. **Static limits that will bite.** Eight tasks, eight descriptors per
+4. **Static limits that will bite.** Eight tasks, eight descriptors per
    task, one filesystem, one partition, one interface. All are constants,
    none is a redesign, and the descriptor limit is the one most likely to
    be hit first.
@@ -974,6 +968,58 @@ links, better timestamps and atomic rename, and costs the host
 interoperability that makes the current workflow work. Worth a discussion
 before anyone starts, not a decision to make in passing.
 
+### fsck, and crash consistency
+
+There is no `fsck` on the machine. The host has one — `fsck.fat`, which
+the test suites run after every session precisely because a filesystem
+only the kernel can check proves nothing — but the machine cannot check
+its own disk, and a guest that cannot is a guest that has to be shut down
+cleanly or trusted blindly.
+
+This matters more than it looks, because **writes go out as they are
+made**: no journal, no ordering guarantees, and no clean-shutdown flag.
+Pulling the plug mid-write leaves exactly what MS-DOS would have left —
+lost clusters, cross-linked chains, a directory entry whose size
+disagrees with its chain. All recoverable, none currently detected.
+
+What a guest `fsck` has to do, in the order the checks depend on
+each other:
+
+- **The boot sector and BPB** against the partition table, and the two
+  FAT copies against each other — FAT16 keeps two, and `fs/fat16.c`
+  writes both, so a disagreement is the first evidence of a bad write
+- **Cluster chains**: every chain terminates, none loops, none runs off
+  the end of the table
+- **Cross-links**: no cluster claimed by two files, which is the one that
+  cannot be repaired without deciding which file to damage
+- **Lost clusters**: allocated but claimed by no directory entry, the
+  classic `FILE0001.CHK` case
+- **Directory sanity**: `.` and `..` present in every subdirectory and
+  pointing where they should, given that they are the *only* record of a
+  parent; `..` of a directory in the root recorded as cluster 0; sizes
+  against chain lengths; names valid 8.3
+- **The free count**, recomputed
+
+Then the harder half: **repairing**, and doing it in an order that is
+itself crash-safe. A repair interrupted halfway must not leave the volume
+worse than it found it.
+
+Two decisions worth making up front:
+
+1. **A clean-unmount flag.** FAT16 has a place for one — the top bits of
+   FAT entry 1 — and using it is what lets the machine check the disk
+   only when it needs to rather than on every boot. `shutdown` would set
+   it and mount would clear it.
+2. **A program, not a builtin.** `fsck` belongs in `system/`, like
+   `ifconfig` and `ping`, and it needs raw access to `/dev/hda` — which
+   works today, since the disk is an ordinary device the shell can open.
+   That also means it can be run against an unmounted volume, which is
+   the only way to repair one safely.
+
+Being able to run the *host's* `fsck.fat` over the same image afterwards
+is the thing that makes this testable, and it is the same argument that
+chose FAT16 in the first place.
+
 ### Shared libraries
 
 Everything is statically linked today, and each of the seven programs in
@@ -1050,4 +1096,5 @@ which shares most of the same machinery.
    program needs and what the line editor's `\r`-and-`\b` rule cannot
    stretch to cover.
 5. **Long file names**, so the filesystem stops being the thing that
-   decides what can be ported.
+   decides what can be ported — and **`fsck`**, so the machine can check
+   the disk it just wrote to.
