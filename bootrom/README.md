@@ -11,7 +11,7 @@ $ make boot           # boot it
 ```
 Sage040 boot ROM
 partition 1 at LBA 2048, type 0x06
-KERNEL.ROM  22988 bytes, first cluster 2
+KERNEL.ROM  43672 bytes, first cluster 2
 image SSP = 0x003FFFF0  PC = 0x00000400
 starting
 
@@ -141,7 +141,8 @@ lives.
 | `make distclean` | also remove the disk image |
 
 `make write` asks `../kernel` to install itself, so the kernel owns the file it
-puts on the disk. To boot something else, `mcopy` your own file in as
+puts on the disk. The programs that go alongside it come from
+`make -C ../user install`, or `make programs` at the top level. To boot something else, `mcopy` your own file in as
 `KERNEL.ROM`; the only requirement is that it links at address 0 with a vector
 table first, which `../tests/sage040.ld` and `../kernel/kernel.ld` both do.
 

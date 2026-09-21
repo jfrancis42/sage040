@@ -10,10 +10,9 @@ cube: 251 frames in 5 seconds (50 fps)
 
 sage$ hello
 hello from a program
-  running on Sage040 0.2 (m68040)
+  running on Sage040 0.3 (m68040)
   argc = 1
   argv[0] = hello
-
 ```
 
 ## The naming question

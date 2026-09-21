@@ -82,6 +82,10 @@ mkdir build-gdb && cd build-gdb
 make -j"$(nproc)" all-gdb && make install-gdb
 ```
 
+GDB is worth building even though nothing needs it to run: `target remote`
+into a running machine is how you look at a kernel that has stopped
+somewhere unexpected. See §13 of the programmer's guide.
+
 `--with-python` is optional but gives you pretty-printers and scripting. If
 GDB is linked against a Python that later gets upgraded out from under it, it
 fails at startup with a missing `libpython3.x.so` — rebuild it against the
@@ -98,6 +102,25 @@ m68k-elf-gdb --version
 ---
 
 ## Using it
+
+### Two sets of flags
+
+The tree builds two different kinds of thing, and they differ in one
+place that matters: the include path.
+
+**Bare metal** — the tests, the boot ROM, `cube/`, and the kernel itself.
+These get the machine's hardware header and own every register.
+
+**Programs** — everything in `user/`. These get `kernel/uapi.h`, the
+system call ABI, and deliberately *not* the hardware header: `user/Makefile`
+leaves `../tests` off the include path, so a program cannot reach a chip
+by adding an `#include`. With no MMU turned on nothing would stop it at
+run time, which is exactly why the build stops it instead.
+
+The kernel additionally defines `-DSAGE040_NO_TESTLIB`, which fences off
+the test support library's declarations in `sage040.h` — names like
+`uart_rx_ready` and `mfp_clear_pending` are exactly what a driver wants to
+call its own helpers.
 
 ### Compiler flags
 

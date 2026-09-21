@@ -15,6 +15,29 @@ running emulator by the test suite in [`tests/`](tests/).
 | Disk | **ATA taskfile** (WD1003 lineage) | T13 ATA/ATAPI |
 | Ethernet | SMSC **LAN91C111** | *LAN91C111* (SMSC/Microchip) |
 | Video | Silicon Motion **SM501** | *SM501* |
+| Clock + NVRAM | ST **M48T59** TIMEKEEPER | *M48T59* (STMicroelectronics) |
+
+---
+
+## Which kind of code are you writing?
+
+There are two, and almost everything in this guide is about the first.
+
+**Bare metal.** Your code *is* the machine: loaded by `-kernel` or by the boot
+ROM, entered in supervisor mode with interrupts masked, and it owns every
+register in the tables below. The test suite, the boot ROM and `cube/` are all
+like this. Sections 1–15 are written for you.
+
+**A program.** The kernel is already running, owns the hardware, and you reach
+it through `trap #0`. You get file descriptors, a filesystem, a terminal, a
+framebuffer and a clock, and you touch no registers at all. `user/` is like
+this. **Section 16** is written for you, and the rest of this guide is then
+background rather than instruction.
+
+The difference is not a matter of taste. A program that pokes a register still
+*works* — there is no MMU turned on to stop it — which is exactly why it is
+worth being deliberate about which one you are writing. The include paths
+enforce it: `user/Makefile` does not put the hardware header on the path.
 
 ---
 
@@ -781,7 +804,238 @@ frame rate at all.
 
 ---
 
-## 15. Quick reference
+## 15. Writing a program
+
+Everything above is about owning the machine. This section is about not
+owning it: the kernel is running, it owns the hardware, and a program
+reaches it through `trap #0`.
+
+See [`user/`](user/) for working examples — `hello.c` is thirty lines,
+`fbtest.c` draws one of everything, `cube.c` is a real one.
+
+### The system call interface
+
+The convention is **Linux/m68k's, unchanged**:
+
+```
+d0 = call number
+d1, d2, d3, d4, d5 = arguments
+      trap #0
+d0 = result, or a negated errno
+```
+
+That is not an imitation. Linux picked the obvious convention for this
+architecture and there is nothing to improve on. The numbers are Linux's
+i386 numbers, so `__NR_write` is 4, and the error values are Linux's, so
+`-ENOENT` is `-2`.
+
+| | |
+|---|---|
+| `exit` 1, `read` 3, `write` 4, `open` 5, `close` 6 | the usual |
+| `unlink` 10, `rename` 38, `stat` 106, `getdents` 141 | files |
+| `lseek` 19, `fsync` 118, `sync` 166, `statfs` 99 | more files |
+| `time` 13, `stime` 25, `times` 43, `nanosleep` 162 | time |
+| `ioctl` 54, `uname` 122, `reboot` 88 | the rest |
+| `spawn` 400 | **not Linux** — see below |
+
+There is **no global `errno`**: a call returns a non-negative result or
+the negated error. A global would only start making sense once there are
+threads to get it wrong.
+
+`spawn` is numbered well above Linux's range because Linux has no such
+call. It is not `execve` — `execve` replaces the calling process, and
+there are no processes here to replace. It loads a program, runs it, and
+returns its exit status. When there are processes it becomes fork +
+execve + waitpid and this number goes away.
+
+### What a program includes
+
+Two headers, and only two:
+
+```c
+#include "ulib.h"        /* the library: syscall stubs, strlen, puts... */
+```
+
+which pulls in `kernel/uapi.h`, the ABI — call numbers, `O_CREAT`,
+`struct stat`, the ioctl numbers. A program does **not** get `kernel.h`,
+`vfs.h`, `dev.h`, anything under `drivers/`, or the machine's hardware
+header. `user/Makefile` deliberately leaves `../tests` off the include
+path, so reaching a chip means editing a Makefile rather than adding an
+`#include` — which makes it a decision instead of a slip.
+
+### Building one
+
+```make
+CFLAGS  := -mcpu=68040 -ffreestanding -nostdlib -nostdinc -O2 \
+           -Wall -Wextra -Werror -fno-builtin -fno-stack-protector \
+           -I. -I.. -I../kernel
+LDFLAGS := -mcpu=68040 -ffreestanding -nostdlib -T user.ld \
+           -Wl,--build-id=none -Wl,--no-warn-rwx-segments
+
+myprog: myprog.c crt0.s ulib.c user.ld
+	$(CC) $(CFLAGS) $(LDFLAGS) \
+	    -x assembler-with-cpp crt0.s -x c ulib.c $< -o $@
+```
+
+`user.ld` links at **1 MB** and has no vector table — a program is
+entered at its ELF entry point, not found at a fixed address by a ROM.
+
+There is no flattening step. The kernel loads ELF directly, which is why
+`make` produces something runnable.
+
+### Getting it onto the disk, and running it
+
+```bash
+make install            # mcopy, uppercasing the name: myprog -> MYPROG
+```
+
+```
+sage$ myprog one two
+```
+
+Anything the shell does not recognise as a builtin is looked up on the
+disk and run. **Programs carry no extension** — the kernel decides what
+is executable by reading the first four bytes of the file, not its name,
+because a FAT16 volume has no execute permission bit to consult. A text
+file named `CUBE.EXE` is still refused.
+
+### The memory a program gets
+
+```
+0x00000000  kernel
+0x00100000  your image            <- USER_BASE, what user.ld links at
+0x002ffff0  your stack, growing down
+0x00300000  unused gap
+0x003ffff0  kernel supervisor stack
+```
+
+The kernel bounds-checks every `PT_LOAD` segment against that window
+before reading a byte of it. With no MMU that check is the only thing
+between a mislinked program and the kernel's own memory — and note it
+protects *loading*, not *running*. Once your code executes it can write
+anywhere it likes.
+
+`.bss` is zeroed by the kernel, not by `crt0.s`: the loader knows which
+part of a segment came from the file and the program does not.
+
+`argc` and `argv` arrive on the stack, below the return address the
+`jsr` pushed. `crt0.s` picks them up at `4(%sp)` and `8(%sp)` — getting
+that off by one slot gives a plausible-looking garbage `argc` and a bus
+error shortly after.
+
+### Files
+
+```c
+int fd = open("NOTES.TXT", O_WRONLY | O_CREAT | O_TRUNC);
+write(fd, "hello\n", 6);
+close(fd);
+```
+
+`O_RDONLY`, `O_WRONLY`, `O_RDWR`, `O_CREAT`, `O_TRUNC`, `O_APPEND`, and
+`lseek` with `SEEK_SET`/`SEEK_CUR`/`SEEK_END`. The access mode is the low
+two bits the way POSIX has it, so **`O_RDONLY` is zero** and testing for
+it with `&` does not work — use `(flags & O_ACCMODE)`.
+
+The volume is FAT16, root directory only, 8.3 names, case-insensitive.
+`getdents(index, &dirent)` walks it by index and returns `-ENOENT` when
+there are no more.
+
+### The terminal
+
+Descriptors 0, 1 and 2 are the console before your first instruction
+runs, exactly as a shell would hand them over.
+
+`read(0, ...)` returns **one whole line**, echoed as it was typed, with
+backspace and ctrl-U already handled, and returns **0** at end of input —
+ctrl-D on an empty line. That is canonical mode, done in the tty driver,
+so every program does not implement line editing again slightly
+differently.
+
+A newline written to the terminal becomes CR+LF; a newline written to a
+file stays a newline. Same `write()`, and the difference is the tty's,
+which is what ONLCR means on a real system.
+
+To ask whether a key is waiting without blocking on a read that may
+never return:
+
+```c
+u32 n;
+ioctl(STDIN_FILENO, FIONREAD, (u32)&n);   /* n = 0 or 1 */
+```
+
+### The framebuffer
+
+`/dev/fb0`, drawn with ioctls:
+
+```c
+struct fb_info info;
+struct fb_line l;
+int fb = open("/dev/fb0", O_RDWR);
+
+ioctl(fb, FBIO_GETINFO, (u32)&info);      /* width, height, bpp, pitch */
+ioctl(fb, FBIO_CLEAR, 0);
+l.x0 = 0; l.y0 = 0; l.x1 = 639; l.y1 = 479; l.colour = 1;
+ioctl(fb, FBIO_LINE, (u32)&l);
+ioctl(fb, FBIO_FLIP, 0);                  /* show what you drew */
+```
+
+| ioctl | argument |
+|---|---|
+| `FBIO_GETINFO` | `struct fb_info *` out |
+| `FBIO_SETMODE` | `struct fb_mode *` — 8 bpp only so far |
+| `FBIO_POINT` | `struct fb_point *` |
+| `FBIO_LINE` | `struct fb_line *` |
+| `FBIO_RECT` | `struct fb_rect *`, `filled` 0 or 1 |
+| `FBIO_CLEAR` | the colour, **by value** |
+| `FBIO_FLIP` | none |
+| `FBIO_SYNC` | none — wait for the blitter |
+| `FBIO_PALETTE` | `struct fb_palette *`, `rgb` as `0x00RRGGBB` |
+
+Drawing through ioctl rather than through graphics system calls because
+a framebuffer is a device and the device model already carries it.
+Linux controls its framebuffer the same way — it then expects you to
+`mmap` the memory and draw yourself, which needs an MMU that is off here.
+
+**It is double buffered.** Drawing goes to the buffer that is not on
+screen; `FBIO_FLIP` swaps them with one register write, so the change
+lands between frames rather than halfway down one. Nothing appears until
+you flip.
+
+Colours are palette indices. The driver sets up eight: 0 black, 1 green,
+2 white, 3 red, 4 blue, 5 yellow, 6 cyan, 7 magenta.
+
+Off-screen coordinates are clipped, not rejected — a shape that runs off
+the edge is not an error.
+
+### Time
+
+```c
+time_t now = time(0);            /* seconds since 1970, from the M48T59 */
+u32 ticks = times();             /* ticks since boot, HZ = 100 */
+msleep(20);                      /* nanosleep, rounded up to a tick */
+```
+
+`HZ` is 100, so a tick is 10 ms and a 50 fps frame is exactly two of
+them. Sleeping uses `STOP` in the kernel, so a sleeping program costs the
+host nothing — prefer it to a delay loop, which is only ever right on the
+machine it was tuned on.
+
+### What a program cannot do yet
+
+- **Run at the same time as another.** One at a time; a nested `spawn`
+  returns `-EBUSY`.
+- **Run unprivileged.** Programs execute in supervisor mode. The gate is
+  in place and the code above it is already on the right side of the
+  line, but nothing yet enters user mode with an `RTE`.
+- **Be isolated.** No MMU, so a wild pointer reaches the kernel.
+- **Map the framebuffer**, for the same reason.
+- **Open a network socket.** `eth0` exists and has a driver; nothing
+  above it sends a packet yet.
+- **Use subdirectories or long file names.** The filesystem has neither.
+
+---
+
+## 16. Quick reference
 
 ```
 CPU          MC68040, on-chip FPU and MMU, big-endian
@@ -800,8 +1054,17 @@ M48T59       0xff600000   byte regs        MFP ch 2   clock = last 8 bytes
 
 MFP vector   (VR & 0xF0) | channel
 MFP clock    2.4576 MHz, prescalers 4/10/16/50/64/100/200
+MFP tick     timer D, /200, reload 123 -> 99.9 Hz (the kernel's HZ=100)
+
+syscalls     d0 = number, d1-d5 = args, trap #0, d0 = result or -errno
+             Linux/m68k convention, Linux i386 numbers, Linux errnos
+devices      /dev/console  /dev/tty  /dev/fb0
 ```
 
 Worked, tested code for every device is in [`tests/`](tests/) — `t6` for the
 interrupt chain, `t7`/`t8`/`t9` for the MFP, `t3` for ATA, `t4` for ethernet,
-`t5` for the MMU, `t10` for video.
+`t5` for the MMU, `t10` for video, `t11` for the clock and its NVRAM.
+
+Driver versions of most of them are in [`kernel/drivers/`](kernel/), which is
+where to look for code that has to keep working rather than code that only has
+to pass once.

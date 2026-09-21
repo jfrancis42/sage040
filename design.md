@@ -142,7 +142,7 @@ MC146818 — see §1.
 Every device has a bare-metal test that exercises the real hardware path.
 `make run` in `tests/`: **11 programs, all passing.** The kernel adds a
 twelfth, `kernel/fstest.sh`, which drives a console session and then checks
-the result with the host's own `mdir`, `mtype` and `fsck.fat` — 21 checks,
+the result with the host's own `mdir`, `mtype` and `fsck.fat` — 26 checks,
 including loading and running a program from the disk, the tick running,
 and a program drawing through `/dev/fb0`.
 
@@ -172,14 +172,15 @@ and a program drawing through `/dev/fb0`.
 | Disk, ethernet, video, MMU, timers | ✅ hardware proven by tests |
 | Disk format (§9) — real MS-DOS, host read/write | ✅ done |
 | Kernel (§10) — VFS, device model, drivers, FAT16 read/write, shell | ✅ done — `kernel/` |
-| System calls — Linux/m68k convention, Linux numbers and errnos | ✅ done, no user programs to use them yet |
+| System calls — Linux/m68k convention, Linux numbers and errnos | ✅ done, and programs use them |
 | Clock — M48T59, `time()`/`stime()`, file timestamps | ✅ done |
 | Programs (§10) — ELF loader, `spawn`, argv, exit status | ✅ done — `user/` |
 | System tick — MC68901 timer D, HZ=100, `nanosleep`, `times` | ✅ done |
 | Framebuffer — `/dev/fb0`, point/line/rect/clear/flip, double buffered | ✅ done |
 | Ethernet driver — `struct netdev`, registered as `eth0` | ✅ written, only the probe is exercised |
-| Timer + preemption, processes, virtual memory | unblocked — ordinary OS work now |
-| TCP/IP (§8), framebuffer console | not started |
+| Shell — Linux-named commands, redirection, runs programs | ✅ done |
+| Preemption, more than one program, user mode, virtual memory | unblocked — ordinary OS work now |
+| TCP/IP (§8), a text console on the framebuffer | not started |
 
 **Every hardware dependency is satisfied.** What remains is operating system,
 not emulator.

@@ -12,28 +12,36 @@ It is loaded from the disk by the [boot ROM](../bootrom/), which finds
 $ make boot
 Sage040 boot ROM
 partition 1 at LBA 2048, type 0x06
-KERNEL.ROM  36960 bytes, first cluster 2
+KERNEL.ROM  43672 bytes, first cluster 2
 image SSP = 0x003FFFF0  PC = 0x00000400
 starting
 
-Sage040 kernel 0.2  (built Sep 21 2026 08:26:25)
+Sage040 kernel 0.3  (built Sep 21 2026 10:03:12)
 Copyright (C) 2026 Jeff Francis.  GPL-3.0-or-later.
 
   traps   : 256 vectors at 0x00000000, TRAP #0 is the system call gate
   syscall : TRAP #0, Linux/m68k convention, verified
   cpu     : MC68040, supervisor mode, sr=0x2700 vbr=0x00000000
   fpu     : on-chip, 1/3 = 0.333333
-  memory  : 4096 KB, kernel 0x00000000-0x00009954, stack top 0x003ffff0
+  memory  : 4096 KB, kernel 0x00000000-0x0000b524, stack top 0x003ffff0
   disk    : hda 'QEMU HARDDISK', 204800 sectors (100 MiB)
-  clock   : m48t59, 2026-09-21 14:26:35 UTC
+  clock   : m48t59, 2026-09-21 16:03:14 UTC
+  timer   : mfp-timer-d at 99 Hz, HZ=100
+  video   : SM501 as /dev/fb0, 640x480x8, double buffered
   network : eth0, 52:54:00:12:34:56
-  root    : fat16 on /dev/hda 'SAGE040', 101158 KB, 101120 KB free
+  root    : fat16 on /dev/hda 'SAGE040', 101158 KB, 101074 KB free
 
 kernel ready.  'help' lists commands.
 
+sage$ ls -l
+-rw     KERNEL.ROM     43672  2026-09-21 10:03
+-rw           CUBE     12472  2026-09-21 10:03
+-rw          HELLO     10492  2026-09-21 10:03
+-rw         FBTEST     11372  2026-09-21 10:03
+4 files, 78008 bytes
 sage$ df
 volume          type   1K-blocks       used      avail  use%
-SAGE040         fat16      101158         38     101120    0%
+SAGE040         fat16      101158         84     101074    0%
 ```
 
 Each device announces itself as its driver registers, so every line is
@@ -146,7 +154,7 @@ Anything the shell does not recognise is looked up on the disk and run:
 ```
 sage$ hello one two
 hello from a program
-  running on Sage040 0.2 (m68040)
+  running on Sage040 0.3 (m68040)
   argc = 3
 sage$ BIG.TXT
 BIG.TXT: not an executable
@@ -350,7 +358,7 @@ the disk. Nothing uses it yet.
 `./fstest.sh` boots the kernel on a scratch image, drives a console
 session, and then checks the result with `mdir`, `mtype` and `fsck.fat`.
 The second half is the part that matters: a filesystem only the kernel
-can read would prove nothing. 16 checks.
+can read would prove nothing. 26 checks.
 
 The device tests in [`../tests/`](../tests/) exercise the same hardware
 from bare metal, with no kernel underneath — including `t11-rtc` for the

@@ -61,7 +61,7 @@ Three things, in this order:
 
 ## 1. The toolchain
 
-Targets `m68k-elf`: bare metal, no operating system, no C library. Built and
+Targets `m68k-elf`: bare metal, no host operating system, no C library. Built and
 tested against binutils 2.45, GCC 15.2.0 and GDB 17.1, though nothing depends
 on those exact versions.
 
@@ -173,12 +173,19 @@ Details and rationale: **[`qemu-patch/README.md`](qemu-patch/README.md)**.
 cd tests && make run
 ```
 
-That builds ten bare-metal test programs and runs each one, exercising every
+That builds eleven bare-metal test programs and runs each one, exercising every
 device on the machine:
 
 ```
- test programs passed: 10
+ test programs passed: 11
  test programs failed: 0
+```
+
+Or boot the whole machine — the ROM finds `KERNEL.ROM` on the disk, the
+kernel comes up, and you get a prompt:
+
+```bash
+make boot
 ```
 
 A full invocation looks like:
@@ -251,11 +258,25 @@ of the real chip — timer A can count disk interrupts directly.
 
 ## Writing code for it
 
-**[`programmer-guide.md`](programmer-guide.md)** is the reference: boot
-protocol, linker script, a minimal `crt0`, the full MFP register and channel
-map, worked driver code for every device, the interrupt handler pattern
-including how to recover the vector from the 68040 exception frame, MMU
-bring-up, and a gotchas section.
+There are two kinds, and it is worth being deliberate about which one you
+are writing.
+
+**Bare metal** — your code *is* the machine. Loaded by `-kernel` or by the
+boot ROM, entered in supervisor mode with interrupts masked, owning every
+register. The tests, the boot ROM and `cube/` are all like this.
+
+**A program** — the kernel is running and owns the hardware, and you reach
+it through `trap #0`: file descriptors, a filesystem, a terminal, a
+framebuffer, a clock. `user/` is like this, and a program touches no
+registers at all.
+
+**[`programmer-guide.md`](programmer-guide.md)** is the reference for both.
+Sections 1–14 are the hardware: boot protocol, linker script, a minimal
+`crt0`, the full MFP register and channel map, worked driver code for every
+device, the interrupt handler pattern including how to recover the vector
+from the 68040 exception frame, MMU bring-up, and a gotchas section.
+**Section 15** is writing a program: the system call ABI, what a program
+gets, files, the terminal, the framebuffer and time.
 
 The short version of the gotchas:
 
@@ -268,6 +289,9 @@ The short version of the gotchas:
   before the handler finishes livelocks the machine. 1–10 ms is a sane
   scheduler tick.
 - **A disabled MFP channel loses interrupts**, it does not defer them.
+- **Q12 fixed-point rotation destroys unit vectors.** Scale a normal to
+  4096 before rotating it, or every face of your cube will test as facing
+  away and nothing will be drawn — with no error anywhere.
 
 ---
 
@@ -281,23 +305,28 @@ The short version of the gotchas:
 | `design.md` | why the machine is shaped the way it is |
 | `qemu-patch/` | the emulator changes, reproducible from pristine source |
 | `tests/` | eleven bare-metal device tests, `make run` |
-| `cube/` | a rotating wireframe cube — the first real program |
+| `cube/` | a rotating wireframe cube on bare metal — a hardware benchmark |
 | `bootrom/` | a boot ROM that finds `KERNEL.ROM` on the disk and runs it |
 | `kernel/` | the kernel: system calls, drivers, VFS, FAT16, shell |
-| `user/` | programs that run on it — the cube, and a hello |
+| `user/` | programs that run on it — `cube`, `hello`, `fbtest` |
+| `types.h` | the integer types, shared by the hardware header, the kernel and the ABI |
 | `disk.mk` | the machine's hard disk, shared by everything that touches it |
 | `boot/` | a 78-byte proof-of-life kernel, for checking the toolchain before building the emulator (runs on stock QEMU's `virt`, not Sage040) |
 
-`tests/` doubles as a support library: `crt0.s`, `sage040.ld`, a 16550 console
-driver and the MFP interrupt plumbing are shared by everything else.
+`tests/` doubles as a support library for the **bare-metal** side: `crt0.s`,
+`sage040.ld`, a 16550 console driver and the MFP interrupt plumbing are
+shared by the boot ROM and `cube/`. The kernel deliberately does not use
+it — it has its own drivers, and builds with `-DSAGE040_NO_TESTLIB` so
+those names cannot collide with a driver's own helpers.
 
 From the top level:
 
 ```bash
-make            # boot ROM and kernel
-make boot       # put the kernel on the disk and boot the machine
-make test       # the device tests, then the kernel's filesystem test
+make            # boot ROM, kernel and programs
+make boot       # put them on the disk and boot the machine
+make test       # the device tests, then the kernel's own test
 make disk-ls    # partition table and directory listing
+make distclean  # also remove the disk image
 ```
 
 ### The test suite
@@ -361,29 +390,29 @@ line discipline, a clock, and a shell that reaches all of it only through
 `trap #0`.
 
 ```
-Sage040 kernel 0.2  (built Sep 21 2026 08:26:25)
+Sage040 kernel 0.3  (built Sep 21 2026 10:03:12)
+Copyright (C) 2026 Jeff Francis.  GPL-3.0-or-later.
 
   traps   : 256 vectors at 0x00000000, TRAP #0 is the system call gate
   syscall : TRAP #0, Linux/m68k convention, verified
   cpu     : MC68040, supervisor mode, sr=0x2700 vbr=0x00000000
   fpu     : on-chip, 1/3 = 0.333333
-  memory  : 4096 KB, kernel 0x00000000-0x00009954, stack top 0x003ffff0
+  memory  : 4096 KB, kernel 0x00000000-0x0000b524, stack top 0x003ffff0
   disk    : hda 'QEMU HARDDISK', 204800 sectors (100 MiB)
-  clock   : m48t59, 2026-09-21 14:26:35 UTC
+  clock   : m48t59, 2026-09-21 16:03:14 UTC
+  timer   : mfp-timer-d at 99 Hz, HZ=100
+  video   : SM501 as /dev/fb0, 640x480x8, double buffered
   network : eth0, 52:54:00:12:34:56
-  root    : fat16 on /dev/hda 'SAGE040', 101158 KB, 101120 KB free
+  root    : fat16 on /dev/hda 'SAGE040', 101158 KB, 101074 KB free
 
 kernel ready.  'help' lists commands.
 
-sage$ df
-volume          type   1K-blocks       used      avail  use%
-SAGE040         fat16      101158         38     101120    0%
-sage$ cat > notes.txt
-hello from the shell
 sage$ ls -l
--rw     KERNEL.ROM     36960  2026-09-21 08:27
--rw      NOTES.TXT        21  2026-09-21 14:27
-2 files, 36981 bytes
+-rw     KERNEL.ROM     43672  2026-09-21 10:03
+-rw           CUBE     12472  2026-09-21 10:03
+-rw          HELLO     10492  2026-09-21 10:03
+-rw         FBTEST     11372  2026-09-21 10:03
+4 files, 78008 bytes
 ```
 
 Each device announces itself as its driver registers, so every line is
@@ -414,7 +443,7 @@ is looked up, loaded and run:
 ```
 sage$ hello one two
 hello from a program
-  running on Sage040 0.2 (m68040)
+  running on Sage040 0.3 (m68040)
   argc = 3
 sage$ uptime
 0:00:14  (1484 ticks at 100 Hz)

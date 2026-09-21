@@ -3,7 +3,7 @@
 Bare-metal programs that exercise each piece of hardware on the Sage040. Every
 one runs against the real emulated device — nothing is stubbed out.
 
-**10 programs, 98 checks, all passing, ~14 s for the suite.**
+**11 programs, all passing.**
 
 ## Running
 
@@ -15,6 +15,17 @@ make disasm-t5-mmu   # disassemble one
 
 Each test prints its checks and ends with `RESULT: PASS` or `RESULT: FAIL`,
 which is what `make run` counts.
+
+These are **bare metal**: no kernel underneath, supervisor mode, every
+register their own. That is the point of them — they establish what the
+hardware does, and the drivers in [`../kernel/drivers/`](../kernel/) are
+written against what they proved. `t3` became `ata.c`, `t4` became
+`smc91c111.c`, `t7`/`t8` became `mfp.c`, `t10` became `sm501.c` and `t11`
+became `m48t59.c`.
+
+The kernel has its own test, [`../kernel/fstest.sh`](../kernel/), which
+drives a console session and then checks the result with the host's own
+`mdir`, `mtype` and `fsck.fat` — 26 checks.
 
 Requires the cross toolchain at `~/m68k/install` (see `../toolchain.md`) and the
 patched QEMU at `~/m68k/sage040-qemu` (see `../qemu-patch/`).

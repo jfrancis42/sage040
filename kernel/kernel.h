@@ -23,8 +23,8 @@
  */
 #define KERNEL_NAME           "Sage040"
 #define KERNEL_VERSION_MAJOR  0
-#define KERNEL_VERSION_MINOR  2
-#define KERNEL_VERSION        "0.2"
+#define KERNEL_VERSION_MINOR  3
+#define KERNEL_VERSION        "0.3"
 
 /* Defined once, in version.c -- see the comment there. */
 extern const char kernel_version[];
