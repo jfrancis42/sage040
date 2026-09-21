@@ -276,8 +276,9 @@ register. The tests, the boot ROM and `cube/` are all like this.
 
 **A program** — the kernel is running and owns the hardware, and you reach
 it through `trap #0`: file descriptors, a filesystem, a terminal, a
-framebuffer, a clock. `user/` is like this, and a program touches no
-registers at all.
+framebuffer, a clock. `system/` and `apps/` are like this, and a program
+touches no registers at all — the MMU is on, so one that tries takes a
+bus error and is killed without disturbing anything else.
 
 **[`programmer-guide.md`](programmer-guide.md)** is the reference for both.
 Sections 1–14 are the hardware: boot protocol, linker script, a minimal
@@ -317,7 +318,11 @@ The short version of the gotchas:
 | `cube/` | a rotating wireframe cube on bare metal — a hardware benchmark |
 | `bootrom/` | a boot ROM that finds `KERNEL.ROM` on the disk and runs it |
 | `kernel/` | the kernel: system calls, drivers, VFS, FAT16, shell |
-| `user/` | programs that run on it — `cube`, `hello`, `fbtest` |
+| `lib/` | what a program links against — `crt0.s`, `ulib.c`, `user.ld` |
+| `system/` | the system's own programs, installed into `/BIN` — `ifconfig`, `ping`, `netstat`, `shutdown`, `env` |
+| `apps/` | everything else, installed at the disk root — `cube`, `hello`, `fbtest`, `fetch`, `httpd`, `spin`, `faulter` |
+| `tools/` | `qemu-net.sh`, which decides how the guest reaches the network |
+| `scratch/` | everything the test suites write; `make clean` removes it |
 | `types.h` | the integer types, shared by the hardware header, the kernel and the ABI |
 | `disk.mk` | the machine's hard disk, shared by everything that touches it |
 | `boot/` | a 78-byte proof-of-life kernel, for checking the toolchain before building the emulator (runs on stock QEMU's `virt`, not Sage040) |
@@ -334,11 +339,14 @@ From the top level:
 make            # boot ROM, kernel and programs
 make boot       # put them on the disk and boot the machine
 make run        # the kernel without the boot ROM in the way
-make programs   # just rebuild what is in user/ onto the disk
+make programs   # just rebuild system/ and apps/ onto the disk
 make cube       # the bare-metal cube demo
-make test       # the device tests, then the kernel's own test
+make test       # the device tests, then all four scripted suites
 make tests      # just the device tests
-make fstest     # just the kernel's test
+make fstest     # the filesystem
+make edittest   # the line editor, history and job control
+make vmtest     # memory protection
+make nettest    # DHCP, ARP, ICMP and TCP
 make disk-ls    # partition table and directory listing
 make disk-fsck  # check the filesystem with the host's tools
 make clean      # build artifacts, keeping the disk
@@ -348,7 +356,7 @@ make distclean  # also remove the disk image
 ### The test suite
 
 Every device has a bare-metal test that exercises the real hardware path —
-nothing is stubbed. 11 programs, all passing.
+nothing is stubbed. 12 programs, all passing.
 
 | Test | What it proves |
 |---|---|
@@ -365,19 +373,23 @@ nothing is stubbed. 11 programs, all passing.
 | `t11-rtc` | NVRAM is real memory and does not alias onto the clock, the oscillator advances, a written date reads back, and 30 February rolls into 1 March |
 | `t12-kbd` | Self test, the command byte, and which scancode set arrives — `a` as `0x1E` not `0x1C`, a release as `0x9E` with no `0xF0` prefix. Keys injected through QEMU's monitor |
 
-Two scripted sessions check the system rather than a device.
+Four scripted sessions check the system rather than a device, each of
+which boots the machine and drives it over its serial line.
 `kernel/fstest.sh` drives the filesystem from the console and verifies
-the result with the host's own MS-DOS tools — 31 checks. `kernel/edittest.sh`
-drives the line editor, the history, ctrl-C, ctrl-Z, jobs and `shutdown`
-by writing control characters into the serial line, which the editor
-cannot tell from a keyboard — 26 checks. `kernel/vmtest.sh` runs a
-program written to misbehave and checks that every forbidden access is
-refused, that each refusal kills the program and not the machine, and
-that a bad pointer handed to a system call comes back as an error — 15
-checks. `kernel/nettest.sh` takes a DHCP lease, pings, and fetches a
-file bigger than the receive buffer from a web server on the host, which
-is the only way to prove the window opens and closes — 12 checks.
-`make test` runs all five.
+the result with the host's own MS-DOS tools — 39 checks.
+`kernel/edittest.sh` drives the line editor, the history, ctrl-C,
+ctrl-Z, background jobs and `shutdown` by writing control characters
+into the serial line, which the editor cannot tell from a keyboard — 27
+checks. `kernel/vmtest.sh` runs a program written to misbehave and
+checks that every forbidden access is refused, that each refusal kills
+the program and not the machine, and that a bad pointer handed to a
+system call comes back as an error — 15 checks. `kernel/nettest.sh`
+takes a DHCP lease, pings, runs `ifconfig` and `netstat` as programs out
+of `/bin`, and fetches a file bigger than the receive buffer from a web
+server on the host, which is the only way to prove the window opens and
+closes — 13 checks.
+
+**106 checks in total**, and `make test` runs all five suites.
 
 ### Booting from disk
 
@@ -415,35 +427,57 @@ way to prove it without the kernel in the picture.
 
 ### The kernel
 
-`kernel/` is a small supervisor-mode kernel: Linux-shaped system calls, a
-device driver model, a VFS, a read/write FAT16 filesystem, a terminal with a
-line discipline, a clock, and a shell that reaches all of it only through
-`trap #0`.
+`kernel/` is a real operating system, and **[`os.md`](os.md) describes it
+in full**. In one paragraph: Linux-shaped system calls, a preemptive
+round-robin scheduler with per-task MMU address spaces, wait queues and
+semaphores, signals and job control, a device driver model, a VFS, a
+read/write FAT16 filesystem with subdirectories, a terminal with a line
+discipline and several sources and sinks, a TCP/IP stack, a clock, and a
+shell that reaches all of it only through `trap #0`.
+
+Programs run **unprivileged**, each in its own address space. One that
+touches a register, or a kernel address, or a null pointer takes a bus
+error and is killed — the shell prints what happened and prompts again.
 
 ```
-Sage040 kernel 0.3  (built Sep 21 2026 10:03:12)
+Sage040 kernel 0.3  (built Sep 21 2026 11:39:17)
 Copyright (C) 2026 Jeff Francis.  GPL-3.0-or-later.
 
   traps   : 256 vectors at 0x00000000, TRAP #0 is the system call gate
   syscall : TRAP #0, Linux/m68k convention, verified
   cpu     : MC68040, supervisor mode, sr=0x2700 vbr=0x00000000
   fpu     : on-chip, 1/3 = 0.333333
-  memory  : 4096 KB, kernel 0x00000000-0x0000b524, stack top 0x003ffff0
+  memory  : 4096 KB, kernel 0x00000000-0x00014e88, stack top 0x003ffff0
   disk    : hda 'QEMU HARDDISK', 204800 sectors (100 MiB)
-  clock   : m48t59, 2026-09-21 16:03:14 UTC
+  clock   : m48t59, 2026-09-21 21:04:37 UTC
   timer   : mfp-timer-d at 99 Hz, HZ=100
   video   : SM501 as /dev/fb0, 640x480x8, double buffered
+  fbcon   : /dev/fbcon, 80x30 of IBM PC 8x16, green on black
+  keyboard: 8042 as /dev/kbd0, scancode set 1, US layout
   network : eth0, 52:54:00:12:34:56
-  root    : fat16 on /dev/hda 'SAGE040', 101158 KB, 101074 KB free
+  console : output to ttyS0 fbcon, input from ttyS0 kbd0
+  root    : fat16 on /dev/hda 'SAGE040', 101158 KB, 100914 KB free, 2048 byte clusters
 
 kernel ready.  'help' lists commands.
 
-sage$ ls -l
--rw     KERNEL.ROM     43672  2026-09-21 10:03
--rw           CUBE     12472  2026-09-21 10:03
--rw          HELLO     10492  2026-09-21 10:03
--rw         FBTEST     11372  2026-09-21 10:03
-4 files, 78008 bytes
+booted from /etc/rc
+/$ ls -l
+-rw     KERNEL.ROM    108924  2026-09-21 15:05
+-rw      NOTES.TXT        42  2026-09-21 14:27
+-rw           CUBE     13836  2026-09-21 14:53
+-rw          HELLO     11748  2026-09-21 14:53
+-rw         FBTEST     12644  2026-09-21 14:53
+drw            ETC         0  2026-09-21 15:05
+drw            BIN         0  2026-09-21 14:53
+-rw          FETCH     12696  2026-09-21 14:53
+-rw          HTTPD     12820  2026-09-21 14:53
+-rw           SPIN     11596  2026-09-21 14:53
+-rw        FAULTER     12668  2026-09-21 14:53
+11 files, 196974 bytes
+/$ cd /bin
+/bin$ ls
+.             ..            IFCONFIG      PING          NETSTAT
+SHUTDOWN      ENV
 ```
 
 Each device announces itself as its driver registers, so every line is
@@ -471,11 +505,12 @@ terminal has lists of sources and sinks, not a current one. So the serial
 log stays complete whatever the display is doing, which is also what lets
 the tests drive the machine headless.
 
-**The shell is a program that happens to be linked in.** It includes
-`syscall.h` and nothing else from the kernel: not the VFS, not the device
-layer, not the console. It cannot reach a chip even by accident, so "programs
-will run unprivileged later" stays a true statement rather than becoming a
-plan.
+**The shell is a task like any other**, linked into the kernel image but
+scheduled alongside everything else. It includes `syscall.h` and nothing
+else from the kernel: not the VFS, not the device layer, not the console.
+That is not a convention — `kernel/layercheck.sh` runs before every link
+and fails the build if it stops being true, which it did once, quietly,
+for months.
 
 **And it runs programs off the disk.** Anything the shell does not recognise
 is looked up, loaded and run:
@@ -505,7 +540,8 @@ none, so the only thing left to consult is the file itself. The kernel reads
 the first four bytes. `CUBE`, not `CUBE.EXE`, and a text file named
 `CUBE.EXE` would still be refused.
 
-See [`user/README.md`](user/README.md).
+See [`programmer-guide.md`](programmer-guide.md) §15, and `apps/` for
+working examples.
 
 The filesystem is read **and** write. Because the volume is a genuine MS-DOS
 one, the host can drop a file on it and the kernel reads it, and anything the
@@ -528,11 +564,20 @@ because a machine is not real until something runs on it.
 
 ## Status
 
-The machine is finished and every device is proven by test. On top of it there
-is now a small kernel — console, system calls, disk, filesystem, shell — which
-is the beginning of an operating system rather than a port of one. Bare metal
-still works and is still the point: the test suite and the cube run with no
-kernel underneath them at all.
+The machine is finished and every device is proven by test. On top of it
+there is now an operating system rather than a port of one: protected
+address spaces, preemptive multitasking, signals and job control, a
+filesystem, a TCP/IP stack and a shell. **[`os.md`](os.md) is the full
+description.** Bare metal still works and is still the point — the test
+suite and the cube run with no kernel underneath them at all.
+
+**It runs more than one thing at a time.** A task is a kernel stack and
+an address space; switching is a stack-pointer swap and nothing else.
+Preemption happens only on the way back to user mode, which is what lets
+the kernel have no locking anywhere in it. `&` backgrounds a job, `jobs`
+lists them, `fg` and `bg` move them, ctrl-Z stops one where it stands —
+in the middle of whatever system call it was making — and `fg` resumes it
+there.
 
 The shell has the editing a shell should have — ctrl-A, ctrl-E, the
 arrow keys, history, ctrl-R to search it — done above the system call
@@ -562,13 +607,21 @@ QEMU's user-mode NAT otherwise — which is what a laptop gets, because an
 802.11 station may only source frames from its own MAC and so cannot
 bridge at all.
 
-What is not there yet: preemption, more than one program at a time, a
-name resolver, and congestion control. `&` and `bg` are parsed and refused with a
-reason rather than faked — nothing can run while the shell runs until
-there is a scheduler. Input is still polled, though both the keyboard
-and the serial port have interrupt lines wired to the MFP. The ethernet
-driver exists and registers `eth0`, but nothing above it sends a packet
-yet. `design.md` tracks what is decided and what is not.
+What is not there yet: **no `mmap` or `brk`, and so no `malloc`** — a
+program's memory is mapped at exec and never changes, which is the
+constraint that decides what can be ported. No C library beyond a thin
+syscall wrapper. No pipes and no redirection. No long file names: 8.3
+only. No signal handlers — signals have default actions and a program
+cannot install one. No name resolver, so addresses are numeric. Input is
+still polled, though both the keyboard and the serial port have
+interrupt lines wired to the MFP; it sleeps on a wait queue rather than
+spinning, so this is now tidiness rather than cost.
+
+**[`os.md`](os.md)** describes the operating system in full.
+[`design.md`](design.md) §11 is the open-items list.
+[`emacs.md`](emacs.md) takes one concrete program — GNU Emacs, and then
+uEmacs, vi and Vim — and measures exactly how far short the system falls
+and what closing the gap would cost.
 
 ---
 
