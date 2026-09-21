@@ -14,3 +14,7 @@ disk.img
 
 # Serial capture from boot/run.sh
 boot/out.txt
+
+# Boot disk image and flattened payload
+bootrom/hd.img
+bootrom/payload.bin

@@ -61,12 +61,17 @@ size. On this big-endian target a too-narrow access lands in the wrong byte lane
 and produces **no output and no error**. Suspect it first when a driver is
 silent.
 
-**Endianness differs per device.** The ATA data register and all SM501 control
-registers are little-endian; everything else matches the CPU. The ATA case is
-insidious — an `IDENTIFY` model string reads correctly either way (ATA stores
-strings byte-swapped within words, so the swaps cancel) while the capacity came
-out as 64 sectors instead of 16384. A test checking only the string would have
-passed.
+**Endianness differs per device.** All SM501 control registers are
+little-endian; everything else matches the CPU. ATA is the subtle one: sector
+data is a byte stream that needs no swap, while `IDENTIFY` returns word values
+that do — get that backwards and a capacity of 16384 sectors reads as 64.
+
+**A round-trip test cannot prove byte order.** `t3` originally wrote and read
+sector data with matching swaps, which is self-consistent while putting a
+byte-swapped image on the media. It passed for weeks and only surfaced when the
+boot ROM tried to load a payload the host had written. `t3` now also reads a
+signature `runtest.sh` plants in the image before boot, which is the only check
+that can catch absolute byte order from inside the guest.
 
 **Empty delay loops vanish at `-O2`.** Use the `delay()` helper in
 `t8-mfp-timers.c`, which increments a `volatile`.

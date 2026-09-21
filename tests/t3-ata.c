@@ -61,10 +61,18 @@ static void ata_select_lba(u32 lba, u8 count)
 }
 
 /*
- * The data register is 16 bits wide.  QEMU declares the MMIO IDE region
- * DEVICE_LITTLE_ENDIAN, so on this big-endian CPU the two bytes of each
- * word arrive swapped relative to their on-disk order.  We therefore do
- * the swap explicitly here and keep byte order correct in the buffer.
+ * Sector data is a byte stream, and the two bytes of each transferred
+ * word -- stored high byte first -- are exactly the two bytes that sit
+ * on the media in that order.  So a plain big-endian store reproduces
+ * the on-disk stream verbatim.
+ *
+ * This is NOT the same as the IDENTIFY handling below.  IDENTIFY returns
+ * 16-bit *values*, and those do need swapping, because QEMU's MMIO IDE
+ * data register is DEVICE_LITTLE_ENDIAN and a 16-bit read on this
+ * big-endian CPU comes back byte-swapped relative to ATA's word value.
+ * Byte streams and word values want opposite treatment; conflating them
+ * writes a byte-swapped image to the disk that still passes a
+ * write-then-read-back test, because both directions swap.
  */
 static void ata_read_sector_bytes(u8 *dst)
 {
@@ -72,8 +80,8 @@ static void ata_read_sector_bytes(u8 *dst)
 
     for (i = 0; i < 256; i++) {
         u16 w = MMIO16(ATA_DATA);
-        dst[i * 2 + 0] = (u8)(w & 0xff);
-        dst[i * 2 + 1] = (u8)(w >> 8);
+        dst[i * 2 + 0] = (u8)(w >> 8);
+        dst[i * 2 + 1] = (u8)(w & 0xff);
     }
 }
 
@@ -82,7 +90,7 @@ static void ata_write_sector_bytes(const u8 *src)
     int i;
 
     for (i = 0; i < 256; i++) {
-        u16 w = (u16)src[i * 2 + 0] | ((u16)src[i * 2 + 1] << 8);
+        u16 w = ((u16)src[i * 2 + 0] << 8) | (u16)src[i * 2 + 1];
         MMIO16(ATA_DATA) = w;
     }
 }
@@ -231,12 +239,46 @@ int main(void)
         }
     }
 
-    /* The signature should survive as readable ASCII if byte order is right */
-    if (cmpbuf[0] == 'S' && cmpbuf[1] == 'A' &&
-        cmpbuf[2] == 'G' && cmpbuf[3] == 'E') {
-        test_ok("byte order preserved ('SAGE' reads back correctly)");
-    } else {
-        test_fail("byte order WRONG across the 16-bit data register");
+    /*
+     * Round-tripping our own writes proves consistency, not correctness:
+     * a driver that swaps on the way in and out again passes it while
+     * putting a byte-swapped image on the media.  So read a signature the
+     * *host* wrote into the image before boot (see runtest.sh) and check
+     * it byte for byte.  That is the only way to catch absolute byte
+     * order from inside the guest.
+     */
+    {
+        static const char sig[] = "SAGE040-DISK-OK!";
+        int bad = -1;
+
+        ata_wait_notbusy();
+        ata_select_lba(2, 1);
+        MMIO8(ATA_COMMAND) = ATA_CMD_READ_PIO;
+        if (ata_wait_drq() != 0) {
+            test_fail("could not read the host-written signature sector");
+        } else {
+            ata_read_sector_bytes(cmpbuf);
+            ata_wait_notbusy();
+
+            for (i = 0; i < 16; i++) {
+                if (cmpbuf[i] != (u8)sig[i]) {
+                    bad = i;
+                    break;
+                }
+            }
+            uart_puts("  host signature = '");
+            for (i = 0; i < 16; i++) {
+                char c = (char)cmpbuf[i];
+                uart_putc((c >= 32 && c < 127) ? c : '?');
+            }
+            uart_puts("'\n");
+
+            if (bad < 0) {
+                test_ok("on-disk byte order matches what the host wrote");
+            } else {
+                test_fail("on-disk byte order WRONG - bytes are swapped");
+            }
+        }
     }
 
     test_end();

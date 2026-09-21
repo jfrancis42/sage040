@@ -400,19 +400,39 @@ int ata_read(u32 lba, u8 *dst)          /* one sector, polled PIO */
     MMIO8(ATA_COMMAND) = 0x20;
     while (!(MMIO8(ATA_ALTSTAT) & 0x08)) { }         /* wait DRQ */
     for (int i = 0; i < 256; i++) {
-        u16 w = MMIO16(ATA_DATA);                    /* LITTLE endian! */
-        dst[i*2 + 0] = w & 0xff;
-        dst[i*2 + 1] = w >> 8;
+        u16 w = MMIO16(ATA_DATA);
+        dst[i*2 + 0] = w >> 8;                       /* see byte order below */
+        dst[i*2 + 1] = w & 0xff;
     }
     return 0;
 }
 ```
 
-> **The data register is little-endian.** A 16-bit read arrives byte-swapped
-> relative to this CPU, so swap explicitly as above. The failure is subtle: an
-> `IDENTIFY` model string reads correctly anyway (ATA stores its strings
-> byte-swapped within each word, so the two swaps cancel) while every numeric
-> field comes out wrong — a capacity of 16384 sectors reads as 64.
+### ATA byte order
+
+The data register needs care, and **byte streams and word values want
+opposite treatment**.
+
+QEMU's MMIO IDE region is `DEVICE_LITTLE_ENDIAN`, so a 16-bit read on this
+big-endian CPU comes back byte-swapped relative to ATA's own word value.
+
+- **Sector data is a byte stream.** The two bytes of each transferred word,
+  stored **high byte first**, are exactly the two bytes that sit on the media
+  in that order. A plain big-endian store reproduces the disk contents
+  verbatim — no swap.
+- **`IDENTIFY` returns 16-bit values.** Those *do* need swapping, or a
+  capacity of 16384 sectors reads back as 64. Having swapped them into ATA's
+  native word order, the model string's first character is the high byte of
+  each word.
+
+Getting this wrong is nastier than it looks, because **a write-then-read-back
+test cannot detect it**. A driver that swaps on the way out and swaps again on
+the way in is perfectly self-consistent while writing a byte-swapped image to
+the media — which only shows up the first time something else has to read the
+disk, such as a boot ROM loading a kernel the host `dd`'d into place. The only
+check that catches it from inside the guest is reading bytes somebody else
+wrote; `tests/t3-ata.c` does that against a signature the harness plants in
+the image before boot.
 
 Interrupts arrive on MFP channel 6. Clear nIEN (`DEVCTL = 0`) to enable them,
 and read the **status** register (not alternate status) to drop the line.
@@ -601,8 +621,10 @@ before you switch on, or the first push after `set_tc` faults.
 ## 11. Gotchas
 
 **Endianness differs per device.** The CPU, RAM and SM501 video memory are
-big-endian. The ATA **data register** and all SM501 **control registers** are
-little-endian. The MFP, UART and LAN91C111 need no swapping.
+big-endian. All SM501 **control registers** are little-endian. The MFP, UART
+and LAN91C111 need no swapping. The ATA **data register** is the subtle one —
+see the byte-order note in §7: sector bytes need no swap, `IDENTIFY` word
+values do.
 
 **Access width is enforced.** SM501 control registers accept **32-bit only**;
 the MFP and UART are **byte** registers. A wrong-width access to a QEMU device

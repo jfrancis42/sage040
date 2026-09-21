@@ -23,6 +23,13 @@ rm -f "$out" "$t.usart"; : > "$out"
 # Known bytes for the MFP USART receiver to pick up.
 printf 'RX!' > "$t.usartin"
 
+# A signature written by the host, so t3-ata can prove it reads the media
+# byte for byte rather than merely round-tripping its own writes.
+if [ -f disk.img ]; then
+    printf 'SAGE040-DISK-OK!' \
+        | dd of=disk.img bs=512 seek=2 conv=notrunc status=none 2>/dev/null || true
+fi
+
 "$QEMU" -M sage040 -cpu m68040 -m 4 \
     -kernel "$t.elf" \
     -serial "file:$out" \

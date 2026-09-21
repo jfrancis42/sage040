@@ -281,6 +281,7 @@ The short version of the gotchas:
 | `qemu-patch/` | the emulator changes, reproducible from pristine source |
 | `tests/` | ten bare-metal device tests, `make run` |
 | `cube/` | a rotating wireframe cube — the first real program |
+| `bootrom/` | a boot ROM that loads a program off the disk and runs it |
 | `boot/` | a 78-byte proof-of-life kernel, for checking the toolchain before building the emulator (runs on stock QEMU's `virt`, not Sage040) |
 
 `tests/` doubles as a support library: `crt0.s`, `sage040.ld`, a 16550 console
@@ -303,6 +304,23 @@ nothing is stubbed. 98 checks across 10 programs, about 14 seconds.
 | `t8-mfp-timers` | All four timers, prescaler ratios measured by racing two timers, and event-count mode counting real ATA interrupts |
 | `t9-mfp-usart` | Transmit verified against the output file, receive verified against fed-in bytes |
 | `t10-sm501` | Device ID, register endianness, 16 MiB with no aliasing, a 640×480 framebuffer filled and read back |
+
+### Booting from disk
+
+`bootrom/` is a boot ROM that reads a flat image off the ATA disk starting at
+sector 0 and runs it, using the image's own 68000 reset vectors to find its
+stack pointer and entry point. There is no filesystem — sector 0 *is* the
+image.
+
+```bash
+cd bootrom
+make disk     # 100 MB hd.img
+make write    # put the cube on it at sector 0
+make boot     # ROM loads sector 0 and jumps to it
+```
+
+The payload is currently the cube, which makes a convincing demonstration that
+the whole path works. Swap it for a kernel when there is one.
 
 ### The cube
 
