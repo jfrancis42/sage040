@@ -13,9 +13,14 @@
  * separate stubs.
  *
  * TRAP #0 is redirected to _trap0_entry, the system call gate; the calls
- * themselves are in syscall.c.  Nothing runs unprivileged yet, but
- * everything above the kernel already goes through the gate rather than
- * around it, so the day something does, the code above does not change.
+ * themselves are in syscall.c.  Programs DO run unprivileged -- this
+ * comment used to say the day was still coming -- and the promise it
+ * made held: everything above the kernel already went through the gate
+ * rather than around it, so nothing above had to change when it did.
+ *
+ * A fault from user mode kills the program (SIGSEGV) and leaves the
+ * machine running; a fault in supervisor mode panics, because there is
+ * nothing else it could safely do.
  */
 #include "kernel.h"
 #include "console.h"

@@ -21,7 +21,6 @@
  * afterwards without the kernel running.
  *
  * Deliberate limits, none of which change the calls in fs.h:
- *   - root directory only, no subdirectories
  *   - 8.3 names, no long names (long-name entries are skipped on scan,
  *     so a file the host created with one is still visible by its short
  *     name and is not corrupted)
