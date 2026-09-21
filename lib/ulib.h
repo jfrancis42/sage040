@@ -18,6 +18,10 @@
 
 #include "uapi.h"
 
+/* Error numbers are part of the ABI: every call here returns one,
+ * negated, on failure. Pure macros, and Linux's values. */
+#include "errno.h"
+
 /* System calls. Same trap, same numbers -- there is no other way in. */
 int    open(const char *path, int flags);
 int    close(int fd);
@@ -31,6 +35,18 @@ int    fstat(int fd, struct stat *st);
 int    access(const char *path, int mode);
 int    dup(int fd);
 int    dup2(int oldfd, int newfd);
+
+/*
+ * The heap. brk() sets the break and returns 0, or -ENOMEM with the
+ * break unchanged; sbrk() moves it by `incr` and returns where it WAS,
+ * or (void *)-1. sbrk(0) says where it is. The heap starts on the page
+ * after the program image and may grow to a page below the stack.
+ */
+int    brk(void *addr);
+
+/* Memory and uptime, in pages of mem_unit bytes. */
+int    sysinfo(struct sysinfo *si);
+void  *sbrk(s32 incr);
 
 /* Is this descriptor a terminal? Built on fstat, the way it is
  * everywhere: there is no separate call to ask. */

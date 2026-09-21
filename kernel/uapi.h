@@ -286,6 +286,14 @@ struct statfs {
                                  * this table's own use of 36..38      */
 
 /*
+ * The program break. Linux's number and Linux's convention, which is
+ * NOT the usual one: brk(addr) returns the new break on success and the
+ * old one, unchanged, on failure -- never an errno. brk(0) asks where
+ * it is. The library's brk() and sbrk() turn that into -1 and ENOMEM.
+ */
+#define __NR_brk        45
+
+/*
  * Above 400 are calls Linux does not have, numbered well clear of it so
  * that nothing here can be mistaken for the real thing.
  *

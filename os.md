@@ -639,10 +639,9 @@ an address space for the child to discard immediately.
 **No signal handlers.** Default actions only. No `signal`, no `sigaction`,
 no `sigprocmask` from user mode.
 
-**No `mmap`, `brk` or `sbrk` yet.** The address space is 256 MB, but
-what is mapped in it is decided at exec and does not change. This is
-the hard limit on what can be ported, and `emacs.md` is an entire
-document about it. `progress.md` tasks 2 and 3 remove it.
+**No `mmap` yet, and no `malloc`.** The address space is 256 MB and
+`brk`/`sbrk` grow a heap in it; `mmap` and an allocator are
+`progress.md` tasks 3 and 4.
 
 **No pipes, no `dup2`, no `fcntl`, no `select` or `poll`.** So no shell
 pipelines, and no input redirection.

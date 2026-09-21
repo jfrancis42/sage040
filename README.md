@@ -613,9 +613,9 @@ QEMU's user-mode NAT otherwise — which is what a laptop gets, because an
 802.11 station may only source frames from its own MAC and so cannot
 bridge at all.
 
-What is not there yet: **no `mmap` or `brk`, and so no `malloc`** — a
-program's memory is mapped at exec and never changes, which is the
-constraint that decides what can be ported. No C library beyond a thin
+What is not there yet: **no `mmap`, and no `malloc`** — a program can
+grow its heap with `brk`/`sbrk` inside a 256 MB address space, but
+nothing above that exists yet. No C library beyond a thin
 syscall wrapper. No pipes and no redirection. No long file names: 8.3
 only. No signal handlers — signals have default actions and a program
 cannot install one. No name resolver, so addresses are numeric. Input is

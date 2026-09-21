@@ -954,6 +954,7 @@ from wherever the allocator had some.
 
 ```
 0x10000000  your image: text, rodata, data, bss
+            the heap, from the next page up, as far as brk() moves it
 ...         UNMAPPED -- a runaway stack faults here
 0x1ff00000  your stack, 1 MB, growing down
 0x1ffffff0  the top of it, where argc and argv were put
@@ -965,6 +966,14 @@ framebuffer, not video memory -- an access to any of them is a bus
 error and the kernel kills the program with a segmentation fault. That
 is not a convention to respect, it is a page table: `apps/faulter.c`
 tries all of them and `kernel/vmtest.sh` checks that every one fails.
+
+**The heap is `brk()` and `sbrk()`**, with Linux's meaning. It starts
+on the page after your image and may grow to one page below the stack
+-- about 255 MB, or as much as the machine has free, whichever is less.
+New heap memory is always zero. `sbrk(n)` returns where the break
+*was*, or `(void *)-1`; `brk(p)` returns 0 or `-ENOMEM`. Memory given
+back by shrinking is unmapped, so touching it afterwards is a
+segmentation fault rather than a quiet read of stale data.
 
 **A pointer you pass to a system call is checked.** The kernel cannot
 dereference your addresses -- they mean nothing in its own space -- so
@@ -1291,10 +1300,9 @@ older copy should know which way round it is now.
 - **Catch a signal.** There is no `sigaction()`. Signals have default
   actions only; ctrl-C and ctrl-Z are things done *to* a program, not
   events it can handle.
-- **Grow its memory.** There is no `mmap`, no `brk` and no `malloc`:
-  what a program gets is its image and 1 MB of stack, decided when it
-  was loaded, inside a 256 MB address space. **This is the constraint that
-  decides what can be ported** — see `emacs.md`.
+- **Map memory, or call `malloc`.** `brk` and `sbrk` work; `mmap` and
+  an allocator are not written yet (`progress.md` tasks 3 and 4). Until
+  then a program that wants memory moves its own break.
 - **Use a C library.** `ulib` is a syscall wrapper plus a handful of
   string helpers. No `stdio`, no `printf`, no `setjmp`, no math.
 - **Map the framebuffer.** No `mmap`, so drawing goes through the

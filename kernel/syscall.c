@@ -28,6 +28,7 @@
 #include "console.h"
 #include "uaccess.h"
 #include "pmm.h"
+#include "vm.h"
 #include "net.h"
 #include "tcp.h"
 #include "errno.h"
@@ -1057,6 +1058,11 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
 
     case __NR_getpid:
         return current->pid;
+
+    case __NR_brk:
+        /* Never negative: every user address is below 0x80000000, so a
+         * break can not be mistaken for an errno on the way back. */
+        return (s32)vm_brk(current->as, a1);
 
     case __NR_kill:
         return signal_kill((int)a1, (int)a2);

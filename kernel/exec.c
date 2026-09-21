@@ -212,6 +212,7 @@ static int load_image(struct addrspace *as, int fd, u32 *entry)
     u32 phoff;
     int phnum, phentsize, i, err;
     int loaded = 0;
+    u32 image_end = 0;
 
     err = read_at(fd, 0, ehdr, sizeof(ehdr));
     if (err < 0) {
@@ -291,10 +292,24 @@ static int load_image(struct addrspace *as, int fd, u32 *entry)
          * worth saying out loud, because the guarantee lives in the
          * allocator and this is where it is relied upon.
          */
+        if (vaddr + memsz > image_end) {
+            image_end = vaddr + memsz;
+        }
         loaded++;
     }
+    if (loaded == 0) {
+        return -ENOEXEC;
+    }
 
-    return loaded > 0 ? 0 : -ENOEXEC;
+    /*
+     * The heap starts on the page after the highest segment, which is
+     * where Linux puts it. Page aligned, so the last page of .bss --
+     * already mapped by reserve() -- belongs to the image and not to the
+     * heap, and shrinking the heap can never unmap part of the program.
+     */
+    as->brk_start = PAGE_ALIGN_UP(image_end);
+    as->brk_cur = as->brk_start;
+    return 0;
 }
 
 /*

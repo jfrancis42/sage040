@@ -805,11 +805,10 @@ Four things, in dependency order:
    stack at the top. It was 2 MB because the packing was eight page
    tables to a page; the constant was never the hard part.
 
-2. **`brk`/`sbrk`.** The classic interface, and the smaller job: a
-   per-address-space break pointer, and mapping or unmapping pages as it
-   moves. `vm.c` already maps pages into an address space on demand from
-   `exec`, so this is mostly bookkeeping — call it 60 lines and it is
-   enough to run a conventional `malloc`.
+2. **`brk`/`sbrk`. Done:** a break per address space, set by exec to
+   the page after the image, mapped and unmapped as it moves, with
+   Linux's return convention (the old break on failure, never an
+   errno).
 
 3. **`mmap`/`munmap`/`mprotect`.** The real interface, and what anything
    modern expects. Anonymous mappings first; file-backed mappings need a

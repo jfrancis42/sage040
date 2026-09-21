@@ -71,6 +71,7 @@ mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
 mcopy -o -i "$MIMG" ../apps/statfs ::/STATFS
 mcopy -o -i "$MIMG" ../apps/cdtest ::/CDTEST
 mcopy -o -i "$MIMG" ../apps/hello ::/HELLO
+mcopy -o -i "$MIMG" ../apps/memtest ::/MEMTEST
 mmd -i "$MIMG" ::/ETC
 mmd -i "$MIMG" ::/BIN
 mcopy -o -i "$MIMG" ../system/env ::/BIN/ENV
@@ -93,6 +94,10 @@ mcopy -o -i "$MIMG" "$SCRATCH/rc.tmp" ::/ETC/RC
     printf 'stat /BIN/ENV\r';           sleep 1
     printf '/BIN/ENV\r';                sleep 1
     printf 'cd /\r';                    sleep 1
+
+    # --- memory: brk and sbrk ---
+    printf 'memtest\r';                 sleep 3
+    printf 'memtest past\r';            sleep 2
 
     printf 'echo SHELL-SURVIVED\r'
 } >> "$SCRATCH/session.tmp"
@@ -135,13 +140,16 @@ sed 's/^/  | /' "$C"
 # each `FAIL` line is a failure, reported here under its own name so
 # that a break says which call stopped working.
 # ---------------------------------------------------------------
-echo "=== checks: descriptors (fstat, access, dup, isatty) ==="
+echo "=== checks: the programs' own (fstat, access, dup, isatty, brk, sbrk) ==="
 
 grep -q "statfs: done" "$C"
-check "the program ran to the end" $?
+check "statfs ran to the end" $?
+
+grep -q "memtest: done" "$C"
+check "memtest ran to the end" $?
 
 test "$(grep -c '^  FAIL ' "$C")" -eq 0
-check "  and every check inside it passed" $?
+check "  and every check inside them passed" $?
 
 # Named individually, so a regression says which one.
 while IFS= read -r line; do
@@ -174,6 +182,17 @@ check "cat of an absolute path worked from inside that directory" $?
 
 grep -q "PATH=" "$C"
 check "a program ran by absolute path from another directory" $?
+
+echo "=== checks: memory the heap gave back is gone ==="
+
+grep -q "memtest: touching memory the heap gave back" "$C"
+check "memtest shrank its heap and reached past the end" $?
+
+! grep -q "NOT-PROTECTED" "$C"
+check "  and the access was refused" $?
+
+grep -q "^memtest: segmentation fault" "$C"
+check "  and the program was killed for it" $?
 
 echo "=== checks: nothing broke ==="
 

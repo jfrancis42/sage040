@@ -430,6 +430,8 @@ struct addrspace *vm_create(void)
     as->tables = 0;
     as->slot_page = 0;
     as->slot_off = 0;
+    as->brk_start = 0;
+    as->brk_cur = 0;
 
     as->root = as_table_alloc(as);
     if (!as->root) {
@@ -530,6 +532,107 @@ u32 vm_mapped_pages(struct addrspace *as)
     return n;
 }
 
+void vm_unmap(struct addrspace *as, u32 va)
+{
+    u32 pt_pa = as_pagetable(as, va, 0);
+    u32 *pt, d;
+
+    if (!pt_pa) {
+        return;
+    }
+    pt = table(pt_pa);
+    d = pt[PAGE_INDEX(va)];
+    if (!(d & PDT_RESIDENT)) {
+        return;
+    }
+    pt[PAGE_INDEX(va)] = 0;
+    pmm_free(d & PAGE_ADDR_MASK);
+
+    /* Before anything can reuse that page, not after: a cached
+     * translation would let the program keep writing to memory that now
+     * belongs to somebody else. */
+    pflusha();
+}
+
+/*
+ * THE PROGRAM BREAK.
+ *
+ * The heap is the range [brk_start, brk_cur), mapped a page at a time
+ * as it grows and unmapped as it shrinks. What is mapped is always
+ * exactly [brk_start, PAGE_ALIGN_UP(brk_cur)), so the break itself can
+ * sit anywhere inside a page and the page arithmetic takes care of it.
+ *
+ * The return convention is Linux's and it is not an accident: a request
+ * that cannot be met returns the OLD break rather than an error. Every
+ * malloc ever written for Linux detects failure by comparing what came
+ * back with what it asked for, so any other convention would make every
+ * one of them wrong on this machine.
+ *
+ * Growth refuses to pass over a page that is already mapped. Nothing
+ * maps there today, but mmap will place things in the same gap, and a
+ * heap that silently grew over a mapping would replace its pages.
+ *
+ * Shrinking does not zero the part of the last page left beyond the
+ * break, and growing back over it returns whatever the program left
+ * there. That is Linux's behaviour as well, and it discloses nothing:
+ * the data was the program's own. Every NEW page arrives zeroed,
+ * because pmm_alloc zeroes, and that is the guarantee that matters --
+ * another program's old memory must never appear in this one.
+ */
+u32 vm_brk(struct addrspace *as, u32 addr)
+{
+    u32 old_end, new_end, va;
+
+    if (!as) {
+        return 0;               /* a kernel task has no heap */
+    }
+    if (addr < as->brk_start || addr > USER_BRK_LIMIT) {
+        return as->brk_cur;     /* brk(0) lands here, as it should */
+    }
+
+    old_end = PAGE_ALIGN_UP(as->brk_cur);
+    new_end = PAGE_ALIGN_UP(addr);
+
+    if (new_end > old_end) {
+        u32 pages = (new_end - old_end) / PAGE_SIZE;
+
+        /*
+         * Refused up front when the memory plainly is not there: the
+         * pages, plus a page of tables per 448 pages (seven 64-page
+         * tables to a table page), plus two for the pointer tables.
+         * Trying and rolling back would work too, but the tables built
+         * on the way would stay with the address space until it died,
+         * so a failed request would cost the machine memory for nothing.
+         */
+        if (pmm_available() < pages + pages / 448 + 2) {
+            return as->brk_cur;
+        }
+        for (va = old_end; va < new_end; va += PAGE_SIZE) {
+            if (vm_translate(as, va, 0)) {
+                return as->brk_cur;
+            }
+        }
+        for (va = old_end; va < new_end; va += PAGE_SIZE) {
+            if (!vm_map(as, va, 0, VM_USER | VM_WRITE)) {
+                /* All or nothing: a half-grown heap is a break that
+                 * does not match what is mapped. */
+                while (va > old_end) {
+                    va -= PAGE_SIZE;
+                    vm_unmap(as, va);
+                }
+                return as->brk_cur;
+            }
+        }
+    } else {
+        for (va = new_end; va < old_end; va += PAGE_SIZE) {
+            vm_unmap(as, va);
+        }
+    }
+
+    as->brk_cur = addr;
+    return addr;
+}
+
 void vm_destroy(struct addrspace *as)
 {
     u32 va, pg;
@@ -577,6 +680,8 @@ void vm_destroy(struct addrspace *as)
     as->tables = 0;
     as->slot_page = 0;
     as->slot_off = 0;
+    as->brk_start = 0;
+    as->brk_cur = 0;
     as->root = 0;
 
     /* Whatever was cached for those addresses now refers to pages that

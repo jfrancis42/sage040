@@ -424,6 +424,49 @@ int dup2(int oldfd, int newfd)
     return (int)sc2(__NR_dup2, (u32)oldfd, (u32)newfd);
 }
 
+int sysinfo(struct sysinfo *si)
+{
+    return (int)sc1(__NR_sysinfo, (u32)si);
+}
+
+/*
+ * The break, cached. Linux's libc does the same: the kernel is asked
+ * once, and after that sbrk() only has to ask it to move.
+ */
+static u32 cur_brk;
+
+int brk(void *addr)
+{
+    u32 got = (u32)sc1(__NR_brk, (u32)addr);
+
+    cur_brk = got;
+    /* The kernel says no by handing back the old break. */
+    return got == (u32)addr ? 0 : -ENOMEM;
+}
+
+void *sbrk(s32 incr)
+{
+    u32 old, want;
+
+    if (!cur_brk) {
+        cur_brk = (u32)sc1(__NR_brk, 0);
+    }
+    old = cur_brk;
+    if (incr == 0) {
+        return (void *)old;
+    }
+    want = old + (u32)incr;
+    /* Wrapping past either end of the address space is not a request
+     * the kernel should ever see. */
+    if ((incr > 0 && want < old) || (incr < 0 && want > old)) {
+        return (void *)-1;
+    }
+    if (brk((void *)want) < 0) {
+        return (void *)-1;
+    }
+    return (void *)old;
+}
+
 int isatty(int fd)
 {
     struct stat st;

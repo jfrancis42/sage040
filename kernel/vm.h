@@ -139,6 +139,15 @@ struct addrspace {
     u32 slot_page;              /* the page being carved right now     */
     u32 slot_off;               /* next free offset within it          */
 
+    /*
+     * The program break: where the heap starts and where it currently
+     * ends. A property of the address space, not of the task, because
+     * it describes what is mapped. brk_start is set by exec to the page
+     * after the image and never moves; brk_cur is what brk() returns.
+     */
+    u32 brk_start;
+    u32 brk_cur;
+
     int used;
 };
 
@@ -182,6 +191,22 @@ u32  vm_translate(struct addrspace *as, u32 va, int write);
 void vm_switch(struct addrspace *as);
 
 u32  vm_mapped_pages(struct addrspace *as);
+
+/* Remove one page, giving its memory back. Nothing if it was not mapped. */
+void vm_unmap(struct addrspace *as, u32 va);
+
+/*
+ * The highest address the heap may reach: one guard page below the
+ * stack, so a heap that meets the stack faults instead of merging.
+ */
+#define USER_BRK_LIMIT  (USER_VA_END - (u32)(USER_STACK_PAGES + 1) * PAGE_SIZE)
+
+/*
+ * Move the program break, with Linux's semantics: returns the NEW break
+ * on success and the OLD one, unchanged, on any failure. There is no
+ * error return; a caller finds out by comparing. See vm.c.
+ */
+u32  vm_brk(struct addrspace *as, u32 addr);
 
 /*
  * Take a page out of the kernel's own map, or put it back.

@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: 2 of 23 complete.**
+**Status: 3 of 23 complete.**
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -31,7 +31,7 @@ drive almost all of it:
 |---|------|----------|-------|
 | 0 | Groundwork: bigger RAM and disk, per-task cwd, `fstat`/`access`/`dup` | small things everything else trips over | **done** |
 | 1 | Grow the user address space | nothing else fits until this | **done** |
-| 2 | `brk`/`sbrk` | the smaller half of memory; enough for `malloc` | todo |
+| 2 | `brk`/`sbrk` | the smaller half of memory; enough for `malloc` | **done** |
 | 3 | `mmap`/`munmap`/`mprotect` | what a runtime and a libc expect | todo |
 | 4 | `malloc` in `lib/` | so tasks 5–12 have something to test against | todo |
 | 5 | Signals: `sigaction`, handlers, `sigreturn` | the largest kernel item; editors need it | todo |
@@ -207,7 +207,7 @@ It grows one group per task, and a group is only added once its calls
 work — so a failure there is always a regression, never a thing not
 written yet.
 
-**133 checks across six suites now:** 12 device programs, 41 fs, 20
+**164 checks across six suites now:** 12 device programs, 41 fs, 51
 api, 29 edit, 18 vm, 13 net.
 
 ### 1. Grow the user address space — done
@@ -289,6 +289,51 @@ full filesystem. Deleting the images fixed it. `/tmp/sage040-cleanup.sh`
 does that if it happens again. **Keep 512 MB disk copies in `scratch/`,
 which is on `/home`, never under `/tmp`.**
 
+### 2. `brk`/`sbrk` — done
+
+`__NR_brk` is Linux's **45**, with Linux's convention: `brk(addr)`
+returns the new break on success and the **old** one on failure,
+never an errno, and `brk(0)` asks. Every Linux `malloc` detects failure
+by comparing, so any other convention would break all of them.
+
+The break belongs to the address space (`brk_start`, `brk_cur` in
+`struct addrspace`), not the task, because it describes what is
+mapped. `exec` sets it to the page after the highest `PT_LOAD`. Page
+aligned, so the last page of `.bss` belongs to the image and a shrink
+can never unmap part of the program. It may grow to one guard page
+below the stack (`USER_BRK_LIMIT`).
+
+`vm_unmap()` is new; nothing could take a page out of a user address
+space before. It flushes **before** the page can be reused, not after.
+
+In `lib/`: `brk()` returns 0 or `-ENOMEM`, `sbrk()` returns the old
+break or `(void *)-1`, and the library caches the break the way glibc
+does. `ulib.h` now includes `errno.h`, so programs get the error
+*names*, which they never had. It is pure macros, and the layering
+check already allowed it. `sysinfo()` got a wrapper too.
+
+*Decision:* a request the machine plainly cannot meet is **refused up
+front**, before any page is mapped. The first version mapped until
+the allocator ran dry and then rolled back. That worked, but the page
+tables built on the way stayed with the address space until it died,
+so every failed `sbrk` cost the machine ~37 pages for nothing. The
+rollback is still there as a safety net. Nothing can reach it today,
+because the kernel is not preemptible and nothing allocates between
+the check and the mapping.
+
+**Growth refuses to pass over a page that is already mapped.** Nothing
+maps in the gap yet, but `mmap` will. A heap that grew over a mapping
+would silently replace its pages.
+
+**Tests:** `apps/memtest` makes 26 checks and `apitest.sh` three more:
+where the heap starts, growing, zeroed new pages, an unaligned break,
+shrinking giving pages back to the machine, regrown pages being NEW
+(zeroed) pages, refusals leaving the break alone, a request for more
+than the machine has returning *every* page, an 8 MB heap, and a
+program touching the page its own shrink gave back and dying for it.
+With the up-front refusal disabled, the "every page returned" check
+fails, so it tests something real.
+
 ---
 
 ## Design notes for the tasks not yet started
@@ -296,32 +341,6 @@ which is on `/home`, never under `/tmp`.**
 Written while the shell was down, because thinking does not need one.
 These are decisions, not code — the point is that the next session
 starts by typing rather than by deciding.
-
-### 2. `brk`/`sbrk`
-
-`__NR_brk` is Linux's **45**. One argument, and the Linux convention
-that makes every `malloc` work:
-
-- `brk(0)` returns the current break without moving it
-- `brk(addr)` sets it and returns the **new** break
-- a request that cannot be satisfied returns the **old** break
-  unchanged — it does not return an error, and `malloc` detects failure
-  by comparing what came back against what it asked for
-
-Where it starts: immediately above the program's last `PT_LOAD`
-segment, rounded up to a page. `exec.c` knows that address; it needs to
-be recorded in the address space or the task at load time. Put it in
-`struct addrspace` beside the table bookkeeping, as `brk_start` and
-`brk_cur`, because it is a property of the address space rather than of
-the task.
-
-Where it stops: the guard region below the stack. With a 1 MB stack at
-the top of 256 MB, the break may grow to roughly `USER_VA_END - 1 MB -
-one guard page`. Refuse beyond that by returning the old break.
-
-Growing maps zeroed pages (the page allocator already zeroes, which is
-required — handing a program another program's old data would be a
-disclosure bug). Shrinking unmaps and frees them, and must `pflusha`.
 
 ### 3. `mmap`/`munmap`/`mprotect`
 
