@@ -1,0 +1,93 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Jeff Francis
+#
+# Sage040 kernel
+#
+#   make           build kernel.elf and kernel.rom
+#   make run       run the kernel directly, with the disk attached
+#   make install   write kernel.rom onto the disk as KERNEL.ROM
+#   make boot      install it, then boot the machine through the boot ROM
+#   make clean     remove build artifacts (the disk image is not one)
+
+# Toolchain and emulator locations.
+#
+# Both default to the local build described in the README, and fall back to
+# whatever is on PATH if that is not present. Override either on the command
+# line, e.g.  make M68K_PREFIX=/opt/m68k  or  make QEMU=/path/to/qemu-system-m68k
+M68K_PREFIX ?= $(HOME)/m68k/install
+SAGE_QEMU   ?= $(HOME)/m68k/sage040-qemu
+
+TOOLCHAIN := $(if $(wildcard $(M68K_PREFIX)/bin/m68k-elf-gcc),$(M68K_PREFIX)/bin/m68k-elf,m68k-elf)
+QEMU      ?= $(if $(wildcard $(SAGE_QEMU)/bin/qemu-system-m68k),$(SAGE_QEMU)/bin/qemu-system-m68k,qemu-system-m68k)
+
+CC      := $(TOOLCHAIN)-gcc
+OBJCOPY := $(TOOLCHAIN)-objcopy
+OBJDUMP := $(TOOLCHAIN)-objdump
+SIZE    := $(TOOLCHAIN)-size
+NM      := $(TOOLCHAIN)-nm
+
+TOPDIR := ..
+include $(TOPDIR)/disk.mk
+
+# disk.mk defines a target before this file does, so say which is the
+# default rather than letting include order decide it.
+.DEFAULT_GOAL := all
+
+MACHINE := -M sage040 -cpu m68040 -m 4
+
+# Hardware register definitions are shared with the device tests.
+SUP      := ../tests
+CPUFLAGS := -mcpu=68040
+CFLAGS   := $(CPUFLAGS) -ffreestanding -nostdlib -nostdinc -O2 \
+            -Wall -Wextra -Werror -fno-builtin -fno-stack-protector \
+            -I. -I$(SUP)
+LDFLAGS  := $(CPUFLAGS) -ffreestanding -nostdlib -T kernel.ld \
+            -Wl,--build-id=none -Wl,--no-warn-rwx-segments -Wl,-Map=kernel.map
+
+SRCS := main.c version.c console.c trap.c string.c ata.c fs.c probe.c shell.c
+HDRS := kernel.h block.h fs.h string.h $(SUP)/sage040.h
+
+.PHONY: all run install boot disasm syms clean distclean
+
+all: kernel.rom
+
+ASMS := start.s memprobe.s
+
+kernel.elf: $(ASMS) $(SRCS) $(HDRS) kernel.ld
+	$(CC) $(CFLAGS) $(LDFLAGS) \
+	    -x assembler-with-cpp $(ASMS) \
+	    -x c $(SRCS) -o $@
+	@$(SIZE) $@
+
+# The flat image the boot ROM loads: the vector table first, so its first
+# two longwords are the initial SSP and PC, then everything else.
+kernel.rom: kernel.elf
+	$(OBJCOPY) -O binary $< $@
+	@echo "kernel.rom: $$(stat -c%s $@) bytes"
+
+# Run the kernel straight from the ELF. Quicker to iterate on than a full
+# boot, and the disk is attached either way, so the filesystem works.
+run: kernel.elf $(DISK)
+	$(QEMU) $(MACHINE) -kernel kernel.elf \
+	    -drive file=$(DISK),format=raw,if=ide \
+	    -serial mon:stdio
+
+# Put the kernel on the disk where the boot ROM will find it.
+install: kernel.rom $(DISK)
+	@mcopy -o -i $(MIMG) kernel.rom ::/KERNEL.ROM
+	@echo "KERNEL.ROM: $$(stat -c%s kernel.rom) bytes -> $(DISK) partition 1"
+
+# The real thing: the boot ROM finds KERNEL.ROM on the filesystem and runs it.
+boot: install
+	$(MAKE) -C ../bootrom boot
+
+disasm: kernel.elf
+	$(OBJDUMP) -d kernel.elf
+
+syms: kernel.elf
+	@$(NM) -n kernel.elf
+
+clean:
+	rm -f kernel.elf kernel.rom kernel.map
+
+distclean: clean

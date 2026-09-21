@@ -15,6 +15,14 @@ disk.img
 # Serial capture from boot/run.sh
 boot/out.txt
 
-# Boot disk image and the flattened kernel written into it
-bootrom/hd.img
-bootrom/kernel.rom
+# The machine's hard disk, in the project root (see disk.mk)
+hd.img
+
+# Flattened images written onto it
+bootrom/payload.bin
+kernel/kernel.rom
+kernel/kernel.map
+
+# Scratch disk and log from kernel/fstest.sh
+kernel/hd-test.img
+kernel/fstest.log

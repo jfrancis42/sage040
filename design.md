@@ -146,9 +146,11 @@ Every device has a bare-metal test that exercises the real hardware path.
 | Boot ROM loading `KERNEL.ROM` from a FAT16 filesystem | ✅ done — `bootrom/` |
 | Console, C runtime, exception vectors, interrupt dispatch | ✅ done |
 | Disk, ethernet, video, MMU, timers | ✅ hardware proven by tests |
-| Timer + preemption | unblocked — ordinary OS work now |
 | Disk format (§9) — real MS-DOS, host read/write | ✅ done |
-| Kernel-side filesystem, TCP/IP (§8), processes, virtual memory, framebuffer console | not started |
+| Kernel (§10) — console, traps, block driver, FAT16 read/write, shell | ✅ done — `kernel/` |
+| System call gate — `TRAP #0`, four console calls | ✅ done, no user programs to use it yet |
+| Timer + preemption, processes, virtual memory | unblocked — ordinary OS work now |
+| TCP/IP (§8), framebuffer console, RTC | not started |
 
 **Every hardware dependency is satisfied.** What remains is operating system,
 not emulator.
@@ -268,22 +270,40 @@ mcopy -i hd.img@@1048576 kernel.rom ::/KERNEL.ROM
 
 ### What is implemented
 
-In the boot ROM, read-only and only as much as finding one file requires:
+Twice over, because the two have different jobs.
+
+**In the boot ROM**, read-only and only as much as finding one file requires:
 BPB parsing, the FAT16 cluster chain with a one-sector FAT cache, and a root
 directory scan that skips deleted entries, long-name fragments, the volume
-label and subdirectories. `fsck.fat` reports the result clean, and the host
-can add files and directories alongside `KERNEL.ROM` without disturbing it.
+label and subdirectories.
+
+**In the kernel** (`kernel/fs.c`), read *and* write over a real block layer
+(`kernel/ata.c`): open, read, write, seek, create, truncate, append, delete,
+rename, stat and a directory walk. Free-cluster allocation uses a rolling
+hint so a sequential write walks the table once instead of restarting from
+cluster 2 on every extension, and every FAT update is written to **both**
+copies of the table.
+
+`fsck.fat` reports the result clean after the kernel has written to it, and
+`kernel/fstest.sh` checks exactly that: a file the kernel wrote comes back
+byte for byte through `mtype`, a file the host wrote is what the kernel
+printed, and `fsck.fat` finds nothing afterwards. A filesystem only the
+kernel can read would prove nothing.
 
 ### What is not, yet
 
-- **Anything kernel-side.** The ROM's FAT code is deliberately minimal and
-  lives in the ROM. A kernel wants its own implementation over a proper block
-  layer — the polled PIO in `t3-ata` lifted into a real `ata.c`.
-- **Writing.** Free-cluster allocation, directory entry creation and
-  compaction, FAT mirror updates. None of it hard, all of it easier once
-  reading is known good.
-- **Subdirectories and long names.** The ROM only looks in the root and only
-  at 8.3 names. Both are period-correct limitations and neither is missed yet.
+- **Subdirectories and long names.** The kernel looks only in the root and
+  only at 8.3 names. Long-name entries the host wrote are skipped on a scan
+  rather than misread, so a file created with one is still visible by its
+  short name and is not damaged. Both are period-correct limitations.
+- **Timestamps.** There is no real-time clock on this machine, so every stamp
+  the kernel writes is a fixed date. A stamp that is wrong but constant is
+  better than one that is wrong and varies: it is obviously synthetic. An
+  MC146818 is the fix and is in the open items.
+- **FAT12 and FAT32.** Refused at mount rather than misread as FAT16.
+- **Crash consistency.** Writes go out as they are made, with no journal and
+  no clean-shutdown flag. Pulling the plug mid-write leaves what MS-DOS would
+  have left: lost clusters that `fsck.fat` can reclaim.
 
 ### The byte-order trap, for whoever writes the kernel side
 
@@ -301,31 +321,115 @@ verification that a round trip cannot give you.
 
 ---
 
-## 10. Open items
+## 10. The kernel
 
-1. **Lift the test code into drivers.** `t3`, `t4`, `t7`–`t10` are proven working
-   code for every device; they want turning into `ata.c`, `smc91c111.c`,
-   `mfp.c`, `sm501.c` with real interfaces.
+`kernel/`, loaded from the disk by the boot ROM as `KERNEL.ROM`. It runs in
+supervisor mode from its first instruction and never leaves it.
+
+### Startup
+
+The order is forced by dependency: console first, so everything after it can
+say what happened; then the vector table, so a fault from that point on is
+reported rather than silently jumping into whatever was at address 0; then the
+`TRAP #0` gate, checked by making a call through it; then the hardware
+inventory; then the filesystem; then the shell.
+
+Every line of the inventory is a device the kernel touched, not a list
+assembled at build time — a startup message that reports what was assumed
+agrees with you while the hardware disagrees.
+
+Interrupts stay masked throughout. Nothing yet needs them: the console and the
+disk are both polled, and enabling them before there is a handler worth
+running only creates ways to hang.
+
+### Supervisor and user mode
+
+The boundary that user programs will cross already exists. **`TRAP #0`** is the
+system call gate: `d0` selects the call, `d1` and `d2` carry arguments, `d0`
+returns the result. Four calls so far, all console — put character, put string,
+get character, get line.
+
+`kmain()` makes one call through the gate at startup and checks the answer, so
+the path is known good at the point it is installed rather than at the point
+something first depends on it.
+
+Two things are deliberately not done. The MMU is not turned on, so there is no
+address space to separate yet. And `syscall_dispatch()` takes its pointer
+arguments at face value, which is correct while the only caller is the kernel
+itself — it is the function that will have to validate and copy them across
+the boundary once an unprivileged program in its own address space can call
+it.
+
+### Sizing memory, and surviving it
+
+Nothing on this machine reports how much RAM is fitted, so the kernel writes
+to each megabyte boundary until one does not answer. The first address past
+the end raises a **bus error** rather than reading back wrong — QEMU faults
+there exactly as hardware with no card in the slot would — so `memprobe.s`
+installs its own bus error handler for the duration, throws the frame away and
+returns as if the test had failed. That is the traditional 68k ROM trick and
+still the only way to do it here.
+
+It is worth keeping narrow. The recovery abandons the exception frame and
+restores the stack pointer by hand, which is safe only because the routine
+touches no callee-saved register and holds no state worth unwinding. It is not
+a general fault handler and should not grow into one.
+
+### Faults
+
+Every vector except reset lands on one handler. The 68040 pushes a
+format/vector word on every exception, so the handler identifies itself from
+its own frame instead of needing 255 separate stubs, and reports the vector,
+its name, the PC, the SR and all fifteen registers before halting.
+
+Nothing is recoverable yet, so it stops — a silent hang is the one outcome
+worth ruling out. That report is what found the first real bug in the kernel:
+the memory probe walking off the end of RAM, with the faulting address sitting
+in `a0`.
+
+### The shell
+
+Not a design goal; it is how the console and filesystem calls get exercised by
+hand. Every command is a direct call into `fs.c` or `console.c` and nothing
+else, so a command that misbehaves points at the layer underneath. When user
+programs exist it becomes one of them, reaching the same calls through
+`TRAP #0`.
+
+---
+
+## 11. Open items
+
+1. **Lift the remaining test code into drivers.** `t3` became `kernel/ata.c`.
+   `t4`, `t7`–`t10` are still proven working code living in tests; they want
+   turning into `smc91c111.c`, `mfp.c`, `sm501.c` with real interfaces.
 2. **Pick a scheduler tick.** Timer C or D at /200 with a reload near 123 gives
    ~10 ms. Note the livelock bound documented in the programmer's guide: a tick
    faster than the handler starves the foreground.
-3. **Pick a TCP/IP stack** (§8). lwIP is the recommendation; nothing blocks it
+3. **An interrupt-driven console.** The UART's IRQ already reaches MFP channel
+   7 and `t6` proves the whole path. `kgetc()` takes from a ring buffer instead
+   of the line status register and nothing above it moves.
+4. **Pick a TCP/IP stack** (§8). lwIP is the recommendation; nothing blocks it
    now that the NIC is proven.
-4. **Kernel-side filesystem** (§9). The format is settled and the boot ROM
-   reads it; a kernel needs its own implementation over a real block layer,
-   and eventually write support.
-5. **Consider upstreaming** the `sm501.c` build fix and the IACK callback.
-6. **Hardware.** Nothing in the design needs a bus that cannot be wired by hand:
+5. **A real-time clock.** The one piece of hardware the design is actually
+   missing: every file the kernel writes carries a fixed date. An **MC146818**
+   fits the design rule — a real part with a datasheet, byte-wide registers,
+   and an interrupt line the MFP has a spare GPIP pin for. A period Sage would
+   have had a battery clock.
+6. **Consider upstreaming** the `sm501.c` build fix and the IACK callback.
+7. **Hardware.** Nothing in the design needs a bus that cannot be wired by hand:
    a 68040, an MFP, and five memory-mapped peripherals.
 
 ---
 
-## 11. Next
+## 12. Next
 
 1. **A scheduler tick** — timer D at ~10 ms driving a counter, then a scheduler.
    Everything it needs is tested.
 2. **An interrupt-driven console** — `t6` has all the pieces; turning the polled
-   `uart.c` into a buffered interrupt-driven one is the natural first use of the
-   interrupt path.
-3. **Then processes** — user/supervisor split, context switch, `trap #0`
-   syscalls, with the MMU available when isolation is wanted.
+   `kernel/console.c` into a buffered interrupt-driven one is the natural first
+   use of the interrupt path.
+3. **Then processes** — the `TRAP #0` gate and the supervisor/user split are in
+   place; what is left is loading a program somewhere other than address 0,
+   giving it a user stack, entering user mode with an `RTE`, and validating the
+   pointers it hands across the gate. The MMU is available when isolation is
+   wanted rather than merely privilege.

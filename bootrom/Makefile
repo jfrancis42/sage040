@@ -4,9 +4,9 @@
 # Sage040 boot ROM
 #
 #   make          build bootrom.elf
-#   make disk     create the 100 MB disk image
-#   make write    write the cube to the disk starting at sector 0
-#   make boot     boot the machine: ROM loads sector 0 and runs it
+#   make disk     create the 100 MB MS-DOS disk image, in the project root
+#   make write    build the kernel and put it on the disk as KERNEL.ROM
+#   make boot     boot the machine: ROM finds KERNEL.ROM and runs it
 #   make clean    remove build artifacts (keeps the disk image)
 
 # Toolchain and emulator locations.
@@ -38,34 +38,24 @@ LDFLAGS := $(CPUFLAGS) -ffreestanding -nostdlib -T bootrom.ld \
 # below the boot ROM at 2 MB.
 BOOT_SECTORS ?= 256
 
-# The disk the machine boots from: a real MS-DOS disk, so the host can read
-# and write it with ordinary tools.
-#
-#   LBA 0       MBR partition table
-#   LBA 64      optional raw image, in the boot gap
-#   LBA 2048    partition 1, FAT16, holds KERNEL.ROM
-DISK     := hd.img
-DISK_MB  := 100
-PART_LBA := 2048
-KERNEL_LBA := 64
-VOLUME   := SAGE040
+# The disk the machine boots from: a real MS-DOS disk in the project root,
+# shared with the kernel and with the host. See ../disk.mk.
+TOPDIR := ..
+include $(TOPDIR)/disk.mk
 
-TOTAL_SECTORS := $(shell expr $(DISK_MB) \* 2048)
-FS_SECTORS    := $(shell expr $(TOTAL_SECTORS) - $(PART_LBA))
-FS_BLOCKS     := $(shell expr $(FS_SECTORS) / 2)
-PART_OFFSET   := $(shell expr $(PART_LBA) \* 512)
+# disk.mk defines a target before this file does, so say which is the
+# default rather than letting include order decide it.
+.DEFAULT_GOAL := all
 
-# mtools reaches into the partition by byte offset -- no root, no loop mount.
-MIMG := $(DISK)@@$(PART_OFFSET)
-
-# What becomes KERNEL.ROM. Swap this for a kernel when there is one.
+# What the raw-image fallback carries. The filesystem path gets KERNEL.ROM
+# from the kernel's own Makefile.
 PAYLOAD_DIR := ../cube
 PAYLOAD_ELF := $(PAYLOAD_DIR)/cube.elf
-PAYLOAD_BIN := kernel.rom
+PAYLOAD_BIN := payload.bin
 
 DEPS := $(SUP)/crt0.s $(SUP)/uart.c $(SUP)/sage040.h bootrom.ld
 
-.PHONY: all disk write write-raw ls fsck boot run disasm clean distclean
+.PHONY: all write write-cube write-raw ls fsck boot run disasm clean distclean
 
 all: bootrom.elf
 
@@ -75,25 +65,19 @@ bootrom.elf: bootrom.c $(DEPS)
 	    -x c $(SUP)/uart.c bootrom.c -o $@
 	@$(SIZE) $@
 
-disk: $(DISK)
-
-# A genuine MS-DOS disk: MBR partition table plus a FAT16 filesystem.
-# Both steps work on the plain image file; neither needs root.
-$(DISK):
-	@echo "creating $(DISK_MB) MB disk image $(DISK)"
-	@dd if=/dev/zero of=$@ bs=1M count=$(DISK_MB) status=none
-	@printf 'label: dos\nunit: sectors\nstart=$(PART_LBA), type=06\n' \
-	    | sfdisk -q $@ >/dev/null
-	@mkfs.fat -F 16 -n $(VOLUME) --offset $(PART_LBA) $@ $(FS_BLOCKS) >/dev/null
-	@echo "partition 1: FAT16 at LBA $(PART_LBA), $(FS_SECTORS) sectors"
-
-# Build the payload, flatten it, and copy it into the filesystem as
-# KERNEL.ROM -- which is exactly what you would do by hand with mcopy.
+# The kernel owns the file it installs, so ask it to.
 write: $(DISK)
+	$(MAKE) -C ../kernel install
+	@mdir -i $(MIMG) ::/ | sed 's/^/  /'
+
+# The cube in place of the kernel -- the demonstration this ROM was first
+# written against, and a useful way to prove the loader without the kernel
+# in the picture.
+write-cube: $(DISK)
 	$(MAKE) -C $(PAYLOAD_DIR) cube.elf
 	$(OBJCOPY) -O binary $(PAYLOAD_ELF) $(PAYLOAD_BIN)
 	@mcopy -o -i $(MIMG) $(PAYLOAD_BIN) ::/KERNEL.ROM
-	@echo "KERNEL.ROM: $$(stat -c%s $(PAYLOAD_BIN)) bytes -> $(DISK) partition 1"
+	@echo "KERNEL.ROM: $$(stat -c%s $(PAYLOAD_BIN)) bytes (cube) -> $(DISK)"
 	@mdir -i $(MIMG) ::/ | sed 's/^/  /'
 
 # The fallback path: a raw image in the boot gap, no filesystem involved.
@@ -113,15 +97,10 @@ write-raw: $(DISK)
 	@dd if=$(PAYLOAD_BIN) of=$(DISK) bs=512 seek=$(KERNEL_LBA) \
 	    conv=notrunc status=none
 
-# Inspect the disk with the host's own DOS tools.
-ls: $(DISK)
-	@sfdisk -l $(DISK) 2>/dev/null | tail -3
-	@mdir -i $(MIMG) ::/
+# Inspect the disk with the host's own DOS tools (defined in ../disk.mk).
+ls: disk-ls
 
-fsck: $(DISK)
-	@fsck.fat -n -v $(DISK)@@$(PART_OFFSET) 2>/dev/null \
-	  || fsck.fat -n $(DISK) 2>/dev/null \
-	  || echo "(run fsck.fat on the partition offset manually)"
+fsck: disk-fsck
 
 # Boot the machine. The ROM is loaded by -kernel; everything after that
 # comes off the disk.
@@ -138,6 +117,5 @@ disasm: bootrom.elf
 clean:
 	rm -f bootrom.elf $(PAYLOAD_BIN)
 
-# Also removes the disk image.
-distclean: clean
-	rm -f $(DISK)
+# Also removes the disk image, which lives in the project root.
+distclean: clean disk-clean

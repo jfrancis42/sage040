@@ -281,11 +281,22 @@ The short version of the gotchas:
 | `qemu-patch/` | the emulator changes, reproducible from pristine source |
 | `tests/` | ten bare-metal device tests, `make run` |
 | `cube/` | a rotating wireframe cube — the first real program |
-| `bootrom/` | a boot ROM that loads a program off the disk and runs it |
+| `bootrom/` | a boot ROM that finds `KERNEL.ROM` on the disk and runs it |
+| `kernel/` | the kernel: console, system call gate, disk driver, FAT16, shell |
+| `disk.mk` | the machine's hard disk, shared by everything that touches it |
 | `boot/` | a 78-byte proof-of-life kernel, for checking the toolchain before building the emulator (runs on stock QEMU's `virt`, not Sage040) |
 
 `tests/` doubles as a support library: `crt0.s`, `sage040.ld`, a 16550 console
 driver and the MFP interrupt plumbing are shared by everything else.
+
+From the top level:
+
+```bash
+make            # boot ROM and kernel
+make boot       # put the kernel on the disk and boot the machine
+make test       # the device tests, then the kernel's filesystem test
+make disk-ls    # partition table and directory listing
+```
 
 ### The test suite
 
@@ -312,11 +323,10 @@ nothing is stubbed. 98 checks across 10 programs, about 14 seconds.
 the image's own 68000 reset vectors to find its stack pointer and entry point.
 
 ```bash
-cd bootrom
-make disk     # 100 MB hd.img: MBR + FAT16 partition
-make write    # build the payload, mcopy it in as KERNEL.ROM
-make boot     # ROM mounts the filesystem and boots it
-make ls       # partition table and directory listing
+make disk           # 100 MB hd.img in the project root: MBR + FAT16 partition
+make -C kernel install   # build the kernel, mcopy it in as KERNEL.ROM
+make boot           # ROM mounts the filesystem and boots it
+make disk-ls        # partition table and directory listing
 ```
 
 The disk is genuinely DOS-formatted, so the host reads and writes it with
@@ -331,8 +341,58 @@ fsck.fat -n /tmp/partition.img
 Replacing the kernel is a file copy, not a `dd` at a magic offset. Needs
 `mtools`, `dosfstools` and `util-linux`.
 
-The payload is currently the cube, which demonstrates the whole path. Swap it
-for a kernel when there is one.
+The disk image lives in the project root, because it belongs to the machine
+rather than to any one program that touches it: the ROM boots from it, the
+kernel reads and writes it, the host puts files on it. `disk.mk` holds its
+definition and every Makefile includes that.
+
+`make -C bootrom write-cube` puts the cube on the disk in place of the kernel,
+which is the demonstration the loader was first written against and a useful
+way to prove it without the kernel in the picture.
+
+### The kernel
+
+`kernel/` is a small supervisor-mode kernel: a console, a `TRAP #0` system
+call gate, an ATA disk driver, a read/write FAT16 filesystem and a shell to
+drive them.
+
+```
+Sage040 kernel 0.1  (built Sep 21 2026 07:44:15)
+
+  traps   : 256 vectors at 0x00000000, TRAP #0 is the system call gate
+  syscall : TRAP #0 gate, 4 calls, verified
+  cpu     : MC68040, supervisor mode, sr=0x2704 vbr=0x00000000
+  fpu     : on-chip, 1/3 = 0.333333
+  memory  : 4096 KB, kernel 0x00000000-0x00006008, stack top 0x003ffff0
+  console : NS16550A at 0xff000000, 8N1, scratch register verified
+  mfp     : MC68901 at 0xff300000, 16 vectored channels on IPL 6
+  disk    : ATA, 'QEMU HARDDISK', 204800 sectors (100 MiB)
+  network : LAN91C111 rev 0x3391, MAC 52:54:00:12:34:56
+  video   : SM501, device id 0x050100a0, 16 MiB at 0xf0000000
+  fs      : FAT16 'SAGE040', 101158 KB, 101134 KB free, 2048 byte clusters
+
+kernel ready.  'help' lists commands.
+
+sage> ls
+---a-  KERNEL.ROM    22988  2026-09-21 07:47
+1 file, 22988 bytes
+```
+
+Every line of that inventory is a device the kernel touched during startup,
+not a list assembled at build time.
+
+The filesystem is read **and** write — create, read, write, seek, append,
+truncate, delete, rename, stat, list. Because the volume is a genuine MS-DOS
+one, the host can drop a file on it and the kernel reads it, and anything the
+kernel writes comes back off the image afterwards without the kernel running.
+`kernel/fstest.sh` checks precisely that, with `mtype`, `mdir` and `fsck.fat`
+— a filesystem only the kernel can read would prove nothing.
+
+The kernel runs in supervisor mode throughout. User programs will not, and the
+boundary they will cross is already there: `TRAP #0`, with the call number in
+`d0`, arguments in `d1` and `d2`, and the result back in `d0`.
+
+See [`kernel/README.md`](kernel/README.md).
 
 ### The cube
 
@@ -347,12 +407,14 @@ because a machine is not real until something runs on it.
 
 ## Status
 
-The machine is finished and every device is proven by test. There is **no
-operating system** — that is the point. What runs on it today is bare metal:
-the test suite, the cube, and whatever you write next.
+The machine is finished and every device is proven by test. On top of it there
+is now a small kernel — console, system calls, disk, filesystem, shell — which
+is the beginning of an operating system rather than a port of one. Bare metal
+still works and is still the point: the test suite and the cube run with no
+kernel underneath them at all.
 
-`design.md` tracks what is decided and what is not, including the open
-question of which TCP/IP stack to adapt.
+What is not there yet: preemption, processes, a TCP/IP stack, and a real-time
+clock. `design.md` tracks what is decided and what is not.
 
 ---
 

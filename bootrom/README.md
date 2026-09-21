@@ -3,19 +3,19 @@
 Loads a program off the disk and runs it.
 
 ```
-$ make disk           # 100 MB image: MBR + FAT16 partition
-$ make write          # build the payload, copy it in as KERNEL.ROM
+$ make disk           # 100 MB image in the project root: MBR + FAT16
+$ make write          # build the kernel, copy it in as KERNEL.ROM
 $ make boot           # boot it
 ```
 
 ```
 Sage040 boot ROM
 partition 1 at LBA 2048, type 0x06
-KERNEL.ROM  5948 bytes, first cluster 2
+KERNEL.ROM  22988 bytes, first cluster 2
 image SSP = 0x003FFFF0  PC = 0x00000400
 starting
 
-Sage040 wireframe cube
+Sage040 kernel 0.1  (built Sep 21 2026 07:44:15)
 ...
 ```
 
@@ -35,10 +35,15 @@ LBA 2048       partition 1, type 0x06, FAT16, volume SAGE040
 ```
 
 ```bash
-mcopy -o -i hd.img@@1M kernel.rom ::/KERNEL.ROM   # replace the kernel
-mdir     -i hd.img@@1M ::/                        # look at the disk
-mmd      -i hd.img@@1M ::/SRC                     # it is just a DOS disk
+mcopy -o -i ../hd.img@@1M kernel.rom ::/KERNEL.ROM   # replace the kernel
+mdir     -i ../hd.img@@1M ::/                        # look at the disk
+mmd      -i ../hd.img@@1M ::/SRC                     # it is just a DOS disk
 ```
+
+The image lives in the **project root**, not here: the ROM boots from it, the
+kernel reads and writes it, and the host puts files on it, so it belongs to
+the machine rather than to any one of them. Its definition is in
+[`../disk.mk`](../disk.mk), which every Makefile includes.
 
 `make disk` builds it with `sfdisk` and `mkfs.fat --offset`, and `make write`
 is a one-line `mcopy`. `fsck.fat` reports it clean. Requires `mtools`,
@@ -108,30 +113,40 @@ The payload lands at address 0, so the boot ROM cannot live there:
 0x00200000 - 0x003fffff   boot ROM, stack at the top of RAM
 ```
 
-`BOOT_SECTORS` (default 256, so 128 KB) sets how much is read. `make write`
-refuses if the payload is larger and tells you what to rebuild with:
+`BOOT_SECTORS` (default 256, so 128 KB) bounds the **raw** fallback path, and
+`make write-raw` refuses if the image is larger and tells you what to rebuild
+with:
 
 ```
-make BOOT_SECTORS=512 write boot
+make BOOT_SECTORS=512 write-raw boot
 ```
+
+The filesystem path has no such limit — it follows the cluster chain for as
+many clusters as the file has, and stops at the 2 MB where the ROM itself
+lives.
 
 ## Targets
 
 | | |
 |---|---|
 | `make` | build `bootrom.elf` |
-| `make disk` | create `hd.img`, 100 MB, MBR + FAT16 |
-| `make write` | build the payload and copy it in as `KERNEL.ROM` |
-| `make write-raw` | instead put it raw in the boot gap at LBA 64 |
+| `make disk` | create `../hd.img`, 100 MB, MBR + FAT16 |
+| `make write` | build the kernel and copy it in as `KERNEL.ROM` |
+| `make write-cube` | put the cube there instead |
+| `make write-raw` | put the cube raw in the boot gap at LBA 64 |
 | `make ls` | partition table and directory listing |
 | `make fsck` | check the filesystem |
 | `make boot` | run the machine — ROM mounts the disk and boots `KERNEL.ROM` |
 | `make clean` | remove build artifacts, keep the disk |
 | `make distclean` | also remove the disk image |
 
-To boot something other than the cube, point `PAYLOAD_DIR` and `PAYLOAD_ELF`
-at it — or just `mcopy` your own file in as `KERNEL.ROM`. The only requirement is that it links at address 0 with a vector table
-first — which `../tests/sage040.ld` already does.
+`make write` asks `../kernel` to install itself, so the kernel owns the file it
+puts on the disk. To boot something else, `mcopy` your own file in as
+`KERNEL.ROM`; the only requirement is that it links at address 0 with a vector
+table first, which `../tests/sage040.ld` and `../kernel/kernel.ld` both do.
+
+`make write-cube` is the demonstration this ROM was first written against, and
+still a useful way to prove the loader with the kernel out of the picture.
 
 ## A bug this found
 
