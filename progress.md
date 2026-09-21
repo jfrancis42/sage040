@@ -34,7 +34,7 @@ drive almost all of it:
 | 2 | `brk`/`sbrk` | the smaller half of memory; enough for `malloc` | **done** |
 | 3 | `mmap`/`munmap`/`mprotect` | what a runtime and a libc expect | **done** |
 | 4 | `malloc` in `lib/` | so tasks 5–12 have something to test against | **done** |
-| 5 | Signals: `sigaction`, handlers, `sigreturn` | the largest kernel item; editors need it | todo |
+| 5 | Signals: `sigaction`, handlers, `sigreturn` | the largest kernel item; editors need it | in progress |
 | 6 | `select`/`poll` | the other half of an event loop | todo |
 | 7 | Interval timers | depends on 5 | todo |
 | 8 | Pipes, `dup2`, real redirection | see the note below — `>` is broken today | todo |
@@ -207,7 +207,7 @@ It grows one group per task, and a group is only added once its calls
 work — so a failure there is always a regression, never a thing not
 written yet.
 
-**251 checks across six suites now:** 12 device programs, 41 fs, 138
+**255 checks across six suites now:** 12 device programs, 41 fs, 142
 api, 29 edit, 18 vm, 13 net.
 
 ### 1. Grow the user address space — done
@@ -461,6 +461,64 @@ and **waits for the workload to finish rather than sleeping past it**,
 because how long 40,000 allocations take depends on the host. With
 backward merging disabled in `coalesce()`, `malloc_check()` reports
 "two free blocks are adjacent" and six checks fail.
+
+### 5. Signals — in progress
+
+#### Found first: the system call gate read `a6` as the status register
+
+`_trap0_entry` saved `d1`–`a6` with one `movem`, a comment that said
+"13 registers, 52 bytes", and then read "the saved SR" from `56(%sp)`.
+**It is fourteen registers, 56 bytes.** Past those and the one pushed
+word, offset 56 is the saved `a6`. Measured by logging what the
+dispatcher received: every call from the shell arrived with "SR" 0 or
+7, where the real value always has the supervisor bit (`0x2000`) set.
+**So every system call a kernel task made was taken for one from user
+mode**, and on the way out it had signals delivered and could be
+preempted. the working notes and the kernel README both say kernel tasks are
+never preempted. That was not true.
+
+It never showed, because the shell ignores SIGINT and SIGTSTP, and the
+one signal it does get, SIGCHLD, defaults to being ignored, so wrongly
+"delivering" it just discarded it. It had to be found now because
+signal handlers are started by rewriting the saved registers, which
+this gate did not even hold all of.
+
+**The fix makes every way into the kernel save the same thing.** The
+gate saves all fifteen registers, `d0` included, in the layout the
+MFP interrupt stub and the exception path already used, and passes a
+pointer to them: `struct pt_regs` in `ptregs.h`, as on Linux. The
+result goes into the saved `d0`. `task_ret_to_user()` takes the
+`pt_regs` and reads the real SR from it. The MFP stub, which had the
+offset right, passes the same pointer.
+
+**Correcting it exposed the policy the bug had been standing in for.**
+A kernel task never returns to user mode, so a signal pending on one
+would never be acted on, and every sleep it attempted would return
+`EINTR` for ever. Two rules, both Linux's:
+
+- **A kernel task takes no signals.** `signal_send` drops them, and the
+  `kill` system call refuses one aimed at a kernel task with `EPERM`.
+- **An ignored signal is discarded when it is sent**, not left pending.
+  That covers one the task asked to ignore and one whose default is to
+  be ignored, like SIGCHLD. A blocked one is kept, since its
+  disposition may change before it is unblocked.
+
+**Tests:** `apps/sigtest` checks that a hand-written `trap #0` returns
+`d1`–`d7` and `a0`–`a6` unchanged and the result in `d0`, and
+`apitest.sh` checks that `kill 2` and `kill -9 2` (the shell) are
+refused. Neither would have failed on the old gate. **The bug itself
+has no lasting regression test,** because the only symptom was a
+kernel task being preempted at a system call's exit, and nothing
+outside the kernel can observe that. It was found and confirmed by
+measurement.
+
+#### Found second: nothing saves the FPU across a context switch
+
+`switch_context` saves the integer registers and USP, and no code
+anywhere in the kernel touches the FPU. Two tasks using floating point
+share one set of FP registers and one rounding mode. It has not shown
+because the cube is the only FP program. A signal frame needs the same
+save, so it is fixed as part of this task.
 
 ---
 

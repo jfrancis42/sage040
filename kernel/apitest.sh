@@ -73,6 +73,7 @@ mcopy -o -i "$MIMG" ../apps/cdtest ::/CDTEST
 mcopy -o -i "$MIMG" ../apps/hello ::/HELLO
 mcopy -o -i "$MIMG" ../apps/memtest ::/MEMTEST
 mcopy -o -i "$MIMG" ../apps/malloctest ::/MALLOCTE
+mcopy -o -i "$MIMG" ../apps/sigtest ::/SIGTEST
 mmd -i "$MIMG" ::/ETC
 mmd -i "$MIMG" ::/BIN
 mcopy -o -i "$MIMG" ../system/env ::/BIN/ENV
@@ -95,6 +96,11 @@ mcopy -o -i "$MIMG" "$SCRATCH/rc.tmp" ::/ETC/RC
     printf 'stat /BIN/ENV\r';           sleep 1
     printf '/BIN/ENV\r';                sleep 1
     printf 'cd /\r';                    sleep 1
+
+    # --- the gate, and signals ---
+    printf 'sigtest\r';                 sleep 2
+    printf 'kill 2\r';                  sleep 1
+    printf 'kill -9 2\r';               sleep 1
 
     # --- memory: brk, sbrk, mmap, munmap, mprotect ---
     printf 'echo FREE-BEFORE\r';        sleep 0.5
@@ -174,6 +180,9 @@ check "memtest ran to the end" $?
 grep -q "malloctest: done" "$C"
 check "malloctest ran to the end" $?
 
+grep -q "sigtest: done" "$C"
+check "sigtest ran to the end" $?
+
 test "$(grep -c '^  FAIL ' "$C")" -eq 0
 check "  and every check inside them passed" $?
 
@@ -250,6 +259,13 @@ check "  and free() said so" $?
 
 ! grep -q "NOT-CAUGHT" "$C"
 check "  and the program did not carry on" $?
+
+echo "=== checks: the kernel's own tasks take no signals ==="
+
+# The shell is pid 2 and a kernel task. A signal to it could never be
+# acted on, so kill refuses rather than leaving one pending for ever.
+test "$(grep -c "^kill: operation not permitted" "$C")" -eq 2
+check "kill and kill -9 of the shell are refused with EPERM" $?
 
 echo "=== checks: nothing broke ==="
 

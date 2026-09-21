@@ -30,6 +30,7 @@
 #include "pmm.h"
 #include "vm.h"
 #include "mmap.h"
+#include "ptregs.h"
 #include "net.h"
 #include "tcp.h"
 #include "errno.h"
@@ -1134,17 +1135,22 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
 /* so a system call it makes is at depth one by definition.           */
 /* ---------------------------------------------------------------- */
 
-s32 syscall_dispatch(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
-                     u32 a6, u32 saved_sr)
+void syscall_dispatch(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
+                      u32 a6, struct pt_regs *regs)
 {
-    s32 r = do_syscall(nr, a1, a2, a3, a4, a5, a6);
+    /*
+     * The result goes where the gate's final movem will find it. It is
+     * stored before signals are looked at, because delivering one saves
+     * these registers for sigreturn to restore -- and what it restores
+     * has to include what this call returned.
+     */
+    regs->d[0] = (u32)do_syscall(nr, a1, a2, a3, a4, a5, a6);
 
     /*
      * Signals, then a possible switch -- and neither if this call came
      * from the kernel itself, which the saved SR is what says.
      */
-    task_ret_to_user(saved_sr);
-    return r;
+    task_ret_to_user(regs);
 }
 
 /* ---------------------------------------------------------------- */

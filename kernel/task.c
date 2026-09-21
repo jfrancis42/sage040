@@ -16,6 +16,7 @@
 #include "wait.h"
 #include "vfs.h"
 #include "signal.h"
+#include "ptregs.h"
 #include "tty.h"
 #include "timer.h"
 #include "console.h"
@@ -421,9 +422,9 @@ void task_tick(void)
  * kernel was in the middle of, and the whole design avoids needing to
  * care about that.
  */
-void task_ret_to_user(u32 saved_sr)
+void task_ret_to_user(struct pt_regs *regs)
 {
-    if (!current || (saved_sr & 0x2000)) {
+    if (!current || !pt_user_mode(regs)) {
         return;
     }
 

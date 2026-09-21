@@ -82,20 +82,24 @@ _exc_common:
 |
         .globl  _trap0_entry
         .type   _trap0_entry,@function
-| The saved SR is passed as an eighth argument, because what happens on
-| the way out depends on where this call came from: a program returning
-| to user mode may be signalled or preempted, and the kernel calling the
-| gate on its own behalf may not. It is the first word of the exception
-| frame, which sits above the 52 bytes of registers.
+| ALL fifteen registers are saved, d0 included, in the layout every
+| other way into the kernel uses -- struct pt_regs in ptregs.h -- and a
+| pointer to them is the eighth argument. What happens on the way out
+| depends on where the call came from, and a signal handler is started
+| by rewriting these registers, so the dispatcher needs all of them.
+|
+| This gate used to save d1-a6 only, and read "the saved SR" from
+| 56(%sp) -- which, past fourteen registers and one pushed word, is the
+| saved a6. Every call from a kernel task was taken for one from user
+| mode. Found while writing signal handlers, which is the first code
+| that could not work with it.
+|
+| The call's result is stored into the saved d0 by the dispatcher, and
+| the final movem restores it with everything else.
 _trap0_entry:
-        movem.l %d1-%d7/%a0-%a6,-(%sp)  | 13 registers, 52 bytes
-        clr.l   -(%sp)
-        move.w  56(%sp),2(%sp)          | the saved SR, zero extended
-                                        | into the LOW half: a word
-                                        | written at (%sp) would land in
-                                        | the high half on a big-endian
-                                        | machine and arrive multiplied
-                                        | by 65536
+        movem.l %d0-%d7/%a0-%a6,-(%sp)  | 15 registers, 60 bytes: pt_regs
+        lea     (%sp),%a1               | a1 is saved; it may be used
+        move.l  %a1,-(%sp)              | struct pt_regs *
         move.l  %a0,-(%sp)
         move.l  %d5,-(%sp)
         move.l  %d4,-(%sp)
@@ -105,7 +109,7 @@ _trap0_entry:
         move.l  %d0,-(%sp)
         jsr     syscall_dispatch
         lea     32(%sp),%sp
-        movem.l (%sp)+,%d1-%d7/%a0-%a6
+        movem.l (%sp)+,%d0-%d7/%a0-%a6
         rte
 
 |

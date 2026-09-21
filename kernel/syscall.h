@@ -26,8 +26,9 @@
 #include "uapi.h"
 
 /* The dispatcher, called from _trap0_entry in start.s. */
-s32 syscall_dispatch(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
-                     u32 a6, u32 saved_sr);
+struct pt_regs;
+void syscall_dispatch(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
+                      u32 a6, struct pt_regs *regs);
 
 /*
  * Is the kernel inside a system call right now?

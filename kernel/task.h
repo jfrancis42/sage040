@@ -158,7 +158,8 @@ void task_tick(void);
  * current task's turn is over -- and does neither if the return is into
  * the kernel rather than into a program.
  */
-void task_ret_to_user(u32 saved_sr);
+struct pt_regs;
+void task_ret_to_user(struct pt_regs *regs);
 
 /* Give `t` the working directory `from` is standing in. */
 void task_cwd_inherit(struct task *t, struct task *from);

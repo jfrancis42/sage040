@@ -57,14 +57,34 @@ int signal_send(struct task *t, int sig)
         return -EINVAL;
     }
 
+    /*
+     * A kernel task never returns to user mode, so a signal sent to one
+     * would never be acted on -- and would sit pending for ever, making
+     * every sleep it tried return at once. The kernel's own tasks take
+     * no signals at all, which is what Linux does with its threads.
+     * (It used to work by accident: the system call gate took every
+     * kernel task's call for a user one, and delivered on the way out.)
+     */
+    if (!t->as) {
+        return 0;
+    }
+
     sr = irq_save();
 
     /*
+     * An ignored signal is discarded when it is SENT, not left pending --
+     * both one the task asked to ignore and one whose default is to be
+     * ignored, like SIGCHLD. Otherwise a parent that never waits would
+     * collect a pending SIGCHLD that interrupts every sleep it makes.
+     * That is POSIX's rule and Linux's. A blocked signal is kept, because
+     * it may be unblocked after the disposition has changed.
+     *
      * SIGKILL cannot be blocked or ignored, which is the one guarantee
      * that makes it worth having: everything else a task can decline,
      * so there has to be something it cannot.
      */
-    if (sig != SIGKILL && (t->sig_ignored & SIGMASK(sig))) {
+    if (sig != SIGKILL && !(t->sig_blocked & SIGMASK(sig)) &&
+        ((t->sig_ignored & SIGMASK(sig)) || default_action(sig) == SIG_IGN)) {
         irq_restore(sr);
         return 0;
     }
@@ -104,7 +124,12 @@ int signal_send(struct task *t, int sig)
 
 int signal_kill(int pid, int sig)
 {
-    return signal_send(task_find(pid), sig);
+    struct task *t = task_find(pid);
+
+    if (t && !t->as && t->state != TASK_ZOMBIE) {
+        return -EPERM;          /* see signal_send: it would do nothing */
+    }
+    return signal_send(t, sig);
 }
 
 int signal_pending(struct task *t)

@@ -128,8 +128,8 @@ __asm__(
 "       move.l  %d0,-(%sp)                  \n"
 "       jsr     mfp_dispatch                \n"
 "       addq.l  #4,%sp                      \n"
-"       clr.l   -(%sp)                      \n"
-"       move.w  64(%sp),2(%sp)              \n"   /* saved SR, low half */
+"       lea     (%sp),%a0                   \n"   /* struct pt_regs *   */
+"       move.l  %a0,-(%sp)                  \n"
 "       jsr     task_ret_to_user            \n"
 "       addq.l  #4,%sp                      \n"
 "       movem.l (%sp)+,%d0-%d7/%a0-%a6      \n"
