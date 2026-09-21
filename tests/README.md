@@ -33,6 +33,7 @@ patched QEMU at `~/m68k/sage040-qemu` (see `../qemu-patch/`).
 | `t8-mfp-timers.c` | MC68901 timers | All four timers, live counters, **prescaler ratio measured at exactly 50** for /4 vs /200, and **event-count mode counting real ATA interrupts** on TAI |
 | `t9-mfp-usart.c` | MC68901 USART | Transmit verified against the output file, receive verified against bytes the harness feeds in, plus both interrupt channels |
 | `t10-sm501.c` | SM501 video | Device ID, register endianness, 16 MiB with no aliasing, **640×480 framebuffer filled and read back** |
+| `t11-rtc.c` | M48T59 clock + NVRAM | NVRAM is real memory and does not alias onto the clock, every time field is in BCD range, **the oscillator advances**, a written date reads back, and **30 February rolls into 1 March** |
 
 The interesting ones are `t4` (a genuine network round trip), `t5` (a real table
 walk), `t7` (the full interrupt-controller semantics an OS depends on) and `t8`

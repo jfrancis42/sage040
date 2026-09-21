@@ -25,7 +25,16 @@ patch -d $Q -p1 < sage040.patch
 ## What the patch changes, and why
 
 **`hw/m68k/Kconfig`, `hw/m68k/meson.build`** — add `CONFIG_SAGE040`, selecting
-`MC68901`, `SERIAL_MM`, `IDE_MMIO`, `SMC91C111` and `SM501`.
+`MC68901`, `SERIAL_MM`, `IDE_MMIO`, `SMC91C111`, `SM501` and `M48T59`.
+
+The **M48T59** clock needed no new code: upstream already provides a sysbus
+variant, so the machine instantiates `sysbus-m48t59` with `base-year` 2000
+and maps its 8 KiB window. That is why the clock is not an MC146818 —
+QEMU's MC146818 model is an `ISADevice` (`config MC146818RTC depends on
+ISA_BUS`), and this board has no ISA bus. Making that part work would mean
+either inventing one or changing the upstream model's parent type, which is
+a much larger and far less upstreamable patch than this file is meant to
+hold.
 
 **`hw/misc/Kconfig`, `hw/misc/meson.build`** — add `CONFIG_MC68901`.
 

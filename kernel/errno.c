@@ -1,0 +1,48 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 Jeff Francis */
+/*
+ * errno.c - error numbers as words.
+ *
+ * The wording is Linux's, near enough that someone who has seen the
+ * message before recognises it. Anything not listed prints its number,
+ * which is more use than "unknown error" on its own.
+ */
+#include "errno.h"
+#include "kernel.h"
+
+const char *strerror(int err)
+{
+    if (err < 0) {
+        err = -err;
+    }
+    switch (err) {
+    case 0:               return "success";
+    case EPERM:           return "operation not permitted";
+    case ENOENT:          return "no such file or directory";
+    case EIO:             return "input/output error";
+    case ENXIO:           return "no such device or address";
+    case E2BIG:           return "argument list too long";
+    case EBADF:           return "bad file descriptor";
+    case ENOMEM:          return "cannot allocate memory";
+    case EACCES:          return "permission denied";
+    case EBUSY:           return "device or resource busy";
+    case EEXIST:          return "file exists";
+    case EXDEV:           return "invalid cross-device link";
+    case ENODEV:          return "no such device";
+    case ENOTDIR:         return "not a directory";
+    case EISDIR:          return "is a directory";
+    case EINVAL:          return "invalid argument";
+    case ENFILE:          return "too many open files in system";
+    case EMFILE:          return "too many open files";
+    case ENOTTY:          return "inappropriate ioctl for device";
+    case EFBIG:           return "file too large";
+    case ENOSPC:          return "no space left on device";
+    case ESPIPE:          return "illegal seek";
+    case EROFS:           return "read-only file system";
+    case ENAMETOOLONG:    return "file name too long";
+    case ENOSYS:          return "function not implemented";
+    case ENOTEMPTY:       return "directory not empty";
+    case ENOMEDIUM:       return "no medium found";
+    default:              return "unknown error";
+    }
+}

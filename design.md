@@ -24,10 +24,22 @@ Implemented as a custom QEMU machine, `sage040`.
 | Disk | **ATA taskfile** (WD1003 lineage) | Eight registers, polled PIO, no DMA or descriptors — ~60 lines for read and write |
 | Ethernet | SMSC **LAN91C111** | On-chip packet FIFO with **no descriptor rings in host memory**, which is what makes it far easier than a SONIC or LANCE |
 | Video | Silicon Motion **SM501** | Plain linear framebuffer in 16 MiB of its own memory |
+| Clock, NVRAM | ST **M48T59** TIMEKEEPER | Directly memory-mapped byte registers, no index/data port pair, and 8 KiB of battery-backed SRAM alongside |
 
 Selection criterion throughout: **fewest registers to poke**. Deliberately
 rejected — NCR 53C94 SCSI (bus phases, CDBs, DMA), DP83932 SONIC (descriptor
 areas plus a CAM load), Zilog Z8530 (fiddlier than a 16550 for no gain).
+
+**The clock is an M48T59 and not an MC146818**, which was the first
+candidate. The MC146818 is the better-known part and the easier one to
+buy today, but QEMU's model of it is an **ISA device** and this board has
+no ISA bus; using it would mean either inventing one or rewriting the
+upstream model's parent type, and a large invasive patch is exactly what
+`qemu-patch/` is meant not to contain. The M48T59 is already a sysbus
+device upstream, so it cost no emulator code at all, its registers are
+memory-mapped bytes like everything else here rather than an index/data
+port pair, and it brings 8 KiB of non-volatile RAM — the only storage on
+this machine that survives a power cycle without going through the disk.
 
 ---
 
@@ -43,17 +55,18 @@ areas plus a CAM load), Zilog Z8530 (fiddlier than a 16550 for no gain).
 | `0xff200000` | 16 | LAN91C111 | MFP channel 3 |
 | `0xff300000` | 24 | MC68901 MFP | drives **IPL 6**, vectored |
 | `0xff400000` | 2 MiB | SM501 control registers | — |
+| `0xff600000` | 8 KiB | M48T59 NVRAM; the clock is its last 8 bytes | MFP channel 2 |
 
 Boot protocol: a big-endian ELF32 (`EM_68K`) loaded with `-kernel`, entered at
 its ELF entry point with SP at the top of RAM. No ROM, no bootloader, and no
 bootinfo block — the OS knows its own machine.
 
 **Booting from disk.** `bootrom/` is loaded that way and then loads everything
-else itself: it reads a flat image from sector 0 to address 0 and jumps to it.
-The payload carries a 68k vector table at its start, so the loader takes the
-initial SSP from offset 0 and the entry point from offset 4 — the 68000 reset
-convention — and needs to know nothing else about it. There is no filesystem
-and no partition table; sector 0 *is* the image. §9 is about changing that.
+else itself: it reads the partition table, mounts the FAT16 volume, finds
+`KERNEL.ROM` in its root directory and loads it to address 0. The image carries
+a 68k vector table at its start, so the loader takes the initial SSP from
+offset 0 and the entry point from offset 4 — the 68000 reset convention — and
+needs to know nothing else about it. See §9.
 
 ---
 
@@ -72,6 +85,7 @@ cannot coexist. There is no autovector controller on this board.
 | GPIP5 | 7 | NS16550A UART | |
 | GPIP4 | 6 | ATA | **TAI** — timer A event input |
 | GPIP3 | 3 | LAN91C111 | **TBI** — timer B event input |
+| GPIP2 | 2 | M48T59 | alarm and watchdog |
 
 Two GPIP pins doubling as timer event inputs is a property of the real chip, and
 is used deliberately: timer A can count disk interrupts directly.
@@ -112,16 +126,23 @@ Three new files and edits to eight existing ones. Details and rationale in
 |---|---|
 | `hw/m68k/sage040.c` | the machine |
 | `hw/misc/mc68901.c` + header | the MFP |
-| Kconfig / meson entries | `CONFIG_SAGE040`, `CONFIG_MC68901` |
+| Kconfig / meson entries | `CONFIG_SAGE040`, `CONFIG_MC68901`, and `select M48T59` |
 | `hw/display/sm501.c`: guard the PCI variant with `#ifdef CONFIG_PCI` | upstream compiles it unconditionally, so a sysbus-only board fails to link. This board has no PCI bus and does not carry one — `CONFIG_PCI` is confirmed unset in the build. |
 | `target/m68k`: optional `m68k_set_iack_handler()` | a vectored controller needs the interrupt-acknowledge cycle upstream documents as absent. Without it the MFP cannot clear the acknowledged channel, and every interrupt repeats forever. ~15 lines. |
+
+The **M48T59** clock needed no new code at all: upstream already has a sysbus
+variant, so the machine instantiates `sysbus-m48t59`, sets `base-year` to
+2000 and maps it. That, rather than familiarity, is why the clock is not an
+MC146818 — see §1.
 
 ---
 
 ## 6. Verification
 
 Every device has a bare-metal test that exercises the real hardware path.
-`make run` in `tests/`: **10 programs, 98 checks, all passing, ~14 s.**
+`make run` in `tests/`: **11 programs, all passing.** The kernel adds a
+twelfth, `kernel/fstest.sh`, which drives a console session and then checks
+the result with the host's own `mdir`, `mtype` and `fsck.fat` — 16 checks.
 
 | Test | Checks | What it proves |
 |---|---|---|
@@ -135,6 +156,7 @@ Every device has a bare-metal test that exercises the real hardware path.
 | `t8-mfp-timers` | 10/10 | All four timers; **prescaler ratio measured at exactly 50** for /4 vs /200; event-count mode counting **real ATA interrupts** |
 | `t9-mfp-usart` | 11/11 | Real transmit (verified against the output file) and real receive |
 | `t10-sm501` | 7/7 | Device ID `0x050100A0`, 16 MiB non-aliasing, **640×480 framebuffer filled and verified** |
+| `t11-rtc` | 6/6 | NVRAM is real memory and does not alias onto the clock; every time field is in BCD range; the **oscillator advances**; a written date reads back; **30 February rolls into 1 March**, which is what the part does and why the driver validates first |
 
 ---
 
@@ -147,10 +169,12 @@ Every device has a bare-metal test that exercises the real hardware path.
 | Console, C runtime, exception vectors, interrupt dispatch | ✅ done |
 | Disk, ethernet, video, MMU, timers | ✅ hardware proven by tests |
 | Disk format (§9) — real MS-DOS, host read/write | ✅ done |
-| Kernel (§10) — console, traps, block driver, FAT16 read/write, shell | ✅ done — `kernel/` |
-| System call gate — `TRAP #0`, four console calls | ✅ done, no user programs to use it yet |
+| Kernel (§10) — VFS, device model, drivers, FAT16 read/write, shell | ✅ done — `kernel/` |
+| System calls — Linux/m68k convention, Linux numbers and errnos | ✅ done, no user programs to use them yet |
+| Clock — M48T59, `time()`/`stime()`, file timestamps | ✅ done |
+| Ethernet driver — `struct netdev`, registered as `eth0` | ✅ written, only the probe is exercised |
 | Timer + preemption, processes, virtual memory | unblocked — ordinary OS work now |
-| TCP/IP (§8), framebuffer console, RTC | not started |
+| TCP/IP (§8), framebuffer console | not started |
 
 **Every hardware dependency is satisfied.** What remains is operating system,
 not emulator.
@@ -326,39 +350,83 @@ verification that a round trip cannot give you.
 `kernel/`, loaded from the disk by the boot ROM as `KERNEL.ROM`. It runs in
 supervisor mode from its first instruction and never leaves it.
 
-### Startup
+### The shape
 
-The order is forced by dependency: console first, so everything after it can
-say what happened; then the vector table, so a fault from that point on is
-reported rather than silently jumping into whatever was at address 0; then the
-`TRAP #0` gate, checked by making a call through it; then the hardware
-inventory; then the filesystem; then the shell.
+```
+              shell.c            a program that happens to be linked in
+ ------------------------------  trap #0
+              syscall.c          open read write lseek stat getdents ...
+               vfs.c             paths, mounts, the descriptor table
+      +-----------+-----------+
+   fs/fat16.c           dev.c    filesystem types, device registries
+      |                   |
+ struct blockdev     struct chardev / netdev / rtcdev
+      |                   |
+ drivers/ata.c       drivers/ns16550.c  m48t59.c  smc91c111.c
+```
 
-Every line of the inventory is a device the kernel touched, not a list
-assembled at build time — a startup message that reports what was assumed
-agrees with you while the hardware disagrees.
+Three properties are worth stating because they are what the layering is
+for, and each is checkable rather than aspirational:
 
-Interrupts stay masked throughout. Nothing yet needs them: the console and the
-disk are both polled, and enabling them before there is a handler worth
-running only creates ways to hang.
+- **`shell.c` includes `syscall.h` and nothing else from the kernel.** Not
+  `vfs.h`, not `dev.h`, not `console.h`. It cannot reach a filesystem or a
+  chip even by accident.
+- **The filesystem talks to a `struct blockdev`** and has no idea an ATA
+  taskfile answers. A SCSI controller or a RAM disk is a new file in
+  `drivers/` and one more line in `main.c`.
+- **`main.c` is the only file that names a chip.** Deliberate: this is a
+  board with parts soldered to it, not a bus that can be enumerated, so
+  something has to know what is fitted — and exactly one thing does.
 
-### Supervisor and user mode
+### System calls
 
-The boundary that user programs will cross already exists. **`TRAP #0`** is the
-system call gate: `d0` selects the call, `d1` and `d2` carry arguments, `d0`
-returns the result. Four calls so far, all console — put character, put string,
-get character, get line.
+The convention is Linux/m68k's, unchanged: `d0` holds the call number,
+`d1`–`d5` the arguments, and `d0` comes back with the result or a negated
+errno. That is not an imitation — Linux picked the obvious convention for
+this architecture and there is nothing to improve on. The numbers are
+Linux's i386 numbers, because `__NR_write` being 4 is a fact a lot of
+people carry around, and the errnos are Linux's by name and value.
 
-`kmain()` makes one call through the gate at startup and checks the answer, so
-the path is known good at the point it is installed rather than at the point
-something first depends on it.
+`uapi.h` holds what crosses the boundary and nothing else, the same split
+Linux makes under the same name: a program gets `O_CREAT` and
+`struct stat`, never `struct fs_type` or the descriptor table.
 
-Two things are deliberately not done. The MMU is not turned on, so there is no
-address space to separate yet. And `syscall_dispatch()` takes its pointer
-arguments at face value, which is correct while the only caller is the kernel
-itself — it is the function that will have to validate and copy them across
-the boundary once an unprivileged program in its own address space can call
-it.
+`kmain()` makes a call through the gate at startup and checks that an
+unknown number comes back `-ENOSYS`, so the path is known good where it is
+installed rather than where something first depends on it.
+
+**Still on the wrong side of the line:** `syscall_dispatch()` takes pointer
+arguments at face value. Correct while every caller shares the kernel's
+address space, and the function that will have to validate and copy them
+when that stops being true. The MMU is off, so there is no address space to
+separate yet.
+
+### Devices
+
+Four classes, each with one interface: `chardev` (a byte stream),
+`blockdev` (sectors), `netdev` (packets), `rtcdev` (seconds since 1970).
+Drivers register during startup and stay registered until the power goes
+off — no hotplug, no refcounting, nothing to unregister, because with a
+handful of soldered parts that would be machinery in search of a problem.
+
+Path resolution has two fixed mount points: `/dev` is the device registry,
+everything else is the mounted volume. That is honest about a filesystem
+with one directory and does not change the calls above it when that stops
+being true.
+
+### The terminal
+
+`drivers/ns16550.c` is a terminal, not just a UART. `read()` returns one
+whole line, echoed as typed, with backspace and ctrl-U working and ctrl-D
+returning 0 for end of input — canonical mode, in the driver for the same
+reason it lives in the tty layer on a real system: otherwise every program
+that reads a line implements it again, slightly differently. ONLCR and
+ICRNL are applied here too, so a file written through the same `write()`
+gets the bare newline it should have.
+
+Polled in both directions, on purpose: it works before interrupts are set
+up, works inside a panic, and cannot deadlock against the code reporting
+the fault.
 
 ### Sizing memory, and surviving it
 
@@ -366,42 +434,36 @@ Nothing on this machine reports how much RAM is fitted, so the kernel writes
 to each megabyte boundary until one does not answer. The first address past
 the end raises a **bus error** rather than reading back wrong — QEMU faults
 there exactly as hardware with no card in the slot would — so `memprobe.s`
-installs its own bus error handler for the duration, throws the frame away and
-returns as if the test had failed. That is the traditional 68k ROM trick and
-still the only way to do it here.
+installs its own bus error handler, throws the frame away and returns as if
+the test had failed. The traditional 68k ROM trick, and still the only way
+to do it here.
 
-It is worth keeping narrow. The recovery abandons the exception frame and
+It is deliberately narrow. The recovery abandons the exception frame and
 restores the stack pointer by hand, which is safe only because the routine
-touches no callee-saved register and holds no state worth unwinding. It is not
-a general fault handler and should not grow into one.
+touches no callee-saved register and holds no state worth unwinding. It is
+not a general fault handler and should not grow into one.
 
 ### Faults
 
 Every vector except reset lands on one handler. The 68040 pushes a
 format/vector word on every exception, so the handler identifies itself from
-its own frame instead of needing 255 separate stubs, and reports the vector,
-its name, the PC, the SR and all fifteen registers before halting.
+its own frame instead of needing 255 stubs, and reports the vector, its
+name, the PC, the SR and all fifteen registers before halting.
 
 Nothing is recoverable yet, so it stops — a silent hang is the one outcome
-worth ruling out. That report is what found the first real bug in the kernel:
-the memory probe walking off the end of RAM, with the faulting address sitting
-in `a0`.
-
-### The shell
-
-Not a design goal; it is how the console and filesystem calls get exercised by
-hand. Every command is a direct call into `fs.c` or `console.c` and nothing
-else, so a command that misbehaves points at the layer underneath. When user
-programs exist it becomes one of them, reaching the same calls through
-`TRAP #0`.
+worth ruling out. That report found the first real bug in the kernel: the
+memory probe walking off the end of RAM, faulting address in `a0`.
 
 ---
 
 ## 11. Open items
 
-1. **Lift the remaining test code into drivers.** `t3` became `kernel/ata.c`.
-   `t4`, `t7`–`t10` are still proven working code living in tests; they want
-   turning into `smc91c111.c`, `mfp.c`, `sm501.c` with real interfaces.
+1. **Lift the remaining test code into drivers.** `t3` became
+   `kernel/drivers/ata.c` and `t4` became `drivers/smc91c111.c`. `t7`–`t11`
+   are still proven working code living in tests; the MFP and the SM501 want
+   turning into drivers with real interfaces, and the SM501 needs a device
+   class of its own — a framebuffer is neither a character stream nor a
+   block device.
 2. **Pick a scheduler tick.** Timer C or D at /200 with a reload near 123 gives
    ~10 ms. Note the livelock bound documented in the programmer's guide: a tick
    faster than the handler starves the foreground.
@@ -410,14 +472,18 @@ programs exist it becomes one of them, reaching the same calls through
    of the line status register and nothing above it moves.
 4. **Pick a TCP/IP stack** (§8). lwIP is the recommendation; nothing blocks it
    now that the NIC is proven.
-5. **A real-time clock.** The one piece of hardware the design is actually
-   missing: every file the kernel writes carries a fixed date. An **MC146818**
-   fits the design rule — a real part with a datasheet, byte-wide registers,
-   and an interrupt line the MFP has a spare GPIP pin for. A period Sage would
-   have had a battery clock.
-6. **Consider upstreaming** the `sm501.c` build fix and the IACK callback.
-7. **Hardware.** Nothing in the design needs a bus that cannot be wired by hand:
-   a 68040, an MFP, and five memory-mapped peripherals.
+5. **Use the ethernet driver.** `drivers/smc91c111.c` implements
+   `struct netdev` — up, down, send, receive — but only its probe runs at
+   startup. Nothing transmits or receives a packet until there is a stack
+   above it (§8), so the send and receive paths are written and unexercised.
+   A test that does an ARP round trip through the driver, as `t4-net` does
+   from bare metal, is the cheap way to close that.
+6. **Use the NVRAM.** 8176 bytes that survive a power cycle, with nothing in
+   them. Boot settings are the obvious tenant, and it wants a checksum and a
+   small structure rather than raw offsets.
+7. **Consider upstreaming** the `sm501.c` build fix and the IACK callback.
+8. **Hardware.** Nothing in the design needs a bus that cannot be wired by hand:
+   a 68040, an MFP, and six memory-mapped peripherals.
 
 ---
 

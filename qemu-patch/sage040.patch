@@ -1,5 +1,5 @@
---- a/hw/display/sm501.c
-+++ b/hw/display/sm501.c
+--- a/hw/display/sm501.c	2026-08-27 06:23:31.000000000 -0600
++++ b/hw/display/sm501.c	2026-09-20 08:41:19.640376516 -0600
 @@ -2164,6 +2164,13 @@
      .instance_init = sm501_sysbus_init,
  };
@@ -29,8 +29,8 @@
  }
  
  type_init(sm501_register_types)
---- a/target/m68k/cpu.h
-+++ b/target/m68k/cpu.h
+--- a/target/m68k/cpu.h	2026-08-27 06:23:32.000000000 -0600
++++ b/target/m68k/cpu.h	2026-09-20 08:55:37.665983150 -0600
 @@ -154,6 +154,18 @@
  
      /* Fields from here on are preserved across CPU reset. */
@@ -60,8 +60,8 @@
  void m68k_switch_sp(CPUM68KState *env);
  
  void do_m68k_semihosting(CPUM68KState *env, int nr);
---- a/target/m68k/helper.c
-+++ b/target/m68k/helper.c
+--- a/target/m68k/helper.c	2026-08-27 06:23:32.000000000 -0600
++++ b/target/m68k/helper.c	2026-09-20 08:45:33.676509022 -0600
 @@ -940,6 +940,14 @@
   * the vector when the interrupt is acknowledged by the CPU.  For
   * simplicity we calculate it when the interrupt is signalled.
@@ -77,8 +77,8 @@
  void m68k_set_irq_level(M68kCPU *cpu, int level, uint8_t vector)
  {
      CPUState *cs = CPU(cpu);
---- a/target/m68k/op_helper.c
-+++ b/target/m68k/op_helper.c
+--- a/target/m68k/op_helper.c	2026-08-27 06:23:32.000000000 -0600
++++ b/target/m68k/op_helper.c	2026-09-20 08:55:37.667381556 -0600
 @@ -531,7 +531,16 @@
           * first signalled.
           */
@@ -96,9 +96,9 @@
          return true;
      }
      return false;
---- a/hw/m68k/Kconfig
-+++ b/hw/m68k/Kconfig
-@@ -46,3 +46,13 @@
+--- a/hw/m68k/Kconfig	2026-08-27 06:23:31.000000000 -0600
++++ b/hw/m68k/Kconfig	2026-09-21 08:01:19.119508097 -0600
+@@ -46,3 +46,14 @@
      select GOLDFISH_TTY
      select GOLDFISH_RTC
      select VIRTIO_MMIO
@@ -112,8 +112,9 @@
 +    select IDE_MMIO         # ATA taskfile disk
 +    select SMC91C111        # SMSC LAN91C111 ethernet
 +    select SM501            # bitmapped video
---- a/hw/m68k/meson.build
-+++ b/hw/m68k/meson.build
++    select M48T59           # RTC + 8 KB NVRAM
+--- a/hw/m68k/meson.build	2026-08-27 06:23:31.000000000 -0600
++++ b/hw/m68k/meson.build	2026-09-19 20:27:11.884302502 -0600
 @@ -5,4 +5,6 @@
  m68k_ss.add(when: 'CONFIG_Q800', if_true: files('q800.c', 'q800-glue.c'))
  m68k_ss.add(when: 'CONFIG_M68K_VIRT', if_true: files('virt.c'))
@@ -121,8 +122,8 @@
 +m68k_ss.add(when: 'CONFIG_SAGE040', if_true: files('sage040.c'))
 +
  hw_arch += {'m68k': m68k_ss}
---- a/hw/misc/Kconfig
-+++ b/hw/misc/Kconfig
+--- a/hw/misc/Kconfig	2026-08-27 06:23:31.000000000 -0600
++++ b/hw/misc/Kconfig	2026-09-20 08:30:07.967887845 -0600
 @@ -258,3 +258,7 @@
      bool
  
@@ -131,8 +132,8 @@
 +config MC68901
 +    bool
 +    depends on M68K
---- a/hw/misc/meson.build
-+++ b/hw/misc/meson.build
+--- a/hw/misc/meson.build	2026-08-27 06:23:32.000000000 -0600
++++ b/hw/misc/meson.build	2026-09-20 08:30:07.949887732 -0600
 @@ -1,3 +1,4 @@
 +system_ss.add(when: 'CONFIG_MC68901', if_true: files('mc68901.c'))
  system_ss.add(when: 'CONFIG_APPLESMC', if_true: files('applesmc.c'))

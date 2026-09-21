@@ -1,64 +1,61 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 Jeff Francis */
 /*
- * console.c - the kernel's console, an NS16550A at 0xff000000.
+ * console.c - the kernel's own output path.
  *
- * Reference: TI/National PC16550D datasheet.  Registers are byte-spaced,
- * so register N of the datasheet is byte N of the window.
+ * One indirection: a pointer to whichever character device was
+ * registered as the console. It does not know what that device is, so
+ * replacing the NS16550A with another UART, or with a framebuffer
+ * terminal, changes nothing here and nothing in any caller.
  *
- * Polled in both directions.  That is a deliberate starting point, not an
- * oversight: a polled console works before interrupts are set up, works
- * inside a panic, and cannot deadlock against the code reporting the
- * fault.  When the receive path becomes interrupt-driven (the UART's IRQ
- * already reaches MFP channel 7) kgetc() will take from a ring buffer
- * instead of the line status register, and nothing above it changes.
- *
- * This is the kernel's own driver rather than a call into ../tests/uart.c.
- * The tests share that file so their output is uniform; the kernel owns
- * its hardware.
+ * Before a console is registered these are silent. Nothing prints
+ * before main.c brings the console up, which it does first for exactly
+ * this reason.
  */
-#include "kernel.h"
+#include "console.h"
 
-void con_init(void)
+static struct chardev *con;
+static struct file confile;
+
+void console_set(struct chardev *d)
 {
-    /*
-     * 8N1, FIFOs enabled and cleared, no interrupts, DTR and RTS
-     * asserted.  The divisor is programmed for form's sake -- baud rate
-     * is meaningless to an emulated UART, but a real one needs it and
-     * the sequence should be the one real hardware wants.
-     */
-    MMIO8(UART_IER) = 0x00;
-    MMIO8(UART_LCR) = LCR_DLAB;
-    MMIO8(UART_DLL) = 0x01;
-    MMIO8(UART_DLM) = 0x00;
-    MMIO8(UART_LCR) = LCR_8N1;
-    MMIO8(UART_FCR) = FCR_ENABLE | FCR_CLR_RX | FCR_CLR_TX;
-    MMIO8(UART_MCR) = MCR_DTR | MCR_RTS;
+    con = d;
+    confile.ops = d ? d->ops : 0;
+    confile.priv = d ? d->priv : 0;
+    confile.used = 1;
+    confile.flags = 0;
 }
 
-/* ---------------------------------------------------------------- */
-/* Output                                                            */
-/* ---------------------------------------------------------------- */
+struct chardev *console_get(void)
+{
+    return con;
+}
 
 void kputc(char c)
 {
-    if (c == '\n') {
-        while (!(MMIO8(UART_LSR) & LSR_THRE)) {
-            /* wait for the transmit holding register */
-        }
-        MMIO8(UART_THR) = '\r';
+    if (!con || !con->ops->write) {
+        return;
     }
-    while (!(MMIO8(UART_LSR) & LSR_THRE)) {
-        /* wait for the transmit holding register */
-    }
-    MMIO8(UART_THR) = (u8)c;
+    /*
+     * The newline goes out as a newline. Turning it into a carriage
+     * return and a line feed is the terminal driver's job -- ONLCR, in
+     * the language of a real tty -- and doing it here as well would put
+     * two of them on the wire.
+     */
+    con->ops->write(&confile, &c, 1);
 }
 
 void kputs(const char *s)
 {
-    while (*s) {
-        kputc(*s++);
+    u32 n = 0;
+
+    if (!con || !con->ops->write) {
+        return;
     }
+    while (s[n]) {
+        n++;
+    }
+    con->ops->write(&confile, s, n);
 }
 
 void kputln(const char *s)
@@ -105,80 +102,8 @@ void kputdec(u32 v)
     }
 }
 
-/* ---------------------------------------------------------------- */
-/* Input                                                             */
-/* ---------------------------------------------------------------- */
-
-int kgetc_nb(void)
+void kput2(u32 v)
 {
-    if (MMIO8(UART_LSR) & LSR_DR) {
-        return (int)MMIO8(UART_RBR);
-    }
-    return -1;
-}
-
-int kgetc(void)
-{
-    int c;
-
-    while ((c = kgetc_nb()) < 0) {
-        /* spin until a character arrives */
-    }
-    return c;
-}
-
-/*
- * Read one line into buf, echoing as it goes, and return its length.
- *
- * Editing is what a serial terminal can do without cursor addressing:
- * backspace or DEL rubs out a character, Ctrl-U discards the line.  CR
- * and LF both end it.  The line is always NUL terminated, and the
- * terminator is not stored, so size must be at least 1.
- */
-int kgets(char *buf, int size)
-{
-    int len = 0;
-    int c;
-
-    if (size < 1) {
-        return 0;
-    }
-
-    for (;;) {
-        c = kgetc();
-
-        if (c == '\r' || c == '\n') {
-            kputc('\n');
-            break;
-        }
-
-        if (c == 0x08 || c == 0x7f) {           /* backspace or DEL */
-            if (len > 0) {
-                len--;
-                kputs("\b \b");
-            }
-            continue;
-        }
-
-        if (c == 0x15) {                        /* Ctrl-U, kill line */
-            while (len > 0) {
-                len--;
-                kputs("\b \b");
-            }
-            continue;
-        }
-
-        if (c < 32 || c > 126) {                /* ignore other control */
-            continue;
-        }
-
-        if (len < size - 1) {
-            buf[len++] = (char)c;
-            kputc((char)c);
-        }
-        /* A full buffer silently refuses more rather than overrunning. */
-    }
-
-    buf[len] = '\0';
-    return len;
+    kputc((char)('0' + (v / 10) % 10));
+    kputc((char)('0' + v % 10));
 }

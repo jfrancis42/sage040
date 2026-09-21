@@ -178,7 +178,7 @@ typedef signed int         s32;
 /* Interrupt channels, 0 = lowest priority, 15 = highest. */
 #define MFPCH_GPIP0        0
 #define MFPCH_GPIP1        1
-#define MFPCH_GPIP2        2
+#define MFPCH_GPIP2        2     /* M48T59 alarm/watchdog on this board */
 #define MFPCH_GPIP3        3     /* LAN91C111 on this board; also TBI */
 #define MFPCH_TIMERD       4
 #define MFPCH_TIMERC       5
@@ -323,6 +323,51 @@ static inline u32 sm501_bswap32(u32 v)
 
 #define SM501_RD(a)     sm501_bswap32(MMIO32(a))
 #define SM501_WR(a, v)  (MMIO32(a) = sm501_bswap32((u32)(v)))
+
+/* ---------------------------------------------------------------- */
+/* ST M48T59 TIMEKEEPER: clock + 8 KiB battery-backed NVRAM          */
+/*                                                                    */
+/* Reference: STMicroelectronics M48T59 datasheet.                    */
+/*                                                                    */
+/* The whole part is one 8 KiB SRAM window.  The last eight bytes are */
+/* the clock and the eight below them are the M48T59's alarm and      */
+/* watchdog; everything under 0x1ff0 is ordinary non-volatile RAM.    */
+/* Byte accesses only, and every time field is BCD.                   */
+/* ---------------------------------------------------------------- */
+#define RTC_BASE        0xff600000UL
+#define RTC_NVRAM_SIZE  0x1ff0          /* usable NVRAM, 8176 bytes   */
+
+#define RTC_FLAGS       (RTC_BASE + 0x1ff0)  /* R: watchdog/alarm flags */
+#define RTC_ALARM_SEC   (RTC_BASE + 0x1ff2)
+#define RTC_ALARM_MIN   (RTC_BASE + 0x1ff3)
+#define RTC_ALARM_HOUR  (RTC_BASE + 0x1ff4)
+#define RTC_ALARM_DATE  (RTC_BASE + 0x1ff5)
+#define RTC_INTERRUPTS  (RTC_BASE + 0x1ff6)
+#define RTC_WATCHDOG    (RTC_BASE + 0x1ff7)
+#define RTC_CONTROL     (RTC_BASE + 0x1ff8)
+#define RTC_SECONDS     (RTC_BASE + 0x1ff9)
+#define RTC_MINUTES     (RTC_BASE + 0x1ffa)
+#define RTC_HOURS       (RTC_BASE + 0x1ffb)
+#define RTC_WEEKDAY     (RTC_BASE + 0x1ffc)
+#define RTC_DATE        (RTC_BASE + 0x1ffd)
+#define RTC_MONTH       (RTC_BASE + 0x1ffe)
+#define RTC_YEAR        (RTC_BASE + 0x1fff)
+
+#define RTC_CTL_W       0x80   /* set to write the clock registers    */
+#define RTC_CTL_R       0x40   /* set to freeze them for reading      */
+#define RTC_SEC_ST      0x80   /* stop bit, in the seconds register   */
+
+#define RTC_FLAG_WDF    0x80   /* watchdog fired                      */
+#define RTC_FLAG_AF     0x40   /* alarm fired                         */
+
+#define RTC_INT_ABE     0x20   /* alarm in battery-back-up mode       */
+#define RTC_INT_AFE     0x80   /* alarm interrupt enable              */
+
+/* The M48T59 stores two BCD year digits; the board supplies the rest. */
+#define RTC_BASE_YEAR   2000
+
+/* The alarm/watchdog output is wired to MFP GPIP2. */
+#define MFP_PIN_RTC     2
 
 /* ---------------------------------------------------------------- */
 /* Console helpers (uart.c)                                          */

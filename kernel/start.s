@@ -70,19 +70,26 @@ _exc_common:
 |
 | TRAP #0 - the system call gate.
 |
-| Calling convention, chosen to be the cheapest thing a user program can
-| do: d0 = call number, d1 and d2 = arguments, d0 = result.  d0 is
-| deliberately not restored, because it carries the result back.
+| The convention is Linux/m68k's, unchanged: d0 holds the call number,
+| d1 through d5 the arguments, and d0 comes back holding the result or a
+| negated errno.  d0 is deliberately not restored for that reason.
+|
+| Linux picked the obvious convention for this architecture and there is
+| nothing to improve on, so a program written against one will work
+| against the other as far as the calls themselves match.
 |
         .globl  _trap0_entry
         .type   _trap0_entry,@function
 _trap0_entry:
         movem.l %d1-%d7/%a0-%a6,-(%sp)  | 13 registers, 52 bytes
+        move.l  %d5,-(%sp)
+        move.l  %d4,-(%sp)
+        move.l  %d3,-(%sp)
         move.l  %d2,-(%sp)
         move.l  %d1,-(%sp)
         move.l  %d0,-(%sp)
         jsr     syscall_dispatch
-        lea     12(%sp),%sp
+        lea     24(%sp),%sp
         movem.l (%sp)+,%d1-%d7/%a0-%a6
         rte
 

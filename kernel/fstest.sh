@@ -72,29 +72,33 @@ done
 mcopy -o -i "$MIMG" big.tmp ::/BIG.TXT
 
 echo "=== running the kernel ==="
-cat > session.tmp <<'EOF'
-ver
-ls
-cat HOST.TXT
-write GUEST.TXT
-a line the kernel wrote
-and another one
-.
-cat GUEST.TXT
-stat GUEST.TXT
-cp BIG.TXT COPY.TXT
-mv COPY.TXT RENAMED.TXT
-ls
-rm HOST.TXT
-ls
-free
-cat NOSUCH.TXT
-write GUEST.TXT
-replaced
-.
-cat GUEST.TXT
-halt
-EOF
+printf '%s\n' \
+  'uname -a' \
+  'ls -l' \
+  'cat HOST.TXT' \
+  'cat > GUEST.TXT' \
+  'a line the kernel wrote' \
+  'and another one' \
+  > session.tmp
+printf '\004' >> session.tmp            # ctrl-D ends the input
+printf '%s\n' \
+  'cat GUEST.TXT' \
+  'stat GUEST.TXT' \
+  'cp BIG.TXT COPY.TXT' \
+  'mv COPY.TXT RENAMED.TXT' \
+  'ls -l' \
+  'rm HOST.TXT' \
+  'ls' \
+  'df' \
+  'cat NOSUCH.TXT' \
+  'echo replaced > GUEST.TXT' \
+  'cat GUEST.TXT' \
+  'cat /dev/../nope' \
+  'date -s 2001-02-03 04:05:06' \
+  'date' \
+  'sync' \
+  'halt' \
+  >> session.tmp
 
 #
 # The guest's "halt" stops the CPU, not the emulator, so the harness has
@@ -140,7 +144,7 @@ echo "=== checks: what the guest did ==="
 contains "$LOG" "kernel ready."
 check "kernel reached its shell" $?
 
-contains "$LOG" "FAT16 'SAGE040'"
+contains "$LOG" "fat16 on /dev/hda 'SAGE040'"
 check "mounted the host-created filesystem" $?
 
 contains "$LOG" "written by the host"
@@ -149,8 +153,14 @@ check "read back a file the host wrote" $?
 contains "$LOG" "no such file"
 check "a missing file is reported, not a crash" $?
 
-contains "$LOG" "$(stat -c%s big.tmp) bytes copied"
-check "copied a multi-cluster file ($(stat -c%s big.tmp) bytes) whole" $?
+contains "$LOG" "Saturday, 3 February 2001"
+check "the clock was set, and the weekday derived from the date" $?
+
+contains "$LOG" "Sage040 0."
+check "uname reported the kernel version" $?
+
+contains "$LOG" "no such device"
+check "a path under /dev that is not a device is refused" $?
 
 contains "$LOG" "exception"
 check "no exception was taken" $((1 - $?))
@@ -172,6 +182,11 @@ check "host does not see the deleted HOST.TXT" $((1 - $?))
 mtype -i "$MIMG" ::/GUEST.TXT > guest.tmp 2>/dev/null
 [ "$(cat guest.tmp)" = "replaced" ]
 check "GUEST.TXT holds exactly what the kernel last wrote" $?
+
+# The kernel writes bare newlines, not CRLF: it is a Unix-flavoured
+# system that happens to store files on an MS-DOS volume.
+[ "$(wc -c < guest.tmp)" -eq 9 ]
+check "the kernel wrote LF line endings, not CRLF" $?
 
 mtype -i "$MIMG" ::/RENAMED.TXT > renamed.tmp 2>/dev/null
 cmp -s renamed.tmp big.tmp

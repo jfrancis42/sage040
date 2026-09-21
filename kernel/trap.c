@@ -12,14 +12,13 @@
  * identify itself from its own stack frame instead of needing 255
  * separate stubs.
  *
- * TRAP #0 is redirected to _trap0_entry, the system call gate.  Nothing
- * uses it from user mode yet -- there are no user programs -- but the
- * boundary is worth drawing now rather than retrofitting: it is the one
- * place a program running unprivileged will be able to reach the kernel,
- * and kmain() calls through it once at startup so the path is known to
- * work before anything depends on it.
+ * TRAP #0 is redirected to _trap0_entry, the system call gate; the calls
+ * themselves are in syscall.c.  Nothing runs unprivileged yet, but
+ * everything above the kernel already goes through the gate rather than
+ * around it, so the day something does, the code above does not change.
  */
 #include "kernel.h"
+#include "console.h"
 
 #define VEC_TRAP0   32          /* vectors 32..47 are TRAP #0..#15 */
 
@@ -122,59 +121,6 @@ void panic(const char *msg)
     kputs(msg);
     kputs("\n*** halted.\n");
     halt();
-}
-
-/* ---------------------------------------------------------------- */
-/* System calls                                                      */
-/* ---------------------------------------------------------------- */
-
-/*
- * Reached from _trap0_entry.  d0 selects the call, d1 and d2 are its
- * arguments, and the return value goes back in d0.
- *
- * The pointer arguments are taken at face value.  That is correct while
- * the only caller is the kernel itself; once a user program in its own
- * address space can make this call, each one has to be validated and
- * copied across the boundary, and this is the function that will do it.
- */
-s32 syscall_dispatch(u32 nr, u32 arg1, u32 arg2)
-{
-    switch (nr) {
-    case SYS_PUTC:
-        kputc((char)arg1);
-        return 0;
-
-    case SYS_PUTS:
-        kputs((const char *)arg1);
-        return 0;
-
-    case SYS_GETC:
-        return (s32)kgetc();
-
-    case SYS_GETS:
-        return (s32)kgets((char *)arg1, (int)arg2);
-
-    default:
-        return -1;
-    }
-}
-
-/*
- * A system call made from the kernel's own code.  Identical to what a
- * user program will execute, so exercising it proves the gate rather
- * than a shortcut around it.
- */
-s32 syscall(u32 nr, u32 arg1, u32 arg2)
-{
-    register u32 d0 __asm__("d0") = nr;
-    register u32 d1 __asm__("d1") = arg1;
-    register u32 d2 __asm__("d2") = arg2;
-
-    __asm__ volatile ("trap #0"
-                      : "+d"(d0)
-                      : "d"(d1), "d"(d2)
-                      : "memory", "cc");
-    return (s32)d0;
 }
 
 void trap_init(void)

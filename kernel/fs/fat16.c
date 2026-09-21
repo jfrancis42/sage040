@@ -1,7 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 Jeff Francis */
 /*
- * fs.c - FAT16, read and write.
+ * fat16.c - FAT16, read and write.
+ *
+ * Registered with the VFS as the filesystem type "fat16" and mounted on
+ * a struct blockdev.  It never names a disk controller, and nothing
+ * above it names FAT: the system call layer holds a struct file with a
+ * struct file_ops, and a different filesystem is a different file with
+ * the same shape.
  *
  * References: Microsoft FAT32 File System Specification (which documents
  * FAT12 and FAT16 alongside it), and the MS-DOS 3.3 disk format it came
@@ -33,8 +39,10 @@
  *   something checks, and then fails a check it should pass.  Every FAT
  *   write goes to all copies.
  */
-#include "fs.h"
-#include "block.h"
+#include "vfs.h"
+#include "dev.h"
+#include "time.h"
+#include "errno.h"
 #include "string.h"
 
 /* ---------------------------------------------------------------- */
@@ -70,21 +78,47 @@ static void put_le32(u8 *p, u32 v)
 /* Volume state                                                      */
 /* ---------------------------------------------------------------- */
 
+#define SECTOR_SIZE    512
+#define FAT_MAX_OPEN   OPEN_MAX
 #define FAT_EOC        0xfff8u     /* >= this ends a chain */
 #define FAT_BAD        0xfff7u
 #define DIRENT_SIZE    32
+#define ATTR_RDONLY    0x01
+#define ATTR_HIDDEN    0x02
+#define ATTR_SYSTEM    0x04
+#define ATTR_VOLUME    0x08
+#define ATTR_DIR       0x10
+#define ATTR_ARCHIVE   0x20
 #define ATTR_LFN       0x0f
 
 /*
- * There is no real-time clock on this machine, so every timestamp
- * written is this one.  A stamp that is wrong but constant is better
- * than one that is wrong and varies: it makes a file's dates obviously
- * synthetic rather than quietly plausible.  An MC146818 would fix it and
- * is on the list.
+ * Timestamps come from whatever clock registered itself.  If the clock does not answer, or
+ * answers with something that is not a date, files get this fixed stamp
+ * instead: wrong but constant, which reads as obviously synthetic rather
+ * than quietly plausible, and is a visible sign that the clock needs
+ * setting.
  */
-#define FS_DATE   ((u16)(((2026 - 1980) << 9) | (1 << 5) | 1))
-#define FS_TIME   ((u16)0)
+#define FS_FALLBACK_DATE  ((u16)(((2026 - 1980) << 9) | (1 << 5) | 1))
 
+static void fs_now(u16 *date, u16 *time)
+{
+    struct rtcdev *r = dev_rtc();
+    struct tm now;
+    time_t secs;
+
+    if (r && r->get(r, &secs) == 0) {
+        gmtime_r(secs, &now);
+        *date = tm_to_fat_date(&now);
+        *time = tm_to_fat_time(&now);
+        if (*date != 0) {
+            return;
+        }
+    }
+    *date = FS_FALLBACK_DATE;
+    *time = 0;
+}
+
+static struct blockdev *dev;
 static int  mounted;
 static u32  part_lba;
 static u32  fat_start;          /* LBA of the first FAT               */
@@ -109,7 +143,7 @@ static char volume_label[12];
 /* ---------------------------------------------------------------- */
 
 struct sbuf {
-    u8  data[BLK_SECTOR_SIZE];
+    u8  data[SECTOR_SIZE];
     u32 lba;
     u8  valid;
     u8  dirty;
@@ -121,12 +155,12 @@ static struct sbuf fb;          /* FAT, addressed relative to fat_start */
 static int sb_flush(void)
 {
     if (sb.valid && sb.dirty) {
-        if (blk_write(sb.lba, 1, sb.data) != 0) {
-            return FS_EIO;
+        if (dev->write(dev, sb.lba, 1, sb.data) != 0) {
+            return -EIO;
         }
         sb.dirty = 0;
     }
-    return FS_OK;
+    return 0;
 }
 
 static int sb_get(u32 lba)
@@ -134,20 +168,20 @@ static int sb_get(u32 lba)
     int err;
 
     if (sb.valid && sb.lba == lba) {
-        return FS_OK;
+        return 0;
     }
     err = sb_flush();
-    if (err != FS_OK) {
+    if (err != 0) {
         return err;
     }
-    if (blk_read(lba, 1, sb.data) != 0) {
+    if (dev->read(dev, lba, 1, sb.data) != 0) {
         sb.valid = 0;
-        return FS_EIO;
+        return -EIO;
     }
     sb.lba = lba;
     sb.valid = 1;
     sb.dirty = 0;
-    return FS_OK;
+    return 0;
 }
 
 /* The FAT buffer is indexed by sector within a FAT, because a flush has
@@ -157,16 +191,16 @@ static int fb_flush(void)
     u32 i;
 
     if (!(fb.valid && fb.dirty)) {
-        return FS_OK;
+        return 0;
     }
     for (i = 0; i < num_fats; i++) {
-        if (blk_write(fat_start + i * sectors_per_fat + fb.lba, 1,
+        if (dev->write(dev, fat_start + i * sectors_per_fat + fb.lba, 1,
                       fb.data) != 0) {
-            return FS_EIO;
+            return -EIO;
         }
     }
     fb.dirty = 0;
-    return FS_OK;
+    return 0;
 }
 
 static int fb_get(u32 rel)
@@ -174,28 +208,28 @@ static int fb_get(u32 rel)
     int err;
 
     if (fb.valid && fb.lba == rel) {
-        return FS_OK;
+        return 0;
     }
     err = fb_flush();
-    if (err != FS_OK) {
+    if (err != 0) {
         return err;
     }
-    if (blk_read(fat_start + rel, 1, fb.data) != 0) {
+    if (dev->read(dev, fat_start + rel, 1, fb.data) != 0) {
         fb.valid = 0;
-        return FS_EIO;
+        return -EIO;
     }
     fb.lba = rel;
     fb.valid = 1;
     fb.dirty = 0;
-    return FS_OK;
+    return 0;
 }
 
-static int fs_flush_all(void)
+static int fat_flush_all(void)
 {
     int a = sb_flush();
     int b = fb_flush();
 
-    return (a != FS_OK) ? a : b;
+    return (a != 0) ? a : b;
 }
 
 /* ---------------------------------------------------------------- */
@@ -212,11 +246,11 @@ static int fat_get(u32 cl, u16 *out)
     u32 off = cl * 2;
     int err = fb_get(off / bytes_per_sector);
 
-    if (err != FS_OK) {
+    if (err != 0) {
         return err;
     }
     *out = le16(&fb.data[off % bytes_per_sector]);
-    return FS_OK;
+    return 0;
 }
 
 static int fat_set(u32 cl, u16 val)
@@ -224,12 +258,12 @@ static int fat_set(u32 cl, u16 val)
     u32 off = cl * 2;
     int err = fb_get(off / bytes_per_sector);
 
-    if (err != FS_OK) {
+    if (err != 0) {
         return err;
     }
     put_le16(&fb.data[off % bytes_per_sector], val);
     fb.dirty = 1;
-    return FS_OK;
+    return 0;
 }
 
 /* Find a free cluster, claim it as the end of a chain, and return it in
@@ -248,21 +282,21 @@ static int fat_alloc(u32 *out)
             cl = 2;
         }
         err = fat_get(cl, &v);
-        if (err != FS_OK) {
+        if (err != 0) {
             return err;
         }
         if (v == 0) {
             err = fat_set(cl, 0xffff);
-            if (err != FS_OK) {
+            if (err != 0) {
                 return err;
             }
             alloc_hint = cl + 1;
             *out = cl;
-            return FS_OK;
+            return 0;
         }
         cl++;
     }
-    return FS_ENOSPC;
+    return -ENOSPC;
 }
 
 static int fat_free_chain(u32 first)
@@ -273,11 +307,11 @@ static int fat_free_chain(u32 first)
         u16 next;
         int err = fat_get(cl, &next);
 
-        if (err != FS_OK) {
+        if (err != 0) {
             return err;
         }
         err = fat_set(cl, 0);
-        if (err != FS_OK) {
+        if (err != 0) {
             return err;
         }
         if (cl < alloc_hint) {
@@ -285,7 +319,7 @@ static int fat_free_chain(u32 first)
         }
         cl = next;
     }
-    return FS_OK;
+    return 0;
 }
 
 static u32 cluster_lba(u32 cl)
@@ -319,7 +353,7 @@ static int name_char_ok(char c)
 
 /*
  * "kernel.rom" -> "KERNEL  ROM", the eleven bytes a directory entry
- * actually holds.  Returns FS_EINVAL for anything that is not a legal
+ * actually holds.  Returns -EINVAL for anything that is not a legal
  * 8.3 name, rather than silently truncating it into a different file.
  */
 static int name_to_83(const char *in, char out[11])
@@ -331,31 +365,31 @@ static int name_to_83(const char *in, char out[11])
     }
 
     if (in == 0 || *in == '\0') {
-        return FS_EINVAL;
+        return -EINVAL;
     }
 
     /* base name */
     for (n = 0; *in && *in != '.'; in++) {
         if (!name_char_ok(*in) || n >= 8) {
-            return FS_EINVAL;
+            return -EINVAL;
         }
         out[n++] = upcase(*in);
     }
     if (n == 0) {
-        return FS_EINVAL;
+        return -EINVAL;
     }
 
     if (*in == '.') {
         in++;
         for (n = 0; *in; in++) {
             if (!name_char_ok(*in) || n >= 3) {
-                return FS_EINVAL;
+                return -EINVAL;
             }
             out[8 + n] = upcase(*in);
             n++;
         }
         if (n == 0) {
-            return FS_EINVAL;
+            return -EINVAL;
         }
     }
 
@@ -363,10 +397,10 @@ static int name_to_83(const char *in, char out[11])
     if ((u8)out[0] == 0xe5) {
         out[0] = 0x05;
     }
-    return FS_OK;
+    return 0;
 }
 
-static void name_from_83(const u8 raw[11], char out[FS_NAME_MAX])
+static void name_from_83(const u8 raw[11], char out[NAME_MAX + 1])
 {
     int i, n = 0;
 
@@ -404,14 +438,14 @@ static int dir_read(u32 index, u8 *ent)
     int err;
 
     if (index >= root_entries) {
-        return FS_ENOENT;
+        return -ENOENT;
     }
     err = sb_get(dir_entry_lba(index));
-    if (err != FS_OK) {
+    if (err != 0) {
         return err;
     }
     memcpy(ent, &sb.data[dir_entry_off(index)], DIRENT_SIZE);
-    return FS_OK;
+    return 0;
 }
 
 static int dir_write(u32 index, const u8 *ent)
@@ -419,15 +453,15 @@ static int dir_write(u32 index, const u8 *ent)
     int err;
 
     if (index >= root_entries) {
-        return FS_ENOENT;
+        return -ENOENT;
     }
     err = sb_get(dir_entry_lba(index));
-    if (err != FS_OK) {
+    if (err != 0) {
         return err;
     }
     memcpy(&sb.data[dir_entry_off(index)], ent, DIRENT_SIZE);
     sb.dirty = 1;
-    return FS_OK;
+    return 0;
 }
 
 /* Is this entry a real file or directory, as opposed to free, deleted, a
@@ -440,14 +474,14 @@ static int dir_entry_is_file(const u8 *ent)
     if ((ent[11] & ATTR_LFN) == ATTR_LFN) {
         return 0;
     }
-    if (ent[11] & FS_ATTR_VOLUME) {
+    if (ent[11] & ATTR_VOLUME) {
         return 0;
     }
     return 1;
 }
 
 /* Find name83 in the root directory.  Returns the entry index, or
- * FS_ENOENT. */
+ * -ENOENT. */
 static int dir_lookup(const char name83[11], u8 *ent_out)
 {
     u32 i;
@@ -456,7 +490,7 @@ static int dir_lookup(const char name83[11], u8 *ent_out)
     for (i = 0; i < root_entries; i++) {
         int err = dir_read(i, ent);
 
-        if (err != FS_OK) {
+        if (err != 0) {
             return err;
         }
         if (ent[0] == 0x00) {
@@ -472,7 +506,7 @@ static int dir_lookup(const char name83[11], u8 *ent_out)
             return (int)i;
         }
     }
-    return FS_ENOENT;
+    return -ENOENT;
 }
 
 /* Claim a free directory slot and write a fresh entry into it. */
@@ -480,11 +514,12 @@ static int dir_create(const char name83[11], u8 attr)
 {
     u32 i;
     u8 ent[DIRENT_SIZE];
+    u16 date, time;
 
     for (i = 0; i < root_entries; i++) {
         int err = dir_read(i, ent);
 
-        if (err != FS_OK) {
+        if (err != 0) {
             return err;
         }
         if (ent[0] != 0x00 && ent[0] != 0xe5) {
@@ -494,21 +529,22 @@ static int dir_create(const char name83[11], u8 attr)
         memset(ent, 0, DIRENT_SIZE);
         memcpy(ent, name83, 11);
         ent[11] = attr;
-        put_le16(&ent[14], FS_TIME);        /* created */
-        put_le16(&ent[16], FS_DATE);
-        put_le16(&ent[18], FS_DATE);        /* accessed */
-        put_le16(&ent[22], FS_TIME);        /* modified */
-        put_le16(&ent[24], FS_DATE);
+        fs_now(&date, &time);
+        put_le16(&ent[14], time);           /* created */
+        put_le16(&ent[16], date);
+        put_le16(&ent[18], date);           /* accessed */
+        put_le16(&ent[22], time);           /* modified */
+        put_le16(&ent[24], date);
         put_le16(&ent[26], 0);              /* first cluster */
         put_le32(&ent[28], 0);              /* size */
 
         err = dir_write(i, ent);
-        if (err != FS_OK) {
+        if (err != 0) {
             return err;
         }
         return (int)i;
     }
-    return FS_EDIRFULL;
+    return -ENOSPC;
 }
 
 /* ---------------------------------------------------------------- */
@@ -520,10 +556,10 @@ static int dir_create(const char name83[11], u8 attr)
  * zero. */
 static u32 find_partition(void)
 {
-    u8 mbr[BLK_SECTOR_SIZE];
+    u8 mbr[SECTOR_SIZE];
     int i;
 
-    if (blk_read(0, 1, mbr) != 0) {
+    if (dev->read(dev, 0, 1, mbr) != 0) {
         return 0;
     }
     if (mbr[510] != 0x55 || mbr[511] != 0xaa) {
@@ -556,7 +592,7 @@ static void read_label(void)
     /* The authoritative label is the root directory entry with the
      * volume attribute; the copy in the boot sector can be stale. */
     for (i = 0; i < root_entries; i++) {
-        if (dir_read(i, ent) != FS_OK) {
+        if (dir_read(i, ent) != 0) {
             break;
         }
         if (ent[0] == 0x00) {
@@ -568,7 +604,7 @@ static void read_label(void)
         if ((ent[11] & ATTR_LFN) == ATTR_LFN) {
             continue;
         }
-        if (ent[11] & FS_ATTR_VOLUME) {
+        if (ent[11] & ATTR_VOLUME) {
             int n;
 
             memcpy(volume_label, ent, 11);
@@ -581,9 +617,9 @@ static void read_label(void)
     }
 }
 
-int fs_mount(void)
+static int fat_mount_dev(void)
 {
-    u8 bpb[BLK_SECTOR_SIZE];
+    u8 bpb[SECTOR_SIZE];
     u32 total_sectors;
     u32 reserved;
     u32 data_sectors;
@@ -595,8 +631,8 @@ int fs_mount(void)
 
     part_lba = find_partition();
 
-    if (blk_read(part_lba, 1, bpb) != 0) {
-        return FS_EIO;
+    if (dev->read(dev, part_lba, 1, bpb) != 0) {
+        return -EIO;
     }
 
     bytes_per_sector    = le16(&bpb[11]);
@@ -610,12 +646,12 @@ int fs_mount(void)
         total_sectors = le32(&bpb[32]);
     }
 
-    if (bytes_per_sector != BLK_SECTOR_SIZE ||
+    if (bytes_per_sector != SECTOR_SIZE ||
         sectors_per_cluster == 0 ||
         num_fats == 0 || num_fats > 2 ||
         root_entries == 0 || sectors_per_fat == 0 ||
         reserved == 0 || total_sectors == 0) {
-        return FS_EINVAL;
+        return -EINVAL;
     }
 
     fat_start    = part_lba + reserved;
@@ -632,35 +668,31 @@ int fs_mount(void)
      * the disk.  Refusing FAT12 and FAT32 here is better than misreading
      * one of them as FAT16. */
     if (total_clusters < 4085 || total_clusters >= 65525) {
-        return FS_EINVAL;
+        return -EINVAL;
     }
 
     mounted = 1;
     read_label();
-    return FS_OK;
+    return 0;
 }
 
-int fs_mounted(void)
-{
-    return mounted;
-}
 
-const char *fs_label(void)
+static const char *fat_label(void)
 {
     return volume_label;
 }
 
-u32 fs_cluster_bytes(void)
+static u32 fat_cluster_bytes(void)
 {
     return mounted ? cluster_bytes : 0;
 }
 
-u32 fs_total_bytes(void)
+static u32 fat_total_bytes(void)
 {
     return mounted ? total_clusters * cluster_bytes : 0;
 }
 
-u32 fs_free_bytes(void)
+static u32 fat_free_bytes(void)
 {
     u32 cl, free_clusters = 0;
 
@@ -670,7 +702,7 @@ u32 fs_free_bytes(void)
     for (cl = 2; cl <= total_clusters + 1; cl++) {
         u16 v;
 
-        if (fat_get(cl, &v) != FS_OK) {
+        if (fat_get(cl, &v) != 0) {
             return 0;
         }
         if (v == 0) {
@@ -684,7 +716,22 @@ u32 fs_free_bytes(void)
 /* Open files                                                        */
 /* ---------------------------------------------------------------- */
 
-struct file {
+/*
+ * POSIX puts the access mode in the low two bits of the open flags
+ * rather than giving read and write a bit each, so O_RDONLY is zero and
+ * testing for it with & does not work.  These say what was meant.
+ */
+static int can_read(int flags)
+{
+    return (flags & O_ACCMODE) != O_WRONLY;
+}
+
+static int can_write(int flags)
+{
+    return (flags & O_ACCMODE) != O_RDONLY;
+}
+
+struct fat_file {
     u8  used;
     u8  flags;
     u8  dirty;                  /* directory entry needs rewriting    */
@@ -696,11 +743,11 @@ struct file {
     u32 cur_index;              /* its position in the chain          */
 };
 
-static struct file files[FS_MAX_OPEN];
+static struct fat_file files[FAT_MAX_OPEN];
 
-static struct file *handle(int fd)
+static struct fat_file *handle(int fd)
 {
-    if (fd < 0 || fd >= FS_MAX_OPEN || !files[fd].used) {
+    if (fd < 0 || fd >= FAT_MAX_OPEN || !files[fd].used) {
         return 0;
     }
     return &files[fd];
@@ -708,38 +755,40 @@ static struct file *handle(int fd)
 
 /* Write the open file's size and first cluster back to its directory
  * entry. */
-static int file_sync(struct file *f)
+static int file_sync(struct fat_file *f)
 {
     u8 ent[DIRENT_SIZE];
+    u16 date, time;
     int err;
 
     if (!f->dirty) {
-        return FS_OK;
+        return 0;
     }
     err = dir_read(f->dir_index, ent);
-    if (err != FS_OK) {
+    if (err != 0) {
         return err;
     }
+    fs_now(&date, &time);
     put_le16(&ent[26], (u16)f->first);
     put_le32(&ent[28], f->size);
-    put_le16(&ent[22], FS_TIME);
-    put_le16(&ent[24], FS_DATE);
-    ent[11] |= FS_ATTR_ARCHIVE;
+    put_le16(&ent[22], time);
+    put_le16(&ent[24], date);
+    ent[11] |= ATTR_ARCHIVE;
     err = dir_write(f->dir_index, ent);
-    if (err != FS_OK) {
+    if (err != 0) {
         return err;
     }
     f->dirty = 0;
-    return fs_flush_all();
+    return fat_flush_all();
 }
 
 /*
  * Find the cluster holding chain position `want`.
  *
- * Returns FS_OK with *out set, 1 if the chain ends before that position
+ * Returns 0 with *out set, 1 if the chain ends before that position
  * and alloc was not asked for, or a negative error.
  */
-static int chain_seek(struct file *f, u32 want, int alloc, u32 *out)
+static int chain_seek(struct fat_file *f, u32 want, int alloc, u32 *out)
 {
     if (f->first == 0) {
         u32 c;
@@ -749,7 +798,7 @@ static int chain_seek(struct file *f, u32 want, int alloc, u32 *out)
             return 1;
         }
         err = fat_alloc(&c);
-        if (err != FS_OK) {
+        if (err != 0) {
             return err;
         }
         f->first = c;
@@ -767,7 +816,7 @@ static int chain_seek(struct file *f, u32 want, int alloc, u32 *out)
         u16 next;
         int err = fat_get(f->cur, &next);
 
-        if (err != FS_OK) {
+        if (err != 0) {
             return err;
         }
         if (next >= FAT_EOC) {
@@ -777,23 +826,23 @@ static int chain_seek(struct file *f, u32 want, int alloc, u32 *out)
                 return 1;
             }
             err = fat_alloc(&c);
-            if (err != FS_OK) {
+            if (err != 0) {
                 return err;
             }
             err = fat_set(f->cur, (u16)c);
-            if (err != FS_OK) {
+            if (err != 0) {
                 return err;
             }
             next = (u16)c;
         } else if (!cluster_valid(next)) {
-            return FS_EIO;      /* a cross-linked or damaged chain */
+            return -EIO;      /* a cross-linked or damaged chain */
         }
         f->cur = next;
         f->cur_index++;
     }
 
     *out = f->cur;
-    return FS_OK;
+    return 0;
 }
 
 /* Is this directory entry already open?  Used to keep a file from being
@@ -802,7 +851,7 @@ static int entry_is_open(u32 dir_index)
 {
     int i;
 
-    for (i = 0; i < FS_MAX_OPEN; i++) {
+    for (i = 0; i < FAT_MAX_OPEN; i++) {
         if (files[i].used && files[i].dir_index == dir_index) {
             return 1;
         }
@@ -810,62 +859,58 @@ static int entry_is_open(u32 dir_index)
     return 0;
 }
 
-int fs_open(const char *name, int flags)
+static int fat_handle_open(const char *name, int flags)
 {
     char n83[11];
     u8 ent[DIRENT_SIZE];
-    struct file *f;
+    struct fat_file *f;
     int fd, idx, err;
 
     if (!mounted) {
-        return FS_ENOTMNT;
+        return -ENODEV;
     }
     err = name_to_83(name, n83);
-    if (err != FS_OK) {
+    if (err != 0) {
         return err;
     }
-    if ((flags & O_RDWR) == 0) {
-        flags |= O_READ;
-    }
-
-    for (fd = 0; fd < FS_MAX_OPEN; fd++) {
+    for (fd = 0; fd < FAT_MAX_OPEN; fd++) {
         if (!files[fd].used) {
             break;
         }
     }
-    if (fd == FS_MAX_OPEN) {
-        return FS_EMFILE;
+    if (fd == FAT_MAX_OPEN) {
+        return -EMFILE;
     }
     f = &files[fd];
 
     idx = dir_lookup(n83, ent);
-    if (idx == FS_ENOENT) {
-        if (!(flags & O_CREATE)) {
-            return FS_ENOENT;
+    if (idx == -ENOENT) {
+        if (!(flags & O_CREAT)) {
+            return -ENOENT;
         }
-        if (!(flags & O_WRITE)) {
-            return FS_EACCES;
+        if (!can_write(flags)) {
+            return -EACCES;
         }
-        idx = dir_create(n83, FS_ATTR_ARCHIVE);
+        idx = dir_create(n83, ATTR_ARCHIVE);
         if (idx < 0) {
             return idx;
         }
         err = dir_read((u32)idx, ent);
-        if (err != FS_OK) {
+        if (err != 0) {
             return err;
         }
     } else if (idx < 0) {
         return idx;
     } else {
-        if (ent[11] & FS_ATTR_DIR) {
-            return FS_EINVAL;
+        if (ent[11] & ATTR_DIR) {
+            return -EINVAL;
         }
-        if ((flags & O_WRITE) && (ent[11] & FS_ATTR_RDONLY)) {
-            return FS_EACCES;
+        if (can_write(flags) && (ent[11] & ATTR_RDONLY)) {
+            return -EACCES;
         }
         /* One writer, or any number of readers -- but not both. */
-        if ((flags & O_WRITE) && entry_is_open((u32)idx)) {
-            return FS_EBUSY;
+        if (can_write(flags) && entry_is_open((u32)idx)) {
+            return -EBUSY;
         }
     }
 
@@ -878,9 +923,9 @@ int fs_open(const char *name, int flags)
     f->cur = f->first;
     f->cur_index = 0;
 
-    if ((flags & O_TRUNC) && (flags & O_WRITE) && f->size != 0) {
+    if ((flags & O_TRUNC) && can_write(flags) && f->size != 0) {
         err = fat_free_chain(f->first);
-        if (err != FS_OK) {
+        if (err != 0) {
             f->used = 0;
             return err;
         }
@@ -889,7 +934,7 @@ int fs_open(const char *name, int flags)
         f->cur = 0;
         f->dirty = 1;
         err = file_sync(f);
-        if (err != FS_OK) {
+        if (err != 0) {
             f->used = 0;
             return err;
         }
@@ -899,43 +944,34 @@ int fs_open(const char *name, int flags)
     return fd;
 }
 
-int fs_close(int fd)
+static int fat_handle_close(int fd)
 {
-    struct file *f = handle(fd);
+    struct fat_file *f = handle(fd);
     int err;
 
     if (!f) {
-        return FS_EBADF;
+        return -EBADF;
     }
     err = file_sync(f);
     f->used = 0;
-    if (err != FS_OK) {
+    if (err != 0) {
         return err;
     }
-    return fs_flush_all();
+    return fat_flush_all();
 }
 
-int fs_sync(int fd)
-{
-    struct file *f = handle(fd);
 
-    if (!f) {
-        return FS_EBADF;
-    }
-    return file_sync(f);
-}
-
-s32 fs_read(int fd, void *buf, u32 len)
+static s32 fat_handle_read(int fd, void *buf, u32 len)
 {
-    struct file *f = handle(fd);
+    struct fat_file *f = handle(fd);
     u8 *out = buf;
     u32 done = 0;
 
     if (!f) {
-        return FS_EBADF;
+        return -EBADF;
     }
-    if (!(f->flags & O_READ)) {
-        return FS_EACCES;
+    if (!can_read(f->flags)) {
+        return -EACCES;
     }
 
     while (done < len && f->pos < f->size) {
@@ -954,7 +990,7 @@ s32 fs_read(int fd, void *buf, u32 len)
         off = off % bytes_per_sector;
 
         err = sb_get(lba);
-        if (err != FS_OK) {
+        if (err != 0) {
             return err;
         }
 
@@ -974,17 +1010,17 @@ s32 fs_read(int fd, void *buf, u32 len)
     return (s32)done;
 }
 
-s32 fs_write(int fd, const void *buf, u32 len)
+static s32 fat_handle_write(int fd, const void *buf, u32 len)
 {
-    struct file *f = handle(fd);
+    struct fat_file *f = handle(fd);
     const u8 *in = buf;
     u32 done = 0;
 
     if (!f) {
-        return FS_EBADF;
+        return -EBADF;
     }
-    if (!(f->flags & O_WRITE)) {
-        return FS_EACCES;
+    if (!can_write(f->flags)) {
+        return -EACCES;
     }
     if (f->flags & O_APPEND) {
         f->pos = f->size;
@@ -997,7 +1033,7 @@ s32 fs_write(int fd, const void *buf, u32 len)
         if (err < 0) {
             /* Out of space partway through is a short write, not a
              * failure -- what was written is already on the disk. */
-            if (err == FS_ENOSPC && done > 0) {
+            if (err == -ENOSPC && done > 0) {
                 break;
             }
             return err;
@@ -1019,14 +1055,14 @@ s32 fs_write(int fd, const void *buf, u32 len)
          */
         if (n == bytes_per_sector) {
             err = sb_flush();
-            if (err != FS_OK) {
+            if (err != 0) {
                 return err;
             }
             sb.lba = lba;
             sb.valid = 1;
         } else {
             err = sb_get(lba);
-            if (err != FS_OK) {
+            if (err != 0) {
                 return err;
             }
         }
@@ -1047,10 +1083,10 @@ s32 fs_write(int fd, const void *buf, u32 len)
         u16 next;
         int err = fat_get(f->cur, &next);
 
-        if (err == FS_OK && next == 0) {
+        if (err == 0 && next == 0) {
             err = fat_set(f->cur, 0xffff);
         }
-        if (err != FS_OK) {
+        if (err != 0) {
             return err;
         }
     }
@@ -1058,46 +1094,34 @@ s32 fs_write(int fd, const void *buf, u32 len)
     return (s32)done;
 }
 
-s32 fs_seek(int fd, s32 offset, int whence)
+static s32 fat_handle_seek(int fd, s32 offset, int whence)
 {
-    struct file *f = handle(fd);
+    struct fat_file *f = handle(fd);
     s32 base;
 
     if (!f) {
-        return FS_EBADF;
+        return -EBADF;
     }
     switch (whence) {
     case SEEK_SET: base = 0;            break;
     case SEEK_CUR: base = (s32)f->pos;  break;
     case SEEK_END: base = (s32)f->size; break;
-    default:       return FS_EINVAL;
+    default:       return -EINVAL;
     }
     if (base + offset < 0) {
-        return FS_EINVAL;
+        return -EINVAL;
     }
     f->pos = (u32)(base + offset);
     return (s32)f->pos;
 }
 
-s32 fs_tell(int fd)
-{
-    struct file *f = handle(fd);
 
-    return f ? (s32)f->pos : FS_EBADF;
-}
-
-s32 fs_filesize(int fd)
-{
-    struct file *f = handle(fd);
-
-    return f ? (s32)f->size : FS_EBADF;
-}
 
 /* ---------------------------------------------------------------- */
 /* Directory operations                                              */
 /* ---------------------------------------------------------------- */
 
-int fs_unlink(const char *name)
+static int fat_unlink(const char *name)
 {
     char n83[11];
     u8 ent[DIRENT_SIZE];
@@ -1105,10 +1129,10 @@ int fs_unlink(const char *name)
     u32 first;
 
     if (!mounted) {
-        return FS_ENOTMNT;
+        return -ENODEV;
     }
     err = name_to_83(name, n83);
-    if (err != FS_OK) {
+    if (err != 0) {
         return err;
     }
     idx = dir_lookup(n83, ent);
@@ -1116,16 +1140,16 @@ int fs_unlink(const char *name)
         return idx;
     }
     if (entry_is_open((u32)idx)) {
-        return FS_EBUSY;
+        return -EBUSY;
     }
-    if (ent[11] & FS_ATTR_RDONLY) {
-        return FS_EACCES;
+    if (ent[11] & ATTR_RDONLY) {
+        return -EACCES;
     }
 
     first = le16(&ent[26]);
     if (first != 0) {
         err = fat_free_chain(first);
-        if (err != FS_OK) {
+        if (err != 0) {
             return err;
         }
     }
@@ -1139,35 +1163,35 @@ int fs_unlink(const char *name)
     ent[0] = 0xe5;
     put_le16(&ent[26], 0);
     err = dir_write((u32)idx, ent);
-    if (err != FS_OK) {
+    if (err != 0) {
         return err;
     }
-    return fs_flush_all();
+    return fat_flush_all();
 }
 
-int fs_rename(const char *from, const char *to)
+static int fat_rename(const char *from, const char *to)
 {
     char f83[11], t83[11];
     u8 ent[DIRENT_SIZE];
     int idx, err;
 
     if (!mounted) {
-        return FS_ENOTMNT;
+        return -ENODEV;
     }
     err = name_to_83(from, f83);
-    if (err != FS_OK) {
+    if (err != 0) {
         return err;
     }
     err = name_to_83(to, t83);
-    if (err != FS_OK) {
+    if (err != 0) {
         return err;
     }
     if (memcmp(f83, t83, 11) == 0) {
-        return FS_OK;
+        return 0;
     }
 
     if (dir_lookup(t83, 0) >= 0) {
-        return FS_EEXIST;
+        return -EEXIST;
     }
 
     idx = dir_lookup(f83, ent);
@@ -1175,40 +1199,45 @@ int fs_rename(const char *from, const char *to)
         return idx;
     }
     if (entry_is_open((u32)idx)) {
-        return FS_EBUSY;
+        return -EBUSY;
     }
 
     /* The name is the only thing that moves; cluster chain and size stay
      * exactly where they are. */
     memcpy(ent, t83, 11);
     err = dir_write((u32)idx, ent);
-    if (err != FS_OK) {
+    if (err != 0) {
         return err;
     }
-    return fs_flush_all();
+    return fat_flush_all();
 }
 
-static void fill_dirent(const u8 *ent, struct fs_dirent *out)
+static void fill_dirent(const u8 *ent, struct dirent *out)
 {
-    name_from_83(ent, out->name);
-    out->attr = ent[11];
-    out->time = le16(&ent[22]);
-    out->date = le16(&ent[24]);
-    out->cluster = le16(&ent[26]);
-    out->size = le32(&ent[28]);
+    struct tm t;
+
+    name_from_83(ent, out->d_name);
+    out->d_size = le32(&ent[28]);
+    out->d_mode = (ent[11] & ATTR_DIR) ? S_IFDIR : S_IFREG;
+    out->d_mode |= S_IRUSR;
+    if (!(ent[11] & ATTR_RDONLY)) {
+        out->d_mode |= S_IWUSR;
+    }
+    fat_to_tm(le16(&ent[24]), le16(&ent[22]), &t);
+    out->d_mtime = timegm(&t);
 }
 
-int fs_stat(const char *name, struct fs_dirent *out)
+static int fat_lookup_dirent(const char *name, struct dirent *out)
 {
     char n83[11];
     u8 ent[DIRENT_SIZE];
     int idx, err;
 
     if (!mounted) {
-        return FS_ENOTMNT;
+        return -ENODEV;
     }
     err = name_to_83(name, n83);
-    if (err != FS_OK) {
+    if (err != 0) {
         return err;
     }
     idx = dir_lookup(n83, ent);
@@ -1216,26 +1245,42 @@ int fs_stat(const char *name, struct fs_dirent *out)
         return idx;
     }
     fill_dirent(ent, out);
-    return FS_OK;
+    return 0;
 }
 
-int fs_readdir(int index, struct fs_dirent *out)
+static int fat_stat(const char *name, struct stat *st)
+{
+    struct dirent de;
+    int err = fat_lookup_dirent(name, &de);
+
+    if (err < 0) {
+        return err;
+    }
+    st->st_mode = de.d_mode;
+    st->st_size = de.d_size;
+    st->st_mtime = de.d_mtime;
+    st->st_blocks = cluster_bytes ?
+                    (de.d_size + cluster_bytes - 1) / cluster_bytes : 0;
+    return 0;
+}
+
+static int fat_readdir(int index, struct dirent *out)
 {
     u32 i;
     int seen = 0;
     u8 ent[DIRENT_SIZE];
 
     if (!mounted) {
-        return FS_ENOTMNT;
+        return -ENODEV;
     }
     if (index < 0) {
-        return FS_EINVAL;
+        return -EINVAL;
     }
 
     for (i = 0; i < root_entries; i++) {
         int err = dir_read(i, ent);
 
-        if (err != FS_OK) {
+        if (err != 0) {
             return err;
         }
         if (ent[0] == 0x00) {
@@ -1246,28 +1291,140 @@ int fs_readdir(int index, struct fs_dirent *out)
         }
         if (seen == index) {
             fill_dirent(ent, out);
-            return FS_OK;
+            return 0;
         }
         seen++;
     }
-    return FS_ENOENT;
+    return -ENOENT;
 }
 
-const char *fs_strerror(int err)
+/* ---------------------------------------------------------------- */
+/* The filesystem as the VFS sees it                                 */
+/*                                                                    */
+/* Below this line nothing is FAT-specific in shape: the same five    */
+/* file operations and the same nine filesystem operations would be   */
+/* implemented by any other filesystem, which is the point.           */
+/* ---------------------------------------------------------------- */
+
+/*
+ * A descriptor's priv holds the internal handle, biased by one so that
+ * handle 0 is distinguishable from a NULL priv.
+ */
+static int priv_to_handle(struct file *f)
 {
-    switch (err) {
-    case FS_OK:       return "ok";
-    case FS_EIO:      return "disk error";
-    case FS_ENOENT:   return "no such file";
-    case FS_EEXIST:   return "file exists";
-    case FS_EINVAL:   return "invalid name or argument";
-    case FS_ENOSPC:   return "disk full";
-    case FS_EMFILE:   return "too many open files";
-    case FS_EBADF:    return "bad file handle";
-    case FS_EACCES:   return "access denied";
-    case FS_ENOTMNT:  return "no filesystem mounted";
-    case FS_EDIRFULL: return "root directory full";
-    case FS_EBUSY:    return "file is open";
-    default:          return "unknown error";
+    return (int)(u32)f->priv - 1;
+}
+
+static s32 fat_file_read(struct file *f, void *buf, u32 len)
+{
+    return fat_handle_read(priv_to_handle(f), buf, len);
+}
+
+static s32 fat_file_write(struct file *f, const void *buf, u32 len)
+{
+    return fat_handle_write(priv_to_handle(f), buf, len);
+}
+
+static s32 fat_file_lseek(struct file *f, s32 offset, int whence)
+{
+    return fat_handle_seek(priv_to_handle(f), offset, whence);
+}
+
+static int fat_file_close(struct file *f)
+{
+    return fat_handle_close(priv_to_handle(f));
+}
+
+static const struct file_ops fat_file_ops = {
+    fat_file_read,
+    fat_file_write,
+    fat_file_lseek,
+    0,                          /* no ioctl on a regular file */
+    fat_file_close
+};
+
+static int fat_open(const char *path, int flags, struct file *f)
+{
+    int h = fat_handle_open(path, flags);
+
+    if (h < 0) {
+        return h;
     }
+    f->ops = &fat_file_ops;
+    f->priv = (void *)(u32)(h + 1);
+    f->flags = flags;
+    return 0;
+}
+
+static int fat_mount(struct blockdev *b)
+{
+    int err;
+
+    if (!b || !b->read) {
+        return -ENXIO;
+    }
+    if (b->sector_size != SECTOR_SIZE) {
+        return -EINVAL;
+    }
+    dev = b;
+    err = fat_mount_dev();
+    if (err < 0) {
+        dev = 0;
+    }
+    return err;
+}
+
+static int fat_umount(void)
+{
+    mounted = 0;
+    dev = 0;
+    return 0;
+}
+
+static int fat_statfs(struct statfs *s)
+{
+    int i;
+
+    if (!mounted) {
+        return -ENODEV;
+    }
+    s->f_bsize = fat_cluster_bytes();
+    s->f_blocks = fat_total_bytes() / (cluster_bytes ? cluster_bytes : 1);
+    s->f_bfree = fat_free_bytes() / (cluster_bytes ? cluster_bytes : 1);
+    s->f_type = "fat16";
+    for (i = 0; i < 11; i++) {
+        s->f_label[i] = fat_label()[i];
+        if (!s->f_label[i]) {
+            break;
+        }
+    }
+    s->f_label[11] = '\0';
+    return 0;
+}
+
+static int fat_sync(void)
+{
+    if (!mounted) {
+        return 0;
+    }
+    return fat_flush_all();
+}
+
+static struct fs_type fat16_type = {
+    "fat16",
+    fat_mount,
+    fat_umount,
+    fat_open,
+    fat_unlink,
+    fat_rename,
+    fat_stat,
+    fat_readdir,
+    fat_statfs,
+    fat_sync,
+    0
+};
+
+int fat16_init(void)
+{
+    return vfs_register(&fat16_type);
 }

@@ -1,8 +1,6 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * Copyright (C) 2026 Jeff Francis
- *
  * Sage040 - a plain 68040 workstation built only from real, documented silicon.
  *
  * Every device here corresponds to a physical part with a publicly available
@@ -15,6 +13,7 @@
  *   ATA taskfile     disk, WD1003 lineage       (T13 ATA/ATAPI specs)
  *   SMSC LAN91C111   ethernet                   (SMSC LAN91C111 datasheet)
  *   Silicon Motion SM501  bitmapped video       (SM501 datasheet)
+ *   ST M48T59            clock + 8 KB NVRAM      (M48T59 datasheet)
  *
  * Interrupts
  * ----------
@@ -27,6 +26,7 @@
  *   GPIP5 (channel  7) <- NS16550A UART
  *   GPIP4 (channel  6) <- ATA            (also TAI, timer A event input)
  *   GPIP3 (channel  3) <- LAN91C111      (also TBI, timer B event input)
+ *   GPIP2 (channel  2) <- M48T59         (alarm and watchdog)
  *
  * Physical memory map:
  *
@@ -38,6 +38,7 @@
  *   0xff200000  LAN91C111, 16-byte bank-switched window
  *   0xff300000  MC68901 MFP, 24 byte-spaced registers
  *   0xff400000  SM501 control registers
+ *   0xff600000  M48T59 NVRAM (8 KiB); the clock is the last eight bytes
  */
 
 #include "qemu/osdep.h"
@@ -67,6 +68,7 @@
 #define SAGE040_NET_BASE      0xff200000
 #define SAGE040_MFP_BASE      0xff300000
 #define SAGE040_SM501_MMIO    0xff400000
+#define SAGE040_RTC_BASE      0xff600000
 
 #define SAGE040_SM501_VRAM_SIZE (16 * MiB)
 
@@ -81,6 +83,14 @@
 #define SAGE040_GPIP_UART     5
 #define SAGE040_GPIP_ATA      4     /* also TAI, timer A event input */
 #define SAGE040_GPIP_NET      3     /* also TBI, timer B event input */
+#define SAGE040_GPIP_RTC      2     /* M48T59 alarm / watchdog output   */
+
+/*
+ * The M48T59 stores a two-digit BCD year and the driver adds a century to
+ * it, so the part covers 2000-2099 here.  Boards choose this: Sun's use
+ * 1968.
+ */
+#define SAGE040_RTC_BASE_YEAR 2000
 
 typedef struct {
     M68kCPU *cpu;
@@ -103,6 +113,7 @@ static void sage040_init(MachineState *machine)
 {
     M68kCPU *cpu;
     DeviceState *mfp_dev, *ide_dev, *sm501_dev;
+    DeviceState *rtc_dev;
     SysBusDevice *sysbus;
     ResetInfo *reset_info;
     uint64_t elf_entry;
@@ -181,6 +192,27 @@ static void sage040_init(MachineState *machine)
     sysbus_realize_and_unref(sysbus, &error_fatal);
     sysbus_mmio_map(sysbus, 0, SAGE040_SM501_VRAM);
     sysbus_mmio_map(sysbus, 1, SAGE040_SM501_MMIO);
+
+    /*
+     * ST M48T59 TIMEKEEPER: 8 KiB of battery-backed SRAM whose last eight
+     * bytes are the clock, plus alarm and watchdog registers just below
+     * them.  Chosen over the MC146818 for two reasons: QEMU's MC146818
+     * model is an ISA device and this board has no ISA bus, and the
+     * M48T59 is directly memory mapped with byte-wide registers like
+     * everything else here.  The NVRAM is a genuine addition - it is the
+     * only storage on the machine that survives a power cycle without
+     * going through the disk.
+     *
+     * mmio region 0 is the directly mapped window; region 1 is the
+     * indirect address/data port pair some boards use instead, which this
+     * one does not need.
+     */
+    rtc_dev = qdev_new("sysbus-m48t59");
+    qdev_prop_set_int32(rtc_dev, "base-year", SAGE040_RTC_BASE_YEAR);
+    sysbus = SYS_BUS_DEVICE(rtc_dev);
+    sysbus_connect_irq(sysbus, 0, qdev_get_gpio_in(mfp_dev, SAGE040_GPIP_RTC));
+    sysbus_realize_and_unref(sysbus, &error_fatal);
+    sysbus_mmio_map(sysbus, 0, SAGE040_RTC_BASE);
 
     /*
      * Boot protocol: load a big-endian ELF32 (EM_68K) and start at its entry

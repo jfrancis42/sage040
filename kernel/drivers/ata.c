@@ -3,6 +3,12 @@
 /*
  * ata.c - the disk, an ATA taskfile controller in polled PIO mode.
  *
+ * Registers itself as the block device "hda".  Everything above it --
+ * the filesystem, and through that every file -- sees only a struct
+ * blockdev: a sector size, a capacity, and a pair of functions that move
+ * sectors.  Replacing this with a SCSI controller or a RAM disk is a new
+ * file and one more call in main.c.
+ *
  * Reference: T13 ATA/ATAPI specification.  The register file is the
  * WD1003 taskfile carried forward, which is why a driver this small can
  * drive it: LBA28, one command at a time, status polled rather than
@@ -29,9 +35,11 @@
  * cannot read.  That bug lived in the test suite for weeks.
  * ----------------------------------------------------------------------
  */
-#include "block.h"
+#include "dev.h"
+#include "errno.h"
 
-#define ATA_TIMEOUT  2000000
+#define ATA_TIMEOUT      2000000
+#define ATA_SECTOR_SIZE  512
 
 static char  model[41];
 static u32   capacity;
@@ -80,7 +88,7 @@ static void ata_pio_in(u8 *dst)
 {
     int i;
 
-    for (i = 0; i < BLK_SECTOR_SIZE / 2; i++) {
+    for (i = 0; i < ATA_SECTOR_SIZE / 2; i++) {
         u16 w = MMIO16(ATA_DATA);
         dst[i * 2 + 0] = (u8)(w >> 8);
         dst[i * 2 + 1] = (u8)(w & 0xff);
@@ -91,13 +99,13 @@ static void ata_pio_out(const u8 *src)
 {
     int i;
 
-    for (i = 0; i < BLK_SECTOR_SIZE / 2; i++) {
+    for (i = 0; i < ATA_SECTOR_SIZE / 2; i++) {
         MMIO16(ATA_DATA) = (u16)(((u16)src[i * 2 + 0] << 8) |
                                   (u16)src[i * 2 + 1]);
     }
 }
 
-int blk_init(void)
+static int ata_identify(void)
 {
     u16 id[256];
     int i;
@@ -147,60 +155,59 @@ int blk_init(void)
     return 0;
 }
 
-u32 blk_capacity(void)
-{
-    return capacity;
-}
-
-const char *blk_model(void)
-{
-    return model;
-}
-
-int blk_read(u32 lba, u32 count, void *buf)
+static int ata_read(struct blockdev *b, u32 lba, u32 count, void *buf)
 {
     u8 *p = buf;
     u32 n;
 
+    (void)b;
     if (!ready || count == 0) {
-        return -1;
+        return -EINVAL;
+    }
+    if (lba + count > capacity) {
+        return -EIO;
     }
 
     for (n = 0; n < count; n++) {
         if (ata_wait_notbusy() != 0) {
-            return -1;
+            return -EIO;
         }
         ata_select_lba(lba + n, 1);
         MMIO8(ATA_COMMAND) = ATA_CMD_READ_PIO;
         if (ata_wait_drq() != 0) {
-            return -1;
+            return -EIO;
         }
         ata_pio_in(p);
-        p += BLK_SECTOR_SIZE;
+        p += ATA_SECTOR_SIZE;
     }
     return 0;
 }
 
-int blk_write(u32 lba, u32 count, const void *buf)
+static int ata_write(struct blockdev *b, u32 lba, u32 count,
+                     const void *buf)
 {
     const u8 *p = buf;
     u32 n;
 
+    (void)b;
     if (!ready || count == 0) {
-        return -1;
+        return -EINVAL;
+    }
+    if (lba + count > capacity) {
+        return -EIO;
     }
 
     for (n = 0; n < count; n++) {
         if (ata_wait_notbusy() != 0) {
-            return -1;
+            return -EIO;
         }
         ata_select_lba(lba + n, 1);
         MMIO8(ATA_COMMAND) = ATA_CMD_WRITE_PIO;
         if (ata_wait_drq() != 0) {
-            return -1;
+            return -EIO;
         }
         ata_pio_out(p);
-        p += BLK_SECTOR_SIZE;
+        p += ATA_SECTOR_SIZE;
 
         /*
          * Wait for the drive to take the data before issuing the next
@@ -208,11 +215,36 @@ int blk_write(u32 lba, u32 count, const void *buf)
          * a filesystem that corrupts itself much later.
          */
         if (ata_wait_notbusy() != 0) {
-            return -1;
+            return -EIO;
         }
         if (MMIO8(ATA_STATUS) & (ATA_SR_ERR | ATA_SR_DF)) {
-            return -1;
+            return -EIO;
         }
     }
     return 0;
+}
+
+/*
+ * The device this driver presents upward.  Nothing above it knows the
+ * word "ATA": the filesystem asks a struct blockdev for sectors.
+ */
+static struct blockdev ata_dev = {
+    "hda",
+    model,
+    ATA_SECTOR_SIZE,
+    0,
+    ata_read,
+    ata_write,
+    0,
+    0
+};
+
+int ata_init(void)
+{
+    if (ata_identify() != 0) {
+        return -ENODEV;
+    }
+    ata_dev.sectors = capacity;
+    ata_dev.model = model;
+    return dev_register_block(&ata_dev);
 }

@@ -31,7 +31,7 @@ LDFLAGS   := $(CPUFLAGS) -ffreestanding -nostdlib -T sage040.ld \
              -Wl,--build-id=none
 
 TESTS  := t1-cpu t2-uart t3-ata t4-net t5-mmu t6-irq \
-          t7-mfp-irq t8-mfp-timers t9-mfp-usart t10-sm501
+          t7-mfp-irq t8-mfp-timers t9-mfp-usart t10-sm501 t11-rtc
 ELFS   := $(addsuffix .elf,$(TESTS))
 COMMON := crt0.s uart.c mfp.c sage040.h sage040.ld
 

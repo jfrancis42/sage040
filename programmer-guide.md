@@ -132,9 +132,10 @@ A complete, working version is `tests/crt0.s`.
 | `0xff200000` | 16 | LAN91C111 | byte and 16-bit | native (big) |
 | `0xff300000` | 24 | MC68901 MFP | **byte** | n/a |
 | `0xff400000` | 2 MiB | SM501 control registers | **32-bit only** | **little** |
+| `0xff600000` | 8 KiB | M48T59 clock + NVRAM | byte | — |
 
 **Endianness is not uniform, and this is the single biggest source of bugs.**
-See §9.
+See §10.
 
 ---
 
@@ -497,7 +498,58 @@ Interrupts arrive on MFP channel 3.
 
 ---
 
-## 9. SM501 video — `0xf0000000` / `0xff400000`
+## 9. M48T59 clock and NVRAM — `0xff600000`
+
+*Reference: STMicroelectronics M48T59 datasheet.*
+
+One 8 KiB SRAM window. Everything below `0x1ff0` is ordinary
+battery-backed RAM; the top sixteen bytes are the alarm, the watchdog and
+the clock:
+
+```
+0xff601ff0  flags (read-only)      0xff601ff8  control
+0xff601ff2  alarm seconds          0xff601ff9  seconds (bit 7 = ST, stop)
+0xff601ff3  alarm minutes          0xff601ffa  minutes
+0xff601ff4  alarm hours            0xff601ffb  hours (24-hour)
+0xff601ff5  alarm date             0xff601ffc  day of week
+0xff601ff6  interrupts             0xff601ffd  date
+0xff601ff7  watchdog               0xff601ffe  month
+                                   0xff601fff  year (two digits)
+```
+
+**Byte accesses only, and every time field is BCD.** There is no century
+register, so the board supplies it: `RTC_BASE_YEAR` is 2000 and the part
+covers 2000–2099.
+
+The datasheet's protocol is to set **R** (bit 6 of control) before reading
+the seven time bytes and clear it afterwards, so the clock cannot advance
+mid-read, and to set **W** (bit 7) before writing them and clear it after,
+which is what transfers them into the counters.
+
+**Neither bit does anything under QEMU.** The model reads live from the
+host clock and applies each write as it happens. Two things follow, both
+measured and both covered by `t11-rtc`:
+
+- A read can straddle a carry, so read the clock twice and repeat if the
+  seconds moved. That loop is what actually gives a consistent reading
+  here, and costs nothing on hardware where R works.
+- Each field is applied through a normalising conversion, so the obvious
+  write order passes through dates that do not exist. Writing 29 February
+  while the clock still holds a non-leap year silently produces 1 March.
+  Write the day as 1 first, then the year, then the month, then the real
+  day, so every intermediate state is a date that exists.
+
+The day-of-week register is not worth reading: nothing keeps it consistent
+with the date, and QEMU numbers it from 0 while the datasheet numbers it
+from 1. Derive the weekday from the date instead.
+
+Presence cannot be tested from the time registers — a dead bus reads as
+zeroes and zeroes are a legal-looking BCD midnight. Write and read back an
+NVRAM byte instead, and put it back.
+
+---
+
+## 10. SM501 video — `0xf0000000` / `0xff400000`
 
 Two windows:
 
@@ -570,7 +622,7 @@ fill has happened.
 
 ---
 
-## 10. The 68040 MMU
+## 11. The 68040 MMU
 
 Fully available. The 68030 has **no MMU at all** in this emulator, which is why
 the machine is a 68040.
@@ -618,7 +670,7 @@ before you switch on, or the first push after `set_tc` faults.
 
 ---
 
-## 11. Gotchas
+## 12. Gotchas
 
 **Endianness differs per device.** The CPU, RAM and SM501 video memory are
 big-endian. All SM501 **control registers** are little-endian. The MFP, UART
@@ -643,7 +695,7 @@ status register.
 
 ---
 
-## 12. Debugging
+## 13. Debugging
 
 ```bash
 # add to the QEMU line:  -S -gdb tcp::1234
@@ -670,7 +722,7 @@ that does nothing. Note that `-d int` does **not** log m68k interrupts.
 
 ---
 
-## 13. Running at period speed
+## 14. Running at period speed
 
 By default QEMU executes as fast as the host allows, which for this machine is
 roughly 150x a real 68040. `-icount` fixes that: it charges every guest
@@ -729,7 +781,7 @@ frame rate at all.
 
 ---
 
-## 14. Quick reference
+## 15. Quick reference
 
 ```
 CPU          MC68040, on-chip FPU and MMU, big-endian
@@ -744,6 +796,7 @@ Ethernet     0xff200000   byte + 16-bit    MFP ch 3
 MFP          0xff300000   byte regs        drives IPL 6, vectored
 SM501 regs   0xff400000   32-bit LITTLE endian
 SM501 VRAM   0xf0000000   16 MiB, big-endian
+M48T59       0xff600000   byte regs        MFP ch 2   clock = last 8 bytes
 
 MFP vector   (VR & 0xF0) | channel
 MFP clock    2.4576 MHz, prescalers 4/10/16/50/64/100/200

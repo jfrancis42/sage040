@@ -23,6 +23,12 @@ rm -f "$out" "$t.usart"; : > "$out"
 # Known bytes for the MFP USART receiver to pick up.
 printf 'RX!' > "$t.usartin"
 
+# QEMU refuses to start at all if the drive file is missing, and then
+# writes nothing, which looks exactly like a guest that crashed before its
+# first character.  Create it here rather than relying on the Makefile, so
+# running this script by hand behaves the same way.
+[ -f disk.img ] || dd if=/dev/zero of=disk.img bs=1M count=8 status=none
+
 # A signature written by the host, so t3-ata can prove it reads the media
 # byte for byte rather than merely round-tripping its own writes.
 if [ -f disk.img ]; then

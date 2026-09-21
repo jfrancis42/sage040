@@ -1,0 +1,129 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 Jeff Francis */
+/*
+ * dev.h - the device model.
+ *
+ * Everything the kernel talks to is one of three kinds of device, and
+ * each kind has exactly one interface that the layers above it use:
+ *
+ *   struct chardev    a byte stream        -> the console, and the /dev names
+ *   struct blockdev   addressable sectors  -> the disk a filesystem sits on
+ *   struct netdev     packets              -> an ethernet interface
+ *
+ * The point is that nothing above these structures names a chip. The
+ * filesystem asks a `struct blockdev` for sector 2048; it does not know
+ * whether an ATA taskfile, a SCSI controller or a RAM disk answers. The
+ * shell writes to a file descriptor; it does not know whether an
+ * NS16550A or some other UART is on the other end. Replacing a driver
+ * means writing one of these structures and registering it, and nothing
+ * above it changes -- which is the whole reason the indirection is here
+ * and worth its cost.
+ *
+ * Drivers register themselves during startup. There is no probing by
+ * bus enumeration, because there is no enumerable bus: this is a board
+ * with parts soldered to it, and main.c knows which ones.
+ */
+#ifndef DEV_H
+#define DEV_H
+
+#include "kernel.h"
+
+struct file;
+
+/* ---------------------------------------------------------------- */
+/* What you can do to an open file, whatever is behind it            */
+/* ---------------------------------------------------------------- */
+
+struct file_ops {
+    s32 (*read)(struct file *f, void *buf, u32 len);
+    s32 (*write)(struct file *f, const void *buf, u32 len);
+    s32 (*lseek)(struct file *f, s32 offset, int whence);
+    int (*ioctl)(struct file *f, u32 request, u32 arg);
+    int (*close)(struct file *f);
+};
+
+struct file {
+    const struct file_ops *ops;
+    void *priv;                 /* whatever the driver needs        */
+    u32   pos;                  /* byte offset, for seekable things */
+    int   flags;                /* the O_* flags it was opened with */
+    int   used;
+};
+
+/* ---------------------------------------------------------------- */
+/* Character devices                                                 */
+/* ---------------------------------------------------------------- */
+
+struct chardev {
+    const char *name;           /* as it appears under /dev         */
+    const struct file_ops *ops;
+    void *priv;
+    struct chardev *next;       /* the registry is a plain list     */
+};
+
+int  dev_register_char(struct chardev *d);
+struct chardev *dev_find_char(const char *name);
+struct chardev *dev_first_char(void);
+
+/* ---------------------------------------------------------------- */
+/* Block devices                                                     */
+/* ---------------------------------------------------------------- */
+
+struct blockdev {
+    const char *name;           /* "hda"                            */
+    const char *model;          /* what the drive calls itself      */
+    u32  sector_size;
+    u32  sectors;               /* capacity                         */
+    int  (*read)(struct blockdev *b, u32 lba, u32 count, void *buf);
+    int  (*write)(struct blockdev *b, u32 lba, u32 count, const void *buf);
+    void *priv;
+    struct blockdev *next;
+};
+
+int  dev_register_block(struct blockdev *b);
+struct blockdev *dev_find_block(const char *name);
+struct blockdev *dev_first_block(void);
+
+/* ---------------------------------------------------------------- */
+/* Real-time clocks                                                  */
+/*                                                                    */
+/* One at a time, and the kernel only ever asks it for seconds since  */
+/* the epoch.  Every part numbers its registers differently -- BCD,   */
+/* binary, two-digit years, index/data ports -- and none of that is   */
+/* the filesystem's business.                                         */
+/* ---------------------------------------------------------------- */
+
+struct rtcdev {
+    const char *name;
+    int (*get)(struct rtcdev *r, time_t *out);
+    int (*set)(struct rtcdev *r, time_t secs);
+    void *priv;
+};
+
+int  dev_register_rtc(struct rtcdev *r);
+struct rtcdev *dev_rtc(void);
+
+/* ---------------------------------------------------------------- */
+/* Network devices                                                   */
+/* ---------------------------------------------------------------- */
+
+#define NET_MTU      1514       /* a full ethernet frame, no FCS     */
+#define NET_ADDR_LEN 6
+
+struct netdev {
+    const char *name;           /* "eth0"                           */
+    u8   mac[NET_ADDR_LEN];
+    int  (*up)(struct netdev *n);
+    int  (*down)(struct netdev *n);
+    int  (*send)(struct netdev *n, const void *frame, u32 len);
+    /* Returns the frame length, 0 if nothing is waiting, or -errno. */
+    s32  (*recv)(struct netdev *n, void *frame, u32 max);
+    void *priv;
+    struct netdev *next;
+};
+
+int  dev_register_net(struct netdev *n);
+struct netdev *dev_find_net(const char *name);
+struct netdev *dev_first_net(void);
+
+#endif /* DEV_H */

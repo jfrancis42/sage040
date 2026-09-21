@@ -230,6 +230,7 @@ cache or memory-latency modelling.
 | `0xff200000` | 16 | LAN91C111 | byte and 16-bit | native (big) |
 | `0xff300000` | 24 | MC68901 MFP | byte | n/a |
 | `0xff400000` | 2 MiB | SM501 control registers | **32-bit only** | **little** |
+| `0xff600000` | 8 KiB | M48T59 clock + NVRAM | byte | — |
 
 Endianness is not uniform, and it is the single biggest source of bugs. The
 ATA data register and every SM501 register are little-endian; everything else
@@ -279,7 +280,7 @@ The short version of the gotchas:
 | `toolchain.md` | building the cross toolchain |
 | `design.md` | why the machine is shaped the way it is |
 | `qemu-patch/` | the emulator changes, reproducible from pristine source |
-| `tests/` | ten bare-metal device tests, `make run` |
+| `tests/` | eleven bare-metal device tests, `make run` |
 | `cube/` | a rotating wireframe cube — the first real program |
 | `bootrom/` | a boot ROM that finds `KERNEL.ROM` on the disk and runs it |
 | `kernel/` | the kernel: console, system call gate, disk driver, FAT16, shell |
@@ -301,7 +302,7 @@ make disk-ls    # partition table and directory listing
 ### The test suite
 
 Every device has a bare-metal test that exercises the real hardware path —
-nothing is stubbed. 98 checks across 10 programs, about 14 seconds.
+nothing is stubbed. 11 programs, all passing.
 
 | Test | What it proves |
 |---|---|
@@ -315,6 +316,7 @@ nothing is stubbed. 98 checks across 10 programs, about 14 seconds.
 | `t8-mfp-timers` | All four timers, prescaler ratios measured by racing two timers, and event-count mode counting real ATA interrupts |
 | `t9-mfp-usart` | Transmit verified against the output file, receive verified against fed-in bytes |
 | `t10-sm501` | Device ID, register endianness, 16 MiB with no aliasing, a 640×480 framebuffer filled and read back |
+| `t11-rtc` | NVRAM is real memory and does not alias onto the clock, the oscillator advances, a written date reads back, and 30 February rolls into 1 March |
 
 ### Booting from disk
 
@@ -352,45 +354,64 @@ way to prove it without the kernel in the picture.
 
 ### The kernel
 
-`kernel/` is a small supervisor-mode kernel: a console, a `TRAP #0` system
-call gate, an ATA disk driver, a read/write FAT16 filesystem and a shell to
-drive them.
+`kernel/` is a small supervisor-mode kernel: Linux-shaped system calls, a
+device driver model, a VFS, a read/write FAT16 filesystem, a terminal with a
+line discipline, a clock, and a shell that reaches all of it only through
+`trap #0`.
 
 ```
-Sage040 kernel 0.1  (built Sep 21 2026 07:44:15)
+Sage040 kernel 0.2  (built Sep 21 2026 08:26:25)
 
   traps   : 256 vectors at 0x00000000, TRAP #0 is the system call gate
-  syscall : TRAP #0 gate, 4 calls, verified
-  cpu     : MC68040, supervisor mode, sr=0x2704 vbr=0x00000000
+  syscall : TRAP #0, Linux/m68k convention, verified
+  cpu     : MC68040, supervisor mode, sr=0x2700 vbr=0x00000000
   fpu     : on-chip, 1/3 = 0.333333
-  memory  : 4096 KB, kernel 0x00000000-0x00006008, stack top 0x003ffff0
-  console : NS16550A at 0xff000000, 8N1, scratch register verified
-  mfp     : MC68901 at 0xff300000, 16 vectored channels on IPL 6
-  disk    : ATA, 'QEMU HARDDISK', 204800 sectors (100 MiB)
-  network : LAN91C111 rev 0x3391, MAC 52:54:00:12:34:56
-  video   : SM501, device id 0x050100a0, 16 MiB at 0xf0000000
-  fs      : FAT16 'SAGE040', 101158 KB, 101134 KB free, 2048 byte clusters
+  memory  : 4096 KB, kernel 0x00000000-0x00009954, stack top 0x003ffff0
+  disk    : hda 'QEMU HARDDISK', 204800 sectors (100 MiB)
+  clock   : m48t59, 2026-09-21 14:26:35 UTC
+  network : eth0, 52:54:00:12:34:56
+  root    : fat16 on /dev/hda 'SAGE040', 101158 KB, 101120 KB free
 
 kernel ready.  'help' lists commands.
 
-sage> ls
----a-  KERNEL.ROM    22988  2026-09-21 07:47
-1 file, 22988 bytes
+sage$ df
+volume          type   1K-blocks       used      avail  use%
+SAGE040         fat16      101158         38     101120    0%
+sage$ cat > notes.txt
+hello from the shell
+sage$ ls -l
+-rw     KERNEL.ROM     36960  2026-09-21 08:27
+-rw      NOTES.TXT        21  2026-09-21 14:27
+2 files, 36981 bytes
 ```
 
-Every line of that inventory is a device the kernel touched during startup,
-not a list assembled at build time.
+Each device announces itself as its driver registers, so every line is
+something the machine actually answered.
 
-The filesystem is read **and** write — create, read, write, seek, append,
-truncate, delete, rename, stat, list. Because the volume is a genuine MS-DOS
+**System calls follow Linux.** The convention is Linux/m68k's, unchanged —
+call number in `d0`, arguments in `d1`–`d5`, result or a negated errno back
+in `d0` — and the numbers and error values are Linux's too, because
+`__NR_write` being 4 is a fact a lot of people already carry around.
+
+**Devices sit behind a driver model.** A character device, a block device, a
+network device and a clock each have exactly one interface, and nothing above
+them names a chip. The filesystem asks a `struct blockdev` for a sector and
+has no idea an ATA taskfile answers; the shell writes to a descriptor and has
+no idea an NS16550A is on the other end. Swapping either is a new file in
+`kernel/drivers/` and one more line in `main.c` — which is the only file in
+the kernel that names a part at all.
+
+**The shell is a program that happens to be linked in.** It includes
+`syscall.h` and nothing else from the kernel: not the VFS, not the device
+layer, not the console. It cannot reach a chip even by accident, so "programs
+will run unprivileged later" stays a true statement rather than becoming a
+plan.
+
+The filesystem is read **and** write. Because the volume is a genuine MS-DOS
 one, the host can drop a file on it and the kernel reads it, and anything the
 kernel writes comes back off the image afterwards without the kernel running.
 `kernel/fstest.sh` checks precisely that, with `mtype`, `mdir` and `fsck.fat`
 — a filesystem only the kernel can read would prove nothing.
-
-The kernel runs in supervisor mode throughout. User programs will not, and the
-boundary they will cross is already there: `TRAP #0`, with the call number in
-`d0`, arguments in `d1` and `d2`, and the result back in `d0`.
 
 See [`kernel/README.md`](kernel/README.md).
 
@@ -413,8 +434,9 @@ is the beginning of an operating system rather than a port of one. Bare metal
 still works and is still the point: the test suite and the cube run with no
 kernel underneath them at all.
 
-What is not there yet: preemption, processes, a TCP/IP stack, and a real-time
-clock. `design.md` tracks what is decided and what is not.
+What is not there yet: preemption, processes and a TCP/IP stack. The
+ethernet driver exists and registers `eth0`, but nothing above it sends a
+packet. `design.md` tracks what is decided and what is not.
 
 ---
 
