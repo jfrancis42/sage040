@@ -15,34 +15,47 @@
  *
  * WHAT THIS IMPLEMENTS
  *
- * The state machine of RFC 793, both opens, retransmission with a
- * backed-off timer, and an orderly close on both sides. Enough to fetch
- * a page from a real web server and enough to be one.
+ * The state machine of RFC 793, both opens, and an orderly close on
+ * both sides. Round trip measurement and a computed retransmission
+ * timeout (RFC 6298) with Karn's algorithm. Slow start, congestion
+ * avoidance, fast retransmit and fast recovery (RFC 5681). A
+ * reassembly queue for segments that arrive ahead of a gap. Delayed
+ * acknowledgements. Initial sequence numbers that an off-path
+ * attacker cannot guess (RFC 6528).
  *
- * WHAT IT DOES NOT, each a decision rather than an oversight:
+ * Most of that list was once a list of things this file deliberately
+ * did NOT do, on the grounds that a machine talking to its own LAN is
+ * not where the internet's congestion is decided. That reasoning held
+ * exactly as long as the only network was QEMU's NAT. The moment the
+ * interface was bridged onto a real one the omissions became defects:
+ * without reassembly one lost packet stalls a transfer for a whole
+ * round trip, and an ISN taken from the tick is guessable by anyone
+ * who knows roughly when the connection was made.
  *
- *   No congestion control. No slow start, no congestion window, no fast
- *   retransmit. A machine that talks to things on its own LAN is not
- *   where the internet's congestion is decided, and the algorithms are
- *   where TCP stops being a protocol and starts being a research field.
- *   The send window is whatever the peer advertised, capped by the send
- *   buffer.
+ * WHAT IT STILL DOES NOT, each a decision rather than an oversight:
  *
- *   No out-of-order reassembly. A segment that arrives ahead of a gap is
- *   dropped and the sender retransmits it. That IS legal -- a receiver
- *   is permitted to drop anything it does not want -- and it costs
- *   throughput on a lossy path rather than correctness. A reassembly
- *   queue is the single biggest piece of TCP and it earns nothing on a
- *   LAN that does not lose packets.
+ *   No window scaling, no SACK, no timestamps. All are options, all
+ *   are negotiated, and a peer that offers them works perfectly well
+ *   with a stack that declines. Window scaling would matter on a path
+ *   whose bandwidth-delay product exceeds 64 KB; this machine's
+ *   receive buffer is 4 KB, so the window is the binding constraint
+ *   long before the field width is.
  *
- *   No window scaling, no SACK, no timestamps. All are options, all are
- *   negotiated, and a peer that offers them works perfectly well with a
- *   stack that declines.
+ *   No PAWS, which needs timestamps.
  *
- *   No PAWS and no random initial sequence numbers. The ISN comes from
- *   the tick. On a machine that is not on the open internet that is a
- *   theoretical exposure; on one that is, it is a real one, and this is
- *   the sentence to come back to.
+ *   No path MTU discovery. The MSS is fixed at what fits an ethernet
+ *   frame, and everything this machine can reach is an ethernet hop
+ *   or behind a router that will fragment.
+ *
+ *   No Nagle. Small writes go out as they are made. A machine with a
+ *   4 KB send buffer and a human at the other end of it is not where
+ *   the forty-byte-header problem is solved, and coalescing would
+ *   make an interactive session worse.
+ *
+ * The socket layer above this file is what keeps the option open: a
+ * program calls socket(), connect() and read(), and which
+ * implementation answers is not its business.
+ *
  */
 #ifndef TCP_H
 #define TCP_H

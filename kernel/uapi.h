@@ -24,7 +24,7 @@
 
 #define NAME_MAX      12        /* "12345678.123" without the NUL     */
 #define PATH_MAX      64
-#define OPEN_MAX      8         /* file descriptors per system        */
+#define OPEN_MAX      8         /* file descriptors per TASK           */
 
 /*
  * open() flags. The access mode is the low two bits, the way POSIX has

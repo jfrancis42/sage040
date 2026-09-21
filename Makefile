@@ -25,7 +25,8 @@ include $(TOPDIR)/disk.mk
 all:
 	$(MAKE) -C bootrom
 	$(MAKE) -C kernel
-	$(MAKE) -C user
+	$(MAKE) -C system
+	$(MAKE) -C apps
 
 # The machine as it is meant to run: the ROM loads KERNEL.ROM off the
 # filesystem and jumps to it.

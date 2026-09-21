@@ -8,7 +8,9 @@ Implemented as a custom QEMU machine, `sage040`.
 
 - **[`programmer-guide.md`](programmer-guide.md)** — how to write code for it
 - [`qemu-patch/`](qemu-patch/) — the emulator, reproducible from pristine source
-- [`tests/`](tests/) — eleven device tests, `make run`
+- [`tests/`](tests/) — twelve device tests, `make run`
+- **[`os.md`](os.md)** — the operating system that runs on it
+- [`emacs.md`](emacs.md) — what it would take to run GNU Emacs
 - [`cube/`](cube/) — a rotating wireframe cube; the first real program on the machine
 - [`toolchain.md`](toolchain.md) — the cross toolchain
 
@@ -143,11 +145,21 @@ MC146818 — see §1.
 ## 6. Verification
 
 Every device has a bare-metal test that exercises the real hardware path.
-`make run` in `tests/`: **12 programs, all passing.** The kernel adds a
-twelfth, `kernel/fstest.sh`, which drives a console session and then checks
-the result with the host's own `mdir`, `mtype` and `fsck.fat` — 31 checks,
-including loading and running a program from the disk, the tick running,
-and a program drawing through `/dev/fb0`.
+`make run` in `tests/`: **12 programs, all passing.** The kernel adds four
+more scripted suites, each of which boots the machine and drives it over
+its serial line:
+
+| | | |
+|---|---|---|
+| `kernel/fstest.sh` | 39 checks | the filesystem, verified afterwards with the host's own `mdir`, `mtype` and `fsck.fat` |
+| `kernel/edittest.sh` | 27 | the line editor, history, job control, background jobs and `shutdown` |
+| `kernel/vmtest.sh` | 15 | memory protection: what a program cannot touch |
+| `kernel/nettest.sh` | 13 | ARP, DHCP, ICMP and TCP against a host web server |
+
+106 checks in total. Verifying the guest's writes with the *host's* tools
+rather than by reading them back with the same code that wrote them is
+deliberate: `t3-ata` is the standing reminder that a round trip cannot
+catch a byte-order error, because both directions swap.
 
 | Test | Checks | What it proves |
 |---|---|---|
@@ -178,134 +190,119 @@ and a program drawing through `/dev/fb0`.
 | Kernel (§10) — VFS, device model, drivers, FAT16 read/write, shell | ✅ done — `kernel/` |
 | System calls — Linux/m68k convention, Linux numbers and errnos | ✅ done, and programs use them |
 | Clock — M48T59, `time()`/`stime()`, file timestamps | ✅ done |
-| Programs (§10) — ELF loader, `spawn`, argv, exit status | ✅ done — `user/` |
+| Programs (§10) — ELF loader, `spawn`, argv, envp, exit status | ✅ done — `lib/`, `system/`, `apps/` |
 | System tick — MC68901 timer D, HZ=100, `nanosleep`, `times` | ✅ done |
 | Framebuffer — `/dev/fb0`, point/line/rect/clear/flip, double buffered | ✅ done |
 | Text console (§10) — `/dev/fbcon`, 80×30, IBM PC 8×16 font | ✅ done |
 | Terminal (§10) — `tty.c`, many sources and sinks | ✅ done |
 | Keyboard — Intel 8042, scancode set 1, `/dev/kbd0` | ✅ done |
-| Ethernet driver — `struct netdev`, registered as `eth0` | ✅ written, only the probe is exercised |
-| Shell — Linux-named commands, redirection, runs programs | ✅ done |
-| Preemption, more than one program, user mode, virtual memory | unblocked — ordinary OS work now |
-| TCP/IP (§8) | not started |
+| Shell — Linux-named commands, environment, PATH, scripts, `/etc/rc` | ✅ done |
+| **Virtual memory** — 68040 MMU, per-task address spaces, `uaccess` | ✅ done — `vm.c`, `uaccess.c` |
+| **User mode** — programs run unprivileged, faults kill only the program | ✅ done — proven by `vmtest.sh` |
+| **Tasks and preemption** — round-robin scheduler, context switch | ✅ done — `task.c`, `taskasm.s` |
+| **Blocking** — wait queues, counting semaphores, mutexes | ✅ done — `wait.c` |
+| **Signals** — default actions, delivered at the user boundary and the tick | ✅ done — `signal.c` |
+| **Job control** — `&`, `jobs`, `fg`, `bg`, `ps`, `kill`, ctrl-Z | ✅ done |
+| Ethernet driver — `struct netdev`, registered as `eth0` | ✅ done, and exercised end to end |
+| **TCP/IP (§8)** — ARP, IP, ICMP, UDP, DHCP, TCP, sockets | ✅ done — `kernel/net/` |
+| Filesystem (§9) — subdirectories, cwd, `mkdir`/`rmdir`/`chdir` | ✅ done |
+| Long file names | ✗ open — §11 |
+| `mmap`/`brk`, pipes and redirection, paging, shared libraries | ✗ open — §11 |
 
-**Every hardware dependency is satisfied.** What remains is operating system,
-not emulator.
+**Every hardware dependency is satisfied**, and has been for some time.
+What the machine now runs is described in **[`os.md`](os.md)**; what is
+still missing is §11.
 
 ---
 
 ## 8. TCP/IP stack
 
-Not yet chosen. The hardware is proven — `t4-net` does a real ARP round trip
-against the LAN91C111 — so this is a software decision.
+**Settled: written out, not imported.** The stack is in `kernel/net/` —
+ARP, IP, ICMP, UDP, DHCP, TCP and a socket layer — and it works against
+real hosts on a real LAN. `os.md` describes what it does; this section is
+the record of *why it is not lwIP*, because that was the recommendation
+here for a long time and reversing it was a deliberate call.
 
-### Leading candidate: lwIP
+### Why lwIP was the recommendation
 
-BSD-licensed and designed to be dropped onto bare metal. Its `NO_SYS=1` raw
-mode needs no threads, no scheduler and no sockets layer — a main loop that
-polls the NIC and calls `sys_check_timeouts()` is enough. That matters here,
-because it does not require an operating system to exist first.
+For a machine with a few MB of RAM, lwIP is the obvious answer: 40 KB of
+code, a `netif` driver of roughly 250 lines, no dynamic allocation
+required, a raw API that avoids threads entirely, and a BSD-socket
+compatibility layer on top. It is the standard choice for exactly this
+size of system and it would have been quicker.
 
-Three things make it fit this machine specifically:
+### Why it was not adopted
 
-- **Big-endian is the easy case.** Network byte order *is* big-endian, so
-  `htons`/`ntohl` compile to nothing and a whole category of porting bug does
-  not arise. (Note the contrast with this board's own devices: the ATA data
-  register and every SM501 register are little-endian. Those are device
-  quirks, not stack concerns.)
-- **The 68040 does unaligned accesses in hardware.** Protocol headers are full
-  of fields at awkward offsets; on ARM or MIPS that means packed-struct
-  gymnastics or byte-at-a-time accessors. Here it is a cycle penalty and
-  nothing more.
-- **Two of the three port pieces already exist.** lwIP's port layer is a
-  `cc.h` (types, packing, byte order), a `sys_now()` returning milliseconds,
-  and one netif driver. MFP timer D already provides a 10 ms tick and a
-  counter, and `tests/t4-net.c` already drives allocate / write-FIFO /
-  enqueue and the receive path.
+The recommendation was right **when the layers below TCP did not exist.**
+By the time the question became urgent, ARP, IP, ICMP and UDP were all
+written, documented, and wired into the device model and the shell.
 
-Expected cost: a netif driver of roughly 250 lines plus configuration.
-Footprint lands around 30–40 KB — large beside the current test binaries,
-irrelevant in 4 MB.
+lwIP is not a TCP. It is a whole stack, with its own ARP, its own IP and
+its own idea of what an interface is. Adopting it at that point meant
+*discarding* everything already working and adapting to its device model,
+not slotting a layer in on top. The cost had inverted.
 
-Known friction: the build is `-nostdinc`, and lwIP wants `string.h`. Some of
-that is owed regardless — GCC emits calls to `memcpy` and `memset` on its own
-for struct copies even in freestanding mode. `PACK_STRUCT` needs GCC's
-`packed` attribute, which 15.2.0 has. Polled versus interrupt-driven receive
-is a real choice: `NO_SYS` assumes polling, but the NIC is on MFP channel 3
-if interrupt-driven is wanted.
+What keeps the decision reversible is the socket layer: a program calls
+`socket()`, `connect()` and `read()`, and which implementation answers is
+not its business. If lwIP is ever wanted, `net/socket.c` is the seam.
 
 ### Alternatives, and when each would win
 
-| Option | When it wins | Cost |
-|---|---|---|
-| **uIP** | Minimal footprint — ~5 KB, a few hundred bytes of RAM | One TCP segment in flight, so throughput is poor. Choosing constraint for its own sake on a 4 MB machine |
-| **KA9Q NOS** | Period- and temperament-correct; it is what actually ran on 68k amateur gear | Expects to *be* the OS — own process model and scheduler. More work than lwIP, not less |
-| **4.4BSD-Lite networking** | Historically authentic for a workstation of this vintage | mbufs, `splnet()`, deep entanglement with a BSD kernel that does not exist here. This is the "port NetBSD instead" path arriving by another route |
-| **Write it** | ARP, ICMP echo and UDP are a few hundred lines, and `t4-net.c` has already started | TCP is where it stops being educational: retransmission, windowing, congestion control, and the state machine's edge cases |
+| | When it wins |
+|---|---|
+| **lwIP** | If the stack below TCP did not already exist, or if IPv6, DNS and DHCP-with-options were all wanted at once |
+| **uIP** | A far smaller machine — one segment in flight, no window worth the name |
+| **Written out** | What happened: the lower layers existed, and TCP was the only missing piece |
 
-### What was actually done, and why it differs
+### What the TCP does
 
-The easy layers were written by hand, as recommended — and then TCP was
-too, which the recommendation above did not expect. The reason the advice
-changed is that it was written when nothing existed: by the time TCP was
-due, ARP, IPv4, ICMP and UDP were here, documented, and wired into the
-device model and the shell. **lwIP is not a TCP.** It is a whole stack
-with its own ARP, its own IP and its own idea of what an interface is, so
-adopting it meant discarding all of that rather than slotting a layer on
-top.
+RFC 793's state machine, both opens, an orderly close on both sides, and:
 
-`net/socket.c` is what keeps the decision reversible. A program calls
-`socket()`, `connect()` and `read()`; which implementation answers is
-not its business, so lwIP can still replace what is underneath without a
-program changing.
+- **Out-of-order reassembly**, from a shared pool rather than per
+  connection — a reassembly queue is only occupied during a loss, so
+  giving every connection its own reserves memory for a situation that is
+  rare on all of them at once
+- **Congestion control**, RFC 5681: slow start, congestion avoidance,
+  fast retransmit, fast recovery
+- **RTT measurement and a computed RTO**, RFC 6298, with Karn's algorithm
+- **Delayed acknowledgements**, and duplicate-ACK handling as the
+  fast-retransmit trigger
+- **Initial sequence numbers that cannot be guessed**, RFC 6528, over
+  `kernel/random.c` — which is xorshift32 seeded from the clock, the tick
+  and the MAC address, and which says at the top of the file, in as many
+  words, that it is not a cryptographic generator
+
+**Every item on that list was once in the section below**, as a
+deliberate omission justified by the machine only ever talking to its own
+LAN. That reasoning held exactly as long as the only network was QEMU's
+NAT. Bridging the interface onto a real one turned each omission into a
+defect: without reassembly a single lost packet stalls a transfer for a
+whole round trip, and an ISN of `jiffies * 7919` is guessable by anyone
+who knows roughly when the connection was made.
 
 ### What the TCP does not do
 
-Each of these is a decision, written down so that it is a to-do rather
-than a surprise. They are roughly in the order they would be worth
-doing.
+Each of these is a decision, and the first four are negotiated options
+that a peer works perfectly well without.
 
-- **A random initial sequence number.** The ISN comes from the tick,
-  which is guessable. On a LAN that is theoretical; on the open
-  internet it lets an off-path attacker inject data into a connection.
-  This is the only one on the list that is a security bug rather than a
-  performance limit, and it should be fixed first. It needs a source of
-  randomness the machine does not yet have — the obvious one is to hash
-  the clock, the MAC and a counter, which is weak but enormously better
-  than a multiplication.
-- **Out-of-order reassembly.** A segment arriving ahead of a gap is
-  dropped and the sender retransmits it. That is legal, and it costs
-  throughput rather than correctness — but on any path that loses
-  packets it turns one loss into a stall for a whole round trip. A
-  reassembly queue is the single largest piece of TCP left undone.
-- **Congestion control.** No slow start, no congestion window, no fast
-  retransmit or recovery. The send window is whatever the peer
-  advertised. A machine that only talks to its own LAN is not where the
-  internet's congestion is decided, but anything going through a real
-  path should not be sending a full window into a link it has not
-  measured.
-- **Round trip time estimation.** The retransmission timeout starts at
-  500 ms and doubles, rather than being derived from measured RTT the
-  way RFC 6298 describes. On a fast LAN that is far too slow to recover
-  from a single loss; on a slow path it is too eager.
-- **Window scaling, SACK and timestamps.** All are options and all are
-  negotiated, so a peer that offers them works perfectly well with a
-  stack that declines. Window scaling is what a transfer needs to go
-  faster than about 64 KB in flight; SACK is what makes recovery from
-  multiple losses in one window cheap. Neither matters until the two
-  above are done.
-- **Delayed and duplicate ACK handling.** Every segment is acknowledged
-  immediately, which doubles the packet count on a bulk transfer.
-- **Keepalives, and a real TIME_WAIT.** TIME_WAIT is ten seconds rather
-  than twice the maximum segment lifetime, which is safe on a LAN where
-  a segment cannot survive that long and is not on a long-haul path.
+- **Window scaling.** It would matter on a path whose bandwidth-delay
+  product exceeds 64 KB. The receive buffer is 4 KB, so the window is the
+  binding constraint long before the field width is.
+- **SACK**, and **timestamps**, and therefore **PAWS**.
+- **Path MTU discovery.** The MSS is what fits an ethernet frame.
+- **Nagle.** Small writes go out as they are made. A machine with a 4 KB
+  send buffer and a human at the other end is not where the
+  forty-byte-header problem is solved, and coalescing would make an
+  interactive session worse.
+- **Keepalives.**
+- **A real `TIME_WAIT`.** It is 10 seconds; the specification says 2 MSL,
+  which is minutes. This is the one genuine shortcut in the list, and the
+  one most likely to matter — a quickly reused port can in principle
+  accept a stale segment from a previous connection.
 
-**Unverified:** whether a usable m68k reference port exists to crib a `cc.h`
-from. ColdFire is 68k-family and was a common lwIP target under uClinux, so
-the ABI and toolchain story should be well-trodden — but that is recollection,
-not something checked, and it is worth ten minutes before counting on it.
-
----
+And above it, **there is no resolver**: addresses are numeric everywhere.
+DNS over UDP is a few hundred lines on a UDP layer that is already done,
+and it is in §11.
 
 ## 9. Filesystem
 
@@ -368,7 +365,20 @@ label and subdirectories.
 
 **In the kernel** (`kernel/fs/fat16.c`), read *and* write over a real block
 layer (`kernel/drivers/ata.c`): open, read, write, seek, create, truncate, append, delete,
-rename, stat and a directory walk. Free-cluster allocation uses a rolling
+rename, stat and a directory walk — and **subdirectories**, with `mkdir`,
+`rmdir`, a per-task working directory, `chdir` and `getcwd`, and path
+resolution through any depth of them.
+
+Two structural facts about FAT16 make that more than a loop change. **A
+directory is one of two things**: the root is a fixed run of sectors that
+cannot grow, and every other directory is an ordinary cluster chain. FAT32
+abolished the distinction; FAT16 did not, so `struct dir` carries a cluster
+number with 0 meaning the root. And **`.` and `..` are the only record of a
+directory's parent** — a FAT directory entry says nothing about where it
+lives — so `mkdir` must write both or the directory cannot be left. The
+parent of a directory in the root is recorded as cluster 0.
+
+Free-cluster allocation uses a rolling
 hint so a sequential write walks the table once instead of restarting from
 cluster 2 on every extension, and every FAT update is written to **both**
 copies of the table.
@@ -381,10 +391,15 @@ kernel can read would prove nothing.
 
 ### What is not, yet
 
-- **Subdirectories and long names.** The kernel looks only in the root and
-  only at 8.3 names. Long-name entries the host wrote are skipped on a scan
-  rather than misread, so a file created with one is still visible by its
-  short name and is not damaged. Both are period-correct limitations.
+- **Long file names.** 8.3 only. Long-name entries the host wrote are
+  skipped on a scan rather than misread, so a file created with one is
+  still visible by its short name and is not damaged. This is
+  period-correct, and it is also **the filesystem's single biggest
+  practical limitation**: 43% of GNU Emacs's Lisp files cannot be named
+  on this volume at all (measured — `emacs.md`). VFAT long-name entries
+  are the answer and are costed in §11.
+- **Permissions, ownership, and links.** FAT has nowhere to put any of
+  them. `ls -l` shows a mode because `stat` synthesises one.
 - **Timestamps before the clock is set.** Stamps come from the M48T59, which
   reads the host's clock under emulation and a dead battery's idea of the
   time on hardware. If it does not answer, files get a fixed date — wrong
@@ -418,18 +433,37 @@ supervisor mode from its first instruction and never leaves it.
 ### The shape
 
 ```
-          shell.c  edit.c        programs that happen to be linked in
+  user mode   programs in their own address spaces:
+              lib/  system/{ifconfig,ping,netstat,shutdown,env}  apps/
+ ============================== rte / trap #0  ===== the privilege boundary
+
+          shell.c  edit.c        a kernel task, but only syscalls below it
  ------------------------------  trap #0
-              syscall.c          open read write lseek stat getdents ...
-               vfs.c             paths, mounts, the descriptor table
+              syscall.c          40 calls, Linux numbers and convention
+      +-----------+-----------+-----------+-----------+
+    vfs.c      net/socket.c   task.c      vm.c      exec.c
+  paths,       sockets       scheduler   address    ELF loading
+  mounts,          |         wait.c      spaces         |
+  descriptors      |         signal.c    pmm.c      uaccess.c
+      |            |             |        |             |
+      |      net/tcp.c udp.c     +--------+-------------+
+      |      net/ip.c icmp.c        taskasm.s: the context switch
+      |      net/arp.c dhcp.c
       +-----------+-----------+
    fs/fat16.c           dev.c    filesystem types, device registries
       |                   |
  struct blockdev     chardev / netdev / rtcdev / timerdev / fbdev
       |                   |
- drivers/ata.c       drivers/ns16550.c  m48t59.c  mfp.c  sm501.c
+ drivers/ata.c       drivers/ns16550.c  m48t59.c  mfp.c  sm501.c  i8042.c
                      drivers/smc91c111.c
 ```
+
+**[`os.md`](os.md) is the full description of everything above the driver
+line.** This section is the design record; that document is the reference.
+
+The shell is a **task** now, scheduled like any other, rather than a
+function the kernel calls. What has not changed is that it reaches the
+machine only through `trap #0`.
 
 Three properties are worth stating because they are what the layering is
 for, and each is checkable rather than aspirational:
@@ -474,11 +508,22 @@ Linux makes under the same name: a program gets `O_CREAT` and
 unknown number comes back `-ENOSYS`, so the path is known good where it is
 installed rather than where something first depends on it.
 
-**Still on the wrong side of the line:** `syscall_dispatch()` takes pointer
-arguments at face value. Correct while every caller shares the kernel's
-address space, and the function that will have to validate and copy them
-when that stops being true. The MMU is off, so there is no address space to
-separate yet.
+**This used to say that `syscall_dispatch()` took pointer arguments at
+face value, because the MMU was off and there was no address space to
+separate.** Both halves have been false for some time. The MMU is on, each
+task has its own address space, and every pointer that crosses the gate
+goes through `kernel/uaccess.c` — a software table walk against
+`current->as`, one page-sized chunk at a time, returning `-EFAULT` rather
+than faulting. `kernel/vmtest.sh` is fifteen attempts by a program to
+reach something it should not, and exists so that this paragraph cannot
+quietly go stale again.
+
+Following `current->as` rather than a global is the whole of one bug:
+`exec` used to set the address space around a program's entire run, which
+worked while the program ran *inside* the spawning call. The moment a
+program became a task of its own, nothing set it, every user pointer
+looked like a kernel pointer, and the first `write()` handed the terminal
+an address belonging to a different address space.
 
 ### The tick
 
@@ -499,6 +544,20 @@ the foreground completely, and this machine already walked into that once
 with a timer at 13 µs. Sleeping uses `STOP`, so an idle program costs the
 host nothing, and `timer_sleep_ticks()` returns `-ENODEV` rather than
 waiting forever when no timer is running.
+
+The tick now does three jobs, not one. It counts time for `nanosleep` and
+`times`; it **drives preemption**, setting `need_resched` so that
+`task_ret_to_user()` switches tasks on the way back to user mode; and it
+calls `net_drain()` to move arriving frames off the ethernet card into a
+ring. That last one is not an optimisation — the LAN91C111 allocates
+transmit buffers from the same page pool that holds received frames, so a
+receiver that is never drained stops the machine being able to *send*.
+
+**Preemption happens only on the way back to user mode**, which is what
+lets this kernel have no locking at all: it can only be entered by one
+task at a time, because a task inside a system call cannot be preempted
+out of it. The cost is that a kernel task — the shell — is never preempted
+and must block or yield.
 
 Interrupts are enabled **last** in startup, after every driver is up: a
 fault before that point is reported by a handler with the console to
@@ -569,23 +628,29 @@ off — no hotplug, no refcounting, nothing to unregister, because with a
 handful of soldered parts that would be machinery in search of a problem.
 
 Path resolution has two fixed mount points: `/dev` is the device registry,
-everything else is the mounted volume. That is honest about a filesystem
-with one directory and does not change the calls above it when that stops
-being true.
+everything else is the mounted volume. That was written when the
+filesystem had one directory, and the promise it made — that the calls
+above it would not change when that stopped being true — held: the volume
+now resolves through any depth of subdirectory and nothing above `vfs.c`
+noticed.
 
-### The terminal
+### The serial port
 
-`drivers/ns16550.c` is a terminal, not just a UART. `read()` returns one
-whole line, echoed as typed, with backspace and ctrl-U working and ctrl-D
-returning 0 for end of input — canonical mode, in the driver for the same
-reason it lives in the tty layer on a real system: otherwise every program
-that reads a line implements it again, slightly differently. ONLCR and
-ICRNL are applied here too, so a file written through the same `write()`
-gets the bare newline it should have.
+`drivers/ns16550.c` is **a serial port and nothing more**, registered as
+`/dev/ttyS0` and as both an input source and an output sink of the
+terminal described above.
+
+This section used to say the opposite — that the driver was a terminal,
+with canonical mode inside it — and that was true once. The line
+discipline moved to `tty.c` when the console grew a second source and a
+second sink, because canonical mode belongs to the *terminal*, not to one
+of the several devices that can be attached to it. The driver's own header
+comment says so, and the two statements disagreed here for a while.
 
 Polled in both directions, on purpose: it works before interrupts are set
 up, works inside a panic, and cannot deadlock against the code reporting
-the fault.
+the fault. `tty.c` above it does not spin — it sleeps on a wait queue with
+a timeout — so polled no longer means burning the processor.
 
 ### Sizing memory, and surviving it
 
@@ -609,191 +674,330 @@ format/vector word on every exception, so the handler identifies itself from
 its own frame instead of needing 255 stubs, and reports the vector, its
 name, the PC, the SR and all fifteen registers before halting.
 
-Nothing is recoverable yet, so it stops — a silent hang is the one outcome
-worth ruling out. That report found the first real bug in the kernel: the
-memory probe walking off the end of RAM, faulting address in `a0`.
+**A fault in user mode kills the program, not the machine.** `trap.c`
+checks whether the frame came from user mode and, if so, raises `SIGSEGV`
+against the current task and exits it; the shell prints what happened and
+prompts again. Only a fault in supervisor mode panics, because there is
+nothing else it could safely do.
+
+It has to kill rather than return, because the 68040 pushes the address of
+the **faulting instruction** — so `rte` re-runs it and faults again
+forever. Resolving a fault instead of reporting it is what demand paging
+would mean, and that is §11. Note also that the SSW says nothing about
+*why*: no bit distinguishes "not mapped" from "write protected" from
+"supervisor only", so a handler that needs to know must walk the tables or
+use `ptest`.
+
+The full-register report found the first real bug in the kernel: the
+memory probe walking off the end of RAM, faulting address in `a0`. A
+silent hang is the one outcome worth ruling out.
 
 ---
 
 ## 11. Open items
 
-1. **Lift the remaining test code into drivers.** `t3` became
-   `kernel/drivers/ata.c`, `t4` became `drivers/smc91c111.c`, `t7`/`t8`
-   became `drivers/mfp.c` and `t10` became `drivers/sm501.c`. What is left
-   in tests and not in a driver is the MFP's USART (`t9`) and the MMU
-   (`t5`) — the second of which is not a driver at all but the thing
-   processes will need.
-2. **Interrupt-driven input.** Both the serial port and the keyboard are
-   polled, and both have an interrupt line already wired to the MFP —
-   channel 7 and channel 1. They should fill one ring buffer that
-   `tty.c` drains, which would remove the last polling loop in the
-   system and let a waiting `read()` use `STOP` the way `nanosleep`
-   already does.
-3. **A scheduler.** The tick exists and drives `nanosleep`; what it does not
-   yet do is preempt anything, because there is only one thing to run.
+Everything below is genuinely open. Items that were on this list and have
+since shipped — the scheduler, tasks and preemption, wait queues,
+semaphores and mutexes, signals, per-task address spaces, user mode, the
+TCP/IP stack, the shell's environment and PATH, shell scripts and
+`/etc/rc`, FAT16 subdirectories, job control, and moving the network
+tools out of the shell and into `/bin` — are described in `os.md` rather
+than kept here as history.
 
-   **The memory half is now done.** Every program runs in user mode in
-   an address space of its own, with its own page tables, its own
-   physical pages and its own kernel stack. Two programs would not
-   collide, and `kernel/vmtest.sh` demonstrates that neither can reach
-   the kernel, the devices, or anything it was not given.
+### Near-term, and well understood
 
-   **What tasks still need, in the order they will be wanted:**
+1. **Interrupt-driven input.** Both the serial port and the keyboard are
+   polled, though both have interrupt lines wired to the MFP and `t6`
+   exercises the path. This is no longer a performance problem — `tty.c`
+   sleeps on a wait queue with a timeout rather than spinning — so it is
+   now a tidiness item rather than a correctness one.
 
-   - **A run queue**, and a `struct task` that `struct job` becomes.
-     The job table already carries state, a saved context, an address
-     space and a kernel stack; what it lacks is a notion of
-     runnable-versus-blocked and something to pick the next one.
-   - **A full context switch.** `exec_stop`/`exec_resume` save only the
-     callee-saved registers, which is enough at a C call boundary and
-     not enough anywhere else. Preemption means saving every register
-     and the PC out of the exception frame.
-   - **Wait queues.** A blocked task has to be somewhere. Every
-     polling loop in the system -- `tty.c`'s `next_char()` above all --
-     becomes a sleep on a queue that the driver's interrupt wakes,
-     which is also what finally removes the spin loops.
-   - **Semaphores**, which are the more basic of the two: a counting
-     semaphore is what a wait queue is made of, and the binary case is
-     what a driver uses to say "the transfer you asked for has
-     finished". Worth having before mutexes rather than after, because
-     a mutex is a semaphore with an owner and the owner is the part
-     that only matters once priorities do.
-   - **Mutexes**, once more than one task can be inside the kernel at
-     once. The VFS, the block layer and the terminal all hold state
-     that is currently safe only because nothing else can run.
-     Interrupt handlers will need the non-blocking kind.
-   - **Real signals.** What exists now is one-directional: the kernel
-     does something *to* a job. Tasks need delivery to a handler,
-     blocking and pending sets, and `kill()` between tasks -- at which
-     point `job_signal_fg` becomes the terminal's special case of a
-     general mechanism rather than the whole of it.
+2. **`ls` ignores a path argument.** `cmd_ls` calls `getdents` on the
+   current directory and silently ignores `args[1]` unless it is `-l`, so
+   `ls /bin` lists the cwd and looks like it worked. Silently wrong output
+   is the worst failure mode available; it should either take a path or
+   refuse one.
 
-4. **An environment, and a PATH.** The shell looks a command up by name
-   in the one directory this volume has, because that is all there is;
-   a `PATH` implies an environment to keep it in, and an environment
-   implies that programs inherit one.
+3. **A resolver.** Addresses are numeric everywhere. DNS over UDP is a
+   few hundred lines and the UDP layer beneath it is done.
 
-   The mechanism is already half built and in the right place.
-   `setup_stack()` copies the argument vector into the new address
-   space -- strings first, then an array of pointers to them -- because
-   the shell's own memory is not reachable from a program any more. An
-   environment is the same operation a second time, and it lands next
-   to the first: the conventional Unix layout puts `envp` directly
-   above `argv` on the stack, with `crt0.s` taking a third argument and
-   `main(argc, argv, envp)` behind it. What has to be decided is where
-   the shell keeps its own copy, since it has no heap, and how much of
-   a fixed budget a program's environment may occupy.
+4. **Use the NVRAM.** The M48T59 brings 8 KiB of it and nothing writes a
+   byte. It is the natural home for the network configuration that
+   `/etc/rc` currently carries.
 
-   `PATH` itself then needs the filesystem to have more than one
-   directory, which FAT16 has and this kernel does not yet use -- so
-   the two are worth doing together.
+5. **Static limits that will bite.** Eight tasks, eight descriptors per
+   task, one filesystem, one partition, one interface. All are constants,
+   none is a redesign, and the descriptor limit is the one most likely to
+   be hit first.
 
-5. **The network tools should be programs, not builtins.** `ifconfig`,
-   `ping`, `arp` and `arping` are commands inside the shell, which was
-   right when there was no way for a program to reach the network and is
-   not now that there are sockets. `netstat` does not exist at all and
-   wants the same information the shell's `jobs` gets -- a listing of
-   what the kernel is holding, which means `netctl` growing a way to
-   walk the socket and connection tables rather than just the interface.
+### Memory: `mmap`, `brk`, `sbrk` and `malloc`
 
-   Moving them out is not cosmetic. A builtin runs in the kernel with
-   the kernel's privileges; a program runs unprivileged in an address
-   space of its own and can only do what the system call interface
-   allows. Anything that can be a program should be one, and the ones
-   that cannot are the argument for a system call that is missing.
+**This is the prerequisite for most of the rest of this section**, and the
+first blocker in `emacs.md`. A program's pages are mapped at exec and the
+set never changes afterwards; `lib/ulib.h` has no allocator at all, so a
+program that wants memory declares an array.
 
-6. **Split the system software from the applications.** `user/` holds
-   the shell, ping, ifconfig and shutdown alongside cube and fbtest,
-   which puts a graphics demo and the program that stops the machine in
-   the same place. They are not the same kind of thing: one set is part
-   of the system and expected to be there, the other is what somebody
-   chose to run on it.
+Four things, in dependency order:
 
-   The split wants the same subdirectories `PATH` and `/etc` want --
-   `/bin` for the system's own programs and somewhere else for
-   everything else -- and it is the reason PATH is worth having at all,
-   since with one directory there is nothing for a search order to
-   choose between.
+1. **A larger user address space.** `USER_VA_SIZE` is 2 MB and
+   `USER_PTABLES` is 8, both because a program used to be a small thing
+   loaded at a fixed address. Nothing architectural requires it — the MMU
+   is a full three-level 68040 unit with a 32-bit virtual address space,
+   and physical memory is not the constraint either, since the machine
+   model accepts up to 2 GB. Raising it is a constant and a loop.
 
-7. **Configuration from files, and a startup script.** Everything the
-   machine knows about itself is currently either compiled in or typed
-   at the prompt: the IP address is `ifconfig` every boot, the console
-   layout is `console` every boot, and none of it survives a restart.
-   The answer is the one Unix settled on -- a directory of small text
-   files that the system reads at startup -- and it arrives in three
-   pieces that depend on each other in this order:
+2. **`brk`/`sbrk`.** The classic interface, and the smaller job: a
+   per-address-space break pointer, and mapping or unmapping pages as it
+   moves. `vm.c` already maps pages into an address space on demand from
+   `exec`, so this is mostly bookkeeping — call it 60 lines and it is
+   enough to run a conventional `malloc`.
 
-   - **Subdirectories in the filesystem.** `/etc` has to be able to
-     exist before anything can live in it. FAT16 has directories and
-     `fs/fat16.c` looks only in the root, so this is the same
-     prerequisite `PATH` has.
-   - **Shell scripting.** A startup file is only worth having if the
-     shell can run one: reading a file as a sequence of commands,
-     comments, and enough conditional to let a script cope with a
-     machine where something is absent. `run_command()` is already
-     separated from the prompt loop for exactly this reason -- `fg` on
-     a queued job needed to run a command line with no prompt
-     involved, and a script is the same need repeated.
-   - **The files themselves.** `/etc/rc.local` run at startup once
-     there is a shell that can run it, and `/etc/network` or similar
-     read by the network code. Worth resisting the temptation to
-     invent a parser per subsystem: one "key value per line" reader,
-     used by everything, is the difference between configuration and a
-     collection of formats.
+3. **`mmap`/`munmap`/`mprotect`.** The real interface, and what anything
+   modern expects. Anonymous mappings first; file-backed mappings need a
+   page cache to be worth having, and shared mappings need the reverse
+   mapping that paging also wants. `MAP_FIXED`, the placement policy for
+   everything else, and unmapping part of a mapping are each their own
+   small decision.
 
-   Note the ordering against DHCP. A machine that gets its address
-   from the network needs no address in a file -- but it does need to
-   be told whether to ask, and that is itself configuration.
+4. **`malloc`/`free`/`realloc`/`calloc`.** Once there is a way to get
+   pages this is ordinary user-space code — and the right move is not to
+   write it, but to take the one that comes with a libc. See *A C
+   library* below.
 
-   **Two thirds of the context-switch plumbing is already there, and it
-   was put there by ctrl-Z rather than planned.** `job.c` holds a table of jobs with
-   states and pending signals; `exec_stop()` and `exec_resume()` in
-   `execasm.s` are a context switch — each saves the callee-saved
-   registers and the stack pointer and jumps to where the other left
-   off. `fg` on a stopped job uses exactly that. What a scheduler adds
-   is a run queue, a decision at the tick, and a **full** context save:
-   today a job can only be stopped at a system call boundary, because
-   resuming from an arbitrary instruction means saving every register
-   and the program counter out of the exception frame. ctrl-C already
-   does unwind from the tick, so the interrupt-side half of that is
-   proven.
+The ordering matters because each step is usable on its own: a bigger
+address space helps immediately, `brk` alone unlocks `malloc`, and `mmap`
+can arrive later without invalidating either.
 
-   Two things are refused today for want of it, and both are enforced
-   rather than documented. `&` and `bg` record a job and say plainly
-   that nothing can run in the background yet. And only one program can
-   be loaded at a time — a stopped job holds the image area at 1 MB, so
-   `exec.c` refuses a second spawn instead of loading over it. That one
-   goes away with the MMU rather than the scheduler.
-4. **An interrupt-driven console.** The UART's IRQ already reaches MFP channel
-   7 and `t6` proves the whole path. `kgetc()` takes from a ring buffer instead
-   of the line status register and nothing above it moves.
-5. **Pick a TCP/IP stack** (§8). lwIP is the recommendation; nothing blocks it
-   now that the NIC is proven.
-6. **Use the ethernet driver.** `drivers/smc91c111.c` implements
-   `struct netdev` — up, down, send, receive — but only its probe runs at
-   startup. Nothing transmits or receives a packet until there is a stack
-   above it (§8), so the send and receive paths are written and unexercised.
-   A test that does an ARP round trip through the driver, as `t4-net` does
-   from bare metal, is the cheap way to close that.
-7. **Use the NVRAM.** 8176 bytes that survive a power cycle, with nothing in
-   them. Boot settings are the obvious tenant, and it wants a checksum and a
-   small structure rather than raw offsets.
-8. **Consider upstreaming** the `sm501.c` build fix and the IACK callback.
-9. **Hardware.** Nothing in the design needs a bus that cannot be wired by hand:
-   a 68040, an MFP, and six memory-mapped peripherals.
+### A C library
 
----
+`lib/ulib.c` is not a libc and does not pretend to be. It is a thin
+wrapper over the system calls plus `strlen`, `strcmp`, `memset`, `memcpy`
+and a few output helpers — enough for the programs in `system/` and
+`apps/`, and enough for nothing else. There is no `stdio`, no `malloc`, no
+`printf`, no `qsort`, no `setjmp`, no locale, no math.
+
+**This is the second-biggest barrier to running anything written by
+somebody else**, after the address space. Every portable C program assumes
+a hosted implementation.
+
+Three options:
+
+- **Port newlib.** The conventional answer for exactly this situation. It
+  targets m68k already, it is designed to sit on a small syscall layer,
+  and the interface it expects is about fifteen stubs — `_open`, `_close`,
+  `_read`, `_write`, `_lseek`, `_fstat`, `_isatty`, `_sbrk`, `_exit`,
+  `_kill`, `_getpid`, `_times`, `_unlink`, `_link`, `_stat`. Most already
+  exist here under those names minus the underscore. Its licence is a
+  patchwork of BSD-style terms, which is compatible with this project.
+- **Port picolibc.** Newlib's smaller descendant, same stub interface,
+  better suited to constrained machines, and with a cleaner build. If
+  starting today this is probably the better of the two, and the choice
+  between them is a genuine decision rather than a toss-up.
+- **Grow `ulib` into one.** Tempting, and wrong. A correct `printf` alone
+  is a serious piece of work, `setjmp`/`longjmp` needs assembly per ABI,
+  and `stdio` buffering has decades of edge cases in it. The only argument
+  for writing one is that the result would be small and fully understood —
+  which is the same argument that was made, correctly, for writing the
+  TCP stack, so it is not absurd. But TCP was written because the layers
+  below it already existed and lwIP would have meant discarding them.
+  Nothing analogous applies here.
+
+**The recommendation is picolibc or newlib, not a hand-written libc.** A
+port converts "write an allocator, a `printf`, `setjmp`, `qsort` and a
+string library" into "write fifteen syscall stubs and a linker script",
+which is the right trade by a wide margin.
+
+The dependency is one way and strict: a libc needs `sbrk` before `malloc`
+can work, and `sbrk` needs the address space item above. So the order is
+address space, `brk`, libc — and only then is porting somebody else's
+program a question about that program rather than about this system.
+
+One consequence worth naming: today every program statically links its own
+`ulib` at ~12 KB. A real libc makes that number much larger and turns
+shared libraries from a curiosity into something worth doing.
+
+### Pipelines and redirection
+
+`|`, `>`, `>>` and `<` do not exist, and neither do the pieces underneath
+them: there is no `pipe`, no `dup`, no `dup2` and no `fcntl`. The shell
+can start several programs now, which is the hard half, so what is left is
+mostly plumbing:
+
+- a pipe as a pair of descriptors over a ring buffer, with a reader that
+  blocks on a wait queue and a writer that blocks when full
+- `SIGPIPE`, which already has a number and a default action
+- `dup2`, so the shell can put a descriptor where a program expects it
+- redirection parsing in the shell, which is the easy part
+
+The design question worth settling first is whether a pipe is a file in
+the VFS or a distinct object that descriptors can point at. The
+refcounted open-file layer already in `vfs.c` makes the second
+straightforward.
+
+### The console: VT100 emulation, curses, and termcap
+
+Today `fbcon.c` understands carriage return, backspace, tab and newline,
+plus exactly enough of `ESC[2J`, `ESC[H` and `ESC[K` for `clear` and
+ctrl-L. **Everything else is dropped.** That is why the rule exists that
+nothing in the line editor may use an escape to move the cursor — every
+movement is built from `\r` and `\b`, so the editor works identically over
+the serial line and on the screen.
+
+That rule has held well for a line editor and will not survive a
+full-screen program. Anything with a cursor that moves in two dimensions —
+an editor, a pager, `top`, a form — needs real addressing. In layers:
+
+1. **A fuller ANSI/VT100 emulation in `fbcon.c`.** At minimum
+   `ESC[<row>;<col>H` for absolute positioning, `ESC[A`/`B`/`C`/`D` for
+   relative, `ESC[J` and `ESC[K` with all three parameter values,
+   `ESC[m` for attributes, and `ESC[s`/`ESC[u` for save and restore. A
+   **scroll region** (`ESC[<top>;<bot>r`) is what makes a full-screen
+   editor redraw one line instead of the whole screen, and is worth
+   having early. Roughly 200 lines, and it is a state machine of the kind
+   already there.
+
+   Note the framebuffer console's real constraint: each character is 128
+   pixels drawn individually, so a program that repaints the whole screen
+   per keystroke will be visibly slow no matter how correct the escape
+   handling is. Scroll regions and `ESC[K` are not optional niceties here,
+   they are the performance story.
+
+2. **`TIOCGWINSZ`**, and `SIGWINCH` behind it. Without the ioctl every
+   program assumes 80×24; the framebuffer console is 80×30, so six rows
+   simply go unused. The ioctl is trivial. The signal needs user-mode
+   signal handlers, which is its own item.
+
+3. **A terminfo or termcap database**, or a deliberate decision not to
+   have one. This is the real choice in this section:
+
+   - **Ship terminfo.** Correct, conventional, and drags in either
+     ncurses or a reimplementation of its parsing. It also needs a place
+     to put the database and long-ish filenames to name the entries.
+   - **Compile in one terminal.** Many programs support this — uEmacs
+     selects an `ansi.c` driver at build time and needs no database at
+     all, and Vim ships builtin entries for exactly this case. Much
+     cheaper, and it fits a machine with one console type.
+
+   **The second is almost certainly right here**, at least first. There
+   is one console and it is whatever `fbcon.c` implements, so a database
+   describing other terminals describes nothing this machine has.
+
+4. **curses or ncurses**, if programs that want it are to be ported. It
+   is a substantial library that expects a libc, `malloc`, terminfo and a
+   real tty layer — so it sits downstream of §11's memory and libc items
+   rather than beside them. Worth noting that the cheapest useful
+   full-screen programs deliberately avoid it: BusyBox's `vi` writes ANSI
+   escapes directly, and uEmacs has its own driver layer.
+
+The practical sequence is **1, then 2, then decide 3, and treat 4 as
+optional** — because a fuller `fbcon.c` plus a compiled-in terminal is
+enough to run a real editor, and that is the point of the exercise.
+`emacs.md` costs this out against actual editors.
+
+### Long file names
+
+FAT16's 8.3 names are the single biggest practical limitation of the
+filesystem, and the cost is not abstract: **43% of GNU Emacs's Lisp files
+cannot be named at all** on this volume (measured — see `emacs.md`).
+
+The answer is almost certainly **VFAT long-name directory entries** rather
+than a different filesystem. They are an extension to the on-disk format
+already implemented, not a replacement for it: a long name is stored in a
+run of extra directory entries that carry attribute byte `0x0F`, which
+every FAT driver written before them ignores as a volume label. So the
+host's `mtools` and `fsck.fat` keep working, the disk stays readable and
+writable from Linux without root, and `make write` stays a one-liner —
+which is the property that has made this filesystem choice worth keeping.
+
+Roughly 400 lines in `fs/fat16.c`: the checksum that ties a long-name run
+to its 8.3 alias, UCS-2 to the kernel's byte strings, generating unique
+`NAME~1` aliases, and deleting a whole run rather than one entry.
+
+The alternative — a real filesystem with an inode table — buys permissions,
+links, better timestamps and atomic rename, and costs the host
+interoperability that makes the current workflow work. Worth a discussion
+before anyone starts, not a decision to make in passing.
+
+### Shared libraries
+
+Everything is statically linked today, and each of the seven programs in
+`/bin` and the root carries its own copy of `ulib`. At ~12 KB per program
+that is not yet a real cost, and it will become one as soon as there is a
+libc worth the name.
+
+What it would take, and the decisions inside it:
+
+- **Position-independent code, or load-time relocation.** The 68040 has
+  PC-relative addressing with a 16-bit displacement, and `-fPIC` on m68k
+  uses a GOT reached through `a5`. That is the conventional route and GCC
+  supports it.
+- **A dynamic linker**, which is a program that runs before the program —
+  it needs `mmap` to place segments, and `mmap` does not exist.
+- **`.dynamic`, `.got`, `.plt` and symbol versioning** in the ELF loader,
+  which currently reads program headers and nothing more.
+- **Sharing the physical pages** between address spaces, which the page
+  allocator and `vm.c` can already express but nothing asks them to.
+
+The honest assessment is that this is downstream of `mmap` and of a real
+libc, and that it buys little until there is a libc big enough to be worth
+not copying. It is on the list because the answer to "why is every program
+12 KB" should be a decision rather than an omission.
+
+### Paging and swapping
+
+There is no demand paging and nothing is ever written to backing store. A
+program's pages are all mapped at exec and stay resident until it exits;
+an access fault kills the program rather than filling a page.
+
+The machine has what this needs: a full 68040 MMU, a disk, and an access
+fault handler that already distinguishes user from kernel. What it does
+not have is any of the bookkeeping:
+
+- a page-fault path that can **resolve** a fault rather than only report
+  it — and note the 68040 pushes the address of the *faulting
+  instruction*, so returning with `rte` correctly re-runs it, which is
+  exactly what demand paging wants and exactly what the current handler
+  cannot allow
+- a swap area, either a partition or a file
+- page-replacement state: the MMU's used and modified bits are there for
+  this, and `vm.c` already knows not to touch indirect descriptors
+- a reverse mapping, or a scan, to find what to evict
+- pinning, so that a page a driver is reading into cannot be taken
+
+Worth doing mainly because it is the natural companion to a larger
+address space: 256 MB of virtual address space on a 4 MB machine is only
+useful if the unused parts need not be resident. Sequenced after `mmap`,
+which shares most of the same machinery.
+
+### Longer-term
+
+- **Signal handlers.** `sigaction`, a signal frame built on the user
+  stack, and a `sigreturn` to unwind it. Today signals have default
+  actions only, which is deliberate but limiting.
+- **`select` or `poll`.** Nothing can wait on more than one thing at a
+  time, which is the constraint that would bite a program with both a
+  socket and a terminal.
+- **TCP's remaining options:** window scaling, SACK, timestamps and PAWS,
+  and keepalives. All are negotiated and a peer works fine without them.
+  **`TIME_WAIT` is 10 seconds rather than 2 MSL**, which is a real
+  shortcut and the one most likely to matter.
+- **Consider upstreaming** the `sm501.c` build fix and the IACK callback.
+  Both are plausibly of general use, which is why `qemu-patch/` is
+  GPL-2.0-or-later.
 
 ## 12. Next
 
-1. **A scheduler tick** — timer D at ~10 ms driving a counter, then a scheduler.
-   Everything it needs is tested.
-2. **An interrupt-driven console** — `t6` has all the pieces; turning the polled
-   `kernel/console.c` into a buffered interrupt-driven one is the natural first
-   use of the interrupt path.
-3. **Then processes.** Most of the way there already: programs load at their
-   own address, run on their own stack, take arguments, return an exit
-   status, and there is now a tick to preempt them with. What is left is
-   entering **user mode** with an `RTE` instead of a `jsr`, validating the
-   pointers that then arrive across the gate, and a run queue. The MMU is
-   available when isolation is wanted rather than merely privilege.
+1. **A bigger address space, then `brk`, then `malloc`.** In that order,
+   because each step is useful on its own and the first is a constant.
+   Everything downstream — `mmap`, shared libraries, paging, a real libc,
+   and any hope of running a large program — waits on this.
+2. **A libc** — picolibc or newlib over those stubs. Together with (1)
+   this is what turns "port a program" from a rewrite into a build.
+3. **Pipes, `dup2` and redirection.** The shell can already run several
+   programs; this is what makes running them *together* possible, and it
+   is the largest visible gain for the least new machinery.
+4. **A fuller VT100 emulation in `fbcon.c`**, which is what a full-screen
+   program needs and what the line editor's `\r`-and-`\b` rule cannot
+   stretch to cover.
+5. **Long file names**, so the filesystem stops being the thing that
+   decides what can be ported.
