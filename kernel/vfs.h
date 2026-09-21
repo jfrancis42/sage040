@@ -73,6 +73,14 @@ struct file *fd_get(int fd);
  * make 0, 1 and 2 the console before anything tries to print. */
 int  fd_bind(int fd, const struct file_ops *ops, void *priv, int flags);
 
+/*
+ * Take the next free descriptor for something that is already open.
+ *
+ * What fd_open() does for a path, for things that do not have one: a
+ * socket is the case that needed it. Returns the descriptor or -errno.
+ */
+int  fd_install(const struct file_ops *ops, void *priv, int flags);
+
 /* Operations that name a path rather than a descriptor. */
 int  vfs_unlink(const char *path);
 int  vfs_rename(const char *from, const char *to);

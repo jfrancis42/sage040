@@ -42,6 +42,31 @@ void   exit(int status) __attribute__((noreturn));
  */
 void   reboot(int cmd);
 
+/*
+ * Sockets. A socket is a file descriptor, so read(), write() and
+ * close() work on one -- there is no send()/recv() pair for a stream.
+ *
+ * htons() and friends are the identity on this machine, because network
+ * byte order IS big-endian and so is a 68040. Call them anyway: the
+ * habit is what makes the code portable and it costs nothing here.
+ */
+int    socket(int domain, int type, int protocol);
+int    bind(int fd, const struct sockaddr_in *addr);
+int    connect(int fd, const struct sockaddr_in *addr);
+int    listen(int fd, int backlog);
+int    accept(int fd, struct sockaddr_in *addr);
+s32    sendto(int fd, const void *buf, u32 len, const struct sockaddr_in *to);
+s32    recvfrom(int fd, void *buf, u32 len, struct sockaddr_in *from);
+int    shutdown(int fd, int how);
+
+#define htons(x) ((u16)(x))
+#define ntohs(x) ((u16)(x))
+#define htonl(x) ((u32)(x))
+#define ntohl(x) ((u32)(x))
+
+/* "10.1.0.1" -> an address, or 0. */
+u32    inet_aton(const char *s);
+
 /* Output helpers, all of them eventually write(). */
 void   putch(char c);
 void   puts(const char *s);          /* no newline appended */

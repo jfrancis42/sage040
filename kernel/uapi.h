@@ -281,6 +281,52 @@ struct statfs {
  * fork + execve + waitpid, the caller keeps the same shape, and this
  * number goes away.
  */
+/*
+ * Sockets, with Linux's own i386 numbers -- the direct calls rather than
+ * the old socketcall(102) multiplexer, which existed because i386 ran
+ * out of argument registers and this machine has not.
+ *
+ * A socket IS a file descriptor here, as it is on any Unix, so read(),
+ * write() and close() work on one and there is no send()/recv() pair
+ * for the stream case. That is not economy: it is what lets a program
+ * be pointed at a socket instead of a file without knowing.
+ */
+#define __NR_socket    359
+#define __NR_bind      361
+#define __NR_connect   362
+#define __NR_listen    363
+#define __NR_accept    364
+#define __NR_sendto    369
+#define __NR_recvfrom  371
+#define __NR_shutdown  373
+
+#define AF_INET         2
+
+#define SOCK_STREAM     1
+#define SOCK_DGRAM      2
+
+#define SHUT_RD         0
+#define SHUT_WR         1
+#define SHUT_RDWR       2
+
+/*
+ * The BSD address structure, unchanged.
+ *
+ * sin_port and sin_addr are in NETWORK byte order, which on this machine
+ * is also host order -- so htons() and ntohl() are the identity here and
+ * compile to nothing. A program should still call them: the day this
+ * code is read on a little-endian machine the habit is what makes it
+ * portable, and the cost of the habit is zero.
+ */
+struct sockaddr_in {
+    u16 sin_family;
+    u16 sin_port;
+    u32 sin_addr;
+    u8  sin_zero[8];
+};
+
+#define INADDR_ANY      0x00000000UL
+
 #define __NR_spawn     400
 #define __NR_jobctl    401
 #define __NR_netctl    402

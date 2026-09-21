@@ -189,6 +189,20 @@ int fd_bind(int fd, const struct file_ops *ops, void *priv, int flags)
     return fd;
 }
 
+int fd_install(const struct file_ops *ops, void *priv, int flags)
+{
+    int fd = fd_alloc();
+
+    if (fd < 0) {
+        return fd;
+    }
+    files[fd].ops = ops;
+    files[fd].priv = priv;
+    files[fd].flags = flags;
+    files[fd].pos = 0;
+    return fd;
+}
+
 int fd_open(const char *path, int flags)
 {
     struct chardev *cd;

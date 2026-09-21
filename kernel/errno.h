@@ -47,6 +47,12 @@
 #define ENAMETOOLONG    36      /* file name too long                 */
 #define ENOSYS          38      /* function not implemented           */
 #define ENOTEMPTY       39      /* directory not empty                */
+#define EPIPE           32      /* broken pipe                        */
+#define ENOTSOCK        88      /* socket operation on non-socket     */
+#define EDESTADDRREQ    89      /* destination address required       */
+#define EPROTONOSUPPORT 93      /* protocol not supported             */
+#define EOPNOTSUPP      95      /* operation not supported            */
+#define EAFNOSUPPORT    97      /* address family not supported       */
 #define EADDRINUSE      98      /* address already in use             */
 #define EMSGSIZE        90      /* message too long                   */
 #define EADDRNOTAVAIL   99      /* cannot assign requested address    */
@@ -55,6 +61,9 @@
 #define ECONNRESET     104      /* connection reset by peer           */
 #define ETIMEDOUT      110      /* connection timed out               */
 #define ECONNREFUSED   111      /* connection refused                 */
+#define ENOBUFS        105      /* no buffer space available          */
+#define EISCONN        106      /* already connected                  */
+#define ENOTCONN       107      /* not connected                      */
 #define EHOSTUNREACH   113      /* no route to host                   */
 #define ENOMEDIUM       123     /* no medium found                    */
 

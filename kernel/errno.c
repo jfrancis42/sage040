@@ -47,6 +47,15 @@ const char *strerror(int err)
     case ENAMETOOLONG:    return "file name too long";
     case ENOSYS:          return "function not implemented";
     case ENOTEMPTY:       return "directory not empty";
+    case EPIPE:           return "broken pipe";
+    case ENOTSOCK:        return "socket operation on non-socket";
+    case EDESTADDRREQ:    return "destination address required";
+    case EPROTONOSUPPORT: return "protocol not supported";
+    case EOPNOTSUPP:      return "operation not supported";
+    case EAFNOSUPPORT:    return "address family not supported";
+    case ENOBUFS:         return "no buffer space available";
+    case EISCONN:         return "transport endpoint is already connected";
+    case ENOTCONN:        return "transport endpoint is not connected";
     case EADDRINUSE:      return "address already in use";
     case EMSGSIZE:        return "message too long";
     case EADDRNOTAVAIL:   return "cannot assign requested address";

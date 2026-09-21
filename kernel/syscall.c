@@ -579,7 +579,6 @@ static int do_jobctl(int cmd, int arg, u32 p)
  */
 static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
 {
-    (void)a4;
     (void)a5;
 
     switch (nr) {
@@ -733,6 +732,92 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
 
     case __NR_netctl:
         return do_netctl((int)a1, a2, a3);
+
+    case __NR_socket:
+        return sock_create((int)a1, (int)a2, (int)a3);
+
+    case __NR_bind:
+    case __NR_connect: {
+        struct sockaddr_in sa;
+        int err = fetch(&sa, a2, sizeof(sa));
+
+        if (err < 0) {
+            return err;
+        }
+        return nr == __NR_bind ? sock_bind((int)a1, &sa)
+                               : sock_connect((int)a1, &sa);
+    }
+
+    case __NR_listen:
+        return sock_listen((int)a1, (int)a2);
+
+    case __NR_accept: {
+        struct sockaddr_in sa;
+        int fd = sock_accept((int)a1, &sa);
+
+        if (fd < 0) {
+            return fd;
+        }
+        if (a2) {
+            int err = store(a2, &sa, sizeof(sa));
+
+            if (err < 0) {
+                fd_close(fd);
+                return err;
+            }
+        }
+        return fd;
+    }
+
+    case __NR_sendto: {
+        struct sockaddr_in sa;
+        u8 buf[512];
+        u32 n = a3;
+        int err;
+
+        if (n > sizeof(buf)) {
+            n = sizeof(buf);
+        }
+        err = fetch(buf, a2, n);
+        if (err < 0) {
+            return err;
+        }
+        err = fetch(&sa, a4, sizeof(sa));
+        if (err < 0) {
+            return err;
+        }
+        return sock_sendto((int)a1, buf, n, &sa);
+    }
+
+    case __NR_recvfrom: {
+        struct sockaddr_in sa;
+        u8 buf[512];
+        u32 n = a3;
+        s32 got;
+        int err;
+
+        if (n > sizeof(buf)) {
+            n = sizeof(buf);
+        }
+        got = sock_recvfrom((int)a1, buf, n, &sa);
+        if (got < 0) {
+            return got;
+        }
+        err = store(a2, buf, (u32)got);
+        if (err < 0) {
+            return err;
+        }
+        if (a4) {
+            err = store(a4, &sa, sizeof(sa));
+            if (err < 0) {
+                return err;
+            }
+        }
+        return got;
+    }
+
+    case __NR_shutdown:
+        return sock_shutdown((int)a1, (int)a2);
 
     case __NR_times:
         return (s32)timer_jiffies();
@@ -947,6 +1032,16 @@ int sys_jobctl(int cmd, int arg, void *p)
 int sys_netctl(int cmd, u32 arg, void *p)
 {
     return (int)syscall3(__NR_netctl, (u32)cmd, arg, (u32)p);
+}
+
+int sys_socket(int domain, int type, int protocol)
+{
+    return (int)syscall3(__NR_socket, (u32)domain, (u32)type, (u32)protocol);
+}
+
+int sys_connect(int fd, const struct sockaddr_in *addr)
+{
+    return (int)syscall2(__NR_connect, (u32)fd, (u32)addr);
 }
 
 u32 sys_times(void)

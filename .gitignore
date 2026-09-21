@@ -34,6 +34,8 @@ user/fbtest
 user/shutdown
 user/faulter
 user/spin
+user/fetch
+user/httpd
 
 # Scratch disk and log from kernel/fstest.sh
 kernel/hd-test.img
@@ -42,3 +44,6 @@ kernel/hd-edit.img
 kernel/edittest.log
 kernel/hd-vm.img
 kernel/vmtest.log
+kernel/hd-net.img
+kernel/nettest.log
+kernel/webroot.tmp/

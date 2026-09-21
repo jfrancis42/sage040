@@ -6,6 +6,7 @@
 #include "net.h"
 #include "dev.h"
 #include "tty.h"
+#include "tcp.h"
 #include "timer.h"
 #include "console.h"
 #include "errno.h"
@@ -91,6 +92,7 @@ int net_init(void)
     iface.up = 1;
 
     arp_init();
+    tcp_init();
     ring_head = ring_tail = 0;
 
     /*

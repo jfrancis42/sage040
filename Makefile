@@ -20,7 +20,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: all boot run test tests fstest edittest vmtest cube programs clean distclean
+.PHONY: all boot run test tests fstest edittest vmtest nettest cube programs clean distclean
 
 all:
 	$(MAKE) -C bootrom
@@ -40,7 +40,7 @@ programs:
 run:
 	$(MAKE) -C kernel run
 
-test: tests fstest edittest vmtest
+test: tests fstest edittest vmtest nettest
 
 tests:
 	$(MAKE) -C tests run
@@ -54,6 +54,9 @@ edittest:
 vmtest:
 	cd kernel && ./vmtest.sh
 
+nettest:
+	cd kernel && ./nettest.sh
+
 cube:
 	$(MAKE) -C cube
 
@@ -66,5 +69,7 @@ clean:
 	rm -f kernel/hd-test.img kernel/fstest.log
 	rm -f kernel/hd-edit.img kernel/edittest.log kernel/clean.tmp
 	rm -f kernel/hd-vm.img kernel/vmtest.log
+	rm -f kernel/hd-net.img kernel/nettest.log
+	rm -rf kernel/webroot.tmp
 
 distclean: clean disk-clean

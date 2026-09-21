@@ -198,6 +198,10 @@ void ip_input(const void *frame, u32 len)
         udp_input(ip->saddr, (const u8 *)ip + hlen, tot - hlen);
         break;
 
+    case IPPROTO_TCP:
+        tcp_input(ip->saddr, ip->daddr, (const u8 *)ip + hlen, tot - hlen);
+        break;
+
     default:
         /* No ICMP protocol-unreachable in reply: answering would tell
          * a scanner exactly which protocols this machine implements. */

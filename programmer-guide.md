@@ -1093,6 +1093,42 @@ Both are local, in the 0x54F0 block; Linux has no equivalent because it
 picks its console at boot with `console=` rather than through a
 descriptor. `shell.c`'s `console` command is the worked example.
 
+#### The network
+
+A socket is a file descriptor, so there is no `send()`/`recv()` pair for
+a stream — `read()` and `write()` work on one.
+
+```c
+struct sockaddr_in sa;
+int fd = socket(AF_INET, SOCK_STREAM, 0);
+
+sa.sin_family = AF_INET;
+sa.sin_port   = htons(80);
+sa.sin_addr   = htonl(inet_aton("10.0.2.2"));
+
+connect(fd, &sa);
+write(fd, "GET / HTTP/1.0\r\n\r\n", 18);
+while ((n = read(fd, buf, sizeof(buf))) > 0) { ... }   /* 0 = closed */
+close(fd);
+```
+
+`bind()`, `listen()` and `accept()` work the other way round;
+`user/httpd.c` is a worked example that serves files off the disk, and
+`user/fetch.c` is the client side.
+
+`htons()` and friends are the identity on this machine, because network
+byte order is big-endian and so is a 68040. **Call them anyway** — the
+habit is what makes the code portable and it costs nothing here.
+
+UDP uses `sendto()` and `recvfrom()` with the same descriptor type.
+
+**There is no resolver**, so addresses are numeric. That is the next
+thing missing rather than an oversight.
+
+**Blocking is a spin.** A `read()` on a socket with nothing waiting
+burns the processor until something arrives or it times out, the same
+way the console does. It becomes a real sleep when there is a scheduler.
+
 #### Stopping the machine
 
 `reboot(RB_POWER_OFF)` flushes the filesystem and stops the machine;

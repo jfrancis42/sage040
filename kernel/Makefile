@@ -56,7 +56,7 @@ SRCS := main.c version.c console.c trap.c syscall.c vfs.c dev.c \
         drivers/ns16550.c drivers/ata.c drivers/m48t59.c \
         drivers/mfp.c drivers/sm501.c drivers/i8042.c \
         drivers/smc91c111.c \
-        net/net.c net/arp.c net/ip.c net/icmp.c net/udp.c net/dhcp.c \
+        net/net.c net/arp.c net/ip.c net/icmp.c net/udp.c net/dhcp.c net/tcp.c net/socket.c \
         fs/fat16.c
 
 HDRS := kernel.h uapi.h dev.h vfs.h syscall.h console.h errno.h exec.h \

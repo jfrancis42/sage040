@@ -51,6 +51,61 @@ void reboot(int cmd)
     sc1(__NR_reboot, (u32)cmd);
 }
 
+static s32 sc4(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4)
+{
+    register u32 d0 __asm__("d0") = nr;
+    register u32 d1 __asm__("d1") = a1;
+    register u32 d2 __asm__("d2") = a2;
+    register u32 d3 __asm__("d3") = a3;
+    register u32 d4 __asm__("d4") = a4;
+
+    __asm__ volatile ("trap #0"
+                      : "+d"(d0)
+                      : "d"(d1), "d"(d2), "d"(d3), "d"(d4)
+                      : "memory", "cc");
+    return (s32)d0;
+}
+
+int socket(int domain, int type, int protocol)
+{
+    return (int)sc3(__NR_socket, (u32)domain, (u32)type, (u32)protocol);
+}
+
+int bind(int fd, const struct sockaddr_in *addr)
+{
+    return (int)sc2(__NR_bind, (u32)fd, (u32)addr);
+}
+
+int connect(int fd, const struct sockaddr_in *addr)
+{
+    return (int)sc2(__NR_connect, (u32)fd, (u32)addr);
+}
+
+int listen(int fd, int backlog)
+{
+    return (int)sc2(__NR_listen, (u32)fd, (u32)backlog);
+}
+
+int accept(int fd, struct sockaddr_in *addr)
+{
+    return (int)sc2(__NR_accept, (u32)fd, (u32)addr);
+}
+
+s32 sendto(int fd, const void *buf, u32 len, const struct sockaddr_in *to)
+{
+    return sc4(__NR_sendto, (u32)fd, (u32)buf, len, (u32)to);
+}
+
+s32 recvfrom(int fd, void *buf, u32 len, struct sockaddr_in *from)
+{
+    return sc4(__NR_recvfrom, (u32)fd, (u32)buf, len, (u32)from);
+}
+
+int shutdown(int fd, int how)
+{
+    return (int)sc2(__NR_shutdown, (u32)fd, (u32)how);
+}
+
 int open(const char *path, int flags)
 {
     return (int)sc2(__NR_open, (u32)path, (u32)flags);
@@ -153,6 +208,32 @@ u32 strlen(const char *s)
         p++;
     }
     return (u32)(p - s);
+}
+
+u32 inet_aton(const char *s)
+{
+    u32 a = 0;
+    int i;
+
+    for (i = 0; i < 4; i++) {
+        int n = 0, digits = 0;
+
+        while (*s >= '0' && *s <= '9') {
+            n = n * 10 + (*s++ - '0');
+            digits++;
+        }
+        if (!digits || n > 255) {
+            return 0;
+        }
+        a = (a << 8) | (u32)n;
+        if (i < 3) {
+            if (*s != '.') {
+                return 0;
+            }
+            s++;
+        }
+    }
+    return *s == '\0' ? a : 0;
 }
 
 int strcmp(const char *a, const char *b)

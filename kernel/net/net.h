@@ -176,6 +176,8 @@ int  icmp_ping(ip4_t to, u32 timeout_ms, u32 *rtt_ms);
 typedef void (*udp_handler_t)(void *arg, ip4_t from, u16 sport,
                               const void *data, u32 len);
 
+void tcp_input(ip4_t src, ip4_t dst, const void *seg, u32 len);
+
 void udp_input(ip4_t from, const void *data, u32 len);
 int  udp_output(ip4_t dst, u16 dport, u16 sport, const void *data, u32 len);
 int  udp_bind(u16 port, udp_handler_t fn, void *arg);
@@ -188,6 +190,20 @@ int   dhcp_configure(void);
 u32   dhcp_lease_seconds(void);
 ip4_t dhcp_server(void);
 ip4_t dhcp_dns(void);
+
+/* --- sockets --------------------------------------------------------- */
+
+struct sockaddr_in;
+
+int  sock_create(int domain, int type, int protocol);
+int  sock_bind(int fd, const struct sockaddr_in *addr);
+int  sock_connect(int fd, const struct sockaddr_in *addr);
+int  sock_listen(int fd, int backlog);
+int  sock_accept(int fd, struct sockaddr_in *addr);
+s32  sock_sendto(int fd, const void *buf, u32 len,
+                 const struct sockaddr_in *addr);
+s32  sock_recvfrom(int fd, void *buf, u32 len, struct sockaddr_in *addr);
+int  sock_shutdown(int fd, int how);
 
 void arp_init(void);
 void arp_input(const void *frame, u32 len);

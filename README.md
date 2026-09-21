@@ -374,7 +374,10 @@ cannot tell from a keyboard — 26 checks. `kernel/vmtest.sh` runs a
 program written to misbehave and checks that every forbidden access is
 refused, that each refusal kills the program and not the machine, and
 that a bad pointer handed to a system call comes back as an error — 15
-checks. `make test` runs all four.
+checks. `kernel/nettest.sh` takes a DHCP lease, pings, and fetches a
+file bigger than the receive buffer from a web server on the host, which
+is the only way to prove the window opens and closes — 12 checks.
+`make test` runs all five.
 
 ### Booting from disk
 
@@ -546,8 +549,21 @@ in software and refused with `EFAULT` rather than faulting. When one
 does fault, it is killed and the shell says why, and the machine carries
 on.
 
-What is not there yet: preemption, more than one program at a time, and
-a TCP/IP stack. `&` and `bg` are parsed and refused with a
+**It is on the network.** Ethernet, ARP, IPv4, ICMP, UDP, DHCP and TCP,
+all written out rather than imported. The machine takes a lease from a
+real DHCP server, answers `ping` from other hosts while sitting at its
+prompt, fetches pages from web servers on the internet, and serves its
+own files over HTTP to anything that asks. A socket is a file
+descriptor, so `read()` and `write()` work on one.
+
+`tools/qemu-net.sh` decides at runtime how to attach: an existing bridge
+if the host has one, a macvtap if its primary interface is wired, and
+QEMU's user-mode NAT otherwise — which is what a laptop gets, because an
+802.11 station may only source frames from its own MAC and so cannot
+bridge at all.
+
+What is not there yet: preemption, more than one program at a time, a
+name resolver, and congestion control. `&` and `bg` are parsed and refused with a
 reason rather than faked — nothing can run while the shell runs until
 there is a scheduler. Input is still polled, though both the keyboard
 and the serial port have interrupt lines wired to the MFP. The ethernet

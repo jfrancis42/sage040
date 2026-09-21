@@ -294,6 +294,87 @@ the very frames the program has to return through. It would look like it
 worked -- and for a while it did, with `fg` resuming a program into a
 context that had been overwritten.
 
+## The network
+
+Ethernet, ARP, IPv4, ICMP, UDP, DHCP and TCP, written out rather than
+imported. The machine takes a lease from a real DHCP server, answers
+ping from other hosts on the LAN, fetches pages from web servers on the
+internet, and serves its own files over HTTP to anything that asks.
+
+```
+        socket.c        socket(), connect(), accept() -- a socket is an fd
+   -------------------
+    tcp.c     udp.c     ports, and a state machine
+   -------------------
+         ip.c           addresses, routing, the checksum
+   -------------------
+    arp.c    icmp.c     hardware addresses; ping
+   -------------------
+        net.c           frames in, frames out, the receive ring
+   -------------------
+   struct netdev        drivers/smc91c111.c
+```
+
+**Byte order needs no conversion.** Network order is big-endian and so
+is a 68040, so `htons` and `ntohl` are the identity and compile to
+nothing. The contrast is with this board's own devices: the ATA data
+register and every SM501 register are little-endian, and those quirks
+stop at their drivers.
+
+**Unaligned access needs none either.** An IP header starts 14 bytes
+into a frame, so its addresses land 2-aligned and never 4-aligned; the
+68040 does that in hardware. The structures are still marked packed,
+which is about what the compiler would otherwise insert rather than what
+the CPU can do.
+
+### Where the protocol code runs, and why there is no locking
+
+One place: `net_poll()`, in ordinary kernel context. The timer interrupt
+calls `net_drain()`, which moves frames off the card into a ring and
+runs no protocol code at all.
+
+That split is not an optimisation. **The LAN91C111 allocates transmit
+buffers from the same pool of packet pages that holds arriving frames**,
+so a card whose receiver is never drained stops being able to send. The
+first version only polled while waiting for a reply, which worked
+perfectly on QEMU's user-mode NAT -- where almost nothing arrives unasked
+-- and failed within seconds of meeting a real LAN, with every transmit
+returning ENOMEM.
+
+Transmit raises the interrupt mask for its duration, because receive and
+transmit share the chip's bank select and pointer register.
+
+The terminal's idle spin calls `net_poll()` too. A machine that answers
+a ping only while waiting for something of its own is not on a network.
+
+### A socket is a file descriptor
+
+`socket.c` gives one `struct file_ops`, so `read()`, `write()` and
+`close()` work on a socket without knowing what it is, and a program can
+be pointed at one instead of a file. That is also what keeps the TCP
+replaceable: a program calls `socket()` and `connect()`, and which
+implementation answers is not its business.
+
+Blocking is a spin, through `net_wait()`, which drives the protocol
+while it waits -- so the data being waited for can actually arrive. The
+same bargain the console has always made, and it becomes a sleep on a
+wait queue the day there is a scheduler.
+
+### What TCP does and does not do
+
+The state machine of RFC 793, both opens, retransmission with an
+exponentially backed-off timer, and an orderly close. Enough to fetch a
+page from a real server and enough to be one.
+
+Not done, each on purpose: **no congestion control** (a machine talking
+to its own LAN is not where the internet's congestion is decided);
+**no out-of-order reassembly** (a segment arriving ahead of a gap is
+dropped and retransmitted, which is legal and costs throughput rather
+than correctness); **no window scaling, SACK or timestamps**; and **the
+initial sequence number comes from the tick**, which is a real exposure
+on a machine facing the open internet and is the sentence to come back
+to.
+
 ## Devices that are not there
 
 Every driver asks whether its chip is fitted before it touches a
@@ -738,6 +819,10 @@ uptime               how long the machine has been up
 console [NAME on|off] show or change where console output goes
 sync                 flush pending writes
 free                 physical memory, in pages
+ifconfig [A M [G]]   show or set the interface address
+dhcp                 ask the network for an address
+ping ADDR [N]        ICMP echo
+arp / arping ADDR    the address cache
 jobs                 list stopped and queued jobs
 fg [%N]              run a stopped or queued job
 bg [%N]              run one in the background — see Jobs, above
@@ -783,6 +868,14 @@ command. Errors go to descriptor 2 even when output is redirected.
 | `pmm.c` | the physical page allocator |
 | `vm.c` | page tables, address spaces, and turning the MMU on |
 | `uaccess.c` | reaching into a program's memory, safely |
+| `net/net.c` | frames in and out, and the receive ring |
+| `net/arp.c` | hardware addresses, and a cache |
+| `net/ip.c` | IPv4, and the internet checksum |
+| `net/icmp.c` | ping, both directions |
+| `net/udp.c` | datagrams and a port table |
+| `net/dhcp.c` | asking the network for an address |
+| `net/tcp.c` | the state machine, and a window |
+| `net/socket.c` | a connection a program can hold |
 | `memprobe.s` | reads that survive a bus error, for memory and for absent chips |
 | `layercheck.sh` | the layering rule, enforced before every link |
 | `shell.c` | a program, reaching the kernel through `trap #0` (bar one command) |
@@ -793,4 +886,5 @@ command. Errors go to descriptor 2 even when output is redirected.
 | `fstest.sh` | scripted session, verified with host tools |
 | `edittest.sh` | the editor, history, ctrl-C, ctrl-Z, jobs and shutdown |
 | `vmtest.sh` | memory protection: what a program cannot touch, and that a bad pointer is an error |
+| `nettest.sh` | ARP, DHCP, ICMP and a TCP transfer bigger than the receive buffer |
 | `kernel.ld` | vectors at 0, text at 0x400, stack at the top of RAM |

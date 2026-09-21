@@ -279,12 +279,21 @@ fi
 # on the host. Waiting on a background child makes the signal arrive
 # while this shell is the one running.
 #
+#
+# And stdin has to be handed over explicitly. A non-interactive shell
+# redirects a BACKGROUNDED command's stdin to /dev/null, so the moment
+# QEMU moved into the background it stopped receiving anything on its
+# serial console -- every scripted session went silent at the first
+# prompt. Saving the real stdin and passing it back in is the fix.
+#
+exec 4<&0
+
 if [ -n "$MACVTAP_NODE" ]; then
     # The fd has to be opened by the shell that runs QEMU.
     exec 3<>"$MACVTAP_NODE"
-    "$@" -nic "$NIC_ARG" &
+    "$@" -nic "$NIC_ARG" <&4 &
 else
-    "$@" -nic "$NIC_ARG" &
+    "$@" -nic "$NIC_ARG" <&4 &
 fi
 qemu_pid=$!
 

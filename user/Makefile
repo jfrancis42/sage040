@@ -41,7 +41,7 @@ CFLAGS   := $(CPUFLAGS) -ffreestanding -nostdlib -nostdinc -O2 \
 LDFLAGS  := $(CPUFLAGS) -ffreestanding -nostdlib -T user.ld \
             -Wl,--build-id=none -Wl,--no-warn-rwx-segments
 
-PROGS := cube hello fbtest shutdown faulter spin
+PROGS := cube hello fbtest shutdown faulter spin fetch httpd
 COMMON := crt0.s ulib.c ulib.h user.ld
 
 .PHONY: all install list disasm clean
