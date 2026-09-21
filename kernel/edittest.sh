@@ -94,6 +94,7 @@ mcopy -o -i "$MIMG" ../apps/cube ::/CUBE
 mcopy -o -i "$MIMG" ../apps/spin ::/SPIN
 mcopy -o -i "$MIMG" ../apps/hello ::/HELLO
 mcopy -o -i "$MIMG" ../system/shutdown ::/SHUTDOWN
+mcopy -o -i "$MIMG" ../apps/napper ::/NAPPER
 
 #
 # The session.
@@ -218,6 +219,19 @@ feed() {
     sleep 2
     printf 'hello alongside\r'
     sleep 3
+
+    # --- a sleeping task must not stop the machine ---
+    #
+    # nanosleep() used to loop on STOP in supervisor mode. Preemption
+    # only happens on the way back to user mode, so a task in that loop
+    # was never preempted and NOTHING else ran for the length of the
+    # sleep: `napper 6 &` froze the shell for six seconds. It has to
+    # sleep on a wait queue instead, and the proof is that work issued
+    # afterwards finishes BEFORE the sleeper wakes.
+    printf 'napper 5 &\r'
+    sleep 2
+    printf 'echo ok-ran-while-one-task-slept\r'
+    sleep 6
 
     # --- and the machine stops itself ---
     printf 'echo ok-about-to-shut-down\r'
@@ -369,6 +383,21 @@ check "  and the background job really was running" $?
 
 contains "$SCRATCH/clean.tmp" "argv[1] = alongside"
 check "  a second program ran at the same time as it" $?
+
+echo "=== checks: a sleeping task does not stop the machine ==="
+
+contains "$SCRATCH/clean.tmp" "napper: sleeping"
+check "a task went to sleep" $?
+
+# The ORDER is the whole test: sleeping, then the echo, then awake. The
+# echo is typed two seconds into a five second sleep, so if the sleeper
+# is yielding then its output lands after the echo's. If nanosleep halts
+# the processor instead, nothing runs until the sleep ends and the two
+# come out the other way round.
+awk '/ok-ran-while-one-task-slept/ { ran = NR }
+     /napper: awake/            { woke = NR }
+     END { exit !(ran && woke && ran < woke) }' "$SCRATCH/clean.tmp"
+check "  other tasks ran while it slept, and finished first" $?
 
 echo "=== checks: shutdown ==="
 

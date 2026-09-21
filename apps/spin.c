@@ -15,9 +15,12 @@
  *   spin calls  a loop that makes a system call each time round, so the
  *               boundary path is what notices
  *
- * The second is the one ctrl-Z needs: a program can only be STOPPED at a
- * system call boundary, because that is the only place there is a
- * context worth coming back to.
+ * BOTH forms can now be stopped as well as killed. Signals are
+ * delivered from the tick as well as at a system call, so even the bare
+ * form -- which makes no system calls at all -- takes a ctrl-Z and
+ * resumes on `fg`. The comment here used to say a program could only be
+ * stopped at a system call boundary; that was true before tasks had
+ * kernel stacks of their own to be left sitting on.
  */
 #include "ulib.h"
 

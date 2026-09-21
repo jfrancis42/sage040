@@ -440,9 +440,9 @@ static void cmd_help(void)
         "JOBS:\n"
         "  ctrl-C             end the running program\n"
         "  ctrl-Z             stop it; `fg` starts it again\n"
-        "  CMD &              queue a job -- but nothing runs in the\n"
-        "                     background until there is a scheduler, so\n"
-        "                     `fg` is what actually runs it\n");
+        "  CMD &              run it in the background\n"
+        "  jobs               list them;  fg / bg  move one\n"
+        "  ps                 every task;  kill [-SIG] PID  signals one\n");
 }
 
 static void print_mode(u32 mode)
@@ -991,12 +991,18 @@ static void cmd_console(int argc, char **args)
 /*
  * `jobs`, `fg` and `bg`, over one system call.
  *
- * What can honestly be done today is less than the vocabulary suggests,
- * and the commands say so rather than pretending. ctrl-Z stops a
- * program and `fg` resumes it, which works. The background does not:
- * running a job while the shell also runs needs something to schedule
- * them, and there is nothing. So `&` records the job and leaves it
- * ready, and `bg` explains itself.
+ * All of it works now. ctrl-Z stops a program and `fg` resumes it from
+ * the system call it was in; `&` and `bg` really do run a job while the
+ * shell carries on prompting, because there is a scheduler to run them.
+ *
+ * This comment used to say the opposite -- that the vocabulary promised
+ * more than the machine could do, so `&` recorded a job and left it
+ * ready for `fg`. That was the honest thing to do at the time and the
+ * commands said so rather than pretending.
+ *
+ * What makes the background safe is that the terminal has ONE
+ * foreground pid: a background job that reads gets nothing rather than
+ * stealing the keystrokes meant for whoever is at the prompt.
  */
 static const char *state_word(int state)
 {

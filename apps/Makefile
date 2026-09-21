@@ -17,7 +17,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-PROGS := cube fbtest hello fetch httpd spin faulter
+PROGS := cube fbtest hello fetch httpd spin faulter napper
 INSTALL_DIR :=
 
 include $(TOPDIR)/lib/program.mk

@@ -1187,7 +1187,6 @@ command. Errors go to descriptor 2 even when output is redirected.
 | `tty.c` | the line discipline, and the fan-out to sinks |
 | `fbcon.c` | /dev/fbcon, the text console |
 | `font8x16.c` | the IBM PC font, and where it came from |
-| `execasm.s` | the drop to user mode and the unwind back — **superseded** by `taskasm.s`; nothing calls it any more |
 | `probe.c` | CPU, FPU and memory — the parts with no driver |
 | `pmm.c` | the physical page allocator |
 | `vm.c` | page tables, address spaces, and turning the MMU on |

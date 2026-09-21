@@ -219,8 +219,8 @@ int net_poll(void)
     /*
      * Bounded. An interface being flooded must not be able to hold the
      * kernel here forever -- whatever was waiting on this poll would
-     * never get its turn, and on a machine with no scheduler that means
-     * the console stops answering.
+     * never get its turn, and the console stops answering while it does
+     * not.
      */
     while (handled < RX_RING && ring_tail != ring_head) {
         net_input(ring[ring_tail].data, ring[ring_tail].len);

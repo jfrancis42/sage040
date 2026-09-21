@@ -21,6 +21,7 @@
 #include "exec.h"
 #include "task.h"
 #include "signal.h"
+#include "wait.h"
 #include "tty.h"
 #include "timer.h"
 #include "dev.h"
@@ -31,6 +32,14 @@
 #include "tcp.h"
 #include "errno.h"
 #include "string.h"
+
+
+/*
+ * Nothing ever wakes this. It exists so that nanosleep() has somewhere
+ * to wait: sleep_on_timeout() needs a queue, and the only two ways out
+ * of this one are the timeout expiring and a signal arriving.
+ */
+static struct waitq sleep_waitq;
 
 /* ---------------------------------------------------------------- */
 /* The trap itself                                                   */
@@ -957,7 +966,8 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
     case __NR_nanosleep: {
         struct timespec ts;
         const struct timespec *req = &ts;
-        u32 ms;
+        u32 ms, started, elapsed;
+        int woken;
         int err = fetch(&ts, a1, sizeof(ts));
 
         if (err < 0) {
@@ -970,21 +980,49 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
          * rounding to it before the tick calculation keeps the
          * arithmetic clear of overflow. */
         ms = req->tv_sec * 1000 + req->tv_nsec / 1000000;
+
+        /*
+         * Sleep on a wait queue that nothing ever wakes, so the only
+         * two ways out are the timeout and a signal.
+         *
+         * This used to call timer_sleep_ms(), which loops on STOP in
+         * supervisor mode. That was right when there was one program:
+         * halting the processor beats spinning, and the tick wakes it.
+         * It became badly wrong the moment there was a scheduler,
+         * because preemption happens only on the way back to USER mode
+         * -- so a task inside this system call was never preempted, and
+         * `sleep 5` stopped the whole machine for five seconds while
+         * every other task sat ready. Nothing caught it because nothing
+         * in the tree slept and did anything else at the same time.
+         */
+        started = timer_jiffies();
+        woken = sleep_on_timeout(&sleep_waitq, ms);
+
         if (a2) {
             struct timespec rem;
+            u32 left_ms = 0;
 
-            /* Nothing interrupts a sleep yet -- no signals, one program
-             * -- so there is never any remaining. Zeroed rather than
-             * left alone, because a caller checking it deserves a
-             * defined answer. */
-            rem.tv_sec = 0;
-            rem.tv_nsec = 0;
+            /*
+             * What is left, which is only ever non-zero when a signal
+             * cut the sleep short. The old code stored zeroes and said
+             * nothing could interrupt a sleep; something can now.
+             */
+            elapsed = (timer_jiffies() - started) * (1000 / HZ);
+            if (woken && elapsed < ms) {
+                left_ms = ms - elapsed;
+            }
+            rem.tv_sec = left_ms / 1000;
+            rem.tv_nsec = (left_ms % 1000) * 1000000UL;
             err = store(a2, &rem, sizeof(rem));
             if (err < 0) {
                 return err;
             }
         }
-        return timer_sleep_ms(ms);
+
+        if (woken && signal_pending(current)) {
+            return -EINTR;
+        }
+        return 0;
     }
 
     case __NR_exit:

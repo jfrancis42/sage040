@@ -279,11 +279,16 @@ struct statfs {
  * Above 400 are calls Linux does not have, numbered well clear of it so
  * that nothing here can be mistaken for the real thing.
  *
- * spawn() is not execve(). execve replaces the calling process, and
- * there are no processes here to replace: this loads a program, runs it,
- * and returns its exit status. When there are processes it becomes
- * fork + execve + waitpid, the caller keeps the same shape, and this
- * number goes away.
+ * spawn() is not execve(). execve replaces the calling process; this
+ * creates a new task and returns its PID. IT DOES NOT WAIT -- whether
+ * to wait is the caller's decision, and that decision is the whole of
+ * what `&` means: a foreground job is one the shell waits for with
+ * waitpid(), a background job is one it does not.
+ *
+ * It is still fork and execve rolled into one call. Splitting them is
+ * what would let a caller arrange its own descriptors in between, which
+ * is what a shell needs for redirection -- so this number goes away the
+ * day there are pipes.
  */
 /*
  * Sockets, with Linux's own i386 numbers -- the direct calls rather than

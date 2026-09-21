@@ -1009,9 +1009,17 @@ two bits the way POSIX has it, so **`O_RDONLY` is zero** and testing for
 it with `&` does not work — use `(flags & O_ACCMODE)`.
 
 The volume is FAT16 with subdirectories, 8.3 names, case-insensitive.
-There is a working directory per task: `chdir`, `getcwd`, `mkdir` and
-`rmdir` all work, and a path may be absolute or relative. What is still
-missing is long names -- 8.3 is a hard limit, not a convention.
+`chdir`, `getcwd`, `mkdir` and `rmdir` all work, and a path may be
+absolute or relative.
+
+**The working directory is global, not per task.** `fs/fat16.c` keeps one
+`cwd`, so a `chdir` in one program moves every other program's idea of
+where it is, including the shell's. That is wrong -- a working directory
+belongs to a task the same way descriptors do -- and it has not bitten
+yet only because nothing in the tree calls `chdir` except the shell.
+Assume it will be fixed; do not rely on it either way.
+
+The other hard limit is names: 8.3, not a convention.
 `getdents(index, &dirent)` walks it by index and returns `-ENOENT` when
 there are no more.
 

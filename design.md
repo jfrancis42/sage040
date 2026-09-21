@@ -366,8 +366,11 @@ label and subdirectories.
 **In the kernel** (`kernel/fs/fat16.c`), read *and* write over a real block
 layer (`kernel/drivers/ata.c`): open, read, write, seek, create, truncate, append, delete,
 rename, stat and a directory walk — and **subdirectories**, with `mkdir`,
-`rmdir`, a per-task working directory, `chdir` and `getcwd`, and path
-resolution through any depth of them.
+`rmdir`, a working directory, `chdir` and `getcwd`, and path resolution
+through any depth of them.
+
+**That working directory is global rather than per task**, which is a
+defect rather than a decision -- see §11.
 
 Two structural facts about FAT16 make that more than a loop change. **A
 directory is one of two things**: the root is a fixed run of sectors that
@@ -711,7 +714,7 @@ above it.
 
 | | |
 |---|---|
-| Near-term | interrupt-driven input, a resolver, the NVRAM, static limits |
+| Near-term | interrupt-driven input, a per-task cwd, a resolver, the NVRAM, static limits |
 | **Memory** | `mmap`, `brk`, `sbrk`, `malloc`, and a bigger address space |
 | **A C library** | picolibc or newlib over a dozen syscall stubs |
 | Pipelines | `pipe`, `dup2`, `SIGPIPE`, and `\|` `>` `>>` `<` in the shell |
@@ -734,14 +737,22 @@ program, and everything it needs that is not here.
    sleeps on a wait queue with a timeout rather than spinning — so it is
    now a tidiness item rather than a correctness one.
 
-2. **A resolver.** Addresses are numeric everywhere. DNS over UDP is a
+2. **The working directory is global, not per task.** `fs/fat16.c` keeps
+   a single `static struct dir cwd` and one `cwd_path`, so a `chdir` in
+   any task moves every other task's idea of where it is — including the
+   shell's. It belongs in `struct task` beside the descriptors, and it
+   should be inherited by `task_create()` and `exec` the same way they
+   are. This has not bitten yet only because the shell is the one thing
+   that calls `chdir`; the first program that does will find it.
+
+3. **A resolver.** Addresses are numeric everywhere. DNS over UDP is a
    few hundred lines and the UDP layer beneath it is done.
 
-3. **Use the NVRAM.** The M48T59 brings 8 KiB of it and nothing writes a
+4. **Use the NVRAM.** The M48T59 brings 8 KiB of it and nothing writes a
    byte. It is the natural home for the network configuration that
    `/etc/rc` currently carries.
 
-4. **Static limits that will bite.** Eight tasks, eight descriptors per
+5. **Static limits that will bite.** Eight tasks, eight descriptors per
    task, one filesystem, one partition, one interface. All are constants,
    none is a redesign, and the descriptor limit is the one most likely to
    be hit first.
