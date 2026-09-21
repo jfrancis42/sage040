@@ -704,6 +704,27 @@ TCP/IP stack, the shell's environment and PATH, shell scripts and
 tools out of the shell and into `/bin` — are described in `os.md` rather
 than kept here as history.
 
+Most of what follows hangs off two things — **a program cannot ask for
+memory, and there is no C library** — and the order below reflects that.
+Nothing after *A C library* is blocked on anything except the items
+above it.
+
+| | |
+|---|---|
+| Near-term | interrupt-driven input, a resolver, the NVRAM, static limits |
+| **Memory** | `mmap`, `brk`, `sbrk`, `malloc`, and a bigger address space |
+| **A C library** | picolibc or newlib over a dozen syscall stubs |
+| Pipelines | `pipe`, `dup2`, `SIGPIPE`, and `\|` `>` `>>` `<` in the shell |
+| The console | VT100 emulation, `TIOCGWINSZ`, termcap, curses |
+| POSIX surface | signal handlers, `select`, timers, subprocesses, and a dozen small calls |
+| Long file names | VFAT, and why not a different filesystem |
+| `fsck` | and a clean-unmount flag to say when it is needed |
+| Shared libraries | downstream of `mmap` and a libc |
+| Paging | downstream of `mmap`, and what makes a big address space affordable |
+
+`emacs.md` is the same list approached from the other end: one real
+program, and everything it needs that is not here.
+
 ### Near-term, and well understood
 
 1. **Interrupt-driven input.** Both the serial port and the keyboard are
