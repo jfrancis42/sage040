@@ -32,9 +32,22 @@ all:
 boot: programs
 	$(MAKE) -C kernel boot
 
+#
 # The programs that live on the disk alongside the kernel.
+#
+# Two sets, and the split is deliberate. system/ is the machine's own --
+# ifconfig, ping, netstat, shutdown, env -- and installs into /bin, which
+# is where PATH looks first. apps/ is everything somebody chose to run,
+# and installs in the root, which PATH reaches last through "." -- so an
+# application cannot quietly stand in for a system program of the same
+# name.
+#
+# Neither is privileged. Being part of the system buys a program nothing
+# except a place on a fresh disk.
+#
 programs:
-	$(MAKE) -C user install
+	$(MAKE) -C system install
+	$(MAKE) -C apps install
 
 # The kernel without the boot ROM in the way. Same kernel, quicker loop.
 run:
@@ -64,7 +77,8 @@ clean:
 	$(MAKE) -C bootrom clean
 	$(MAKE) -C kernel clean
 	$(MAKE) -C cube clean
-	$(MAKE) -C user clean
+	$(MAKE) -C system clean
+	$(MAKE) -C apps clean
 	$(MAKE) -C tests clean
 	#
 	# Everything the test suites write lives in scratch/ -- the disk

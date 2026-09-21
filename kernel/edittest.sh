@@ -79,7 +79,8 @@ absent() {          # absent <file> <text>
 echo "=== building ==="
 make -s kernel.rom || exit 1
 make -s -C ../bootrom bootrom.elf || exit 1
-make -s -C ../user || exit 1
+make -s -C ../apps || exit 1
+make -s -C ../system || exit 1
 
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
@@ -89,10 +90,10 @@ printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
 mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
     $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
 mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mcopy -o -i "$MIMG" ../user/cube ::/CUBE
-mcopy -o -i "$MIMG" ../user/spin ::/SPIN
-mcopy -o -i "$MIMG" ../user/hello ::/HELLO
-mcopy -o -i "$MIMG" ../user/shutdown ::/SHUTDOWN
+mcopy -o -i "$MIMG" ../apps/cube ::/CUBE
+mcopy -o -i "$MIMG" ../apps/spin ::/SPIN
+mcopy -o -i "$MIMG" ../apps/hello ::/HELLO
+mcopy -o -i "$MIMG" ../system/shutdown ::/SHUTDOWN
 
 #
 # The session.

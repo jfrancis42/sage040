@@ -66,7 +66,7 @@ int  sys_sync(void);
 int  sys_uname(struct utsname *u);
 int  sys_sysinfo(struct sysinfo *si);
 int  sys_ioctl(int fd, u32 request, u32 arg);
-int  sys_spawn(const char *path, int argc, char **argv);
+int  sys_spawn(const char *path, int argc, char **argv, char **envp);
 int  sys_jobctl(int cmd, int arg, void *p);
 int  sys_waitpid(int pid, int *status);
 int  sys_mkdir(const char *path);

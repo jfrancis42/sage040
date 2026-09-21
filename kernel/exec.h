@@ -34,6 +34,7 @@
  * rule. It is now a hole in a page table.
  */
 #define EXEC_MAX_ARGS   8
+#define EXEC_MAX_ENV    16
 
 /*
  * Load `path` and run it. Returns the program's exit status, or a
@@ -44,7 +45,7 @@
  * processes, this becomes fork + execve + waitpid, the caller keeps the
  * same shape, and the syscall underneath it changes.
  */
-int exec_spawn(const char *path, int argc, char **argv);
+int exec_spawn(const char *path, int argc, char **argv, char **envp);
 
 /*
  * Load `path` and start it as a task. Returns the new pid, or -errno.
@@ -54,6 +55,6 @@ int exec_spawn(const char *path, int argc, char **argv);
  * one step. Whether to wait for it is the caller's decision, and that
  * decision is what `&` is.
  */
-int exec_spawn(const char *path, int argc, char **argv);
+int exec_spawn(const char *path, int argc, char **argv, char **envp);
 
 #endif /* EXEC_H */

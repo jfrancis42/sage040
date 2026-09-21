@@ -66,7 +66,8 @@ check() {
 echo "=== building ==="
 make -s kernel.rom || exit 1
 make -s -C ../bootrom bootrom.elf || exit 1
-make -s -C ../user || exit 1
+make -s -C ../apps || exit 1
+make -s -C ../system || exit 1
 
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
@@ -76,7 +77,16 @@ printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
 mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
     $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
 mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mcopy -o -i "$MIMG" ../user/fetch ::/FETCH
+mcopy -o -i "$MIMG" ../apps/fetch ::/FETCH
+#
+# The network tools are programs now, not shell builtins, so the test
+# has to install them the way a real disk would -- in /bin, which is
+# where PATH looks first.
+#
+mmd -i "$MIMG" ::/BIN 2>/dev/null || true
+for p in ifconfig ping netstat; do
+    mcopy -o -i "$MIMG" "../system/$p" "::/BIN/$(echo $p | tr a-z A-Z)"
+done
 
 #
 # A web server on the host. The guest reaches it at 10.0.2.2, which is
@@ -145,10 +155,10 @@ fi
 
 : > "$SCRATCH/session.tmp"
 {
-    printf 'dhcp\r';                       sleep 6
-    printf 'ifconfig\r';                   sleep 2
-    printf 'ping 10.0.2.2 3\r';            sleep 6
-    printf 'arp\r';                        sleep 2
+    printf 'ifconfig dhcp\r';              sleep 8
+    printf 'ifconfig\r';                   sleep 3
+    printf 'ping 10.0.2.2 3\r';            sleep 8
+    printf 'netstat -a\r';                 sleep 3
     printf "fetch 10.0.2.2 $HTTP_PORT /small.txt\r"; sleep 10
     printf "fetch 10.0.2.2 $HTTP_PORT /big.txt\r";   sleep 20
     printf 'ifconfig\r';                   sleep 2
@@ -198,13 +208,13 @@ check "the driver brought the interface up at boot" $?
 
 echo "=== checks: DHCP ==="
 
-grep -q "got 10.0.2.15" "$SCRATCH/clean.tmp"
+grep -q "inet 10.0.2.15" "$SCRATCH/clean.tmp"
 check "DHCP got an address, netmask and gateway" $?
 
 echo "=== checks: ARP ==="
 
 grep -qE "^10\.0\.2\.2  at [0-9a-f:]{17}" "$SCRATCH/clean.tmp"
-check "ARP resolved the gateway to a hardware address" $?
+check "ARP resolved the gateway, and netstat showed the cache" $?
 
 echo "=== checks: ICMP ==="
 
@@ -232,6 +242,14 @@ check "  and every byte of it arrived" $?
 
 grep -q "line 0 " "$SCRATCH/clean.tmp"
 check "  in order, from the first line" $?
+
+echo "=== checks: the tools are programs ==="
+
+# They run unprivileged, in address spaces of their own. If any of them
+# had still been a builtin this would be indistinguishable -- which is
+# why the check is that the PROGRAM was found and run from /bin.
+grep -q "eth0  hwaddr" "$SCRATCH/clean.tmp"
+check "ifconfig ran as a program out of /bin" $?
 
 echo "=== checks: nothing broke ==="
 

@@ -704,6 +704,23 @@ int edit_readline(const char *prompt, char *buf, int max)
             delete_back(&l, l.pos - word_start(&l));
             break;
 
+        case CTRL('L'):
+            /*
+             * Clear the screen and put the line back, which is what
+             * bash does -- the line being edited is not lost, it is
+             * redrawn at the top. Anything else would make ctrl-L a
+             * destructive key.
+             */
+            o_puts("\033[H\033[2J");
+            o_puts(prompt);
+            o_write(l.buf, l.len);
+            {
+                int back = l.len - l.pos;
+
+                o_repeat('\b', back);
+            }
+            break;
+
         case '\b':
         case DEL:
             delete_back(&l, 1);

@@ -34,13 +34,17 @@ kernel/kernel.map
 # Built programs. They have no extension on purpose -- the kernel decides
 # what is executable by reading the file, not its name -- so they have to
 # be named here one by one rather than matched by a suffix.
-user/cube
-user/hello
-user/fbtest
-user/shutdown
-user/faulter
-user/spin
-user/fetch
-user/httpd
+apps/cube
+apps/hello
+apps/fbtest
+apps/faulter
+apps/spin
+apps/fetch
+apps/httpd
+system/ifconfig
+system/ping
+system/netstat
+system/shutdown
+system/env
 
 # Scratch disk and log from kernel/fstest.sh

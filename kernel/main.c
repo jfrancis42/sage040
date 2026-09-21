@@ -30,6 +30,7 @@
 #include "pmm.h"
 #include "vm.h"
 #include "net.h"
+#include "random.h"
 #include "dev.h"
 #include "vfs.h"
 #include "syscall.h"
@@ -302,7 +303,17 @@ static void start_drivers(void)
 static void start_network(void)
 {
     struct netif *n;
-    int err = net_init();
+    int err;
+
+    /*
+     * Seeded here because this is the first moment the things it seeds
+     * from exist: the clock has been read, the ethernet address is
+     * known, and the tick has been running long enough to have counted
+     * something that depended on how the disk behaved.
+     */
+    random_init();
+
+    err = net_init();
 
     status("net");
     if (err < 0) {

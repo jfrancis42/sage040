@@ -1620,18 +1620,33 @@ static void fill_dirent(const u8 *ent, struct dirent *out)
 
 static int fat_lookup_dirent(const char *name, struct dirent *out)
 {
+    struct dir d;
     char n83[11];
     u8 ent[DIRENT_SIZE];
-    int idx, err;
+    int idx, err, last_is_dir;
 
     if (!mounted) {
         return -ENODEV;
     }
-    err = name_to_83(name, n83);
+
+    /*
+     * Through path_walk, not name_to_83: stat() is asked about "/etc/rc"
+     * as often as about "notes.txt", and looking only in the current
+     * directory made every absolute path report that it did not exist.
+     */
+    err = path_walk(&cwd, name, &d, n83, &last_is_dir);
     if (err != 0) {
         return err;
     }
-    idx = dir_lookup(n83, ent);
+    if (last_is_dir) {
+        /* A path ending in a slash, or "/" itself: a directory, and
+         * there is no entry anywhere describing the root. */
+        memset(out, 0, sizeof(*out));
+        out->d_mode = S_IFDIR | 0755;
+        return 0;
+    }
+
+    idx = dir_lookup_in(&d, n83, ent);
     if (idx < 0) {
         return idx;
     }

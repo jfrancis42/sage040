@@ -28,6 +28,7 @@
 #include "uaccess.h"
 #include "pmm.h"
 #include "net.h"
+#include "tcp.h"
 #include "errno.h"
 #include "string.h"
 
@@ -60,6 +61,21 @@ s32 syscall2(u32 nr, u32 a1, u32 a2)
 
     __asm__ volatile ("trap #0"
                       : "+d"(d0) : "d"(d1), "d"(d2) : "memory", "cc");
+    return (s32)d0;
+}
+
+s32 syscall4(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4)
+{
+    register u32 d0 __asm__("d0") = nr;
+    register u32 d1 __asm__("d1") = a1;
+    register u32 d2 __asm__("d2") = a2;
+    register u32 d3 __asm__("d3") = a3;
+    register u32 d4 __asm__("d4") = a4;
+
+    __asm__ volatile ("trap #0"
+                      : "+d"(d0)
+                      : "d"(d1), "d"(d2), "d"(d3), "d"(d4)
+                      : "memory", "cc");
     return (s32)d0;
 }
 
@@ -346,13 +362,15 @@ static int do_ioctl(int fd, u32 request, u32 arg)
  */
 #define SPAWN_ARG_MAX  64
 
-static int do_spawn(u32 upath, int argc, u32 uargv)
+static int do_spawn(u32 upath, int argc, u32 uargv, u32 uenvp)
 {
     char path[PATH_MAX];
     char argstore[EXEC_MAX_ARGS][SPAWN_ARG_MAX];
     char *argv[EXEC_MAX_ARGS];
+    char envstore[EXEC_MAX_ENV][SPAWN_ARG_MAX];
+    char *envp[EXEC_MAX_ENV + 1];
     u32 uptr[EXEC_MAX_ARGS];
-    int i, err;
+    int i, err, envc = 0;
 
     if (argc < 0 || argc > EXEC_MAX_ARGS) {
         return -E2BIG;
@@ -363,7 +381,7 @@ static int do_spawn(u32 upath, int argc, u32 uargv)
     }
 
     if (!from_program()) {
-        return exec_spawn(path, argc, (char **)uargv);
+        return exec_spawn(path, argc, (char **)uargv, (char **)uenvp);
     }
 
     if (argc > 0) {
@@ -379,7 +397,32 @@ static int do_spawn(u32 upath, int argc, u32 uargv)
         }
         argv[i] = argstore[i];
     }
-    return exec_spawn(path, argc, argv);
+
+    /*
+     * The environment the same way, one level of user pointer deeper.
+     * It has to end up in kernel memory because exec_spawn copies it
+     * into a DIFFERENT address space, by which time this one may not
+     * even be mapped.
+     */
+    if (uenvp) {
+        u32 eptr[EXEC_MAX_ENV + 1];
+
+        err = fetch(eptr, uenvp, sizeof(eptr));
+        if (err < 0) {
+            return err;
+        }
+        while (envc < EXEC_MAX_ENV && eptr[envc]) {
+            err = fetch_str(envstore[envc], eptr[envc], SPAWN_ARG_MAX);
+            if (err < 0) {
+                return err;
+            }
+            envp[envc] = envstore[envc];
+            envc++;
+        }
+    }
+    envp[envc] = 0;
+
+    return exec_spawn(path, argc, argv, envp);
 }
 
 /* --- the network --------------------------------------------------- */
@@ -441,6 +484,28 @@ static int do_netctl(int cmd, u32 arg, u32 p)
             return err;
         }
         return store(p, &rtt, sizeof(rtt));
+    }
+
+    case NETCTL_CONN: {
+        struct conninfo out;
+        struct tcpcb *c = tcp_nth((int)arg);
+
+        if (!c) {
+            return -ENOENT;
+        }
+        memset(&out, 0, sizeof(out));
+        out.local_ip = c->local_ip;
+        out.remote_ip = c->remote_ip;
+        out.local_port = c->local_port;
+        out.remote_port = c->remote_port;
+        out.state = (u32)c->state;
+        out.txq = c->sndlen;
+        out.rxq = tcp_available(c);
+        out.cwnd = c->cwnd;
+        out.rtt_ms = c->rtt_valid ? c->srtt_ms : 0;
+        strncpy(out.state_name, tcp_state_name(c->state),
+                sizeof(out.state_name) - 1);
+        return store(p, &out, sizeof(out));
     }
 
     case NETCTL_DHCP: {
@@ -560,7 +625,17 @@ static int do_jobctl(int cmd, int arg, u32 p)
         }
         t->background = 0;
         tty_set_foreground(t->pid);
-        signal_send(t, SIGCONT);
+        /*
+         * Only if it was actually stopped. Sending SIGCONT to a task
+         * that is merely being brought to the foreground leaves a
+         * signal pending on it -- and anything that checks for one
+         * before blocking, which the whole network stack does, then
+         * returns immediately. Every program's first packet was lost
+         * that way.
+         */
+        if (t->state == TASK_STOPPED) {
+            signal_send(t, SIGCONT);
+        }
         return 0;
 
     case JOBCTL_BG:
@@ -572,7 +647,9 @@ static int do_jobctl(int cmd, int arg, u32 p)
         /* The terminal goes back to whoever asked, because a background
          * job is precisely one that does not have it. */
         tty_set_foreground(current->pid);
-        signal_send(t, SIGCONT);
+        if (t->state == TASK_STOPPED) {
+            signal_send(t, SIGCONT);
+        }
         return 0;
 
     case JOBCTL_REAP: {
@@ -780,7 +857,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
         return 0;               /* not reached */
 
     case __NR_spawn:
-        return do_spawn(a1, (int)a2, a3);
+        return do_spawn(a1, (int)a2, a3, a4);
 
     case __NR_jobctl:
         return do_jobctl((int)a1, (int)a2, a3);
@@ -1053,9 +1130,10 @@ int sys_ioctl(int fd, u32 request, u32 arg)
     return (int)syscall3(__NR_ioctl, (u32)fd, request, arg);
 }
 
-int sys_spawn(const char *path, int argc, char **argv)
+int sys_spawn(const char *path, int argc, char **argv, char **envp)
 {
-    return (int)syscall3(__NR_spawn, (u32)path, (u32)argc, (u32)argv);
+    return (int)syscall4(__NR_spawn, (u32)path, (u32)argc, (u32)argv,
+                         (u32)envp);
 }
 
 int sys_jobctl(int cmd, int arg, void *p)

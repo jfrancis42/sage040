@@ -164,8 +164,107 @@ static void newline(void)
     }
 }
 
+/*
+ * Just enough ANSI to be clearable.
+ *
+ * The serial console on the other end of the wire is a real terminal and
+ * understands escape sequences; this one understood none, so anything
+ * that wanted to clear the screen had to know which sink it was talking
+ * to. Teaching this the two sequences that matter means the shell can
+ * write ESC [ H ESC [ 2 J and have both sinks do the right thing, which
+ * is the whole point of having sinks.
+ *
+ * Deliberately not a full terminal emulator. Cursor addressing would
+ * invite the line editor to use it, and the editor is carefully built
+ * out of carriage return and backspace so that it works here at all.
+ */
+enum { ESC_NONE, ESC_SAW_ESC, ESC_BRACKET };
+
+static int esc_state;
+static int esc_param;
+
+static void fbcon_home(void)
+{
+    cur_col = 0;
+    cur_row = 0;
+}
+
+static void fbcon_erase_all(void)
+{
+    int r, c;
+
+    for (r = 0; r < rows; r++) {
+        for (c = 0; c < cols; c++) {
+            cells[r][c] = ' ';
+        }
+    }
+    if (fb->clear) {
+        fb->clear(fb, COL_BG);
+    } else {
+        redraw_all();
+    }
+    cursor_drawn = 0;
+}
+
+/* Returns 1 if the character was consumed by an escape sequence. */
+static int fbcon_escape(u8 ch)
+{
+    switch (esc_state) {
+    case ESC_NONE:
+        if (ch == 0x1b) {
+            esc_state = ESC_SAW_ESC;
+            return 1;
+        }
+        return 0;
+
+    case ESC_SAW_ESC:
+        if (ch == '[') {
+            esc_state = ESC_BRACKET;
+            esc_param = 0;
+        } else {
+            esc_state = ESC_NONE;   /* not a sequence this knows */
+        }
+        return 1;
+
+    case ESC_BRACKET:
+    default:
+        if (ch >= '0' && ch <= '9') {
+            esc_param = esc_param * 10 + (ch - '0');
+            return 1;
+        }
+        switch (ch) {
+        case 'J':
+            /* 2J is the whole screen, which is the only one used. */
+            if (esc_param == 2) {
+                fbcon_erase_all();
+            }
+            break;
+        case 'H':
+            fbcon_home();
+            break;
+        case 'K': {
+            int c;
+
+            for (c = cur_col; c < cols; c++) {
+                cells[cur_row][c] = ' ';
+                draw_cell(c, cur_row, ' ');
+            }
+            break;
+        }
+        default:
+            break;                  /* silently ignore the rest */
+        }
+        esc_state = ESC_NONE;
+        return 1;
+    }
+}
+
 static void fbcon_putc(u8 ch)
 {
+    if (fbcon_escape(ch)) {
+        return;
+    }
+
     switch (ch) {
     case '\n':
         newline();

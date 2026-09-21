@@ -38,7 +38,111 @@ static char line[LINE_MAX];
 /* The line as it was typed, before split() chopped it into pieces. `&`
  * puts this in the job table and `fg` gets it back. */
 static char cmdline_saved[LINE_MAX];
+
+/* What the last command returned, for $? and for scripts. */
+static int last_status;
 static char *argv[MAX_ARGS];
+
+/* ---------------------------------------------------------------- */
+/* The environment                                                   */
+/*                                                                    */
+/* A flat array of "NAME=VALUE" strings, which is exactly what a      */
+/* program is handed -- so passing it on costs nothing and there is   */
+/* no second representation to keep in step. The shell is a task      */
+/* like any other and this is its own copy; a child gets a copy of    */
+/* this one, and changes on either side do not travel back.           */
+/* ---------------------------------------------------------------- */
+
+#define ENV_MAX      16
+#define ENV_ENTRY    64
+
+static char env_store[ENV_MAX][ENV_ENTRY];
+static char *env[ENV_MAX + 1];
+static int  env_count;
+
+static void env_rebuild(void)
+{
+    int i;
+
+    for (i = 0; i < env_count; i++) {
+        env[i] = env_store[i];
+    }
+    env[env_count] = 0;
+}
+
+/* The index of NAME, or -1. Compared up to the '=' so that a lookup of
+ * "PATH" does not match "PATHX". */
+static int env_find(const char *name)
+{
+    int i;
+
+    for (i = 0; i < env_count; i++) {
+        const char *e = env_store[i];
+        const char *n = name;
+
+        while (*n && *e && *e != '=' && *n == *e) {
+            n++;
+            e++;
+        }
+        if (!*n && *e == '=') {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static const char *env_get(const char *name)
+{
+    int i = env_find(name);
+    const char *e;
+
+    if (i < 0) {
+        return 0;
+    }
+    e = env_store[i];
+    while (*e && *e != '=') {
+        e++;
+    }
+    return *e == '=' ? e + 1 : "";
+}
+
+static int env_set(const char *name, const char *value)
+{
+    int i = env_find(name);
+    u32 n = 0;
+
+    if (i < 0) {
+        if (env_count == ENV_MAX) {
+            return -ENOSPC;
+        }
+        i = env_count++;
+    }
+    while (*name && n + 2 < ENV_ENTRY) {
+        env_store[i][n++] = *name++;
+    }
+    env_store[i][n++] = '=';
+    while (*value && n + 1 < ENV_ENTRY) {
+        env_store[i][n++] = *value++;
+    }
+    env_store[i][n] = '\0';
+    env_rebuild();
+    return 0;
+}
+
+static void env_unset(const char *name)
+{
+    int i = env_find(name);
+
+    if (i < 0) {
+        return;
+    }
+    while (i < env_count - 1) {
+        strcpy(env_store[i], env_store[i + 1]);
+        i++;
+    }
+    env_count--;
+    env_rebuild();
+}
 static u8 iobuf[IOBUF_SIZE];
 
 /* ---------------------------------------------------------------- */
@@ -276,6 +380,12 @@ static int parse_fixed(const char **p, int digits, u32 *out)
 static void cmd_help(void)
 {
     out_puts(
+        "clear                clear the screen (ctrl-L does it too)\n"
+        "test / [ ... ]       ask a question; the exit status answers\n"
+        "source FILE          run a file of commands\n"
+        "set                  the environment\n"
+        "export NAME=VALUE    put something in it\n"
+        "unset NAME...        take it out\n"
         "ls [-l]              list the directory\n"
         "cd [DIR]             change directory\n"
         "pwd                  where you are\n"
@@ -289,11 +399,7 @@ static void cmd_help(void)
         "stat FILE            size, mode and modification time\n"
         "df                   space used and available\n"
         "free                 physical memory, in pages\n"
-        "ifconfig [A M [G]]   show or set the interface address\n"
-        "arp                  the address cache\n"
-        "arping ADDR          ask who has an address\n"
-        "ping ADDR [N]        ICMP echo\n"
-        "dhcp                 ask the network for an address\n"
+
         "echo TEXT            print a line\n"
         "date                 show the date and time\n"
         "date -s DATE [TIME]  set them: YYYY-MM-DD and HH:MM[:SS]\n"
@@ -308,6 +414,10 @@ static void cmd_help(void)
         "bg [%N]              run one in the background (see below)\n"
         "history              the lines remembered so far\n"
         "halt                 stop the processor\n"
+        "\n"
+        "\nThe network tools are PROGRAMS, not builtins: ifconfig, ping\n"
+        "and netstat live in /bin and run unprivileged like anything\n"
+        "else. `ifconfig dhcp` asks the network for an address.\n"
         "\n"
         "Anything else is looked up as a program on the disk and run --\n"
         "`cube` runs CUBE. Programs have no extension: the kernel decides\n"
@@ -820,248 +930,13 @@ static void cmd_console(int argc, char **args)
     }
 }
 
-/* ---------------------------------------------------------------- */
-/* The network                                                       */
-/* ---------------------------------------------------------------- */
 
-static void out_ip(u32 a)
-{
-    out_putdec((a >> 24) & 0xff); out_putc('.');
-    out_putdec((a >> 16) & 0xff); out_putc('.');
-    out_putdec((a >> 8) & 0xff);  out_putc('.');
-    out_putdec(a & 0xff);
-}
 
-static void out_mac(const u8 *m)
-{
-    int i;
 
-    for (i = 0; i < 6; i++) {
-        if (i) {
-            out_putc(':');
-        }
-        out_puthex8(m[i]);
-    }
-}
 
-/* "10.1.0.11" -> host-order u32. Returns 0 on anything malformed, which
- * is also 0.0.0.0 -- a distinction nothing here needs to make. */
-static u32 parse_ip(const char *s)
-{
-    u32 a = 0;
-    int part, i;
 
-    for (i = 0; i < 4; i++) {
-        int n = 0, digits = 0;
 
-        while (*s >= '0' && *s <= '9') {
-            n = n * 10 + (*s++ - '0');
-            digits++;
-        }
-        if (!digits || n > 255) {
-            return 0;
-        }
-        a = (a << 8) | (u32)n;
-        if (i < 3) {
-            if (*s != '.') {
-                return 0;
-            }
-            s++;
-        }
-    }
-    (void)part;
-    return *s == '\0' ? a : 0;
-}
 
-static void cmd_ifconfig(int argc, char **args)
-{
-    struct netinfo ni;
-    int err;
-
-    if (argc >= 4) {
-        struct netaddr a;
-
-        a.ip = parse_ip(args[1]);
-        a.netmask = parse_ip(args[2]);
-        a.gateway = argc > 3 ? parse_ip(args[3]) : 0;
-        if (!a.ip || !a.netmask) {
-            err_usage("ifconfig [ADDR NETMASK [GATEWAY]]");
-            return;
-        }
-        err = sys_netctl(NETCTL_SETADDR, 0, &a);
-        if (err < 0) {
-            err_report("ifconfig", err);
-            return;
-        }
-    } else if (argc != 1) {
-        err_usage("ifconfig [ADDR NETMASK [GATEWAY]]");
-        return;
-    }
-
-    err = sys_netctl(NETCTL_INFO, 0, &ni);
-    if (err < 0) {
-        err_report("ifconfig", err);
-        return;
-    }
-
-    out_puts(ni.name);
-    out_puts("  hwaddr ");
-    out_mac(ni.mac);
-    out_puts(ni.up ? "  UP\n" : "  DOWN\n");
-
-    out_puts("      inet ");
-    out_ip(ni.ip);
-    out_puts("  netmask ");
-    out_ip(ni.netmask);
-    out_puts("  gateway ");
-    out_ip(ni.gateway);
-    out_putc('\n');
-
-    out_puts("      RX ");
-    out_putdec(ni.rx_packets);
-    out_puts(" packets, ");
-    out_putdec(ni.rx_dropped);
-    out_puts(" dropped    TX ");
-    out_putdec(ni.tx_packets);
-    out_puts(" packets, ");
-    out_putdec(ni.tx_errors);
-    out_puts(" errors\n");
-}
-
-static void cmd_dhcp(void)
-{
-    struct netaddr a;
-    int err;
-
-    out_puts("requesting a lease...\n");
-    out_flush();
-
-    err = sys_netctl(NETCTL_DHCP, 0, &a);
-    if (err < 0) {
-        err_report("dhcp", err);
-        return;
-    }
-    out_puts("got ");
-    out_ip(a.ip);
-    out_puts("  netmask ");
-    out_ip(a.netmask);
-    out_puts("  gateway ");
-    out_ip(a.gateway);
-    out_putc('\n');
-}
-
-static void cmd_arp(void)
-{
-    struct arpinfo ai;
-    int i, any = 0;
-
-    for (i = 0; sys_netctl(NETCTL_ARP, (u32)i, &ai) == 0; i++) {
-        any = 1;
-        out_ip(ai.ip);
-        out_puts("  at ");
-        out_mac(ai.mac);
-        out_puts("  (");
-        out_putdec(ai.age_ms / 1000);
-        out_puts("s ago)\n");
-    }
-    if (!any) {
-        out_puts("no entries\n");
-    }
-}
-
-static void cmd_arping(const char *who)
-{
-    u32 ip = parse_ip(who);
-    int err;
-
-    if (!ip) {
-        err_puts("arping: not an address: ");
-        err_puts(who);
-        err_puts("\n");
-        return;
-    }
-
-    out_puts("who has ");
-    out_ip(ip);
-    out_puts("? ");
-    out_flush();
-
-    err = sys_netctl(NETCTL_ARPING, ip, 0);
-    if (err < 0) {
-        out_putc('\n');
-        err_report(who, err);
-        return;
-    }
-
-    {
-        struct arpinfo ai;
-        int i;
-
-        for (i = 0; sys_netctl(NETCTL_ARP, (u32)i, &ai) == 0; i++) {
-            if (ai.ip == ip) {
-                out_mac(ai.mac);
-                out_putc('\n');
-                return;
-            }
-        }
-    }
-    out_puts("resolved\n");
-}
-
-static void cmd_ping(int argc, char **args)
-{
-    u32 ip, rtt;
-    int count = 4, i, ok = 0, err;
-
-    ip = parse_ip(args[1]);
-    if (!ip) {
-        err_puts("ping: not an address: ");
-        err_puts(args[1]);
-        err_puts("\n");
-        return;
-    }
-    if (argc > 2) {
-        count = 0;
-        for (i = 0; args[2][i] >= '0' && args[2][i] <= '9'; i++) {
-            count = count * 10 + (args[2][i] - '0');
-        }
-        if (count <= 0 || count > 100) {
-            count = 4;
-        }
-    }
-
-    for (i = 0; i < count; i++) {
-        err = sys_netctl(NETCTL_PING, ip, &rtt);
-        if (err == 0) {
-            ok++;
-            out_puts("reply from ");
-            out_ip(ip);
-            out_puts(": seq=");
-            out_putdec((u32)i + 1);
-            out_puts(" time=");
-            out_putdec(rtt);
-            out_puts(" ms\n");
-        } else if (err == -ETIMEDOUT) {
-            out_puts("no reply from ");
-            out_ip(ip);
-            out_puts(" (seq=");
-            out_putdec((u32)i + 1);
-            out_puts(")\n");
-        } else {
-            err_report("ping", err);
-            return;
-        }
-        out_flush();
-    }
-
-    out_putc('\n');
-    out_putdec((u32)count);
-    out_puts(" sent, ");
-    out_putdec((u32)ok);
-    out_puts(" received, ");
-    out_putdec((u32)((count - ok) * 100 / count));
-    out_puts("% loss\n");
-}
 
 /* ---------------------------------------------------------------- */
 /* Jobs                                                              */
@@ -1198,6 +1073,8 @@ static int job_arg(int argc, char **args)
 
 static void report_status(const char *what, int status);
 static int wait_for(int pid, const char *what);
+static int run_script(const char *path);
+static int looks_like_script(const char *path);
 
 /* Find a job by id and copy out what it is. */
 static int job_lookup(int id, struct job_info *out)
@@ -1347,6 +1224,72 @@ static void report_status(const char *what, int status)
 }
 
 /*
+ * Find a command and start it.
+ *
+ * A name with a slash in it is a path and is used as given, the way
+ * every shell does it -- that is what makes ./prog mean "this one, here"
+ * rather than "search for it". Anything else is looked for in each
+ * directory of PATH in turn, and with no PATH set, in the current
+ * directory only.
+ *
+ * The search stops at the first directory that has it, which is what
+ * makes PATH an order of preference rather than a set.
+ */
+static int spawn_on_path(const char *name, int argc, char **args)
+{
+    const char *path = env_get("PATH");
+    char full[PATH_MAX];
+    int has_slash = 0, i;
+
+    for (i = 0; name[i]; i++) {
+        if (name[i] == '/') {
+            has_slash = 1;
+        }
+    }
+    if (has_slash || !path || !*path) {
+        return sys_spawn(name, argc, args, env);
+    }
+
+    while (*path) {
+        u32 n = 0;
+
+        while (*path && *path != ':' && n + 2 < sizeof(full)) {
+            full[n++] = *path++;
+        }
+        if (n > 0 && full[n - 1] != '/') {
+            full[n++] = '/';
+        }
+        {
+            const char *p = name;
+
+            while (*p && n + 1 < sizeof(full)) {
+                full[n++] = *p++;
+            }
+        }
+        full[n] = '\0';
+
+        {
+            int r = sys_spawn(full, argc, args, env);
+
+            /*
+             * Only "not there" moves on to the next directory. A
+             * program that exists and could not be run is an error to
+             * report, not a reason to go looking for a different
+             * program of the same name.
+             */
+            if (r != -ENOENT && r != -EINVAL) {
+                return r;
+            }
+        }
+
+        while (*path == ':') {
+            path++;
+        }
+    }
+    return -ENOENT;
+}
+
+/*
  * Wait for a foreground job, holding the terminal while it runs.
  *
  * The terminal's foreground task is what ctrl-C and ctrl-Z are aimed at,
@@ -1403,6 +1346,99 @@ static int wait_for(int pid, const char *what)
  * & has a command line and no context -- it has to be able to run one
  * without there being a prompt involved.
  */
+/*
+ * Replace $NAME with its value, in place.
+ *
+ * In place because the line buffer is already the right size and a
+ * second one would only exist to be copied back. Expansion happens
+ * BEFORE splitting, which is what makes a variable able to contain more
+ * than one word -- and is also why a value with a space in it is split,
+ * exactly as an unquoted expansion is in any shell.
+ *
+ * ${NAME} is accepted so that a variable can be followed immediately by
+ * a letter. $$ is this shell's pid, because a script needs some way to
+ * make a name nothing else will use.
+ */
+static void expand(char *line, u32 max)
+{
+    char out[LINE_MAX];
+    u32 i = 0, o = 0;
+
+    while (line[i] && o + 1 < max) {
+        char name[32];
+        u32 n = 0;
+        const char *val;
+        int braced = 0;
+
+        if (line[i] != '$' || !line[i + 1]) {
+            out[o++] = line[i++];
+            continue;
+        }
+        i++;
+
+        if (line[i] == '$') {
+            char buf[12];
+            int k = 0, pid = sys_getpid();
+
+            i++;
+            if (!pid) {
+                buf[k++] = '0';
+            }
+            while (pid > 0) {
+                buf[k++] = (char)('0' + pid % 10);
+                pid /= 10;
+            }
+            while (k > 0 && o + 1 < max) {
+                out[o++] = buf[--k];
+            }
+            continue;
+        }
+        if (line[i] == '?') {
+            /* The last command's status, which is what a script tests. */
+            char buf[12];
+            int k = 0, v = last_status;
+
+            i++;
+            if (!v) {
+                buf[k++] = '0';
+            }
+            while (v > 0) {
+                buf[k++] = (char)('0' + v % 10);
+                v /= 10;
+            }
+            while (k > 0 && o + 1 < max) {
+                out[o++] = buf[--k];
+            }
+            continue;
+        }
+        if (line[i] == '{') {
+            braced = 1;
+            i++;
+        }
+        while (line[i] && n + 1 < sizeof(name) &&
+               ((line[i] >= 'A' && line[i] <= 'Z') ||
+                (line[i] >= 'a' && line[i] <= 'z') ||
+                (line[i] >= '0' && line[i] <= '9') || line[i] == '_')) {
+            name[n++] = line[i++];
+        }
+        name[n] = '\0';
+        if (braced && line[i] == '}') {
+            i++;
+        }
+        if (!n) {
+            out[o++] = '$';     /* a lone $ is just a dollar sign */
+            continue;
+        }
+        val = env_get(name);
+        while (val && *val && o + 1 < max) {
+            out[o++] = *val++;
+        }
+    }
+    out[o] = '\0';
+    strncpy(line, out, max - 1);
+    line[max - 1] = '\0';
+}
+
 static void run_command(char *cmdline)
 {
     const char *redir;
@@ -1413,6 +1449,7 @@ static void run_command(char *cmdline)
     int i;
 
     {
+        expand(cmdline, LINE_MAX);
         argc = split(cmdline, &redir, &append, &background);
         if (argc == -1) {
             err_puts("syntax error: > needs a file name\n");
@@ -1549,23 +1586,113 @@ static void run_command(char *cmdline)
             out_flush();
             sys_reboot(RB_HALT_SYSTEM);
 
-        } else if (strcmp(argv[0], "ifconfig") == 0) {
-            cmd_ifconfig(argc, argv);
+        } else if (strcmp(argv[0], "clear") == 0) {
+            /*
+             * Home, then erase. Both sinks understand it: the serial
+             * terminal because it is a terminal, and the framebuffer
+             * console because fbcon.c was taught these two sequences.
+             */
+            out_puts("\033[H\033[2J");
 
-        } else if (strcmp(argv[0], "dhcp") == 0) {
-            cmd_dhcp();
+        } else if (strcmp(argv[0], "test") == 0 ||
+                   strcmp(argv[0], "[") == 0) {
+            /*
+             * Enough of test(1) for a script to ask whether something
+             * is there. The exit status IS the answer, which is what
+             * makes `if test -f X` work without any other machinery.
+             */
+            int r = 1;
 
-        } else if (strcmp(argv[0], "arp") == 0) {
-            cmd_arp();
+            if (strcmp(argv[argc - 1], "]") == 0) {
+                argc--;                 /* the closing bracket */
+            }
+            if (argc == 2) {
+                r = argv[1][0] ? 0 : 1;             /* test STRING */
+            } else if (argc == 3 && argv[1][0] == '-') {
+                struct stat st;
 
-        } else if (strcmp(argv[0], "arping") == 0) {
-            if (need(argc, 2, "arping ADDR")) {
-                cmd_arping(argv[1]);
+                switch (argv[1][1]) {
+                case 'f':
+                    r = (sys_stat(argv[2], &st) == 0 &&
+                         !(st.st_mode & S_IFDIR)) ? 0 : 1;
+                    break;
+                case 'd':
+                    r = (sys_stat(argv[2], &st) == 0 &&
+                         (st.st_mode & S_IFDIR)) ? 0 : 1;
+                    break;
+                case 'e':
+                    r = sys_stat(argv[2], &st) == 0 ? 0 : 1;
+                    break;
+                case 'n':
+                    r = argv[2][0] ? 0 : 1;
+                    break;
+                case 'z':
+                    r = argv[2][0] ? 1 : 0;
+                    break;
+                default:
+                    err_puts("test: unknown test\n");
+                    break;
+                }
+            } else if (argc == 4 && strcmp(argv[2], "=") == 0) {
+                r = strcmp(argv[1], argv[3]) == 0 ? 0 : 1;
+            } else if (argc == 4 && strcmp(argv[2], "!=") == 0) {
+                r = strcmp(argv[1], argv[3]) != 0 ? 0 : 1;
+            }
+            last_status = r;
+            redirect_end();
+            return;
+
+        } else if (strcmp(argv[0], "source") == 0 ||
+                   strcmp(argv[0], ".") == 0) {
+            if (need(argc, 2, "source FILE")) {
+                err = run_script(argv[1]);
+                if (err < 0) {
+                    err_report(argv[1], err);
+                }
             }
 
-        } else if (strcmp(argv[0], "ping") == 0) {
-            if (need(argc, 2, "ping ADDR [COUNT]")) {
-                cmd_ping(argc, argv);
+        } else if (strcmp(argv[0], "set") == 0) {
+            /*
+             * `set` is the builtin and `env` deliberately is NOT: env is
+             * a program, and running it proves the environment actually
+             * crossed into another address space rather than merely
+             * existing in this one.
+             */
+            for (i = 0; i < env_count; i++) {
+                out_puts(env_store[i]);
+                out_putc('\n');
+            }
+
+        } else if (strcmp(argv[0], "export") == 0) {
+            /*
+             * `export NAME=VALUE`, and `export NAME` to clear it. There
+             * is no distinction between a shell variable and an
+             * exported one here: everything the shell holds is the
+             * environment, because with no shell functions there is
+             * nothing a private variable would be private from.
+             */
+            if (need(argc, 2, "export NAME=VALUE")) {
+                for (i = 1; i < argc; i++) {
+                    char *eq = strchr(argv[i], '=');
+
+                    if (eq) {
+                        *eq = '\0';
+                        err = env_set(argv[i], eq + 1);
+                        *eq = '=';
+                    } else {
+                        err = env_set(argv[i], "");
+                    }
+                    if (err < 0) {
+                        err_report(argv[i], err);
+                    }
+                }
+            }
+
+        } else if (strcmp(argv[0], "unset") == 0) {
+            if (need(argc, 2, "unset NAME...")) {
+                for (i = 1; i < argc; i++) {
+                    env_unset(argv[i]);
+                }
             }
 
         } else if (strcmp(argv[0], "cd") == 0) {
@@ -1647,7 +1774,7 @@ static void run_command(char *cmdline)
              * what & means: a foreground job is one the shell waits
              * for, and a background job is one it does not.
              */
-            status = sys_spawn(argv[0], argc, argv);
+            status = spawn_on_path(argv[0], argc, argv);
 
             if (status > 0) {
                 int pid = status;
@@ -1679,11 +1806,31 @@ static void run_command(char *cmdline)
                 err_puts(argv[0]);
                 err_puts(": command not found\n");
             } else if (status == -ENOEXEC) {
-                err_puts(argv[0]);
-                err_puts(": not an executable\n");
+                /*
+                 * Not an ELF image. It may be a script -- but only if
+                 * it says so by starting with '#'.
+                 *
+                 * There is no execute permission on a FAT volume and no
+                 * way to add one, so something has to distinguish a
+                 * script from a data file that happens to share its
+                 * name. Unix uses the exec bit and the #! line; with
+                 * only the second available, a leading '#' is the whole
+                 * test. Running any text file instead would mean a
+                 * mistyped `cat` executing somebody's notes.
+                 */
+                if (looks_like_script(argv[0])) {
+                    err = run_script(argv[0]);
+                    if (err < 0) {
+                        err_report(argv[0], err);
+                    }
+                } else {
+                    err_puts(argv[0]);
+                    err_puts(": not an executable\n");
+                }
             } else if (status < 0) {
                 err_report(argv[0], status);
             } else {
+                last_status = status;
                 report_status(argv[0], status);
                 sys_jobctl(JOBCTL_REAP, 0, 0);
             }
@@ -1691,6 +1838,211 @@ static void run_command(char *cmdline)
 
         redirect_end();
     }
+}
+
+/* ---------------------------------------------------------------- */
+/* Scripts                                                           */
+/* ---------------------------------------------------------------- */
+
+/*
+ * A script is a file of commands, and the only things it needs beyond
+ * that are comments and a way to ask a question.
+ *
+ * WHY THE WHOLE FILE IS READ FIRST. A script can start a program that
+ * reads from the terminal, and a shell reading its script through the
+ * same descriptor would find the program had eaten the rest of it. The
+ * file is small, the memory is there, and the alternative is a class of
+ * bug with no good symptom.
+ *
+ * The conditional is line-structured -- `if`, `then`, `else`, `fi` each
+ * on their own line -- because that needs a stack of flags rather than a
+ * parser, and because the thing a startup script actually needs to say
+ * is "if this exists, do that".
+ */
+#define SCRIPT_MAX    4096
+#define IF_DEPTH      8
+
+static char script_buf[SCRIPT_MAX];
+
+static int script_line_is(const char *line, const char *word)
+{
+    u32 i = 0;
+
+    while (line[i] == ' ' || line[i] == '\t') {
+        i++;
+    }
+    while (*word && line[i] == *word) {
+        i++;
+        word++;
+    }
+    if (*word) {
+        return 0;
+    }
+    while (line[i] == ' ' || line[i] == '\t') {
+        i++;
+    }
+    return line[i] == '\0';
+}
+
+/*
+ * Does this file claim to be a script?
+ *
+ * One character decides it. A shebang line is accepted and then treated
+ * as a comment, because there is only one shell here for it to name.
+ */
+static int looks_like_script(const char *path)
+{
+    int fd = sys_open(path, O_RDONLY);
+    char c = 0;
+    s32 n;
+
+    if (fd < 0) {
+        return 0;
+    }
+    n = sys_read(fd, &c, 1);
+    sys_close(fd);
+    return n == 1 && c == '#';
+}
+
+static int run_script(const char *path)
+{
+    /*
+     * executing[d] says whether this nesting level is running, and
+     * taken[d] whether a branch at this level already matched -- which
+     * is what stops `else` from running after a true `if`.
+     */
+    int executing[IF_DEPTH];
+    int taken[IF_DEPTH];
+    int depth = 0;
+    int fd, i;
+    s32 got, total = 0;
+
+    fd = sys_open(path, O_RDONLY);
+    if (fd < 0) {
+        return fd;
+    }
+    while (total < (s32)sizeof(script_buf) - 1) {
+        got = sys_read(fd, script_buf + total,
+                       (u32)(sizeof(script_buf) - 1 - (u32)total));
+        if (got <= 0) {
+            break;
+        }
+        total += got;
+    }
+    sys_close(fd);
+    script_buf[total] = '\0';
+
+    executing[0] = 1;
+    taken[0] = 1;
+
+    i = 0;
+    while (i < total) {
+        char *line = &script_buf[i];
+        int end = i;
+
+        while (end < total && script_buf[end] != '\n') {
+            end++;
+        }
+        script_buf[end] = '\0';
+        i = end + 1;
+
+        /* Strip a trailing carriage return, so a script written on the
+         * host with DOS line endings works. */
+        {
+            int L = (int)strlen(line);
+
+            while (L > 0 && (line[L - 1] == '\r' || line[L - 1] == ' ')) {
+                line[--L] = '\0';
+            }
+        }
+
+        {
+            u32 k = 0;
+
+            while (line[k] == ' ' || line[k] == '\t') {
+                k++;
+            }
+            if (line[k] == '\0' || line[k] == '#') {
+                continue;               /* blank, or a comment */
+            }
+        }
+
+        if (script_line_is(line, "fi")) {
+            if (depth > 0) {
+                depth--;
+            }
+            continue;
+        }
+        if (script_line_is(line, "else")) {
+            if (depth > 0) {
+                executing[depth] = executing[depth - 1] && !taken[depth];
+            }
+            continue;
+        }
+        if (script_line_is(line, "then")) {
+            continue;                   /* accepted and ignored */
+        }
+
+        {
+            u32 k = 0;
+
+            while (line[k] == ' ' || line[k] == '\t') {
+                k++;
+            }
+            if (line[k] == 'i' && line[k + 1] == 'f' &&
+                (line[k + 2] == ' ' || line[k + 2] == '\t')) {
+                int cond = 0;
+
+                if (depth + 1 >= IF_DEPTH) {
+                    err_puts("script: if nested too deeply\n");
+                    return -E2BIG;
+                }
+                if (executing[depth]) {
+                    char sub[LINE_MAX];
+
+                    strncpy(sub, &line[k + 3], sizeof(sub) - 1);
+                    sub[sizeof(sub) - 1] = '\0';
+                    /* A trailing "; then" is how everybody writes it. */
+                    {
+                        int L = (int)strlen(sub);
+
+                        while (L > 4 &&
+                               strcmp(&sub[L - 4], "then") == 0) {
+                            sub[L - 4] = '\0';
+                            L -= 4;
+                            while (L > 0 && (sub[L - 1] == ' ' ||
+                                             sub[L - 1] == ';')) {
+                                sub[--L] = '\0';
+                            }
+                        }
+                    }
+                    last_status = 0;
+                    run_command(sub);
+                    cond = (last_status == 0);
+                }
+                depth++;
+                executing[depth] = executing[depth - 1] && cond;
+                taken[depth] = cond;
+                continue;
+            }
+        }
+
+        if (!executing[depth]) {
+            continue;
+        }
+
+        {
+            char work[LINE_MAX];
+
+            strncpy(work, line, sizeof(work) - 1);
+            work[sizeof(work) - 1] = '\0';
+            strncpy(cmdline_saved, work, sizeof(cmdline_saved) - 1);
+            cmdline_saved[sizeof(cmdline_saved) - 1] = '\0';
+            run_command(work);
+        }
+    }
+
+    return 0;
 }
 
 /*
@@ -1702,6 +2054,35 @@ static void run_command(char *cmdline)
  */
 void shell(void)
 {
+    /*
+     * The defaults, before /etc/rc gets a chance to change them.
+     *
+     * PATH has /bin first because that is where the system's own
+     * programs live, and the current directory last -- which is the
+     * ordering that stops a program dropped in the working directory
+     * from quietly replacing a system one.
+     */
+    env_set("PATH", "/bin:.");
+    env_set("HOME", "/");
+    env_set("SHELL", "/bin/sh");
+
+    /*
+     * /etc/rc, if there is one. Not an error if there is not: a machine
+     * with a blank disk should still come up to a prompt, and saying
+     * "no such file" at every boot would be noise rather than news.
+     *
+     * Note the name. rc.local would be the conventional one and is not
+     * a legal 8.3 name -- five characters of extension -- so the
+     * filesystem chose this, not taste.
+     */
+    {
+        struct stat st;
+
+        if (sys_stat("/etc/rc", &st) == 0) {
+            run_script("/etc/rc");
+        }
+    }
+
     for (;;) {
         char prompt[PATH_MAX + 8];
         int n;

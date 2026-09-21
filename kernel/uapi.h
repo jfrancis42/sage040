@@ -382,6 +382,7 @@ struct sockaddr_in {
 #define NETCTL_ARPING  2        /* arg = IPv4 address, host order     */
 #define NETCTL_ARP     3        /* arg = index, p = struct arpinfo *  */
 #define NETCTL_PING    6        /* arg = address; p = u32 *rtt_ms     */
+#define NETCTL_CONN    8        /* arg = index, p = struct conninfo * */
 #define NETCTL_DHCP    7        /* p = struct netaddr * (filled in)   */
 #define NETCTL_UP      4
 #define NETCTL_DOWN    5
@@ -404,6 +405,20 @@ struct netaddr {
     u32 ip;
     u32 netmask;
     u32 gateway;
+};
+
+/* One TCP connection, as netstat sees it. */
+struct conninfo {
+    u32 local_ip;
+    u32 remote_ip;
+    u16 local_port;
+    u16 remote_port;
+    u32 state;
+    u32 txq;                    /* bytes waiting to be acknowledged */
+    u32 rxq;                    /* bytes waiting to be read         */
+    u32 cwnd;
+    u32 rtt_ms;
+    char state_name[16];
 };
 
 struct arpinfo {

@@ -59,6 +59,17 @@ s32    sendto(int fd, const void *buf, u32 len, const struct sockaddr_in *to);
 s32    recvfrom(int fd, void *buf, u32 len, struct sockaddr_in *from);
 int    shutdown(int fd, int how);
 
+/*
+ * The network control call. Local to this system -- Linux does this
+ * with ioctls on a socket, which needs a socket for something that is
+ * not a connection. See uapi.h for the commands.
+ */
+int    netctl(int cmd, u32 arg, void *p);
+
+/* Formatting helpers that every network tool needs. */
+void   put_ip(u32 addr);
+void   put_mac(const u8 *mac);
+
 #define htons(x) ((u16)(x))
 #define ntohs(x) ((u16)(x))
 #define htonl(x) ((u32)(x))
@@ -76,6 +87,10 @@ void   eputs(const char *s);         /* to stderr */
 
 /* Has a key been pressed?  Does not block and does not consume it. */
 int    key_waiting(void);
+
+/* The environment this program was started with. Read only. */
+const char *getenv(const char *name);
+extern char **environ;
 
 u32    strlen(const char *s);
 int    strcmp(const char *a, const char *b);

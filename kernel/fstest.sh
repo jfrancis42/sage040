@@ -67,7 +67,8 @@ contains() {        # contains <file> <text>
 echo "=== building ==="
 make -s kernel.rom || exit 1
 make -s -C ../bootrom bootrom.elf || exit 1
-make -s -C ../user hello fbtest || exit 1
+make -s -C ../apps hello fbtest || exit 1
+make -s -C ../system || exit 1
 
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
@@ -93,8 +94,8 @@ mcopy -o -i "$MIMG" "$SCRATCH/big.tmp" ::/BIG.TXT
 # A program, to check that the ELF loader runs one and that its exit
 # status comes back. No extension: the kernel decides what is executable
 # from the file's first four bytes, not from its name.
-mcopy -o -i "$MIMG" ../user/hello ::/HELLO
-mcopy -o -i "$MIMG" ../user/fbtest ::/FBTEST
+mcopy -o -i "$MIMG" ../apps/hello ::/HELLO
+mcopy -o -i "$MIMG" ../apps/fbtest ::/FBTEST
 
 echo "=== running the kernel ==="
 printf '%s\n' \

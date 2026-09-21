@@ -106,6 +106,33 @@ int shutdown(int fd, int how)
     return (int)sc2(__NR_shutdown, (u32)fd, (u32)how);
 }
 
+int netctl(int cmd, u32 arg, void *p)
+{
+    return (int)sc3(__NR_netctl, (u32)cmd, arg, (u32)p);
+}
+
+void put_ip(u32 a)
+{
+    putdec((a >> 24) & 0xff); putch('.');
+    putdec((a >> 16) & 0xff); putch('.');
+    putdec((a >> 8) & 0xff);  putch('.');
+    putdec(a & 0xff);
+}
+
+void put_mac(const u8 *m)
+{
+    static const char hex[] = "0123456789abcdef";
+    int i;
+
+    for (i = 0; i < 6; i++) {
+        if (i) {
+            putch(':');
+        }
+        putch(hex[(m[i] >> 4) & 0xf]);
+        putch(hex[m[i] & 0xf]);
+    }
+}
+
 int open(const char *path, int flags)
 {
     return (int)sc2(__NR_open, (u32)path, (u32)flags);
@@ -208,6 +235,39 @@ u32 strlen(const char *s)
         p++;
     }
     return (u32)(p - s);
+}
+
+extern char **environ;
+
+/*
+ * The environment a program was started with.
+ *
+ * Read only: there is no setenv, because a change would have nowhere to
+ * go -- the environment is a copy made when the program started, and
+ * nothing propagates it back to whoever started it. That is true on any
+ * Unix; what is missing here is only the ability to pass a changed one
+ * on to a further program.
+ */
+const char *getenv(const char *name)
+{
+    int i;
+
+    if (!environ) {
+        return 0;
+    }
+    for (i = 0; environ[i]; i++) {
+        const char *e = environ[i];
+        const char *n = name;
+
+        while (*n && *e && *e != '=' && *n == *e) {
+            n++;
+            e++;
+        }
+        if (!*n && *e == '=') {
+            return e + 1;
+        }
+    }
+    return 0;
 }
 
 u32 inet_aton(const char *s)

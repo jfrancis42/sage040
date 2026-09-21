@@ -89,6 +89,10 @@ int sleep_on_timeout(struct waitq *q, u32 ms)
 
     for (;;) {
         sr = irq_save();
+        /* Cleared before sleeping, not after: a flag left set by an
+         * earlier wake would make this return immediately and report a
+         * wakeup that has already been consumed. */
+        current->woken = 0;
         enqueue(q, current);
         current->state = TASK_BLOCKED;
         current->wake_at = deadline;

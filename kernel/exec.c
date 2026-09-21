@@ -314,13 +314,47 @@ static int load_image(struct addrspace *as, int fd, u32 *entry)
  * is unmapped in every address space, so a program that manages to
  * return from _start faults instead of wandering.
  */
-static int setup_stack(int argc, char **argv, u32 *out_sp)
+static int setup_stack(int argc, char **argv, char **envp, u32 *out_sp)
 {
     u32 uargv[EXEC_MAX_ARGS + 1];
+    u32 uenv[EXEC_MAX_ENV + 1];
     u32 sp = USER_VA_STACK_TOP & ~3UL;
+    u32 envc = 0;
     int i, err;
 
-    for (i = argc - 1; i >= 0; i--) {
+    /*
+     * The environment goes in first, above the arguments, because the
+     * conventional Unix layout puts envp above argv on the stack and
+     * because nothing here depends on the order -- so it may as well be
+     * the order everybody expects to find.
+     */
+    if (envp) {
+        while (envc < EXEC_MAX_ENV && envp[envc]) {
+            envc++;
+        }
+        for (i = (int)envc - 1; i >= 0; i--) {
+            u32 len = (u32)strlen(envp[i]) + 1;
+
+            sp -= len;
+            err = copy_to_user(sp, envp[i], len);
+            if (err < 0) {
+                return err;
+            }
+            uenv[i] = sp;
+        }
+    }
+    uenv[envc] = 0;
+
+    sp &= ~3UL;
+    sp -= (envc + 1) * 4;
+    err = copy_to_user(sp, uenv, (envc + 1) * 4);
+    if (err < 0) {
+        return err;
+    }
+    {
+        u32 uenvp = sp;
+
+        for (i = argc - 1; i >= 0; i--) {
         u32 len = (u32)strlen(argv[i]) + 1;
 
         sp -= len;
@@ -340,16 +374,18 @@ static int setup_stack(int argc, char **argv, u32 *out_sp)
     }
 
     {
-        u32 frame[3];
+        u32 frame[4];
 
         frame[0] = 0;                   /* the return address crt0 ignores */
         frame[1] = (u32)argc;
         frame[2] = sp;                  /* argv */
-        sp -= 12;
+        frame[3] = uenvp;               /* envp */
+        sp -= 16;
         err = copy_to_user(sp, frame, sizeof(frame));
         if (err < 0) {
             return err;
         }
+    }
     }
 
     *out_sp = sp;
@@ -380,7 +416,7 @@ static void describe(char *out, u32 max, int argc, char **argv)
  * and its arguments. Everything it will be able to reach.
  */
 static int build(struct addrspace *as, const char *path,
-                 int argc, char **argv, u32 *entry, u32 *sp)
+                 int argc, char **argv, char **envp, u32 *entry, u32 *sp)
 {
     u32 va;
     int fd, err;
@@ -412,7 +448,7 @@ static int build(struct addrspace *as, const char *path,
         }
     }
 
-    return setup_stack(argc, argv, sp);
+    return setup_stack(argc, argv, envp, sp);
 }
 
 /*
@@ -422,7 +458,7 @@ static int build(struct addrspace *as, const char *path,
  * and whether to do it is what separates a foreground job from a
  * background one. That separation is the whole of what `&` needed.
  */
-int exec_spawn(const char *path, int argc, char **argv)
+int exec_spawn(const char *path, int argc, char **argv, char **envp)
 {
     char cmd[JOB_CMD_MAX];
     struct addrspace *as;
@@ -454,7 +490,7 @@ int exec_spawn(const char *path, int argc, char **argv)
         struct addrspace *saved = uaccess_current();
 
         uaccess_set(as);
-        err = build(as, path, argc, argv, &entry, &sp);
+        err = build(as, path, argc, argv, envp, &entry, &sp);
         uaccess_set(saved);
     }
 
