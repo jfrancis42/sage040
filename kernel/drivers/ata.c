@@ -36,6 +36,7 @@
  * ----------------------------------------------------------------------
  */
 #include "dev.h"
+#include "drivers.h"
 #include "errno.h"
 
 #define ATA_TIMEOUT      2000000
@@ -241,6 +242,13 @@ static struct blockdev ata_dev = {
 
 int ata_init(void)
 {
+    /* Is the chip fitted? An address with nothing behind it raises a
+     * bus error rather than reading back zeroes, so this has to be
+     * asked before the first register access, not by making one. */
+    if (!io_probe8((volatile void *)ATA_ALTSTAT)) {
+        return -ENODEV;
+    }
+
     if (ata_identify() != 0) {
         return -ENODEV;
     }

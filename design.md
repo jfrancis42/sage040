@@ -384,9 +384,15 @@ for, and each is checkable rather than aspirational:
 
 - **The shell reaches the filesystem, the disk and the terminal only
   through `trap #0`.** Every command in it is system calls and nothing
-  else. One exception is known and listed in `kernel/README.md`:
-  `cmd_console` calls `tty_sink()` directly, because there is no ioctl
-  yet for asking where console output goes.
+  else, and `kernel/layercheck.sh` fails the build if that stops being
+  true. It was asserted here while it was false — `cmd_console` had
+  grown a direct call into `tty.c` — which is the argument for checking
+  the rule rather than restating it.
+- **A driver probes before it pokes.** An address with no device behind
+  it bus-errors rather than reading zeroes, so every driver asks with
+  `io_probe8`/`16`/`32` first and `main.c` reports what is absent. A
+  kernel on an emulator built before one of its devices existed says so
+  instead of panicking.
 - **The line editor is above the boundary too.** `edit.c` clears
   `ICANON` and `ECHO` with `TCSETS` and does the editing, the history
   and the searching itself, which is where bash keeps that work. It

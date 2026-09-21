@@ -23,15 +23,9 @@
  * already do it. Errors go to descriptor 2 even when output is
  * redirected, which is the distinction stderr exists to make.
  */
-#include "kernel.h"
 #include "syscall.h"
 #include "errno.h"
 #include "time.h"
-#include "timer.h"
-#include "console.h"
-#include "fbcon.h"
-#include "tty.h"
-#include "dev.h"
 #include "edit.h"
 #include "string.h"
 
@@ -747,24 +741,36 @@ static void cmd_date(int argc, char **args)
  * it, and the test harnesses drive the machine over the wire with the
  * display switched off entirely.
  */
-static void cmd_console(int argc, char **args)
+static void list_console(int which, const char *heading)
 {
-    struct chardev *d;
-    int i, on, err;
+    struct console_info ci;
+    int i;
 
-    if (argc == 1) {
-        out_puts("output to:\n");
-        for (i = 0; (d = tty_sink(i, &on)) != 0; i++) {
-            out_puts("  ");
-            out_puts(d->name);
-            out_puts(on ? "   on\n" : "   off\n");
+    out_puts(heading);
+    for (i = 0; ; i++) {
+        ci.which = which;
+        ci.index = i;
+        if (sys_ioctl(STDIN_FILENO, TIOCGCONS, (u32)&ci) < 0) {
+            break;
         }
-        out_puts("input from:\n");
-        for (i = 0; (d = tty_source(i)) != 0; i++) {
-            out_puts("  ");
-            out_puts(d->name);
+        out_puts("  ");
+        out_puts(ci.name);
+        if (which == CONS_SINK) {
+            out_puts(ci.enabled ? "   on\n" : "   off\n");
+        } else {
             out_putc('\n');
         }
+    }
+}
+
+static void cmd_console(int argc, char **args)
+{
+    struct console_set cs;
+    int on, err, i;
+
+    if (argc == 1) {
+        list_console(CONS_SINK, "output to:\n");
+        list_console(CONS_SOURCE, "input from:\n");
         out_puts("\nturn one off with `console NAME off`\n");
         return;
     }
@@ -783,8 +789,18 @@ static void cmd_console(int argc, char **args)
         return;
     }
 
+    for (i = 0; i < (int)sizeof(cs.name); i++) {
+        cs.name[i] = '\0';
+    }
+    strncpy(cs.name, args[1], sizeof(cs.name) - 1);
+    cs.on = on;
+
+    /*
+     * Flushed first, because the very next thing that happens may be
+     * the device this output was going to being switched off.
+     */
     out_flush();
-    err = tty_sink_enable(args[1], on);
+    err = sys_ioctl(STDIN_FILENO, TIOCSCONS, (u32)&cs);
     if (err == -EBUSY) {
         err_puts("console: that is the only one left\n");
     } else if (err < 0) {

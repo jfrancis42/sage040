@@ -15,6 +15,31 @@
 #ifndef DRIVERS_H
 #define DRIVERS_H
 
+/*
+ * Is anything at this address?
+ *
+ * A read that survives a bus error, in memprobe.s. Returns 1 if the
+ * access completed and 0 if nothing answered; it never writes and never
+ * looks at the value, because an absent chip and a chip holding zero
+ * read the same and the question is only whether the bus replied.
+ *
+ * EVERY DRIVER CALLS ONE OF THESE BEFORE ITS FIRST REGISTER ACCESS.
+ * QEMU faults on an address with no device behind it, exactly as a real
+ * board faults on an empty socket, so without this a kernel run on an
+ * emulator built before one of its devices existed does not report a
+ * missing device -- it panics inside the first driver that reaches for
+ * one, which reads as a kernel bug and is not. That has happened once
+ * already, with the keyboard.
+ *
+ * Probe at the width the driver will use. Several device regions
+ * declare a minimum access size and a too-narrow access lands in the
+ * wrong byte lane silently: SM501 registers are 32-bit only, while the
+ * MFP, the UART and the 8042 are byte registers.
+ */
+int io_probe8(volatile void *addr);
+int io_probe16(volatile void *addr);
+int io_probe32(volatile void *addr);
+
 int mfp_init(void);         /* interrupt controller + the system timer     */
 void mfp_interrupts_on(void);
 int mfp_request_irq(int channel, void (*handler)(void *), void *arg);

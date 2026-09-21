@@ -498,6 +498,52 @@ static int tty_ioctl(struct file *f, u32 request, u32 arg)
         }
         return 0;
 
+    /*
+     * Which devices the console is made of, and turning one off.
+     *
+     * Here rather than in the shell because this is the only thing that
+     * knows: the lists are private to this file, and a program asking
+     * where its output goes should be asking the terminal, not reaching
+     * into the kernel for a list it happens to be able to see.
+     */
+    case TIOCGCONS: {
+        struct console_info *ci = (struct console_info *)arg;
+        struct chardev *d;
+
+        if (!ci) {
+            return -EINVAL;
+        }
+        if (ci->which == CONS_SINK) {
+            if (ci->index < 0 || ci->index >= nsinks) {
+                return -ENOENT;
+            }
+            d = sinks[ci->index].dev;
+            ci->enabled = sinks[ci->index].enabled;
+        } else if (ci->which == CONS_SOURCE) {
+            if (ci->index < 0 || ci->index >= nsources) {
+                return -ENOENT;
+            }
+            d = sources[ci->index];
+            /* A source is never off. Silently ignoring a keystroke
+             * somebody typed is not a state worth being able to reach. */
+            ci->enabled = 1;
+        } else {
+            return -EINVAL;
+        }
+        strncpy(ci->name, d->name, sizeof(ci->name) - 1);
+        ci->name[sizeof(ci->name) - 1] = '\0';
+        return 0;
+    }
+
+    case TIOCSCONS: {
+        const struct console_set *cs = (const struct console_set *)arg;
+
+        if (!cs) {
+            return -EINVAL;
+        }
+        return tty_sink_enable(cs->name, cs->on);
+    }
+
     case TCGETS:
         if (!arg) {
             return -EINVAL;

@@ -137,6 +137,13 @@ static struct chardev serial_dev = {
  */
 int ns16550_present(void)
 {
+    /* Is the chip fitted? An address with nothing behind it raises a
+     * bus error rather than reading back zeroes, so this has to be
+     * asked before the first register access, not by making one. */
+    if (!io_probe8((volatile void *)UART_BASE)) {
+        return 0;
+    }
+
     u8 saved = MMIO8(UART_SCR);
     int ok;
 

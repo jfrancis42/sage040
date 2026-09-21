@@ -1031,6 +1031,35 @@ means **a program that makes no system calls cannot be stopped** (it can
 still be killed). A `read()` interrupted by ctrl-C returns `-EINTR`,
 exactly as it would on Linux.
 
+#### Where the console is
+
+This machine's console is several devices at once — output goes to the
+screen and the serial line, input comes from the keyboard and the serial
+line — so a program can ask which, and turn an output off:
+
+```c
+struct console_info ci;
+int i;
+
+for (i = 0; ; i++) {
+    ci.which = CONS_SINK;           /* or CONS_SOURCE */
+    ci.index = i;
+    if (ioctl(STDIN_FILENO, TIOCGCONS, (u32)&ci) < 0) {
+        break;                      /* -ENOENT past the end */
+    }
+    /* ci.name, ci.enabled */
+}
+```
+
+`TIOCSCONS` takes a `struct console_set` — a name and an on/off — and
+returns `-EBUSY` rather than turning off the last one, because a machine
+with no console output cannot tell you why. A source cannot be turned
+off at all.
+
+Both are local, in the 0x54F0 block; Linux has no equivalent because it
+picks its console at boot with `console=` rather than through a
+descriptor. `shell.c`'s `console` command is the worked example.
+
 #### Stopping the machine
 
 `reboot(RB_POWER_OFF)` flushes the filesystem and stops the machine;
@@ -1118,7 +1147,12 @@ msleep(20);                      /* nanosleep, rounded up to a tick */
 ```
 
 `HZ` is 100, so a tick is 10 ms and a 50 fps frame is exactly two of
-them. Sleeping uses `STOP` in the kernel, so a sleeping program costs the
+them. It comes from `uapi.h`, not from a kernel header: `times()`
+returns ticks, and a count of ticks means nothing without the rate, so
+the rate crosses the boundary with it. Linux answers the same question
+through `sysconf(_SC_CLK_TCK)`; there is no `sysconf` here.
+
+Sleeping uses `STOP` in the kernel, so a sleeping program costs the
 host nothing — prefer it to a delay loop, which is only ever right on the
 machine it was tuned on.
 

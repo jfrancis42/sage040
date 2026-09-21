@@ -396,6 +396,17 @@ int i8042_present(void)
 {
     u8 reply = 0;
 
+    /*
+     * Before anything else: is the controller there at all? An emulator
+     * built without it faults on this address rather than reading back
+     * zeroes, so asking the question by reading the status register --
+     * which is what the rest of this function does -- is asking it too
+     * late.
+     */
+    if (!io_probe8((volatile void *)KBD_STATUS)) {
+        return 0;
+    }
+
     if (kbd_command(KBD_CCMD_SELF_TEST) < 0) {
         return 0;
     }

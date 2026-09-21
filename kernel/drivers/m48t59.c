@@ -44,6 +44,7 @@
  *     is a real date.
  */
 #include "rtc.h"
+#include "drivers.h"
 #include "dev.h"
 #include "time.h"
 #include "errno.h"
@@ -221,6 +222,13 @@ static struct rtcdev m48t59_dev = {
 
 int m48t59_init(void)
 {
+    /* Is the chip fitted? An address with nothing behind it raises a
+     * bus error rather than reading back zeroes, so this has to be
+     * asked before the first register access, not by making one. */
+    if (!io_probe8((volatile void *)RTC_BASE)) {
+        return -ENODEV;
+    }
+
     if (!rtc_present()) {
         return -ENODEV;
     }

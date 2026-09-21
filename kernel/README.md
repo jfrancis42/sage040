@@ -83,10 +83,14 @@ takes. The disk image lives in the project root — see
 The layering is the point, so it is worth saying what it buys:
 
 - **The shell reaches the filesystem, the disk and the terminal only
-  through `trap #0`.** Every command in it — `ls`, `cat`, `date`, `fg` —
-  is system calls and nothing else, which is how a claim like "programs
-  will run unprivileged later" stays true instead of becoming a plan.
-  (`cmd_console` is the one exception, and it is listed below.)
+  through `trap #0`.** Every command in it — `ls`, `cat`, `date`, `fg`,
+  `console` — is system calls and nothing else, which is how a claim
+  like "programs will run unprivileged later" stays true instead of
+  becoming a plan. **`layercheck.sh` enforces it before every link**:
+  `shell.c` and `edit.c` may include `syscall.h` and a short list of
+  pure headers (`string.h`, `time.h`, `errno.h`) and nothing more. The
+  rule was asserted in three documents for months while it was false,
+  which is the argument for checking it rather than writing it down.
 - **The line editor is above the boundary too.** `edit.c` does what
   readline does: turn off `ICANON` and `ECHO` with `TCSETS`, read
   characters, and do the editing, the history and the searching itself.
@@ -164,14 +168,12 @@ the function that will have to validate and copy them when that stops
 being true. The MMU is not turned on, so there is no address space to
 separate yet.
 
-**`cmd_console` in `shell.c` calls `tty_sink()` and `tty_source()`
-directly**, and so `shell.c` includes `tty.h` and `dev.h`. It is the
-only command that does, and it is a real break in the rule the rest of
-the file keeps: listing where console output goes is not something a
-program can ask through a system call yet. The fix is an ioctl on
-`/dev/console` that reports and enables sinks, and then the two includes
-come out. Until then this is stated here rather than quietly tolerated,
-because the value of the rule is that the exceptions are countable.
+Nothing else, now. `cmd_console` used to call `tty_sink()` directly —
+listing where console output goes was not something a program could ask
+for — and three documents asserted the rule while that was quietly
+false. It is `TIOCGCONS` and `TIOCSCONS` on the terminal instead, and
+`layercheck.sh` runs before every link so the next one fails the build
+rather than the documentation.
 
 ## Running programs
 
@@ -214,6 +216,26 @@ name, in `execasm.s`. One program at a time, because that file has room
 for one saved context.
 
 See [`../user/`](../user/) for the programs themselves.
+
+## Devices that are not there
+
+Every driver asks whether its chip is fitted before it touches a
+register, with `io_probe8`, `io_probe16` or `io_probe32` from
+`memprobe.s` — a read that survives a bus error.
+
+This is not defensive decoration. **An address with no device behind it
+raises a bus error; it does not read back zeroes**, on this emulator and
+on a real board with an empty socket alike. So a kernel run on a QEMU
+built before one of its devices existed does not report a missing
+device — it panics inside the first driver that reaches for one, and the
+panic looks like a kernel bug rather than a stale emulator. That has
+happened once, with the keyboard, which is why the probes exist.
+
+They read and never write, at the width the driver will use, and they
+ignore the value: an absent chip and a chip holding zero read the same,
+so the only question is whether the bus answered. `main.c` prints what
+is missing and carries on, which is why a machine with no disk still
+gets a prompt that can tell you there is no disk.
 
 ## Devices
 
@@ -661,7 +683,6 @@ command. Errors go to descriptor 2 even when output is redirected.
 | File | |
 |------|--|
 | `start.s` | entry, vector table, exception and TRAP #0 stubs |
-| `memprobe.s` | one memory test that survives a bus error |
 | `main.c` | startup order, and the only file that names a chip |
 | `syscall.c` | the call table and the wrappers around the trap |
 | `vfs.c` | paths, mounts, the descriptor table |
@@ -681,6 +702,8 @@ command. Errors go to descriptor 2 even when output is redirected.
 | `font8x16.c` | the IBM PC font, and where it came from |
 | `execasm.s` | the stack switch into a program, the unwind out, and the context switch between |
 | `probe.c` | CPU, FPU and memory — the parts with no driver |
+| `memprobe.s` | reads that survive a bus error, for memory and for absent chips |
+| `layercheck.sh` | the layering rule, enforced before every link |
 | `shell.c` | a program, reaching the kernel through `trap #0` (bar one command) |
 | `version.c` | the version and build stamp, defined once |
 | `uapi.h` | what crosses the system call boundary |

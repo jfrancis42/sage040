@@ -224,6 +224,13 @@ int mfp_init(void)
 {
     int i;
 
+    /* Is the chip fitted? An address with nothing behind it raises a
+     * bus error rather than reading back zeroes, so this has to be
+     * asked before the first register access, not by making one. */
+    if (!io_probe8((volatile void *)MFP_BASE)) {
+        return -ENODEV;
+    }
+
     if (!mfp_present()) {
         return -ENODEV;
     }

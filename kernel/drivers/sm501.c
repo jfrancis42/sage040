@@ -332,6 +332,13 @@ static struct fbdev sm501_fb = {
 
 int sm501_init(void)
 {
+    /* Is the chip fitted? An address with nothing behind it raises a
+     * bus error rather than reading back zeroes, so this has to be
+     * asked before the first register access, not by making one. */
+    if (!io_probe32((volatile void *)SM501_DEVICEID)) {
+        return -ENODEV;
+    }
+
     if (SM501_RD(SM501_DEVICEID) != SM501_DEVICEID_VALUE) {
         return -ENODEV;
     }

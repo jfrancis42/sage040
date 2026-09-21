@@ -68,7 +68,12 @@ all: kernel.rom
 
 ASMS := start.s memprobe.s execasm.s
 
-kernel.elf: $(ASMS) $(SRCS) $(HDRS) kernel.ld
+# The layering rule is checked before the link, not documented and hoped
+# for. shell.c and edit.c are programs: they reach the system through
+# trap #0 and may not include a kernel header that lets them go round it.
+# See layercheck.sh for what is allowed and why.
+kernel.elf: $(ASMS) $(SRCS) $(HDRS) kernel.ld layercheck.sh
+	@./layercheck.sh
 	$(CC) $(CFLAGS) $(LDFLAGS) \
 	    -x assembler-with-cpp $(ASMS) \
 	    -x c $(SRCS) -o $@

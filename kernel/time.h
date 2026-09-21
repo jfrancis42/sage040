@@ -16,7 +16,7 @@
 #ifndef TIME_H
 #define TIME_H
 
-#include "kernel.h"
+#include "types.h"
 
 /* Named as POSIX names it, and with the same fields, minus the ones
  * nothing here has a use for. */

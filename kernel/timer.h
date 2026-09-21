@@ -18,8 +18,14 @@
 #define TIMER_H
 
 #include "kernel.h"
+#include "uapi.h"
 
-#define HZ  100
+/*
+ * HZ lives in uapi.h, not here. times() returns ticks and a tick count
+ * is meaningless without the rate, so the rate crosses the system call
+ * boundary with it -- which makes it part of the ABI rather than one of
+ * the kernel's own numbers.
+ */
 
 /*
  * Ticks since boot. Written by the interrupt handler and read

@@ -50,6 +50,7 @@
  * ---------------------------------------------------------------------
  */
 #include "dev.h"
+#include "drivers.h"
 #include "errno.h"
 #include "sage040.h"
 
@@ -416,6 +417,13 @@ void smc91c111_init(void)
 {
     u16 rev;
     int i;
+
+    /* Is the chip fitted? An address with nothing behind it raises a
+     * bus error rather than reading back zeroes, so this has to be
+     * asked before the first register access, not by making one. */
+    if (!io_probe16((volatile void *)SMC_BASE)) {
+        return;
+    }
 
     /*
      * Probe in two steps.  The bank select register is visible from

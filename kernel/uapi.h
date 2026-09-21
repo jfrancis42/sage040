@@ -47,6 +47,40 @@
 #define FIONREAD      0x541B
 
 /*
+ * Where console output goes, and where its input comes from.
+ *
+ * Local to this system, and numbered in the 0x54F0 block to say so --
+ * Linux's own TIOC numbers stop well below it. There is no Linux
+ * equivalent because there is no Linux equivalent idea: its console is
+ * picked at boot with console= and listed in /proc/consoles, neither of
+ * which is something a program asks a descriptor about. This machine
+ * genuinely has a screen and a serial line at once, and a keyboard and
+ * a serial line at once, so something has to be able to ask -- and the
+ * terminal is the descriptor that has the answer.
+ *
+ * TIOCGCONS fills in one entry by index and returns -ENOENT past the
+ * end, so a caller walks it from 0 without asking how many there are.
+ */
+#define TIOCGCONS     0x54F0    /* struct console_info *, in and out  */
+#define TIOCSCONS     0x54F1    /* struct console_set *, in           */
+
+#define CONS_SINK     1         /* somewhere output goes              */
+#define CONS_SOURCE   2         /* somewhere input comes from         */
+
+struct console_info {
+    int  which;                 /* in:  CONS_SINK or CONS_SOURCE      */
+    int  index;                 /* in:  which one, from 0             */
+    int  enabled;               /* out: always 1 for a source, which
+                                 *      cannot be turned off          */
+    char name[16];              /* out                                */
+};
+
+struct console_set {
+    char name[16];
+    int  on;
+};
+
+/*
  * Terminal settings, Linux's numbers and Linux's structure.
  *
  * The reason these exist is that the line editor belongs in the shell,
@@ -299,6 +333,16 @@ struct job_info {
  */
 #define __NR_times      43
 #define __NR_nanosleep 162
+
+/*
+ * How many of those ticks there are in a second.
+ *
+ * Part of the ABI rather than a kernel constant, because times() returns
+ * ticks and a number of ticks means nothing without it. Linux answers
+ * the same question through sysconf(_SC_CLK_TCK); there is no sysconf
+ * here, so it is a number in the header a program already includes.
+ */
+#define HZ             100
 
 /* Standard descriptors, bound to the console at startup. */
 #define STDIN_FILENO   0
