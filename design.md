@@ -8,7 +8,7 @@ Implemented as a custom QEMU machine, `sage040`.
 
 - **[`programmer-guide.md`](programmer-guide.md)** — how to write code for it
 - [`qemu-patch/`](qemu-patch/) — the emulator, reproducible from pristine source
-- [`tests/`](tests/) — ten device tests, `make run`
+- [`tests/`](tests/) — eleven device tests, `make run`
 - [`cube/`](cube/) — a rotating wireframe cube; the first real program on the machine
 - [`toolchain.md`](toolchain.md) — the cross toolchain
 
@@ -307,8 +307,8 @@ BPB parsing, the FAT16 cluster chain with a one-sector FAT cache, and a root
 directory scan that skips deleted entries, long-name fragments, the volume
 label and subdirectories.
 
-**In the kernel** (`kernel/fs.c`), read *and* write over a real block layer
-(`kernel/ata.c`): open, read, write, seek, create, truncate, append, delete,
+**In the kernel** (`kernel/fs/fat16.c`), read *and* write over a real block
+layer (`kernel/drivers/ata.c`): open, read, write, seek, create, truncate, append, delete,
 rename, stat and a directory walk. Free-cluster allocation uses a rolling
 hint so a sequential write walks the table once instead of restarting from
 cluster 2 on every extension, and every FAT update is written to **both**
@@ -326,10 +326,10 @@ kernel can read would prove nothing.
   only at 8.3 names. Long-name entries the host wrote are skipped on a scan
   rather than misread, so a file created with one is still visible by its
   short name and is not damaged. Both are period-correct limitations.
-- **Timestamps.** There is no real-time clock on this machine, so every stamp
-  the kernel writes is a fixed date. A stamp that is wrong but constant is
-  better than one that is wrong and varies: it is obviously synthetic. An
-  MC146818 is the fix and is in the open items.
+- **Timestamps before the clock is set.** Stamps come from the M48T59, which
+  reads the host's clock under emulation and a dead battery's idea of the
+  time on hardware. If it does not answer, files get a fixed date — wrong
+  but constant, which reads as obviously synthetic.
 - **FAT12 and FAT32.** Refused at mount rather than misread as FAT16.
 - **Crash consistency.** Writes go out as they are made, with no journal and
   no clean-shutdown flag. Pulling the plug mid-write leaves what MS-DOS would
@@ -366,9 +366,10 @@ supervisor mode from its first instruction and never leaves it.
       +-----------+-----------+
    fs/fat16.c           dev.c    filesystem types, device registries
       |                   |
- struct blockdev     struct chardev / netdev / rtcdev
+ struct blockdev     chardev / netdev / rtcdev / timerdev / fbdev
       |                   |
- drivers/ata.c       drivers/ns16550.c  m48t59.c  smc91c111.c
+ drivers/ata.c       drivers/ns16550.c  m48t59.c  mfp.c  sm501.c
+                     drivers/smc91c111.c
 ```
 
 Three properties are worth stating because they are what the layering is

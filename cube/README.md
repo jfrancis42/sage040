@@ -25,7 +25,7 @@ job on a machine two decades younger.
 ![The cube, mid-tumble](docs/cube1.png)
 
 640×480, 8 bits per pixel, double buffered in the SM501's video memory,
-cleared by the SM501's 2D engine. 5,564 bytes.
+cleared by the SM501's 2D engine. 5,944 bytes of code.
 
 ## Running
 
@@ -68,7 +68,8 @@ is one C file plus a Makefile.
 
 1. **Clear** the back buffer — one Rectangle Fill command to the SM501's
    2D engine. Set `use_2d = 0` in `cube.c` to do it with CPU stores instead
-   and watch the frame rate fall by a factor of six.
+   and watch the frame rate fall — by about six times at host speed, and by
+   eleven at a period-correct 25 MHz. The table below has both.
 2. **Rotate the six face normals** through the current `ax`, `ay`, `az` and
    keep the sign of each rotated Z. That is the hidden-line test.
 3. **Rotate the eight vertices** `(±64, ±64, ±64)` through the same three
@@ -147,7 +148,9 @@ porting it was not the maths, which got easier, but the hardware around it.
   by far the most expensive thing in a frame — eight vertices and nine short
   lines are nothing beside it. The SM501's 2D engine does it as a single
   Rectangle Fill: seven register writes, and the CPU never touches the
-  framebuffer. Measured at **5.9x** the whole-frame rate.
+  framebuffer. Measured at **5.9x** the whole-frame rate at host speed, and
+  **11.3x** at the 25 MHz the Makefile actually defaults to — the slower
+  the CPU, the more the blitter is worth.
 
 ## Running it at period speed
 

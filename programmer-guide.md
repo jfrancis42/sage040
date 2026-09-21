@@ -26,12 +26,12 @@ There are two, and almost everything in this guide is about the first.
 **Bare metal.** Your code *is* the machine: loaded by `-kernel` or by the boot
 ROM, entered in supervisor mode with interrupts masked, and it owns every
 register in the tables below. The test suite, the boot ROM and `cube/` are all
-like this. Sections 1–15 are written for you.
+like this. Sections 1–14 are written for you.
 
 **A program.** The kernel is already running, owns the hardware, and you reach
 it through `trap #0`. You get file descriptors, a filesystem, a terminal, a
 framebuffer and a clock, and you touch no registers at all. `user/` is like
-this. **Section 16** is written for you, and the rest of this guide is then
+this. **Section 15** is written for you, and the rest of this guide is then
 background rather than instruction.
 
 The difference is not a matter of taste. A program that pokes a register still
@@ -82,7 +82,11 @@ a single-segment bare-metal image; silence with `-Wl,--no-warn-rwx-segments`.
 
 Serial 0 is the 16550 console; serial 1 is the MFP's USART.
 
-> **`-serial stdio` shows nothing.** Use `-serial file:` or `-serial mon:stdio`.
+> **Match the serial option to how you are driving it.** Interactively,
+> `-serial stdio` is fine. For a *scripted* session `-serial mon:stdio` does
+> not forward piped stdin at all — use
+> `-chardev stdio,id=con,signal=off -serial chardev:con`. For capture only,
+> `-serial file:`.
 
 > **`STOP` halts the CPU but not QEMU.** Scripts should watch the output for a
 > sentinel and kill QEMU, as `tests/runtest.sh` does.
@@ -174,6 +178,7 @@ its own vector — there is no autovector controller on this board.
 | GPIP5 | 7 | NS16550A UART | |
 | GPIP4 | 6 | ATA | also **TAI**, timer A event input |
 | GPIP3 | 3 | LAN91C111 | also **TBI**, timer B event input |
+| GPIP2 | 2 | M48T59 | alarm and watchdog |
 
 ### Channel priority (15 highest → 0 lowest)
 
@@ -634,9 +639,12 @@ SM501_WR(SM501_2D_STRETCH, SM501_2D_FMT_8BPP);          /* XY addressing */
 SM501_WR(SM501_2D_CONTROL, SM501_2D_START | SM501_2D_CMD_RECTFILL);
 ```
 
-Seven register writes instead of 76,800 CPU stores. In the cube demo this
-raised the whole-frame rate by **5.9x**, because the clear was almost the
-entire cost of a frame.
+Seven register writes instead of 76,800 CPU stores, and the clear is
+almost the entire cost of a frame. In the cube demo it raises the
+whole-frame rate by **5.9x at host speed and 11.3x at a period-correct
+25 MHz** — the slower the CPU, the more the blitter is worth, which is
+the opposite of how it is usually quoted. See §14 for why the
+period-speed figure is the meaningful one.
 
 Bits 19–16 of the stretch register must be zero; anything else selects linear
 rather than XY addressing, which is not modelled. The operation is synchronous
@@ -904,10 +912,15 @@ file named `CUBE.EXE` is still refused.
 ```
 0x00000000  kernel
 0x00100000  your image            <- USER_BASE, what user.ld links at
+0x002f0000  the loader refuses anything above here   <- USER_LIMIT
 0x002ffff0  your stack, growing down
 0x00300000  unused gap
 0x003ffff0  kernel supervisor stack
 ```
+
+`USER_LIMIT` is 64 KB below the stack top, which is why `user.ld` gives
+itself `2M - 64K`: a segment that reached the stack would be loaded on
+top of it.
 
 The kernel bounds-checks every `PT_LOAD` segment against that window
 before reading a byte of it. With no MMU that check is the only thing
@@ -962,6 +975,9 @@ never return:
 u32 n;
 ioctl(STDIN_FILENO, FIONREAD, (u32)&n);   /* n = 0 or 1 */
 ```
+
+`ulib.h` wraps that as `key_waiting()`, which is what `user/cube.c`
+actually calls.
 
 ### The framebuffer
 
@@ -1065,6 +1081,6 @@ Worked, tested code for every device is in [`tests/`](tests/) — `t6` for the
 interrupt chain, `t7`/`t8`/`t9` for the MFP, `t3` for ATA, `t4` for ethernet,
 `t5` for the MMU, `t10` for video, `t11` for the clock and its NVRAM.
 
-Driver versions of most of them are in [`kernel/drivers/`](kernel/), which is
+Driver versions of most of them are in [`kernel/drivers/`](kernel/drivers/), which is
 where to look for code that has to keep working rather than code that only has
 to pass once.

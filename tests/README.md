@@ -18,10 +18,12 @@ which is what `make run` counts.
 
 These are **bare metal**: no kernel underneath, supervisor mode, every
 register their own. That is the point of them — they establish what the
-hardware does, and the drivers in [`../kernel/drivers/`](../kernel/) are
-written against what they proved. `t3` became `ata.c`, `t4` became
-`smc91c111.c`, `t7`/`t8` became `mfp.c`, `t10` became `sm501.c` and `t11`
-became `m48t59.c`.
+hardware does, and the drivers in [`../kernel/drivers/`](../kernel/drivers/) are
+written against what they proved. `t2` became `ns16550.c`, `t3` became `ata.c`, `t4` became `smc91c111.c`,
+`t6`'s interrupt chain and `t7`/`t8` became `mfp.c`, `t10` became
+`sm501.c` and `t11` became `m48t59.c`. What is left without a driver is
+`t5` (the MMU, which is not a device) and `t9` (the MFP's USART, which
+nothing uses yet).
 
 The kernel has its own test, [`../kernel/fstest.sh`](../kernel/), which
 drives a console session and then checks the result with the host's own

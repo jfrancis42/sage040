@@ -5,8 +5,8 @@
  *
  * The build stamp lives here rather than in a header because __DATE__ and
  * __TIME__ are expanded separately in every translation unit that uses
- * them.  With the stamp in a macro, the banner and the shell's 'ver'
- * command reported build times a second apart -- true, useless, and
+ * them.  With the stamp in a macro, the banner and the shell's 'uname -a'
+ * reported build times a second apart -- true, useless, and
  * exactly the kind of detail that makes someone doubt the rest of the
  * output.
  */

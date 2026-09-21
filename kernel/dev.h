@@ -3,12 +3,15 @@
 /*
  * dev.h - the device model.
  *
- * Everything the kernel talks to is one of three kinds of device, and
- * each kind has exactly one interface that the layers above it use:
+ * Everything the kernel talks to is one of six kinds of device, and each
+ * kind has exactly one interface that the layers above it use:
  *
  *   struct chardev    a byte stream        -> the console, and the /dev names
  *   struct blockdev   addressable sectors  -> the disk a filesystem sits on
  *   struct netdev     packets              -> an ethernet interface
+ *   struct rtcdev     seconds since 1970   -> the battery-backed clock
+ *   struct timerdev   a periodic interrupt -> what makes time pass
+ *   struct fbdev      a display            -> point, line, rect, flip
  *
  * The point is that nothing above these structures names a chip. The
  * filesystem asks a `struct blockdev` for sector 2048; it does not know

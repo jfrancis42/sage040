@@ -19,9 +19,11 @@
  * bus that can be enumerated -- and that is the only place a part is
  * named at all.
  *
- * Interrupts stay masked throughout. Nothing yet needs them: the console
- * and the disk are both polled, and enabling them before there is a
- * handler worth running only creates ways to hang.
+ * Interrupts stay masked until the very end, and are then enabled by the
+ * last thing kmain() does before the shell. Up to that point a fault is
+ * reported by a handler with the console entirely to itself; an interrupt
+ * arriving in the middle of bringing a driver up would be a much harder
+ * thing to understand. The console and the disk are polled either way.
  */
 #include "kernel.h"
 #include "console.h"

@@ -15,7 +15,7 @@ KERNEL.ROM  43672 bytes, first cluster 2
 image SSP = 0x003FFFF0  PC = 0x00000400
 starting
 
-Sage040 kernel 0.1  (built Sep 21 2026 07:44:15)
+Sage040 kernel 0.3  (built Sep 21 2026 10:03:12)
 ...
 ```
 

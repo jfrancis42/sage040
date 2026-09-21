@@ -8,10 +8,10 @@
  * dev.h or anything under drivers/ -- those describe the inside of the
  * kernel and a program has no business seeing them.
  *
- * The one exception is a program that draws: there is no framebuffer
- * device yet, so cube.c includes the hardware header and pokes the SM501
- * directly. That is a gap in the kernel, not a design, and it is marked
- * as such where it happens.
+ * There are no exceptions. A program that draws opens /dev/fb0 and uses
+ * the FBIO_* ioctls like any other device; the hardware header is not on
+ * the include path at all, so reaching a chip would mean editing
+ * user/Makefile rather than adding an #include.
  */
 #ifndef ULIB_H
 #define ULIB_H

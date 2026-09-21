@@ -215,30 +215,6 @@ struct utsname {
     char version[32];
 };
 
-
-/* Standard descriptors, bound to the console at startup. */
-#define STDIN_FILENO   0
-#define STDOUT_FILENO  1
-#define STDERR_FILENO  2
-
-/*
- * nanosleep()'s argument. The kernel's tick is 10 ms, so anything finer
- * than that rounds up to one tick -- a sleep that returns early is a
- * bug waiting to happen and one tick late is nothing.
- */
-struct timespec {
-    u32 tv_sec;
-    u32 tv_nsec;
-};
-
-/* What uname() fills in. */
-struct utsname {
-    char sysname[16];
-    char release[16];
-    char machine[16];
-    char version[32];
-};
-
 /* reboot() commands, Linux's magic values cut down to what is useful. */
 #define RB_HALT_SYSTEM  0xcdef0123
 #define RB_AUTOBOOT     0x01234567

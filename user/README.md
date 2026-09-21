@@ -56,10 +56,15 @@ address anyway.
 ```
 0x00000000  kernel: vectors, text, data, bss
 0x00100000  program image                  <- USER_BASE
+0x002f0000  nothing may load above here    <- USER_LIMIT
 0x002ffff0  program stack, growing down
 0x00300000  unused gap
 0x003ffff0  kernel supervisor stack
 ```
+
+`USER_LIMIT` is 64 KB below the stack top, which is why `user.ld` gives
+itself `2M - 64K` rather than the whole space: a segment that reached the
+stack would be loaded on top of it.
 
 The kernel bounds-checks every segment against that window **before**
 reading a byte, because with no MMU turned on that check is the only
@@ -108,7 +113,9 @@ ABI — the numbers, the flags, `struct stat`. It does **not** get
 the inside of the kernel.
 
 `ulib.c` is the whole C library: the system call stubs, `strlen`,
-`memset`, `memcpy`, and enough output to be useful. The stubs are the
+`memset`, `memcpy`, enough output to be useful, `msleep()` on the kernel's
+tick, and `key_waiting()` — which asks the terminal whether a key is
+there without committing to a read that would block until one is. The stubs are the
 same four lines of assembly the kernel uses on its own behalf, because
 there is one way in and everything takes it.
 

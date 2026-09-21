@@ -116,9 +116,21 @@ int main(void)
         test_fail("a field is out of range - BCD conversion or wiring");
     }
 
-    /* --- and it should be running ---------------------------------- */
+    /*
+     * --- and it should be running -----------------------------------
+     *
+     * Waiting for the seconds register to change takes up to a full
+     * second of wall time, and the only thing bounding this loop is a
+     * count of MMIO reads. How long that count takes depends entirely on
+     * the host: 20 million reads is several seconds on a slow one and
+     * close to a single second on a fast one -- which made this check
+     * fail intermittently, on nothing but the host being quick.
+     *
+     * 200 million is far past any plausible second, and it only ever
+     * runs to the end when the clock has genuinely stopped.
+     */
     sec2 = sec;
-    for (spin = 0; spin < 20000000L; spin++) {
+    for (spin = 0; spin < 200000000L; spin++) {
         sec2 = bcd2bin(rd(RTC_SECONDS) & 0x7f);
         if (sec2 != sec) {
             break;

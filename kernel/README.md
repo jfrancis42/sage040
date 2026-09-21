@@ -74,7 +74,7 @@ takes. The disk image lives in the project root — see
         +-----------+-----------+
      fs/fat16.c           dev.c    filesystem types, device registries
         |                   |
-   struct blockdev     struct chardev / netdev / rtcdev
+   struct blockdev     chardev / netdev / rtcdev / timerdev / fbdev
         |                   |
    drivers/ata.c       drivers/ns16550.c  m48t59.c  mfp.c
                        sm501.c  smc91c111.c
@@ -121,8 +121,15 @@ fsync(118) uname(122) getdents(141) nanosleep(162) sync(166)
 spawn(400)
 ```
 
-`spawn` is above 400 because Linux has no such call — see below. Every
-other number is Linux's.
+Two are not Linux's. `spawn` is above 400 because Linux has no such call
+— see below. `sync` is 166 rather than Linux's 36, which would have
+collided with this table's own use of 36–38. Everything else is Linux's
+number exactly.
+
+`reboot()` takes `RB_HALT_SYSTEM` or `RB_AUTOBOOT` and both do the same
+thing: flush the filesystem and stop the CPU. There is no reset line to
+pull, and QEMU keeps running — a harness watching the serial output is
+what notices.
 
 Errors are Linux's too, by name and by number: `-ENOENT` is -2 here for
 the same reason it is -2 there. There is no global `errno` — a variable
@@ -191,7 +198,7 @@ See [`../user/`](../user/) for the programs themselves.
 
 ## Devices
 
-Four kinds, each with one interface (see [`dev.h`](dev.h)):
+Six kinds, each with one interface (see [`dev.h`](dev.h)):
 
 | | |
 |---|---|
@@ -349,9 +356,12 @@ reads are taken twice and repeated if the seconds moved, and the date is
 written day-first-as-1 so no intermediate state is a date that does not
 exist. Writing 29 February in the obvious order silently becomes 1 March.
 
-It also carries **8176 bytes of battery-backed NVRAM**, which is the only
-storage on this machine that survives a power cycle without going through
-the disk. Nothing uses it yet.
+It also carries **8176 bytes of battery-backed NVRAM**, the only storage
+on this machine that survives a power cycle without going through the
+disk. `nvram_read()` and `nvram_write()` in `drivers/rtc.h` reach it, and
+`rtc_present()` uses a byte of it as the chip's presence test — a dead bus
+reads as zeroes, and zeroes are a legal-looking BCD midnight. Nothing else
+uses it yet; boot settings are the obvious tenant.
 
 ## Testing it
 
@@ -406,7 +416,7 @@ rm FILE...           remove files
 stat FILE            size, mode and modification time
 df                   space used and available
 echo TEXT            print a line
-date [-s DATE TIME]  show or set the clock
+date [-s DATE [TIME]] show or set the clock
 uname [-a]           system name, or name and version
 uptime               how long the machine has been up
 sync                 flush pending writes
@@ -435,6 +445,7 @@ command. Errors go to descriptor 2 even when output is redirected.
 | `console.c` | how the kernel itself prints, without a descriptor |
 | `trap.c` | exception reporting |
 | `string.c` | `memcpy` and friends; there is no C library |
+| `errno.c` | error numbers as words, for every message the system prints |
 | `exec.c` | the ELF loader, and running a program |
 | `timer.c` | jiffies, and sleeping on them |
 | `fb.c` | /dev/fb0, and the drawing a driver did not do itself |

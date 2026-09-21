@@ -203,10 +203,18 @@ qemu-system-m68k -M sage040 -cpu m68040 -m 4 \
 
 Serial 0 is the 16550 console; serial 1 is the MFP's USART.
 
-Two things that will waste your time otherwise: **`-serial stdio` shows
-nothing** — use `-serial file:` or `-serial mon:stdio`. And **`STOP` halts the
-CPU but not QEMU**, so scripts should watch the output for a sentinel and kill
-it, as `tests/runtest.sh` does.
+Two things that will waste your time otherwise.
+
+**Choose the serial option to match how you are driving it.** Interactively
+in a terminal, `-serial stdio` is fine and `-serial mon:stdio` additionally
+gives you the monitor on ctrl-A c. For a *scripted* session, neither will
+do: `mon:stdio` does not forward piped stdin at all, so feed the guest with
+`-chardev stdio,id=con,signal=off -serial chardev:con`, and note that
+anything sent before the guest opens the port is discarded when it clears
+the UART's receive FIFO. For capture only, `-serial file:`.
+
+**`STOP` halts the CPU but not QEMU**, so scripts should watch the output
+for a sentinel and kill it, as `tests/runtest.sh` does.
 
 ### Running at period speed
 
@@ -324,8 +332,15 @@ From the top level:
 ```bash
 make            # boot ROM, kernel and programs
 make boot       # put them on the disk and boot the machine
+make run        # the kernel without the boot ROM in the way
+make programs   # just rebuild what is in user/ onto the disk
+make cube       # the bare-metal cube demo
 make test       # the device tests, then the kernel's own test
+make tests      # just the device tests
+make fstest     # just the kernel's test
 make disk-ls    # partition table and directory listing
+make disk-fsck  # check the filesystem with the host's tools
+make clean      # build artifacts, keeping the disk
 make distclean  # also remove the disk image
 ```
 
@@ -367,7 +382,7 @@ ordinary tools and no root:
 ```bash
 mcopy -i hd.img@@1M kernel.rom ::/KERNEL.ROM
 mdir  -i hd.img@@1M ::/
-fsck.fat -n /tmp/partition.img
+fsck.fat -n -v hd.img@@1M
 ```
 
 Replacing the kernel is a file copy, not a `dd` at a magic offset. Needs
@@ -423,13 +438,16 @@ call number in `d0`, arguments in `d1`–`d5`, result or a negated errno back
 in `d0` — and the numbers and error values are Linux's too, because
 `__NR_write` being 4 is a fact a lot of people already carry around.
 
-**Devices sit behind a driver model.** A character device, a block device, a
-network device and a clock each have exactly one interface, and nothing above
-them names a chip. The filesystem asks a `struct blockdev` for a sector and
+**Devices sit behind a driver model.** Six kinds — a character device, a
+block device, a network device, a clock, a periodic timer and a framebuffer
+— each with exactly one interface, and nothing above them names a chip. The filesystem asks a `struct blockdev` for a sector and
 has no idea an ATA taskfile answers; the shell writes to a descriptor and has
 no idea an NS16550A is on the other end. Swapping either is a new file in
 `kernel/drivers/` and one more line in `main.c` — which is the only file in
 the kernel that names a part at all.
+
+**There is a 100 Hz tick and a framebuffer.** The MC68901's timer D drives
+`nanosleep()`; the SM501 is `/dev/fb0` and draws through ioctls.
 
 **The shell is a program that happens to be linked in.** It includes
 `syscall.h` and nothing else from the kernel: not the VFS, not the device
