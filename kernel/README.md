@@ -887,4 +887,7 @@ command. Errors go to descriptor 2 even when output is redirected.
 | `edittest.sh` | the editor, history, ctrl-C, ctrl-Z, jobs and shutdown |
 | `vmtest.sh` | memory protection: what a program cannot touch, and that a bad pointer is an error |
 | `nettest.sh` | ARP, DHCP, ICMP and a TCP transfer bigger than the receive buffer |
+
+Every one of them writes to `scratch/` at the top of the tree, which
+`make clean` removes.
 | `kernel.ld` | vectors at 0, text at 0x400, stack at the top of RAM |

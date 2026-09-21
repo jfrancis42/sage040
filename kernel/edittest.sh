@@ -30,11 +30,21 @@ SAGE_QEMU=${SAGE_QEMU:-$HOME/m68k/sage040-qemu}
 QEMU=${QEMU:-$SAGE_QEMU/bin/qemu-system-m68k}
 [ -x "$QEMU" ] || QEMU=qemu-system-m68k
 
-DISK=hd-edit.img
+#
+# Everything this test writes goes in one place.
+#
+# Scratch disk images are 16 MB each and there is one per test suite, so
+# leaving them beside the source meant 67 MB of build product scattered
+# through the tree with names that looked like part of it. They are all
+# under scratch/ now, which `make clean` removes and git ignores.
+#
+SCRATCH=${SAGE_SCRATCH:-$(cd "$(dirname "$0")/.." && pwd)/scratch}
+mkdir -p "$SCRATCH"
+DISK="$SCRATCH/hd-edit.img"
 PART_LBA=2048
 OFFSET=$((PART_LBA * 512))
 MIMG="$DISK@@$OFFSET"
-LOG=edittest.log
+LOG="$SCRATCH/edittest.log"
 BOOT_WAIT=${BOOT_WAIT:-4}
 
 pass=0
@@ -89,7 +99,7 @@ mcopy -o -i "$MIMG" ../user/shutdown ::/SHUTDOWN
 #   \022 ctrl-R   \023 ctrl-S   \025 ctrl-U   \027 ctrl-W
 #   \032 ctrl-Z   \033 escape
 #
-: > session.tmp
+: > "$SCRATCH/session.tmp"
 {
     # --- ctrl-A: go to the start and type in front of what is there ---
     printf 'ok-ctrl-a\001echo \r'
@@ -185,10 +195,10 @@ mcopy -o -i "$MIMG" ../user/shutdown ::/SHUTDOWN
     # --- and the machine stops itself ---
     printf 'echo ok-about-to-shut-down\r'
     printf 'shutdown\r'
-} >> session.tmp
+} >> "$SCRATCH/session.tmp"
 
-rm -f in.fifo
-mkfifo in.fifo
+rm -f "$SCRATCH/in.fifo"
+mkfifo "$SCRATCH/in.fifo"
 
 #
 # No -no-reboot here would make `shutdown` restart the machine instead of
@@ -199,12 +209,12 @@ mkfifo in.fifo
     -drive file="$DISK",format=raw,if=ide \
     -display none -no-reboot \
     -chardev stdio,id=con,signal=off -serial chardev:con \
-    < in.fifo > "$LOG" 2>&1 &
+    < "$SCRATCH/in.fifo" > "$LOG" 2>&1 &
 qemu_pid=$!
 
-exec 3> in.fifo
+exec 3> "$SCRATCH/in.fifo"
 sleep "$BOOT_WAIT"
-cat session.tmp >&3
+cat "$SCRATCH/session.tmp" >&3
 
 #
 # The session contains sleeps, so it takes a while to feed. Wait for the
@@ -223,30 +233,30 @@ done
 exec 3>&-
 kill "$qemu_pid" 2>/dev/null
 wait "$qemu_pid" 2>/dev/null
-rm -f in.fifo
+rm -f "$SCRATCH/in.fifo"
 
 #
 # The terminal sends CR LF, so every line in the log ends with a stray
 # carriage return. Strip it once here rather than allowing for it in
 # twenty grep patterns.
 #
-tr -d '\r' < "$LOG" > clean.tmp
+tr -d '\r' < "$LOG" > "$SCRATCH/clean.tmp"
 
 echo "=== guest session ==="
-sed 's/^/  | /' clean.tmp
+sed 's/^/  | /' "$SCRATCH/clean.tmp"
 
 echo "=== checks: editing ==="
 
-contains clean.tmp "kernel ready."
+contains "$SCRATCH/clean.tmp" "kernel ready."
 check "kernel reached its shell" $?
 
-contains clean.tmp "ok-ctrl-a"
+contains "$SCRATCH/clean.tmp" "ok-ctrl-a"
 check "ctrl-A moved to the start of the line" $?
 
-contains clean.tmp "ok-ctrl-b-XXXX"
+contains "$SCRATCH/clean.tmp" "ok-ctrl-b-XXXX"
 check "ctrl-B moved left and inserted in the middle" $?
 
-contains clean.tmp "ok-ctrl-u"
+contains "$SCRATCH/clean.tmp" "ok-ctrl-u"
 check "ctrl-U discarded everything before the cursor" $?
 
 #
@@ -256,7 +266,7 @@ check "ctrl-U discarded everything before the cursor" $?
 # what `echo` then printed, which is a line of its own.
 #
 ran() {             # ran <exact output line>
-    grep -qx -- "$1" clean.tmp
+    grep -qx -- "$1" "$SCRATCH/clean.tmp"
 }
 
 ran "ok-ctrl-w"
@@ -276,62 +286,62 @@ check "Home and End moved to the ends of the line" $?
 
 echo "=== checks: history ==="
 
-test "$(grep -c -- 'ok-history-source' clean.tmp)" -ge 3
+test "$(grep -c -- 'ok-history-source' "$SCRATCH/clean.tmp")" -ge 3
 check "ctrl-P recalled the previous line and ran it again" $?
 
-contains clean.tmp "ok-hist-two"
+contains "$SCRATCH/clean.tmp" "ok-hist-two"
 check "ctrl-P walked back two lines and ctrl-N forward one" $?
 
-test "$(grep -c -- 'ok-needle-found' clean.tmp)" -ge 3
+test "$(grep -c -- 'ok-needle-found' "$SCRATCH/clean.tmp")" -ge 3
 check "ctrl-R found a line by substring and ran it" $?
 
-contains clean.tmp "reverse-i-search"
+contains "$SCRATCH/clean.tmp" "reverse-i-search"
 check "  and showed the search prompt while it did" $?
 
 echo "=== checks: ctrl-C ==="
 
-contains clean.tmp "ok-after-ctrl-c"
+contains "$SCRATCH/clean.tmp" "ok-after-ctrl-c"
 check "the shell carried on after ctrl-C" $?
 
 # Echoed as it was typed, then abandoned -- so the test is that `echo`
 # never printed it on a line of its own.
-! grep -qx -- "this must never run" clean.tmp
+! grep -qx -- "this must never run" "$SCRATCH/clean.tmp"
 check "the abandoned line was echoed but never run" $?
 
-grep -qF -- "^C" clean.tmp
+grep -qF -- "^C" "$SCRATCH/clean.tmp"
 check "  and the shell showed ^C the way a shell does" $?
 
-contains clean.tmp "ok-bare-spin-interrupted"
+contains "$SCRATCH/clean.tmp" "ok-bare-spin-interrupted"
 check "ctrl-C ended a program making NO system calls -- the timer noticed" $?
 
-contains clean.tmp "ok-calling-spin-interrupted"
+contains "$SCRATCH/clean.tmp" "ok-calling-spin-interrupted"
 check "ctrl-C ended one that was making them, at the boundary" $?
 
 echo "=== checks: jobs ==="
 
-contains clean.tmp "[1]+  stopped"
+contains "$SCRATCH/clean.tmp" "[1]+  stopped"
 check "ctrl-Z stopped the running program" $?
 
-contains clean.tmp "ok-stopped-and-listed"
+contains "$SCRATCH/clean.tmp" "ok-stopped-and-listed"
 check "the shell was usable while a job was stopped" $?
 
-contains clean.tmp "ok-resumed-then-killed"
+contains "$SCRATCH/clean.tmp" "ok-resumed-then-killed"
 check "fg resumed the stopped job and it was still killable" $?
 
 # A program resumed into a clobbered context dies on its own rather than
 # running until it is killed, so a fault here means fg is lying.
-! grep -q "exception" clean.tmp
+! grep -q "exception" "$SCRATCH/clean.tmp"
 check "  and nothing faulted doing it" $?
 
-contains clean.tmp "queued -- nothing runs in the background"
+contains "$SCRATCH/clean.tmp" "queued -- nothing runs in the background"
 check "& queued a job rather than pretending to run it" $?
 
-contains clean.tmp "argv[1] = queued-by-ampersand"
+contains "$SCRATCH/clean.tmp" "argv[1] = queued-by-ampersand"
 check "fg ran the job that & had queued" $?
 
 echo "=== checks: shutdown ==="
 
-contains clean.tmp "ok-about-to-shut-down"
+contains "$SCRATCH/clean.tmp" "ok-about-to-shut-down"
 check "the session got as far as shutdown" $?
 
 test "$exited" -eq 0

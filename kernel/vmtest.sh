@@ -28,11 +28,21 @@ SAGE_QEMU=${SAGE_QEMU:-$HOME/m68k/sage040-qemu}
 QEMU=${QEMU:-$SAGE_QEMU/bin/qemu-system-m68k}
 [ -x "$QEMU" ] || QEMU=qemu-system-m68k
 
-DISK=hd-vm.img
+#
+# Everything this test writes goes in one place.
+#
+# Scratch disk images are 16 MB each and there is one per test suite, so
+# leaving them beside the source meant 67 MB of build product scattered
+# through the tree with names that looked like part of it. They are all
+# under scratch/ now, which `make clean` removes and git ignores.
+#
+SCRATCH=${SAGE_SCRATCH:-$(cd "$(dirname "$0")/.." && pwd)/scratch}
+mkdir -p "$SCRATCH"
+DISK="$SCRATCH/hd-vm.img"
 PART_LBA=2048
 OFFSET=$((PART_LBA * 512))
 MIMG="$DISK@@$OFFSET"
-LOG=vmtest.log
+LOG="$SCRATCH/vmtest.log"
 BOOT_WAIT=${BOOT_WAIT:-4}
 
 pass=0
@@ -62,7 +72,7 @@ mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
 mcopy -o -i "$MIMG" ../user/faulter ::/FAULTER
 mcopy -o -i "$MIMG" ../user/hello ::/HELLO
 
-: > session.tmp
+: > "$SCRATCH/session.tmp"
 {
     printf 'faulter ok\r';       sleep 1
     printf 'faulter kernel\r';   sleep 1
@@ -75,22 +85,22 @@ mcopy -o -i "$MIMG" ../user/hello ::/HELLO
     # The machine is still usable after all of that.
     printf 'hello after-the-faults\r'; sleep 1
     printf 'echo SHELL-SURVIVED\r'
-} >> session.tmp
+} >> "$SCRATCH/session.tmp"
 
-rm -f in.fifo
-mkfifo in.fifo
+rm -f "$SCRATCH/in.fifo"
+mkfifo "$SCRATCH/in.fifo"
 
 "$QEMU" -M sage040 -cpu m68040 -m 4 \
     -kernel ../bootrom/bootrom.elf \
     -drive file="$DISK",format=raw,if=ide \
     -display none -no-reboot \
     -chardev stdio,id=con,signal=off -serial chardev:con \
-    < in.fifo > "$LOG" 2>&1 &
+    < "$SCRATCH/in.fifo" > "$LOG" 2>&1 &
 qemu_pid=$!
 
-exec 3> in.fifo
+exec 3> "$SCRATCH/in.fifo"
 sleep "$BOOT_WAIT"
-cat session.tmp >&3
+cat "$SCRATCH/session.tmp" >&3
 
 for _ in $(seq 1 200); do
     if grep -qF "SHELL-SURVIVED" "$LOG" 2>/dev/null; then break; fi
@@ -102,24 +112,24 @@ sleep 0.5
 exec 3>&-
 kill "$qemu_pid" 2>/dev/null
 wait "$qemu_pid" 2>/dev/null
-rm -f in.fifo
+rm -f "$SCRATCH/in.fifo"
 
-tr -d '\r' < "$LOG" > clean.tmp
+tr -d '\r' < "$LOG" > "$SCRATCH/clean.tmp"
 
 echo "=== guest session ==="
-sed 's/^/  | /' clean.tmp
+sed 's/^/  | /' "$SCRATCH/clean.tmp"
 
 echo "=== checks: the MMU is on ==="
 
-grep -q "mmu     : on," clean.tmp
+grep -q "mmu     : on," "$SCRATCH/clean.tmp"
 check "the kernel reports the MMU enabled" $?
 
-grep -q "kernel ready." clean.tmp
+grep -q "kernel ready." "$SCRATCH/clean.tmp"
 check "and the machine came all the way up with it on" $?
 
 echo "=== checks: a program can use its own memory ==="
 
-grep -qx "OWN-MEMORY-OK" clean.tmp
+grep -qx "OWN-MEMORY-OK" "$SCRATCH/clean.tmp"
 check "a program reads and writes its own memory" $?
 
 echo "=== checks: and nothing else ==="
@@ -127,7 +137,7 @@ echo "=== checks: and nothing else ==="
 # Every forbidden access must have faulted. If protection were off, the
 # program would print NOT-PROTECTED and carry on -- so the check is that
 # the string never appears anywhere.
-! grep -q "NOT-PROTECTED" clean.tmp
+! grep -q "NOT-PROTECTED" "$SCRATCH/clean.tmp"
 check "no forbidden access was allowed" $?
 
 for what in "00000400:the kernel's own text" \
@@ -138,27 +148,27 @@ for what in "00000400:the kernel's own text" \
             "40000000:an address in no map at all"; do
     addr=${what%%:*}
     desc=${what#*:}
-    grep -q "bus error at 0x$addr" clean.tmp
+    grep -q "bus error at 0x$addr" "$SCRATCH/clean.tmp"
     check "a program is refused $desc" $?
 done
 
-test "$(grep -c 'segmentation fault' clean.tmp)" -ge 6
+test "$(grep -c 'segmentation fault' "$SCRATCH/clean.tmp")" -ge 6
 check "each refusal killed the program, and the shell said why" $?
 
 echo "=== checks: a bad pointer to the kernel is an error, not a crash ==="
 
-grep -qx "BADPTR-ALL-REFUSED" clean.tmp
+grep -qx "BADPTR-ALL-REFUSED" "$SCRATCH/clean.tmp"
 check "write, open, uname and read all refused an unmapped pointer" $?
 
-test "$(grep -c '= 14$' clean.tmp)" -ge 4
+test "$(grep -c '= 14$' "$SCRATCH/clean.tmp")" -ge 4
 check "  and every one of them returned EFAULT" $?
 
 echo "=== checks: the machine is still standing ==="
 
-grep -q "argv\[1\] = after-the-faults" clean.tmp
+grep -q "argv\[1\] = after-the-faults" "$SCRATCH/clean.tmp"
 check "a program still runs after all of that" $?
 
-grep -qx "SHELL-SURVIVED" clean.tmp
+grep -qx "SHELL-SURVIVED" "$SCRATCH/clean.tmp"
 check "the shell survived every fault" $?
 
 echo

@@ -3,6 +3,12 @@
 *.bin
 *.o
 
+# Everything the test suites write: disk images, logs, fifos. One
+# directory rather than scattered through the tree, removed by
+# `make clean`. hd.img at the top level is deliberately NOT here -- it
+# is the machine's disk, not a build product, and it is ignored below.
+/scratch/
+
 # Emulator output captured during test runs
 *.out
 *.mon
@@ -38,12 +44,3 @@ user/fetch
 user/httpd
 
 # Scratch disk and log from kernel/fstest.sh
-kernel/hd-test.img
-kernel/fstest.log
-kernel/hd-edit.img
-kernel/edittest.log
-kernel/hd-vm.img
-kernel/vmtest.log
-kernel/hd-net.img
-kernel/nettest.log
-kernel/webroot.tmp/

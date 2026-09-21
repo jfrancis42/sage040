@@ -17,7 +17,17 @@ t="$1"
 SAGE_QEMU="$HOME/m68k/sage040-qemu/bin/qemu-system-m68k"
 [ -x "$SAGE_QEMU" ] || SAGE_QEMU=qemu-system-m68k
 QEMU="${QEMU:-$SAGE_QEMU}"
-out="$t.out"
+#
+# Everything this test writes goes in one place.
+#
+# Scratch disk images are 16 MB each and there is one per test suite, so
+# leaving them beside the source meant 67 MB of build product scattered
+# through the tree with names that looked like part of it. They are all
+# under scratch/ now, which `make clean` removes and git ignores.
+#
+SCRATCH=${SAGE_SCRATCH:-$(cd "$(dirname "$0")/.." && pwd)/scratch}
+mkdir -p "$SCRATCH"
+out="$SCRATCH/$t.out"
 rm -f "$out" "$t.usart"; : > "$out"
 
 # Known bytes for the MFP USART receiver to pick up.
@@ -27,20 +37,20 @@ printf 'RX!' > "$t.usartin"
 # writes nothing, which looks exactly like a guest that crashed before its
 # first character.  Create it here rather than relying on the Makefile, so
 # running this script by hand behaves the same way.
-[ -f disk.img ] || dd if=/dev/zero of=disk.img bs=1M count=8 status=none
+[ -f "$SCRATCH/disk.img" ] || dd if=/dev/zero of="$SCRATCH/disk.img" bs=1M count=8 status=none
 
 # A signature written by the host, so t3-ata can prove it reads the media
 # byte for byte rather than merely round-tripping its own writes.
-if [ -f disk.img ]; then
+if [ -f "$SCRATCH/disk.img" ]; then
     printf 'SAGE040-DISK-OK!' \
-        | dd of=disk.img bs=512 seek=2 conv=notrunc status=none 2>/dev/null || true
+        | dd of="$SCRATCH/disk.img" bs=512 seek=2 conv=notrunc status=none 2>/dev/null || true
 fi
 
 # A monitor socket, so a test that needs keystrokes can be typed at.
 # QEMU delivers no keyboard input with -display none -- there is no
 # window to take focus -- so `sendkey` on the monitor is the only way a
 # test can exercise the 8042 at all.
-mon="$t.mon"
+mon="$SCRATCH/$t.mon"
 rm -f "$mon"
 
 "$QEMU" -M sage040 -cpu m68040 -m 4 \
@@ -50,7 +60,7 @@ rm -f "$mon"
     -chardev "file,id=mfpusart,path=$t.usart,input-path=$t.usartin" \
     -serial chardev:mfpusart \
     -display none -no-reboot \
-    -drive file=disk.img,format=raw,if=ide \
+    -drive file="$SCRATCH/disk.img",format=raw,if=ide \
     -nic user,model=smc91c111 >/dev/null 2>&1 &
 pid=$!
 

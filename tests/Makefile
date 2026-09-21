@@ -35,7 +35,10 @@ TESTS  := t1-cpu t2-uart t3-ata t4-net t5-mmu t6-irq \
 ELFS   := $(addsuffix .elf,$(TESTS))
 COMMON := crt0.s uart.c mfp.c sage040.h sage040.ld
 
-DISK   := disk.img
+# The scratch image lives with every other test artefact, not beside the
+# source. runtest.sh derives the same path.
+SCRATCH := $(abspath ..)/scratch
+DISK   := $(SCRATCH)/disk.img
 
 .PHONY: all run clean $(addprefix run-,$(TESTS))
 
@@ -46,6 +49,7 @@ all: $(ELFS)
 	@$(SIZE) $@
 
 $(DISK):
+	@mkdir -p $(SCRATCH)
 	dd if=/dev/zero of=$(DISK) bs=1M count=8 status=none
 
 define RUNTEST

@@ -66,10 +66,12 @@ clean:
 	$(MAKE) -C cube clean
 	$(MAKE) -C user clean
 	$(MAKE) -C tests clean
-	rm -f kernel/hd-test.img kernel/fstest.log
-	rm -f kernel/hd-edit.img kernel/edittest.log kernel/clean.tmp
-	rm -f kernel/hd-vm.img kernel/vmtest.log
-	rm -f kernel/hd-net.img kernel/nettest.log
-	rm -rf kernel/webroot.tmp
+	#
+	# Everything the test suites write lives in scratch/ -- the disk
+	# images most of all, which are 16 MB each and used to sit beside
+	# the source with names that looked like part of it. hd.img is NOT
+	# in there: that is the machine's own disk, not a build product.
+	#
+	rm -rf scratch
 
 distclean: clean disk-clean
