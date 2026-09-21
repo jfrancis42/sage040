@@ -25,39 +25,6 @@
 #include "kernel.h"
 #include "uapi.h"
 
-#define __NR_exit        1
-#define __NR_read        3
-#define __NR_write       4
-#define __NR_open        5
-#define __NR_close       6
-#define __NR_unlink     10
-#define __NR_time       13
-#define __NR_lseek      19
-#define __NR_stime      25
-#define __NR_rename     38
-#define __NR_ioctl      54
-#define __NR_reboot     88
-#define __NR_statfs     99
-#define __NR_stat      106
-#define __NR_fsync     118
-#define __NR_uname     122
-#define __NR_getdents  141
-#define __NR_sync      166      /* Linux has 36; 166 keeps it clear of
-                                 * this table's own use of 36..38      */
-
-/* Standard descriptors, bound to the console at startup. */
-#define STDIN_FILENO   0
-#define STDOUT_FILENO  1
-#define STDERR_FILENO  2
-
-/* What uname() fills in. */
-struct utsname {
-    char sysname[16];
-    char release[16];
-    char machine[16];
-    char version[32];
-};
-
 /* The dispatcher, called from _trap0_entry in start.s. */
 s32 syscall_dispatch(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5);
 
@@ -86,12 +53,11 @@ int  sys_statfs(void *sfs);
 int  sys_fsync(int fd);
 int  sys_sync(void);
 int  sys_uname(struct utsname *u);
+int  sys_ioctl(int fd, u32 request, u32 arg);
+int  sys_spawn(const char *path, int argc, char **argv);
+void sys_exit(int status);
 time_t sys_time(time_t *t);
 int  sys_stime(const time_t *t);
 void sys_reboot(int cmd) __attribute__((noreturn));
-
-/* reboot() commands, Linux's magic values cut down to what is useful. */
-#define RB_HALT_SYSTEM  0xcdef0123
-#define RB_AUTOBOOT     0x01234567
 
 #endif /* SYSCALL_H */

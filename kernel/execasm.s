@@ -1,0 +1,70 @@
+| SPDX-License-Identifier: GPL-3.0-or-later
+| Copyright (C) 2026 Jeff Francis
+|
+| execasm.s - switch to a program's stack, call it, and come back.
+|
+|   int exec_call(u32 entry, u32 stack_top, int argc, char **argv);
+|
+| Returns whatever the program's entry point returned, or whatever it
+| passed to exit().
+|
+| Two things are going on here.
+|
+| The first is an ordinary stack switch: the program gets its own stack
+| rather than growing down through the kernel's, so a program that
+| recurses too far runs into empty space instead of into the kernel.
+|
+| The second is the unwind. A program that calls exit() is several frames
+| deep inside itself and inside a trap handler, and none of that can be
+| returned through normally. exec_unwind() throws all of it away: it
+| restores the stack pointer saved on the way in and returns from
+| exec_call as though the program had simply returned. That is a longjmp
+| in everything but name.
+|
+| Note where the trap frame lands. The program runs in supervisor mode --
+| there is no user mode yet -- so its stack IS the supervisor stack, and a
+| `trap #0` from the program pushes its exception frame there. Abandoning
+| that frame is safe precisely because the whole stack is being discarded.
+|
+| One program at a time. exec.c refuses a nested spawn, because there is
+| one saved context here and a second would overwrite it.
+
+        .text
+
+        .globl  exec_call
+        .type   exec_call,@function
+exec_call:
+        movem.l %d2-%d7/%a2-%a6,-(%sp)  | 11 registers, 44 bytes
+        move.l  %sp,exec_ksp            | the point to come back to
+
+        move.l  44+4(%sp),%a0           | entry
+        move.l  44+8(%sp),%a1           | stack_top
+        move.l  44+12(%sp),%d1          | argc
+        move.l  44+16(%sp),%d2          | argv
+
+        movea.l %a1,%sp                 | the program's stack from here on
+        move.l  %d2,-(%sp)              | argv
+        move.l  %d1,-(%sp)              | argc
+        jsr     (%a0)                   | into the program
+        | d0 holds its return value; fall through.
+
+        .globl  exec_unwind
+        .type   exec_unwind,@function
+exec_unwind:
+        movea.l exec_ksp,%sp
+        movem.l (%sp)+,%d2-%d7/%a2-%a6
+        rts
+
+|
+| void exec_longjmp(int status) - used by exit(). Never returns.
+|
+        .globl  exec_longjmp
+        .type   exec_longjmp,@function
+exec_longjmp:
+        move.l  4(%sp),%d0
+        bra     exec_unwind
+
+        .bss
+        .align  4
+exec_ksp:
+        .space  4

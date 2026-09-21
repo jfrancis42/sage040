@@ -22,6 +22,7 @@
 #define EIO              5      /* I/O error                          */
 #define ENXIO            6      /* no such device or address          */
 #define E2BIG            7      /* argument list too long             */
+#define ENOEXEC          8      /* exec format error                  */
 #define EBADF            9      /* bad file descriptor                */
 #define ENOMEM          12      /* out of memory                      */
 #define EACCES          13      /* permission denied                  */

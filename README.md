@@ -283,7 +283,8 @@ The short version of the gotchas:
 | `tests/` | eleven bare-metal device tests, `make run` |
 | `cube/` | a rotating wireframe cube — the first real program |
 | `bootrom/` | a boot ROM that finds `KERNEL.ROM` on the disk and runs it |
-| `kernel/` | the kernel: console, system call gate, disk driver, FAT16, shell |
+| `kernel/` | the kernel: system calls, drivers, VFS, FAT16, shell |
+| `user/` | programs that run on it — the cube, and a hello |
 | `disk.mk` | the machine's hard disk, shared by everything that touches it |
 | `boot/` | a 78-byte proof-of-life kernel, for checking the toolchain before building the emulator (runs on stock QEMU's `virt`, not Sage040) |
 
@@ -407,6 +408,29 @@ layer, not the console. It cannot reach a chip even by accident, so "programs
 will run unprivileged later" stays a true statement rather than becoming a
 plan.
 
+**And it runs programs off the disk.** Anything the shell does not recognise
+is looked up, loaded and run:
+
+```
+sage$ hello one two
+hello from a program
+  running on Sage040 0.2 (m68040)
+  argc = 3
+sage$ cube
+cube: rotating wireframe, 640x480, Q12 fixed point
+measuring how fast this machine is... 50 fps wanted, 839140 spins per frame
+press any key to stop
+```
+
+Programs are ordinary ELF32 executables — the toolchain's own output, no
+flattening step — and they carry **no extension**. That follows from how
+executability is decided: Linux uses a permission bit and a FAT16 volume has
+none, so the only thing left to consult is the file itself. The kernel reads
+the first four bytes. `CUBE`, not `CUBE.EXE`, and a text file named
+`CUBE.EXE` would still be refused.
+
+See [`user/README.md`](user/README.md).
+
 The filesystem is read **and** write. Because the volume is a genuine MS-DOS
 one, the host can drop a file on it and the kernel reads it, and anything the
 kernel writes comes back off the image afterwards without the kernel running.
@@ -434,9 +458,11 @@ is the beginning of an operating system rather than a port of one. Bare metal
 still works and is still the point: the test suite and the cube run with no
 kernel underneath them at all.
 
-What is not there yet: preemption, processes and a TCP/IP stack. The
-ethernet driver exists and registers `eth0`, but nothing above it sends a
-packet. `design.md` tracks what is decided and what is not.
+What is not there yet: preemption, more than one program at a time, user
+mode, and a TCP/IP stack. The ethernet driver exists and registers `eth0`,
+but nothing above it sends a packet yet, and the cube still writes to the
+SM501 directly because a display fits none of the device classes so far.
+`design.md` tracks what is decided and what is not.
 
 ---
 

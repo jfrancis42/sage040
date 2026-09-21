@@ -34,6 +34,13 @@
 #define O_TRUNC       0x0200
 #define O_APPEND      0x0400
 
+/*
+ * ioctl requests. FIONREAD is Linux's, with Linux's number, and it is
+ * the one a program needs to ask "has a key been pressed" without
+ * blocking on a read that may never return.
+ */
+#define FIONREAD      0x541B
+
 /* lseek() origins */
 #define SEEK_SET      0
 #define SEEK_CUR      1
@@ -73,5 +80,75 @@ struct statfs {
     char f_label[12];
     const char *f_type;         /* "fat16"                            */
 };
+
+/* ---------------------------------------------------------------- */
+/* System call numbers                                               */
+/*                                                                    */
+/* Part of the ABI, so they live here rather than in the kernel's own */
+/* header: a program needs them and needs nothing else from it.       */
+/* ---------------------------------------------------------------- */
+
+#define __NR_exit        1
+#define __NR_read        3
+#define __NR_write       4
+#define __NR_open        5
+#define __NR_close       6
+#define __NR_unlink     10
+#define __NR_time       13
+#define __NR_lseek      19
+#define __NR_stime      25
+#define __NR_rename     38
+#define __NR_ioctl      54
+#define __NR_reboot     88
+#define __NR_statfs     99
+#define __NR_stat      106
+#define __NR_fsync     118
+#define __NR_uname     122
+#define __NR_getdents  141
+#define __NR_sync      166      /* Linux has 36; 166 keeps it clear of
+                                 * this table's own use of 36..38      */
+
+/*
+ * Above 400 are calls Linux does not have, numbered well clear of it so
+ * that nothing here can be mistaken for the real thing.
+ *
+ * spawn() is not execve(). execve replaces the calling process, and
+ * there are no processes here to replace: this loads a program, runs it,
+ * and returns its exit status. When there are processes it becomes
+ * fork + execve + waitpid, the caller keeps the same shape, and this
+ * number goes away.
+ */
+#define __NR_spawn     400
+
+/* Standard descriptors, bound to the console at startup. */
+#define STDIN_FILENO   0
+#define STDOUT_FILENO  1
+#define STDERR_FILENO  2
+
+/* What uname() fills in. */
+struct utsname {
+    char sysname[16];
+    char release[16];
+    char machine[16];
+    char version[32];
+};
+
+
+/* Standard descriptors, bound to the console at startup. */
+#define STDIN_FILENO   0
+#define STDOUT_FILENO  1
+#define STDERR_FILENO  2
+
+/* What uname() fills in. */
+struct utsname {
+    char sysname[16];
+    char release[16];
+    char machine[16];
+    char version[32];
+};
+
+/* reboot() commands, Linux's magic values cut down to what is useful. */
+#define RB_HALT_SYSTEM  0xcdef0123
+#define RB_AUTOBOOT     0x01234567
 
 #endif /* UAPI_H */

@@ -268,6 +268,10 @@ static void cmd_help(void)
         "sync                 flush pending writes to the disk\n"
         "halt                 stop the machine\n"
         "\n"
+        "Anything else is looked up as a program on the disk and run --\n"
+        "`cube` runs CUBE. Programs have no extension: the kernel decides\n"
+        "what is executable by looking at the file, not at its name.\n"
+        "\n"
         "> FILE and >> FILE redirect output, so `cat > notes.txt` writes\n"
         "a file and `echo more >> notes.txt` adds to it.\n");
 }
@@ -825,8 +829,56 @@ void shell(void)
             sys_reboot(RB_HALT_SYSTEM);
 
         } else {
-            err_puts(argv[0]);
-            err_puts(": command not found\n");
+            /*
+             * Not a builtin, so look for a program of that name. This is
+             * where a real shell would walk $PATH; there is one directory
+             * on this volume, so the name is the path.
+             */
+            int status;
+
+            out_flush();
+            status = sys_spawn(argv[0], argc, argv);
+
+            if (status == -ENOENT || status == -EINVAL) {
+                /*
+                 * EINVAL here means the name could not be a file on this
+                 * volume at all -- more than eight characters before the
+                 * dot, say. From a shell's point of view that is still
+                 * just a command that does not exist, and saying
+                 * "invalid argument" would send someone looking for an
+                 * argument they did not give.
+                 */
+                err_puts(argv[0]);
+                err_puts(": command not found\n");
+            } else if (status == -ENOEXEC) {
+                err_puts(argv[0]);
+                err_puts(": not an executable\n");
+            } else if (status < 0) {
+                err_report(argv[0], status);
+            } else if (status != 0) {
+                /* Report a non-zero exit the way a shell does when asked:
+                 * quietly enough not to be noise, loudly enough to see. */
+                err_puts(argv[0]);
+                err_puts(": exited ");
+                {
+                    char n[12];
+                    int i = 0, v = status;
+
+                    if (v == 0) {
+                        n[i++] = '0';
+                    }
+                    while (v > 0) {
+                        n[i++] = (char)('0' + v % 10);
+                        v /= 10;
+                    }
+                    while (i > 0) {
+                        char c = n[--i];
+
+                        sys_write(STDERR_FILENO, &c, 1);
+                    }
+                }
+                err_puts("\n");
+            }
         }
 
         redirect_end();

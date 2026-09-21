@@ -49,6 +49,7 @@ contains() {        # contains <file> <text>
 echo "=== building ==="
 make -s kernel.rom || exit 1
 make -s -C ../bootrom bootrom.elf || exit 1
+make -s -C ../user hello || exit 1
 
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
@@ -70,6 +71,11 @@ for i in $(seq 1 200); do
     printf 'line %03d 0123456789abcdefghijklmnopqrstuvwxyz\n' "$i" >> big.tmp
 done
 mcopy -o -i "$MIMG" big.tmp ::/BIG.TXT
+
+# A program, to check that the ELF loader runs one and that its exit
+# status comes back. No extension: the kernel decides what is executable
+# from the file's first four bytes, not from its name.
+mcopy -o -i "$MIMG" ../user/hello ::/HELLO
 
 echo "=== running the kernel ==="
 printf '%s\n' \
@@ -94,6 +100,10 @@ printf '%s\n' \
   'echo replaced > GUEST.TXT' \
   'cat GUEST.TXT' \
   'cat /dev/../nope' \
+  'hello one two' \
+  'hello -x' \
+  'nosuchprogram' \
+  'BIG.TXT' \
   'date -s 2001-02-03 04:05:06' \
   'date' \
   'sync' \
@@ -161,6 +171,21 @@ check "uname reported the kernel version" $?
 
 contains "$LOG" "no such device"
 check "a path under /dev that is not a device is refused" $?
+
+contains "$LOG" "hello from a program"
+check "a program was loaded from the disk and run" $?
+
+contains "$LOG" "argv[2] = two"
+check "argv reached the program intact" $?
+
+contains "$LOG" "hello: exited 1"
+check "a non-zero exit status came back to the shell" $?
+
+contains "$LOG" "nosuchprogram: command not found"
+check "a missing program is reported as not found" $?
+
+contains "$LOG" "BIG.TXT: not an executable"
+check "a data file is refused as a program, by its contents" $?
 
 contains "$LOG" "exception"
 check "no exception was taken" $((1 - $?))

@@ -142,7 +142,8 @@ MC146818 — see §1.
 Every device has a bare-metal test that exercises the real hardware path.
 `make run` in `tests/`: **11 programs, all passing.** The kernel adds a
 twelfth, `kernel/fstest.sh`, which drives a console session and then checks
-the result with the host's own `mdir`, `mtype` and `fsck.fat` — 16 checks.
+the result with the host's own `mdir`, `mtype` and `fsck.fat` — 21 checks,
+including loading and running a program from the disk.
 
 | Test | Checks | What it proves |
 |---|---|---|
@@ -172,6 +173,7 @@ the result with the host's own `mdir`, `mtype` and `fsck.fat` — 16 checks.
 | Kernel (§10) — VFS, device model, drivers, FAT16 read/write, shell | ✅ done — `kernel/` |
 | System calls — Linux/m68k convention, Linux numbers and errnos | ✅ done, no user programs to use them yet |
 | Clock — M48T59, `time()`/`stime()`, file timestamps | ✅ done |
+| Programs (§10) — ELF loader, `spawn`, argv, exit status | ✅ done — `user/` |
 | Ethernet driver — `struct netdev`, registered as `eth0` | ✅ written, only the probe is exercised |
 | Timer + preemption, processes, virtual memory | unblocked — ordinary OS work now |
 | TCP/IP (§8), framebuffer console | not started |
@@ -458,31 +460,34 @@ memory probe walking off the end of RAM, faulting address in `a0`.
 
 ## 11. Open items
 
-1. **Lift the remaining test code into drivers.** `t3` became
+1. **A framebuffer device.** The most visible gap now that programs exist:
+   `user/cube.c` includes the machine's hardware header and writes to the
+   SM501 directly, because a display fits none of the classes in `dev.h`. It
+   needs one — and then the cube stops reaching around the kernel, which is
+   the last thing in `user/` that does.
+2. **Lift the remaining test code into drivers.** `t3` became
    `kernel/drivers/ata.c` and `t4` became `drivers/smc91c111.c`. `t7`–`t11`
-   are still proven working code living in tests; the MFP and the SM501 want
-   turning into drivers with real interfaces, and the SM501 needs a device
-   class of its own — a framebuffer is neither a character stream nor a
-   block device.
-2. **Pick a scheduler tick.** Timer C or D at /200 with a reload near 123 gives
+   are still proven working code living in tests; the MFP wants turning into
+   a driver with a real interface.
+3. **Pick a scheduler tick.** Timer C or D at /200 with a reload near 123 gives
    ~10 ms. Note the livelock bound documented in the programmer's guide: a tick
    faster than the handler starves the foreground.
-3. **An interrupt-driven console.** The UART's IRQ already reaches MFP channel
+4. **An interrupt-driven console.** The UART's IRQ already reaches MFP channel
    7 and `t6` proves the whole path. `kgetc()` takes from a ring buffer instead
    of the line status register and nothing above it moves.
-4. **Pick a TCP/IP stack** (§8). lwIP is the recommendation; nothing blocks it
+5. **Pick a TCP/IP stack** (§8). lwIP is the recommendation; nothing blocks it
    now that the NIC is proven.
-5. **Use the ethernet driver.** `drivers/smc91c111.c` implements
+6. **Use the ethernet driver.** `drivers/smc91c111.c` implements
    `struct netdev` — up, down, send, receive — but only its probe runs at
    startup. Nothing transmits or receives a packet until there is a stack
    above it (§8), so the send and receive paths are written and unexercised.
    A test that does an ARP round trip through the driver, as `t4-net` does
    from bare metal, is the cheap way to close that.
-6. **Use the NVRAM.** 8176 bytes that survive a power cycle, with nothing in
+7. **Use the NVRAM.** 8176 bytes that survive a power cycle, with nothing in
    them. Boot settings are the obvious tenant, and it wants a checksum and a
    small structure rather than raw offsets.
-7. **Consider upstreaming** the `sm501.c` build fix and the IACK callback.
-8. **Hardware.** Nothing in the design needs a bus that cannot be wired by hand:
+8. **Consider upstreaming** the `sm501.c` build fix and the IACK callback.
+9. **Hardware.** Nothing in the design needs a bus that cannot be wired by hand:
    a 68040, an MFP, and six memory-mapped peripherals.
 
 ---
@@ -494,8 +499,9 @@ memory probe walking off the end of RAM, faulting address in `a0`.
 2. **An interrupt-driven console** — `t6` has all the pieces; turning the polled
    `kernel/console.c` into a buffered interrupt-driven one is the natural first
    use of the interrupt path.
-3. **Then processes** — the `TRAP #0` gate and the supervisor/user split are in
-   place; what is left is loading a program somewhere other than address 0,
-   giving it a user stack, entering user mode with an `RTE`, and validating the
-   pointers it hands across the gate. The MMU is available when isolation is
-   wanted rather than merely privilege.
+3. **Then processes.** Most of the way there already: programs load at their
+   own address, run on their own stack, take arguments and return an exit
+   status. What is left is entering **user mode** with an `RTE` instead of a
+   `jsr`, validating the pointers that then arrive across the gate, and a
+   scheduler to have more than one at a time. The MMU is available when
+   isolation is wanted rather than merely privilege.

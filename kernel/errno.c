@@ -22,6 +22,7 @@ const char *strerror(int err)
     case EIO:             return "input/output error";
     case ENXIO:           return "no such device or address";
     case E2BIG:           return "argument list too long";
+    case ENOEXEC:         return "exec format error";
     case EBADF:           return "bad file descriptor";
     case ENOMEM:          return "cannot allocate memory";
     case EACCES:          return "permission denied";

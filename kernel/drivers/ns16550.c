@@ -153,14 +153,27 @@ static s32 tty_read(struct file *f, void *buf, u32 len)
 static int tty_ioctl(struct file *f, u32 request, u32 arg)
 {
     (void)f;
-    (void)request;
-    (void)arg;
-    /*
-     * Nothing to configure yet. It returns -ENOTTY rather than 0 so that
-     * a caller testing whether this is a terminal gets a truthful answer
-     * once there is something to answer with.
-     */
-    return -ENOTTY;
+
+    switch (request) {
+    case FIONREAD:
+        /*
+         * How many bytes could be read without blocking. Nothing is
+         * buffered here, so the honest answer is 1 if the receiver holds
+         * a character and 0 if it does not -- there may be more behind it
+         * in the chip's FIFO, and this does not claim otherwise.
+         *
+         * It exists so a program can ask "has a key been pressed" without
+         * committing to a read that would block until one is. That is the
+         * whole reason the cube can be stopped.
+         */
+        if (arg) {
+            *(u32 *)arg = rx_ready() ? 1 : 0;
+        }
+        return 0;
+
+    default:
+        return -ENOTTY;
+    }
 }
 
 static int tty_close(struct file *f)

@@ -23,6 +23,12 @@ bootrom/payload.bin
 kernel/kernel.rom
 kernel/kernel.map
 
+# Built programs. They have no extension on purpose -- the kernel decides
+# what is executable by reading the file, not its name -- so they have to
+# be named here one by one rather than matched by a suffix.
+user/cube
+user/hello
+
 # Scratch disk and log from kernel/fstest.sh
 kernel/hd-test.img
 kernel/fstest.log

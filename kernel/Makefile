@@ -48,19 +48,19 @@ LDFLAGS  := $(CPUFLAGS) -ffreestanding -nostdlib -T kernel.ld \
 # the first group names a chip; everything in the second does, and only
 # there.
 SRCS := main.c version.c console.c trap.c syscall.c vfs.c dev.c \
-        time.c errno.c string.c probe.c shell.c \
+        time.c errno.c string.c exec.c probe.c shell.c \
         drivers/ns16550.c drivers/ata.c drivers/m48t59.c \
         drivers/smc91c111.c \
         fs/fat16.c
 
-HDRS := kernel.h uapi.h dev.h vfs.h syscall.h console.h errno.h \
+HDRS := kernel.h uapi.h dev.h vfs.h syscall.h console.h errno.h exec.h \
         time.h string.h drivers/drivers.h drivers/rtc.h $(SUP)/sage040.h
 
 .PHONY: all run install boot disasm syms clean distclean
 
 all: kernel.rom
 
-ASMS := start.s memprobe.s
+ASMS := start.s memprobe.s execasm.s
 
 kernel.elf: $(ASMS) $(SRCS) $(HDRS) kernel.ld
 	$(CC) $(CFLAGS) $(LDFLAGS) \

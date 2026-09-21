@@ -18,6 +18,7 @@
  */
 #include "syscall.h"
 #include "vfs.h"
+#include "exec.h"
 #include "dev.h"
 #include "errno.h"
 #include "string.h"
@@ -190,10 +191,14 @@ s32 syscall_dispatch(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
         do_reboot((int)a1);
         return 0;               /* not reached */
 
+    case __NR_spawn:
+        return exec_spawn((const char *)a1, (int)a2, (char **)a3);
+
     case __NR_exit:
-        /* With no processes there is nothing to exit from, and pretending
-         * otherwise would hide that. */
-        return -ENOSYS;
+        /* Returns only if nothing was spawned -- a program's exit()
+         * unwinds all the way back into exec_spawn() and never comes
+         * back here. */
+        return exec_exit((int)a1);
 
     default:
         return -ENOSYS;
@@ -267,6 +272,21 @@ int sys_sync(void)
 int sys_uname(struct utsname *u)
 {
     return (int)syscall1(__NR_uname, (u32)u);
+}
+
+int sys_ioctl(int fd, u32 request, u32 arg)
+{
+    return (int)syscall3(__NR_ioctl, (u32)fd, request, arg);
+}
+
+int sys_spawn(const char *path, int argc, char **argv)
+{
+    return (int)syscall3(__NR_spawn, (u32)path, (u32)argc, (u32)argv);
+}
+
+void sys_exit(int status)
+{
+    syscall1(__NR_exit, (u32)status);
 }
 
 time_t sys_time(time_t *t)

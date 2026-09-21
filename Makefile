@@ -7,7 +7,7 @@
 # common things.
 #
 #   make            build the boot ROM and the kernel
-#   make boot       put the kernel on the disk and boot the machine
+#   make boot       put the kernel and programs on the disk, and boot
 #   make test       device tests, then the kernel filesystem test
 #   make disk       create the disk image if it is not there
 #   make disk-ls    partition table and directory listing
@@ -20,16 +20,21 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: all boot run test tests fstest cube clean distclean
+.PHONY: all boot run test tests fstest cube programs clean distclean
 
 all:
 	$(MAKE) -C bootrom
 	$(MAKE) -C kernel
+	$(MAKE) -C user
 
 # The machine as it is meant to run: the ROM loads KERNEL.ROM off the
 # filesystem and jumps to it.
-boot:
+boot: programs
 	$(MAKE) -C kernel boot
+
+# The programs that live on the disk alongside the kernel.
+programs:
+	$(MAKE) -C user install
 
 # The kernel without the boot ROM in the way. Same kernel, quicker loop.
 run:
@@ -50,6 +55,7 @@ clean:
 	$(MAKE) -C bootrom clean
 	$(MAKE) -C kernel clean
 	$(MAKE) -C cube clean
+	$(MAKE) -C user clean
 	$(MAKE) -C tests clean
 	rm -f kernel/hd-test.img kernel/fstest.log
 

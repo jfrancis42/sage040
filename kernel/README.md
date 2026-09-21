@@ -134,6 +134,48 @@ the function that will have to validate and copy them when that stops
 being true. The MMU is not turned on, so there is no address space to
 separate yet.
 
+## Running programs
+
+Anything the shell does not recognise is looked up on the disk and run:
+
+```
+sage$ hello one two
+hello from a program
+  running on Sage040 0.2 (m68040)
+  argc = 3
+sage$ BIG.TXT
+BIG.TXT: not an executable
+```
+
+Programs are **ELF32, big-endian, EM_68K**, statically linked at 1 MB --
+the toolchain's own output, so there is no flattening step and no private
+format. `exec.c` reads the program headers, loads each `PT_LOAD` segment
+at its `p_vaddr` and zeroes the part the file did not supply.
+
+**They carry no extension**, and that follows from how executability is
+decided. Linux uses a permission bit; a FAT16 volume has none to consult,
+so the only thing left is the file itself. The first four bytes say
+whether it is a program, which is what Unix has always done. An extension
+would be decoration that could lie.
+
+The kernel bounds-checks every segment against the program's window
+before reading a byte. With no MMU that check is the only thing between a
+mislinked program and the kernel's own memory.
+
+`spawn()` is **not** `execve()`. `execve` replaces the calling process,
+and there are no processes to replace: this loads, runs, and returns the
+exit status. When there are processes it becomes fork + execve + waitpid
+and this call goes away. Naming it `execve` now would cost nothing today
+and mislead later.
+
+A program leaves through `exit()`, which unwinds out of however many
+frames deep it was, out of the trap it called from, and back into
+`exec_spawn` as though it had returned — a longjmp in everything but
+name, in `execasm.s`. One program at a time, because that file has room
+for one saved context.
+
+See [`../user/`](../user/) for the programs themselves.
+
 ## Devices
 
 Four kinds, each with one interface (see [`dev.h`](dev.h)):
@@ -289,6 +331,8 @@ sync                 flush pending writes
 halt                 stop the machine
 
 > FILE and >> FILE redirect output
+
+Anything else is looked up as a program on the disk and run.
 ```
 
 `cat > notes.txt` is how you write a file, because that is how a Unix
@@ -309,6 +353,8 @@ command. Errors go to descriptor 2 even when output is redirected.
 | `console.c` | how the kernel itself prints, without a descriptor |
 | `trap.c` | exception reporting |
 | `string.c` | `memcpy` and friends; there is no C library |
+| `exec.c` | the ELF loader, and running a program |
+| `execasm.s` | the stack switch into a program and the unwind out of it |
 | `probe.c` | CPU, FPU and memory — the parts with no driver |
 | `shell.c` | a program, reaching the kernel only through `trap #0` |
 | `version.c` | the version and build stamp, defined once |
