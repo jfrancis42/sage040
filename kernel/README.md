@@ -788,6 +788,30 @@ so the machine stopping and the emulator exiting are the same event.
 the one command whose whole job is getting out would restart the machine
 instead.
 
+## Directories
+
+FAT16 has subdirectories and this kernel now uses them: `mkdir`,
+`rmdir`, `cd`, `pwd`, and paths like `/etc/rc` that walk the tree.
+
+**A directory is one of two things, and both have to be carried.** The
+root is a fixed run of sectors, laid down when the volume was made and
+unable to grow. Every other directory is an ordinary cluster chain,
+exactly like a file, whose contents happen to be directory entries.
+FAT32 abolished the distinction by making the root a chain too; FAT16
+did not. `struct dir` with a cluster of 0 meaning the root is how that
+is said, and a subdirectory that fills up gets another cluster chained
+on while a full root is full for good.
+
+**`.` and `..` are not decoration.** A FAT directory entry records
+nothing about where it lives, so `..` is the only record of a
+directory's parent anywhere on the volume -- a path walk hitting `..`
+reads it from there. A directory made without them cannot be left. The
+parent of a directory in the root is written as cluster 0, which is how
+FAT spells "the root".
+
+**8.3 names still apply.** `rc.local` is not a valid name here -- five
+characters of extension -- which is why the startup script is `/etc/rc`.
+
 ## The filesystem
 
 FAT16, read and write, registered as the type `fat16` and mounted on

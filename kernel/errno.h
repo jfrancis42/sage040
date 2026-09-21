@@ -45,6 +45,7 @@
 #define ENOSPC          28      /* no space left on device            */
 #define ESPIPE          29      /* illegal seek                       */
 #define EROFS           30      /* read-only file system              */
+#define ERANGE          34      /* result too large                   */
 #define ENAMETOOLONG    36      /* file name too long                 */
 #define ENOSYS          38      /* function not implemented           */
 #define ENOTEMPTY       39      /* directory not empty                */

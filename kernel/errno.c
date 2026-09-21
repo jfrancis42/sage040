@@ -45,6 +45,7 @@ const char *strerror(int err)
     case ENOSPC:          return "no space left on device";
     case ESPIPE:          return "illegal seek";
     case EROFS:           return "read-only file system";
+    case ERANGE:          return "result too large";
     case ENAMETOOLONG:    return "file name too long";
     case ENOSYS:          return "function not implemented";
     case ENOTEMPTY:       return "directory not empty";

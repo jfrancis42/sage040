@@ -44,6 +44,17 @@ struct fs_type {
     int (*readdir)(int index, struct dirent *d);
     int (*statfs)(struct statfs *s);
     int (*sync)(void);
+
+    /*
+     * Directories. A filesystem that has none leaves these null and the
+     * VFS answers -ENOSYS, which is what a flat volume should say
+     * rather than pretending a mkdir worked.
+     */
+    int (*mkdir)(const char *path);
+    int (*rmdir)(const char *path);
+    int (*chdir)(const char *path);
+    const char *(*getcwd)(void);
+
     struct fs_type *next;
 };
 
@@ -100,6 +111,10 @@ void fd_close_all(struct task *t);
 
 /* Operations that name a path rather than a descriptor. */
 int  vfs_unlink(const char *path);
+int  vfs_mkdir(const char *path);
+int  vfs_rmdir(const char *path);
+int  vfs_chdir(const char *path);
+const char *vfs_getcwd(void);
 int  vfs_rename(const char *from, const char *to);
 int  vfs_stat(const char *path, struct stat *st);
 int  vfs_readdir(int index, struct dirent *d);

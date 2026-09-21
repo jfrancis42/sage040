@@ -132,6 +132,19 @@ printf '%s\n' \
   'fbtest 1' \
   'date -s 2001-02-03 04:05:06' \
   'date' \
+  'mkdir etc' \
+  'mkdir bin' \
+  'cd etc' \
+  'pwd' \
+  'echo written in a subdirectory > sub.txt' \
+  'cat sub.txt' \
+  'ls' \
+  'cd ..' \
+  'pwd' \
+  'cat /etc/sub.txt' \
+  'mkdir etc' \
+  'rmdir bin' \
+  'rmdir etc' \
   'sync' \
   'halt' \
   >> "$SCRATCH/session.tmp"
@@ -252,7 +265,34 @@ check "no exception was taken" $((1 - $?))
 contains "$LOG" "RENAMED.TXT"
 check "rename showed up in the directory" $?
 
+echo "=== checks: directories ==="
+
+contains "$LOG" "/etc"
+check "cd moved into a subdirectory and pwd said so" $?
+
+contains "$LOG" "written in a subdirectory"
+check "a file created in a subdirectory read back" $?
+
+contains "$LOG" "file exists"
+check "making a directory that already exists is refused" $?
+
+contains "$LOG" "directory not empty"
+check "removing a directory with something in it is refused" $?
+
 echo "=== checks: what the host sees afterwards ==="
+
+mdir -i "$MIMG" ::/ 2>&1 | grep -q "ETC"
+check "host sees the ETC directory" $?
+
+mdir -i "$MIMG" ::/ETC 2>&1 | grep -q "SUB      TXT"
+check "host sees the file the guest made inside it" $?
+
+mtype -i "$MIMG" ::/ETC/SUB.TXT 2>/dev/null | grep -q "written in a subdirectory"
+check "  and its contents are what the guest wrote" $?
+
+mdir -i "$MIMG" ::/ 2>&1 | grep -q "BIN" && false || true
+check "the empty directory the guest removed is gone" $?
+
 mdir -i "$MIMG" ::/ > "$SCRATCH/dir.tmp" 2>&1
 grep -q "GUEST    TXT" "$SCRATCH/dir.tmp"
 check "host sees GUEST.TXT" $?

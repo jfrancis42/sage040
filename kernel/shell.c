@@ -277,6 +277,10 @@ static void cmd_help(void)
 {
     out_puts(
         "ls [-l]              list the directory\n"
+        "cd [DIR]             change directory\n"
+        "pwd                  where you are\n"
+        "mkdir DIR...         make directories\n"
+        "rmdir DIR...         remove empty ones\n"
         "cat [FILE...]        print files, or the terminal until ctrl-D\n"
         "hd FILE              hex dump, first 256 bytes\n"
         "cp SRC DST           copy a file\n"
@@ -1564,6 +1568,44 @@ static void run_command(char *cmdline)
                 cmd_ping(argc, argv);
             }
 
+        } else if (strcmp(argv[0], "cd") == 0) {
+            /* Bare `cd` goes to the root, which is this machine's home
+             * directory -- there is no user to have one of their own. */
+            err = sys_chdir(argc > 1 ? argv[1] : "/");
+            if (err < 0) {
+                err_report(argc > 1 ? argv[1] : "/", err);
+            }
+
+        } else if (strcmp(argv[0], "pwd") == 0) {
+            char cwd[PATH_MAX];
+
+            if (sys_getcwd(cwd, sizeof(cwd)) < 0) {
+                err_puts("pwd: cannot tell\n");
+            } else {
+                out_puts(cwd);
+                out_putc('\n');
+            }
+
+        } else if (strcmp(argv[0], "mkdir") == 0) {
+            if (need(argc, 2, "mkdir DIR...")) {
+                for (i = 1; i < argc; i++) {
+                    err = sys_mkdir(argv[i]);
+                    if (err < 0) {
+                        err_report(argv[i], err);
+                    }
+                }
+            }
+
+        } else if (strcmp(argv[0], "rmdir") == 0) {
+            if (need(argc, 2, "rmdir DIR...")) {
+                for (i = 1; i < argc; i++) {
+                    err = sys_rmdir(argv[i]);
+                    if (err < 0) {
+                        err_report(argv[i], err);
+                    }
+                }
+            }
+
         } else if (strcmp(argv[0], "ps") == 0) {
             cmd_ps();
 
@@ -1661,7 +1703,30 @@ static void run_command(char *cmdline)
 void shell(void)
 {
     for (;;) {
-        int n = edit_readline("sage$ ", line, (int)sizeof(line));
+        char prompt[PATH_MAX + 8];
+        int n;
+
+        /*
+         * The prompt carries the directory, because with more than one
+         * of them a bare "sage$" stops saying enough.
+         */
+        {
+            char cwd[PATH_MAX];
+            u32 k = 0;
+
+            if (sys_getcwd(cwd, sizeof(cwd)) < 0) {
+                strcpy(cwd, "?");
+            }
+            while (cwd[k] && k < sizeof(prompt) - 4) {
+                prompt[k] = cwd[k];
+                k++;
+            }
+            prompt[k++] = '$';
+            prompt[k++] = ' ';
+            prompt[k] = '\0';
+        }
+
+        n = edit_readline(prompt, line, (int)sizeof(line));
 
         if (n == -EINTR) {
             continue;           /* ctrl-C: a fresh prompt, nothing run */

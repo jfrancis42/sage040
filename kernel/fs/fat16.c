@@ -423,9 +423,78 @@ static void name_from_83(const u8 raw[11], char out[NAME_MAX + 1])
 /* The root directory                                                */
 /* ---------------------------------------------------------------- */
 
-static u32 dir_entry_lba(u32 index)
+/*
+ * A DIRECTORY IS ONE OF TWO THINGS on FAT16, and that is the whole
+ * reason this layer needs generalising rather than extending.
+ *
+ * The root directory is a fixed run of sectors with a fixed size, laid
+ * down when the volume was made and unable to grow. Every other
+ * directory is an ordinary cluster chain, exactly like a file, whose
+ * contents happen to be directory entries. FAT32 abolished the
+ * distinction by making the root a chain too; FAT16 did not, so both
+ * cases have to be carried.
+ *
+ * `cluster` of zero means the root. Everything below takes one of these
+ * rather than assuming.
+ */
+struct dir {
+    u32 cluster;                /* 0 = the fixed root directory */
+};
+
+static const struct dir ROOT_DIR = { 0 };
+
+/* How many entries a directory can hold. The root's is fixed; a chain
+ * grows, so this walks it. */
+static u32 dir_entries(const struct dir *d)
 {
-    return root_start + index / (bytes_per_sector / DIRENT_SIZE);
+    u32 n = 0, cl;
+    u16 next;
+
+    if (!d->cluster) {
+        return root_entries;
+    }
+    for (cl = d->cluster; cluster_valid(cl); ) {
+        n += cluster_bytes / DIRENT_SIZE;
+        if (fat_get(cl, &next) != 0) {
+            break;
+        }
+        cl = next;
+    }
+    return n;
+}
+
+/* The sector holding entry `index` of this directory. */
+static int dir_entry_lba_of(const struct dir *d, u32 index, u32 *lba)
+{
+    u32 per_sector = bytes_per_sector / DIRENT_SIZE;
+
+    if (!d->cluster) {
+        if (index >= root_entries) {
+            return -ENOENT;
+        }
+        *lba = root_start + index / per_sector;
+        return 0;
+    }
+
+    {
+        u32 per_cluster = cluster_bytes / DIRENT_SIZE;
+        u32 skip = index / per_cluster;
+        u32 within = index % per_cluster;
+        u32 cl = d->cluster;
+        u16 next;
+
+        while (skip-- > 0) {
+            if (!cluster_valid(cl) || fat_get(cl, &next) != 0) {
+                return -ENOENT;
+            }
+            cl = next;
+        }
+        if (!cluster_valid(cl)) {
+            return -ENOENT;
+        }
+        *lba = cluster_lba(cl) + within / per_sector;
+        return 0;
+    }
 }
 
 static u32 dir_entry_off(u32 index)
@@ -433,14 +502,40 @@ static u32 dir_entry_off(u32 index)
     return (index % (bytes_per_sector / DIRENT_SIZE)) * DIRENT_SIZE;
 }
 
-static int dir_read(u32 index, u8 *ent)
+/*
+ * Fill a cluster with zeroes.
+ *
+ * A fresh directory cluster must be blank, because a zero first byte is
+ * what says "no entry has ever been used beyond here" and every scan
+ * stops there. A cluster holding whatever the last file left behind
+ * would be read as a directory full of rubbish.
+ */
+static int zero_cluster(u32 cl)
 {
-    int err;
+    u32 lba = cluster_lba(cl);
+    u32 i;
 
-    if (index >= root_entries) {
-        return -ENOENT;
+    for (i = 0; i < sectors_per_cluster; i++) {
+        int err = sb_get(lba + i);
+
+        if (err != 0) {
+            return err;
+        }
+        memset(sb.data, 0, bytes_per_sector);
+        sb.dirty = 1;
     }
-    err = sb_get(dir_entry_lba(index));
+    return 0;
+}
+
+static int dir_read_in(const struct dir *d, u32 index, u8 *ent)
+{
+    u32 lba;
+    int err = dir_entry_lba_of(d, index, &lba);
+
+    if (err != 0) {
+        return err;
+    }
+    err = sb_get(lba);
     if (err != 0) {
         return err;
     }
@@ -448,14 +543,20 @@ static int dir_read(u32 index, u8 *ent)
     return 0;
 }
 
-static int dir_write(u32 index, const u8 *ent)
+static int dir_read(u32 index, u8 *ent)
 {
-    int err;
+    return dir_read_in(&ROOT_DIR, index, ent);
+}
 
-    if (index >= root_entries) {
-        return -ENOENT;
+static int dir_write_in(const struct dir *d, u32 index, const u8 *ent)
+{
+    u32 lba;
+    int err = dir_entry_lba_of(d, index, &lba);
+
+    if (err != 0) {
+        return err;
     }
-    err = sb_get(dir_entry_lba(index));
+    err = sb_get(lba);
     if (err != 0) {
         return err;
     }
@@ -480,15 +581,15 @@ static int dir_entry_is_file(const u8 *ent)
     return 1;
 }
 
-/* Find name83 in the root directory.  Returns the entry index, or
- * -ENOENT. */
-static int dir_lookup(const char name83[11], u8 *ent_out)
+/* Find name83 in `d`. Returns the entry index, or -ENOENT. */
+static int dir_lookup_in(const struct dir *d, const char name83[11],
+                         u8 *ent_out)
 {
-    u32 i;
+    u32 i, n = dir_entries(d);
     u8 ent[DIRENT_SIZE];
 
-    for (i = 0; i < root_entries; i++) {
-        int err = dir_read(i, ent);
+    for (i = 0; i < n; i++) {
+        int err = dir_read_in(d, i, ent);
 
         if (err != 0) {
             return err;
@@ -509,15 +610,252 @@ static int dir_lookup(const char name83[11], u8 *ent_out)
     return -ENOENT;
 }
 
-/* Claim a free directory slot and write a fresh entry into it. */
-static int dir_create(const char name83[11], u8 attr)
+static int dir_lookup(const char name83[11], u8 *ent_out)
 {
-    u32 i;
+    return dir_lookup_in(&ROOT_DIR, name83, ent_out);
+}
+
+/* --- paths ----------------------------------------------------------- */
+
+/*
+ * Walk a path down to the directory that holds its last component, and
+ * hand back that component.
+ *
+ * "/etc/rc.local" gives the directory /etc and the name "rc.local".
+ * "notes.txt" gives the current directory and the same name. An empty
+ * last component -- "/etc/" -- gives the directory and nothing, which is
+ * how a caller asks to open a directory rather than a file in one.
+ *
+ * Relative paths are resolved against `start`, which is the calling
+ * task's working directory. Every absolute path begins at the root, and
+ * nothing here ever looks above it: ".." in the root is the root, which
+ * is what every Unix does and what stops a path escaping the volume.
+ */
+static int path_walk(const struct dir *start, const char *path,
+                     struct dir *out_dir, char out_name[11], int *out_last_is_dir)
+{
+    struct dir d = *start;
+    const char *p = path;
+
+    if (out_last_is_dir) {
+        *out_last_is_dir = 0;
+    }
+    memset(out_name, ' ', 11);
+
+    if (*p == '/') {
+        d = ROOT_DIR;
+        while (*p == '/') {
+            p++;
+        }
+    }
+
+    for (;;) {
+        char comp[64];
+        const char *slash = p;
+        u32 n = 0;
+        u8 ent[DIRENT_SIZE];
+        char n83[11];
+        int idx;
+
+        while (*slash && *slash != '/') {
+            slash++;
+        }
+        n = (u32)(slash - p);
+        if (n == 0) {
+            /* Trailing slash, or the path was just "/". */
+            *out_dir = d;
+            if (out_last_is_dir) {
+                *out_last_is_dir = 1;
+            }
+            return 0;
+        }
+        if (n >= sizeof(comp)) {
+            return -ENAMETOOLONG;
+        }
+        memcpy(comp, p, n);
+        comp[n] = '\0';
+
+        if (!*slash) {
+            int err;
+
+            /*
+             * "." and ".." are directories even as the last component,
+             * and they are not 8.3 names -- name_to_83 rejects them,
+             * which is right for a file and wrong here. `cd ..` is the
+             * case that matters and it failed outright until this.
+             */
+            if (comp[0] == '.' && comp[1] == '\0') {
+                *out_dir = d;
+                if (out_last_is_dir) {
+                    *out_last_is_dir = 1;
+                }
+                return 0;
+            }
+            if (comp[0] == '.' && comp[1] == '.' && comp[2] == '\0') {
+                if (d.cluster) {
+                    static const char dd[11] = {
+                        '.', '.', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '
+                    };
+
+                    idx = dir_lookup_in(&d, dd, ent);
+                    if (idx < 0) {
+                        return -ENOENT;
+                    }
+                    d.cluster = le16(&ent[26]);
+                }
+                *out_dir = d;
+                if (out_last_is_dir) {
+                    *out_last_is_dir = 1;
+                }
+                return 0;
+            }
+
+            /* The last component: this is the name the caller wants. */
+            err = name_to_83(comp, n83);
+            if (err != 0) {
+                return err;
+            }
+            memcpy(out_name, n83, 11);
+            *out_dir = d;
+            return 0;
+        }
+
+        /* An intermediate component has to be a directory. */
+        if (comp[0] == '.' && comp[1] == '\0') {
+            /* stay where we are */
+        } else if (comp[0] == '.' && comp[1] == '.' && comp[2] == '\0') {
+            if (d.cluster) {
+                /* The 8.3 form of "..", space padded and NOT
+                 * NUL terminated -- a directory entry's name is
+                 * eleven bytes with no terminator at all. */
+                static const char dotdot[11] = {
+                    '.', '.', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '
+                };
+
+                idx = dir_lookup_in(&d, dotdot, ent);
+                if (idx < 0) {
+                    return -ENOENT;
+                }
+                d.cluster = le16(&ent[26]);
+            }
+            /* ".." in the root is the root. */
+        } else {
+            int err = name_to_83(comp, n83);
+
+            if (err != 0) {
+                return err;
+            }
+            idx = dir_lookup_in(&d, n83, ent);
+            if (idx < 0) {
+                return -ENOENT;
+            }
+            if (!(ent[11] & ATTR_DIR)) {
+                return -ENOTDIR;
+            }
+            d.cluster = le16(&ent[26]);
+        }
+
+        p = slash;
+        while (*p == '/') {
+            p++;
+        }
+    }
+}
+
+/*
+ * The directory a task is working in.
+ *
+ * One per task would live in `struct task`; it is here for now because
+ * the filesystem is the only thing that knows what a directory IS, and
+ * moving it out means giving the task layer a filesystem-independent
+ * handle. That is the right shape and it is not needed until there is a
+ * second filesystem.
+ */
+static struct dir cwd = { 0 };
+static char cwd_path[PATH_MAX] = "/";
+
+static int fat_chdir(const char *path)
+{
+    struct dir d;
+    char name[11];
+    int last_is_dir;
+    int err = path_walk(&cwd, path, &d, name, &last_is_dir);
+    u8 ent[DIRENT_SIZE];
+    int idx;
+
+    if (err != 0) {
+        return err;
+    }
+    if (last_is_dir) {
+        cwd = d;
+    } else {
+        idx = dir_lookup_in(&d, name, ent);
+        if (idx < 0) {
+            return -ENOENT;
+        }
+        if (!(ent[11] & ATTR_DIR)) {
+            return -ENOTDIR;
+        }
+        d.cluster = le16(&ent[26]);
+        cwd = d;
+    }
+
+    /* Keep a printable form for `pwd`. Rebuilt rather than walked back
+     * up, because ".." only gives the parent's cluster and not its
+     * name. */
+    if (path[0] == '/') {
+        strncpy(cwd_path, path, sizeof(cwd_path) - 1);
+        cwd_path[sizeof(cwd_path) - 1] = '\0';
+    } else if (strcmp(path, "..") == 0) {
+        int n = (int)strlen(cwd_path);
+
+        while (n > 1 && cwd_path[n - 1] != '/') {
+            n--;
+        }
+        if (n > 1) {
+            n--;
+        }
+        cwd_path[n] = '\0';
+        if (!cwd_path[0]) {
+            strcpy(cwd_path, "/");
+        }
+    } else if (strcmp(path, ".") != 0) {
+        u32 n = (u32)strlen(cwd_path);
+
+        if (n > 1 && n + 1 < sizeof(cwd_path)) {
+            cwd_path[n++] = '/';
+        }
+        strncpy(cwd_path + n, path, sizeof(cwd_path) - n - 1);
+        cwd_path[sizeof(cwd_path) - 1] = '\0';
+    }
+    if (!cwd.cluster) {
+        strcpy(cwd_path, "/");
+    }
+    return 0;
+}
+
+static const char *fat_getcwd(void)
+{
+    return cwd_path;
+}
+
+/*
+ * Claim a free slot in `d` and write a fresh entry into it.
+ *
+ * A subdirectory can GROW, and this is where that happens: if every
+ * slot is taken, another cluster is chained on and its entries become
+ * free slots. The root cannot, which is the one place FAT16's two kinds
+ * of directory behave differently to a caller -- a full root is full
+ * for good, and always was.
+ */
+static int dir_create_in(const struct dir *d, const char name83[11], u8 attr)
+{
+    u32 i, n = dir_entries(d);
     u8 ent[DIRENT_SIZE];
     u16 date, time;
 
-    for (i = 0; i < root_entries; i++) {
-        int err = dir_read(i, ent);
+    for (i = 0; i < n; i++) {
+        int err = dir_read_in(d, i, ent);
 
         if (err != 0) {
             return err;
@@ -538,11 +876,43 @@ static int dir_create(const char name83[11], u8 attr)
         put_le16(&ent[26], 0);              /* first cluster */
         put_le32(&ent[28], 0);              /* size */
 
-        err = dir_write(i, ent);
+        err = dir_write_in(d, i, ent);
         if (err != 0) {
             return err;
         }
         return (int)i;
+    }
+
+    /*
+     * Full. A chained directory can be extended; the root cannot.
+     */
+    if (d->cluster) {
+        u32 last = d->cluster, add;
+        u16 next;
+        int err;
+
+        while (cluster_valid(last)) {
+            if (fat_get(last, &next) != 0) {
+                return -EIO;
+            }
+            if (!cluster_valid(next)) {
+                break;
+            }
+            last = next;
+        }
+        err = fat_alloc(&add);
+        if (err != 0) {
+            return err;
+        }
+        err = zero_cluster(add);
+        if (err != 0) {
+            return err;
+        }
+        if (fat_set(last, (u16)add) != 0) {
+            return -EIO;
+        }
+        /* The first slot of the new cluster is the one we wanted. */
+        return dir_create_in(d, name83, attr);
     }
     return -ENOSPC;
 }
@@ -735,6 +1105,7 @@ struct fat_file {
     u8  used;
     u8  flags;
     u8  dirty;                  /* directory entry needs rewriting    */
+    struct dir dir;             /* which directory holds its entry    */
     u32 dir_index;
     u32 first;                  /* first cluster, 0 if empty          */
     u32 size;
@@ -764,7 +1135,7 @@ static int file_sync(struct fat_file *f)
     if (!f->dirty) {
         return 0;
     }
-    err = dir_read(f->dir_index, ent);
+    err = dir_read_in(&f->dir, f->dir_index, ent);
     if (err != 0) {
         return err;
     }
@@ -774,7 +1145,7 @@ static int file_sync(struct fat_file *f)
     put_le16(&ent[22], time);
     put_le16(&ent[24], date);
     ent[11] |= ATTR_ARCHIVE;
-    err = dir_write(f->dir_index, ent);
+    err = dir_write_in(&f->dir, f->dir_index, ent);
     if (err != 0) {
         return err;
     }
@@ -864,14 +1235,24 @@ static int fat_handle_open(const char *name, int flags)
     char n83[11];
     u8 ent[DIRENT_SIZE];
     struct fat_file *f;
+    struct dir open_dir;
     int fd, idx, err;
 
     if (!mounted) {
         return -ENODEV;
     }
-    err = name_to_83(name, n83);
-    if (err != 0) {
-        return err;
+    {
+        struct dir d;
+        int last_is_dir;
+
+        err = path_walk(&cwd, name, &d, n83, &last_is_dir);
+        if (err != 0) {
+            return err;
+        }
+        if (last_is_dir) {
+            return -EISDIR;     /* "/etc/" is a directory, not a file */
+        }
+        open_dir = d;
     }
     for (fd = 0; fd < FAT_MAX_OPEN; fd++) {
         if (!files[fd].used) {
@@ -883,7 +1264,7 @@ static int fat_handle_open(const char *name, int flags)
     }
     f = &files[fd];
 
-    idx = dir_lookup(n83, ent);
+    idx = dir_lookup_in(&open_dir, n83, ent);
     if (idx == -ENOENT) {
         if (!(flags & O_CREAT)) {
             return -ENOENT;
@@ -891,11 +1272,11 @@ static int fat_handle_open(const char *name, int flags)
         if (!can_write(flags)) {
             return -EACCES;
         }
-        idx = dir_create(n83, ATTR_ARCHIVE);
+        idx = dir_create_in(&open_dir, n83, ATTR_ARCHIVE);
         if (idx < 0) {
             return idx;
         }
-        err = dir_read((u32)idx, ent);
+        err = dir_read_in(&open_dir, (u32)idx, ent);
         if (err != 0) {
             return err;
         }
@@ -917,6 +1298,14 @@ static int fat_handle_open(const char *name, int flags)
     memset(f, 0, sizeof(*f));
     f->used = 1;
     f->flags = (u8)flags;
+    /*
+     * AFTER the memset, which is where this has to be -- it was set
+     * before it and silently zeroed, so every file's entry was written
+     * back to the root directory at the subdirectory's index. A file
+     * created in /etc then overwrote whatever happened to be at that
+     * slot in /, which is a spectacular way to lose a program.
+     */
+    f->dir = open_dir;
     f->dir_index = (u32)idx;
     f->first = le16(&ent[26]);
     f->size = le32(&ent[28]);
@@ -1123,6 +1512,7 @@ static s32 fat_handle_seek(int fd, s32 offset, int whence)
 
 static int fat_unlink(const char *name)
 {
+    struct dir target;
     char n83[11];
     u8 ent[DIRENT_SIZE];
     int idx, err;
@@ -1162,7 +1552,7 @@ static int fat_unlink(const char *name)
      */
     ent[0] = 0xe5;
     put_le16(&ent[26], 0);
-    err = dir_write((u32)idx, ent);
+    err = dir_write_in(&target, (u32)idx, ent);
     if (err != 0) {
         return err;
     }
@@ -1171,6 +1561,7 @@ static int fat_unlink(const char *name)
 
 static int fat_rename(const char *from, const char *to)
 {
+    struct dir fdir, tdir;
     char f83[11], t83[11];
     u8 ent[DIRENT_SIZE];
     int idx, err;
@@ -1178,11 +1569,11 @@ static int fat_rename(const char *from, const char *to)
     if (!mounted) {
         return -ENODEV;
     }
-    err = name_to_83(from, f83);
+    err = path_walk(&cwd, from, &fdir, f83, 0);
     if (err != 0) {
         return err;
     }
-    err = name_to_83(to, t83);
+    err = path_walk(&cwd, to, &tdir, t83, 0);
     if (err != 0) {
         return err;
     }
@@ -1205,7 +1596,7 @@ static int fat_rename(const char *from, const char *to)
     /* The name is the only thing that moves; cluster chain and size stay
      * exactly where they are. */
     memcpy(ent, t83, 11);
-    err = dir_write((u32)idx, ent);
+    err = dir_write_in(&fdir, (u32)idx, ent);
     if (err != 0) {
         return err;
     }
@@ -1277,8 +1668,8 @@ static int fat_readdir(int index, struct dirent *out)
         return -EINVAL;
     }
 
-    for (i = 0; i < root_entries; i++) {
-        int err = dir_read(i, ent);
+    for (i = 0; i < dir_entries(&cwd); i++) {
+        int err = dir_read_in(&cwd, i, ent);
 
         if (err != 0) {
             return err;
@@ -1381,6 +1772,161 @@ static int fat_umount(void)
     return 0;
 }
 
+/*
+ * Make a directory.
+ *
+ * A new directory is a cluster containing exactly two entries, "." and
+ * "..", and nothing else. They are not decoration: ".." is the ONLY
+ * record of a directory's parent anywhere on the volume -- a FAT
+ * directory entry says nothing about where it lives -- so a path walk
+ * hitting ".." reads it from here. A directory made without them cannot
+ * be left.
+ *
+ * The parent of a directory in the root is recorded as cluster 0, which
+ * is how FAT spells "the root" and why the root itself needs no entry.
+ */
+static int fat_mkdir(const char *path)
+{
+    struct dir parent, self;
+    char n83[11];
+    u8 ent[DIRENT_SIZE];
+    u32 cl;
+    u16 date, time;
+    int idx, err;
+
+    if (!mounted) {
+        return -ENODEV;
+    }
+    err = path_walk(&cwd, path, &parent, n83, 0);
+    if (err != 0) {
+        return err;
+    }
+    if (dir_lookup_in(&parent, n83, 0) >= 0) {
+        return -EEXIST;
+    }
+
+    err = fat_alloc(&cl);
+    if (err != 0) {
+        return err;
+    }
+    err = zero_cluster(cl);
+    if (err != 0) {
+        return err;
+    }
+
+    idx = dir_create_in(&parent, n83, ATTR_DIR);
+    if (idx < 0) {
+        fat_free_chain(cl);
+        return idx;
+    }
+    err = dir_read_in(&parent, (u32)idx, ent);
+    if (err != 0) {
+        return err;
+    }
+    put_le16(&ent[26], (u16)cl);
+    err = dir_write_in(&parent, (u32)idx, ent);
+    if (err != 0) {
+        return err;
+    }
+
+    self.cluster = cl;
+    fs_now(&date, &time);
+
+    /* "." -> itself */
+    memset(ent, 0, DIRENT_SIZE);
+    memset(ent, ' ', 11);
+    ent[0] = '.';
+    ent[11] = ATTR_DIR;
+    put_le16(&ent[22], time);
+    put_le16(&ent[24], date);
+    put_le16(&ent[26], (u16)cl);
+    err = dir_write_in(&self, 0, ent);
+    if (err != 0) {
+        return err;
+    }
+
+    /* ".." -> the parent, or 0 meaning the root */
+    memset(ent, 0, DIRENT_SIZE);
+    memset(ent, ' ', 11);
+    ent[0] = '.';
+    ent[1] = '.';
+    ent[11] = ATTR_DIR;
+    put_le16(&ent[22], time);
+    put_le16(&ent[24], date);
+    put_le16(&ent[26], (u16)parent.cluster);
+    err = dir_write_in(&self, 1, ent);
+    if (err != 0) {
+        return err;
+    }
+
+    return fat_flush_all();
+}
+
+/*
+ * Remove one, but only if it is empty.
+ *
+ * Empty means nothing but "." and "..", which is why they have to be
+ * skipped rather than counted. Removing a directory that still had
+ * things in it would orphan every one of their cluster chains -- they
+ * would be marked allocated forever with nothing pointing at them.
+ */
+static int fat_rmdir(const char *path)
+{
+    struct dir parent, self;
+    char n83[11];
+    u8 ent[DIRENT_SIZE];
+    u32 i, n;
+    int idx, err;
+
+    if (!mounted) {
+        return -ENODEV;
+    }
+    err = path_walk(&cwd, path, &parent, n83, 0);
+    if (err != 0) {
+        return err;
+    }
+    idx = dir_lookup_in(&parent, n83, ent);
+    if (idx < 0) {
+        return idx;
+    }
+    if (!(ent[11] & ATTR_DIR)) {
+        return -ENOTDIR;
+    }
+
+    self.cluster = le16(&ent[26]);
+    if (self.cluster == cwd.cluster) {
+        return -EBUSY;          /* somebody is standing in it */
+    }
+
+    n = dir_entries(&self);
+    for (i = 0; i < n; i++) {
+        u8 e[DIRENT_SIZE];
+
+        if (dir_read_in(&self, i, e) != 0) {
+            break;
+        }
+        if (e[0] == 0x00) {
+            break;
+        }
+        if (e[0] == 0xe5 || (e[11] & ATTR_LFN) == ATTR_LFN) {
+            continue;
+        }
+        if (e[0] == '.' && (e[1] == ' ' || (e[1] == '.' && e[2] == ' '))) {
+            continue;           /* . and .. do not count */
+        }
+        return -ENOTEMPTY;
+    }
+
+    fat_free_chain(self.cluster);
+    ent[0] = 0xe5;
+    put_le16(&ent[26], 0);
+    err = dir_write_in(&parent, (u32)idx, ent);
+    if (err != 0) {
+        return err;
+    }
+    return fat_flush_all();
+}
+
 static int fat_statfs(struct statfs *s)
 {
     int i;
@@ -1421,6 +1967,10 @@ static struct fs_type fat16_type = {
     fat_readdir,
     fat_statfs,
     fat_sync,
+    fat_mkdir,
+    fat_rmdir,
+    fat_chdir,
+    fat_getcwd,
     0
 };
 

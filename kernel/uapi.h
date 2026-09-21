@@ -259,6 +259,10 @@ struct statfs {
 #define __NR_time       13
 #define __NR_lseek      19
 #define __NR_stime      25
+#define __NR_mkdir      39
+#define __NR_rmdir      40
+#define __NR_chdir      12
+#define __NR_getcwd    183
 #define __NR_rename     38
 #define __NR_ioctl      54
 #define __NR_reboot     88

@@ -645,6 +645,38 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
         return vfs_unlink(path);
     }
 
+    case __NR_mkdir:
+    case __NR_rmdir:
+    case __NR_chdir: {
+        char path[PATH_MAX];
+        int err = fetch_str(path, a1, sizeof(path));
+
+        if (err < 0) {
+            return err;
+        }
+        if (nr == __NR_mkdir) {
+            return vfs_mkdir(path);
+        }
+        if (nr == __NR_rmdir) {
+            return vfs_rmdir(path);
+        }
+        return vfs_chdir(path);
+    }
+
+    case __NR_getcwd: {
+        const char *cwd = vfs_getcwd();
+        u32 n = (u32)strlen(cwd) + 1;
+
+        if (a2 < n) {
+            return -ERANGE;
+        }
+        {
+            int err = store(a1, cwd, n);
+
+            return err < 0 ? err : (s32)n;
+        }
+    }
+
     case __NR_rename: {
         char from[PATH_MAX], to[PATH_MAX];
         int err = fetch_str(from, a1, sizeof(from));
@@ -1029,6 +1061,26 @@ int sys_spawn(const char *path, int argc, char **argv)
 int sys_jobctl(int cmd, int arg, void *p)
 {
     return (int)syscall3(__NR_jobctl, (u32)cmd, (u32)arg, (u32)p);
+}
+
+int sys_mkdir(const char *path)
+{
+    return (int)syscall1(__NR_mkdir, (u32)path);
+}
+
+int sys_rmdir(const char *path)
+{
+    return (int)syscall1(__NR_rmdir, (u32)path);
+}
+
+int sys_chdir(const char *path)
+{
+    return (int)syscall1(__NR_chdir, (u32)path);
+}
+
+int sys_getcwd(char *buf, u32 len)
+{
+    return (int)syscall2(__NR_getcwd, (u32)buf, len);
 }
 
 int sys_waitpid(int pid, int *status)

@@ -470,6 +470,38 @@ int fd_ioctl(int fd, u32 request, u32 arg)
 /* Operations that name a path                                       */
 /* ---------------------------------------------------------------- */
 
+int vfs_mkdir(const char *path)
+{
+    if (!mounted_fs || !mounted_fs->mkdir) {
+        return -ENOSYS;
+    }
+    return mounted_fs->mkdir(strip_root(path));
+}
+
+int vfs_rmdir(const char *path)
+{
+    if (!mounted_fs || !mounted_fs->rmdir) {
+        return -ENOSYS;
+    }
+    return mounted_fs->rmdir(strip_root(path));
+}
+
+int vfs_chdir(const char *path)
+{
+    if (!mounted_fs || !mounted_fs->chdir) {
+        return -ENOSYS;
+    }
+    return mounted_fs->chdir(path);
+}
+
+const char *vfs_getcwd(void)
+{
+    if (!mounted_fs || !mounted_fs->getcwd) {
+        return "/";
+    }
+    return mounted_fs->getcwd();
+}
+
 int vfs_unlink(const char *path)
 {
     if (resolve_dev(path)) {
