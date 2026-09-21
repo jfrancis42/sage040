@@ -38,18 +38,34 @@ LDFLAGS := $(CPUFLAGS) -ffreestanding -nostdlib -T bootrom.ld \
 # below the boot ROM at 2 MB.
 BOOT_SECTORS ?= 256
 
-# The 100 MB disk the machine boots from.
-DISK    := hd.img
-DISK_MB := 100
+# The disk the machine boots from: a real MS-DOS disk, so the host can read
+# and write it with ordinary tools.
+#
+#   LBA 0       MBR partition table
+#   LBA 64      optional raw image, in the boot gap
+#   LBA 2048    partition 1, FAT16, holds KERNEL.ROM
+DISK     := hd.img
+DISK_MB  := 100
+PART_LBA := 2048
+KERNEL_LBA := 64
+VOLUME   := SAGE040
 
-# What gets written to sector 0. Swap this for a kernel later.
+TOTAL_SECTORS := $(shell expr $(DISK_MB) \* 2048)
+FS_SECTORS    := $(shell expr $(TOTAL_SECTORS) - $(PART_LBA))
+FS_BLOCKS     := $(shell expr $(FS_SECTORS) / 2)
+PART_OFFSET   := $(shell expr $(PART_LBA) \* 512)
+
+# mtools reaches into the partition by byte offset -- no root, no loop mount.
+MIMG := $(DISK)@@$(PART_OFFSET)
+
+# What becomes KERNEL.ROM. Swap this for a kernel when there is one.
 PAYLOAD_DIR := ../cube
 PAYLOAD_ELF := $(PAYLOAD_DIR)/cube.elf
-PAYLOAD_BIN := payload.bin
+PAYLOAD_BIN := kernel.rom
 
 DEPS := $(SUP)/crt0.s $(SUP)/uart.c $(SUP)/sage040.h bootrom.ld
 
-.PHONY: all disk write boot run disasm clean distclean
+.PHONY: all disk write write-raw ls fsck boot run disasm clean distclean
 
 all: bootrom.elf
 
@@ -61,23 +77,51 @@ bootrom.elf: bootrom.c $(DEPS)
 
 disk: $(DISK)
 
+# A genuine MS-DOS disk: MBR partition table plus a FAT16 filesystem.
+# Both steps work on the plain image file; neither needs root.
 $(DISK):
 	@echo "creating $(DISK_MB) MB disk image $(DISK)"
-	@dd if=/dev/zero of=$(DISK) bs=1M count=$(DISK_MB) status=none
+	@dd if=/dev/zero of=$@ bs=1M count=$(DISK_MB) status=none
+	@printf 'label: dos\nunit: sectors\nstart=$(PART_LBA), type=06\n' \
+	    | sfdisk -q $@ >/dev/null
+	@mkfs.fat -F 16 -n $(VOLUME) --offset $(PART_LBA) $@ $(FS_BLOCKS) >/dev/null
+	@echo "partition 1: FAT16 at LBA $(PART_LBA), $(FS_SECTORS) sectors"
 
-# Build the payload, flatten it, and lay it down from sector 0.
-# conv=notrunc keeps the rest of the 100 MB image intact.
+# Build the payload, flatten it, and copy it into the filesystem as
+# KERNEL.ROM -- which is exactly what you would do by hand with mcopy.
 write: $(DISK)
+	$(MAKE) -C $(PAYLOAD_DIR) cube.elf
+	$(OBJCOPY) -O binary $(PAYLOAD_ELF) $(PAYLOAD_BIN)
+	@mcopy -o -i $(MIMG) $(PAYLOAD_BIN) ::/KERNEL.ROM
+	@echo "KERNEL.ROM: $$(stat -c%s $(PAYLOAD_BIN)) bytes -> $(DISK) partition 1"
+	@mdir -i $(MIMG) ::/ | sed 's/^/  /'
+
+# The fallback path: a raw image in the boot gap, no filesystem involved.
+write-raw: $(DISK)
 	$(MAKE) -C $(PAYLOAD_DIR) cube.elf
 	$(OBJCOPY) -O binary $(PAYLOAD_ELF) $(PAYLOAD_BIN)
 	@sz=$$(stat -c%s $(PAYLOAD_BIN)); \
 	 sec=$$(( (sz + 511) / 512 )); \
+	 if [ $$(( $(KERNEL_LBA) + $$sec )) -gt $(PART_LBA) ]; then \
+	   echo "payload would run into the filesystem at LBA $(PART_LBA)"; exit 1; \
+	 fi; \
 	 if [ $$sec -gt $(BOOT_SECTORS) ]; then \
-	   echo "payload is $$sec sectors but the ROM only reads $(BOOT_SECTORS);"; \
+	   echo "payload is $$sec sectors but the ROM reads $(BOOT_SECTORS);"; \
 	   echo "rebuild with: make BOOT_SECTORS=$$sec"; exit 1; \
 	 fi; \
-	 echo "writing $$sz bytes ($$sec sectors) to $(DISK) at sector 0"
-	@dd if=$(PAYLOAD_BIN) of=$(DISK) bs=512 conv=notrunc status=none
+	 echo "writing $$sz bytes ($$sec sectors) at LBA $(KERNEL_LBA)"
+	@dd if=$(PAYLOAD_BIN) of=$(DISK) bs=512 seek=$(KERNEL_LBA) \
+	    conv=notrunc status=none
+
+# Inspect the disk with the host's own DOS tools.
+ls: $(DISK)
+	@sfdisk -l $(DISK) 2>/dev/null | tail -3
+	@mdir -i $(MIMG) ::/
+
+fsck: $(DISK)
+	@fsck.fat -n -v $(DISK)@@$(PART_OFFSET) 2>/dev/null \
+	  || fsck.fat -n $(DISK) 2>/dev/null \
+	  || echo "(run fsck.fat on the partition offset manually)"
 
 # Boot the machine. The ROM is loaded by -kernel; everything after that
 # comes off the disk.

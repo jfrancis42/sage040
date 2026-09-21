@@ -307,20 +307,32 @@ nothing is stubbed. 98 checks across 10 programs, about 14 seconds.
 
 ### Booting from disk
 
-`bootrom/` is a boot ROM that reads a flat image off the ATA disk starting at
-sector 0 and runs it, using the image's own 68000 reset vectors to find its
-stack pointer and entry point. There is no filesystem — sector 0 *is* the
-image.
+`bootrom/` is a boot ROM that mounts a **real MS-DOS disk**, finds
+`KERNEL.ROM` in the root directory, loads it to address 0 and runs it — using
+the image's own 68000 reset vectors to find its stack pointer and entry point.
 
 ```bash
 cd bootrom
-make disk     # 100 MB hd.img
-make write    # put the cube on it at sector 0
-make boot     # ROM loads sector 0 and jumps to it
+make disk     # 100 MB hd.img: MBR + FAT16 partition
+make write    # build the payload, mcopy it in as KERNEL.ROM
+make boot     # ROM mounts the filesystem and boots it
+make ls       # partition table and directory listing
 ```
 
-The payload is currently the cube, which makes a convincing demonstration that
-the whole path works. Swap it for a kernel when there is one.
+The disk is genuinely DOS-formatted, so the host reads and writes it with
+ordinary tools and no root:
+
+```bash
+mcopy -i hd.img@@1M kernel.rom ::/KERNEL.ROM
+mdir  -i hd.img@@1M ::/
+fsck.fat -n /tmp/partition.img
+```
+
+Replacing the kernel is a file copy, not a `dd` at a magic offset. Needs
+`mtools`, `dosfstools` and `util-linux`.
+
+The payload is currently the cube, which demonstrates the whole path. Swap it
+for a kernel when there is one.
 
 ### The cube
 

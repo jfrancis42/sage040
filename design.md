@@ -48,6 +48,13 @@ Boot protocol: a big-endian ELF32 (`EM_68K`) loaded with `-kernel`, entered at
 its ELF entry point with SP at the top of RAM. No ROM, no bootloader, and no
 bootinfo block — the OS knows its own machine.
 
+**Booting from disk.** `bootrom/` is loaded that way and then loads everything
+else itself: it reads a flat image from sector 0 to address 0 and jumps to it.
+The payload carries a 68k vector table at its start, so the loader takes the
+initial SSP from offset 0 and the entry point from offset 4 — the 68000 reset
+convention — and needs to know nothing else about it. There is no filesystem
+and no partition table; sector 0 *is* the image. §9 is about changing that.
+
 ---
 
 ## 3. Interrupt architecture
@@ -136,10 +143,12 @@ Every device has a bare-metal test that exercises the real hardware path.
 | Stage | State |
 |-------|-------|
 | Machine, toolchain, boot | ✅ done |
+| Boot ROM loading `KERNEL.ROM` from a FAT16 filesystem | ✅ done — `bootrom/` |
 | Console, C runtime, exception vectors, interrupt dispatch | ✅ done |
 | Disk, ethernet, video, MMU, timers | ✅ hardware proven by tests |
 | Timer + preemption | unblocked — ordinary OS work now |
-| Filesystem, processes, virtual memory, framebuffer console | not started |
+| Disk format (§9) — real MS-DOS, host read/write | ✅ done |
+| Kernel-side filesystem, TCP/IP (§8), processes, virtual memory, framebuffer console | not started |
 
 **Every hardware dependency is satisfied.** What remains is operating system,
 not emulator.
@@ -207,7 +216,92 @@ not something checked, and it is worth ten minutes before counting on it.
 
 ---
 
-## 9. Open items
+## 9. Filesystem
+
+**Decided and partly built: a real MS-DOS disk.** Not a FAT-like format of our
+own, but a genuine partitioned FAT16 volume that the host reads and writes
+with ordinary tools — `mtools`, `mount -t vfat`, `fdisk`, `fsck.fat`.
+
+### Why
+
+Host interoperability is the whole point. Putting a kernel on the disk is
+`mcopy kernel.rom ::/`, not `dd` at a magic offset, and anything else on the
+machine's disk can be inspected or edited from Linux without the guest
+running. Every alternative means writing a host-side tool before a single
+file can be placed.
+
+It also has genuine 68k heritage — the Atari ST's GEMDOS filesystem is FAT
+with quirks — and it is small: read-only FAT16 with 8.3 names came to about
+200 lines.
+
+FAT16 rather than 12 or 32. On a 99 MB partition with 2 KB clusters that is
+50,579 data clusters, comfortably inside FAT16's range, with a 200-sector FAT.
+FAT12 would mean unpacking 12-bit entries that straddle byte boundaries for no
+benefit; FAT32 adds FSINFO and a cluster-chained root directory for capacity
+that is not needed.
+
+### Layout
+
+```
+LBA 0          MBR partition table
+LBA 64         optional raw image, in the boot gap
+LBA 2048       partition 1, type 0x06, FAT16, volume SAGE040
+```
+
+Sector 0 belongs to the partition table, so the kernel cannot live there. The
+boot ROM reads the partition table, mounts the filesystem, finds
+**`KERNEL.ROM`** in the root directory, follows its cluster chain to address 0
+and jumps to it via the image's own 68000 reset vectors.
+
+If there is no filesystem, or no `KERNEL.ROM` in it, it falls back to a raw
+image at LBA 64 — the gap between the partition table and the first partition,
+nearly a megabyte — so a disk with no filesystem still boots. All three paths
+are exercised: file found, file missing with a raw image present, and neither.
+
+The disk is built with the host's own tools and needs no root:
+
+```
+sfdisk        write the MBR
+mkfs.fat -F 16 --offset 2048
+mcopy -i hd.img@@1048576 kernel.rom ::/KERNEL.ROM
+```
+
+### What is implemented
+
+In the boot ROM, read-only and only as much as finding one file requires:
+BPB parsing, the FAT16 cluster chain with a one-sector FAT cache, and a root
+directory scan that skips deleted entries, long-name fragments, the volume
+label and subdirectories. `fsck.fat` reports the result clean, and the host
+can add files and directories alongside `KERNEL.ROM` without disturbing it.
+
+### What is not, yet
+
+- **Anything kernel-side.** The ROM's FAT code is deliberately minimal and
+  lives in the ROM. A kernel wants its own implementation over a proper block
+  layer — the polled PIO in `t3-ata` lifted into a real `ata.c`.
+- **Writing.** Free-cluster allocation, directory entry creation and
+  compaction, FAT mirror updates. None of it hard, all of it easier once
+  reading is known good.
+- **Subdirectories and long names.** The ROM only looks in the root and only
+  at 8.3 names. Both are period-correct limitations and neither is missed yet.
+
+### The byte-order trap, for whoever writes the kernel side
+
+**FAT is little-endian in every field and this machine is big-endian.** Every
+BPB field, every FAT entry, every directory entry's cluster number and size
+goes through `le16()`/`le32()`. Sector *data*, by contrast, is a byte stream
+and needs no swapping at all.
+
+That distinction already caused one bug: `t3-ata` swapped sector bytes in both
+directions, which is self-consistent and passed its own round-trip test while
+writing a byte-swapped image to the media. It surfaced only when the boot ROM
+first tried to load something the host had written. Test against images the
+host made and can still read afterwards; `fsck.fat` and `mdir` are the
+verification that a round trip cannot give you.
+
+---
+
+## 10. Open items
 
 1. **Lift the test code into drivers.** `t3`, `t4`, `t7`–`t10` are proven working
    code for every device; they want turning into `ata.c`, `smc91c111.c`,
@@ -217,13 +311,16 @@ not something checked, and it is worth ten minutes before counting on it.
    faster than the handler starves the foreground.
 3. **Pick a TCP/IP stack** (§8). lwIP is the recommendation; nothing blocks it
    now that the NIC is proven.
-4. **Consider upstreaming** the `sm501.c` build fix and the IACK callback.
-5. **Hardware.** Nothing in the design needs a bus that cannot be wired by hand:
+4. **Kernel-side filesystem** (§9). The format is settled and the boot ROM
+   reads it; a kernel needs its own implementation over a real block layer,
+   and eventually write support.
+5. **Consider upstreaming** the `sm501.c` build fix and the IACK callback.
+6. **Hardware.** Nothing in the design needs a bus that cannot be wired by hand:
    a 68040, an MFP, and five memory-mapped peripherals.
 
 ---
 
-## 10. Next
+## 11. Next
 
 1. **A scheduler tick** — timer D at ~10 ms driving a counter, then a scheduler.
    Everything it needs is tested.

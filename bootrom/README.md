@@ -3,14 +3,15 @@
 Loads a program off the disk and runs it.
 
 ```
-$ make write          # put the cube on the disk at sector 0
+$ make disk           # 100 MB image: MBR + FAT16 partition
+$ make write          # build the payload, copy it in as KERNEL.ROM
 $ make boot           # boot it
 ```
 
 ```
 Sage040 boot ROM
-reading 256 sectors from LBA 0 to 0x00000000
-....
+partition 1 at LBA 2048, type 0x06
+KERNEL.ROM  5948 bytes, first cluster 2
 image SSP = 0x003FFFF0  PC = 0x00000400
 starting
 
@@ -21,6 +22,59 @@ Sage040 wireframe cube
 The Sage040 has no ROM, so this is loaded with QEMU's `-kernel` — but it does
 the job a real machine's ROM monitor would, and everything after it comes off
 the disk.
+
+## The disk is a real MS-DOS disk
+
+Not a FAT-like format of our own — a genuine partitioned FAT16 volume the host
+reads and writes with ordinary tools, no root required:
+
+```
+LBA 0          MBR partition table
+LBA 64         optional raw image, in the boot gap
+LBA 2048       partition 1, type 0x06, FAT16, volume SAGE040
+```
+
+```bash
+mcopy -o -i hd.img@@1M kernel.rom ::/KERNEL.ROM   # replace the kernel
+mdir     -i hd.img@@1M ::/                        # look at the disk
+mmd      -i hd.img@@1M ::/SRC                     # it is just a DOS disk
+```
+
+`make disk` builds it with `sfdisk` and `mkfs.fat --offset`, and `make write`
+is a one-line `mcopy`. `fsck.fat` reports it clean. Requires `mtools`,
+`dosfstools` and `util-linux` on the host.
+
+That is the point of using a real format: replacing the kernel is a file copy,
+not a `dd` at a magic offset, and anything else you leave on the disk is
+readable from Linux without the guest running.
+
+## How the ROM finds the kernel
+
+1. Read sector 0, check the `55 AA` signature, take partition 1's start LBA.
+2. Read the partition's boot sector and parse the BPB — bytes per sector,
+   sectors per cluster, reserved sectors, number of FATs, root entries, FAT
+   size — and from those work out where the FAT, root directory and data area
+   begin.
+3. Scan the root directory for `KERNEL.ROM`, skipping deleted entries,
+   long-name fragments, the volume label and subdirectories.
+4. Follow its cluster chain to address 0, caching one FAT sector so a
+   sequential run does not re-read it.
+5. Jump via the image's reset vectors.
+
+Read-only, FAT16, 8.3 names, root directory only — exactly as much as finding
+one file requires, and about 200 lines.
+
+**Every FAT field is little-endian and this machine is not**, so all of it
+goes through `le16()`/`le32()`. Sector *data*, by contrast, is a byte stream
+and needs no swapping — see the note at the end of this file for what happens
+when those two get conflated.
+
+### If there is no filesystem
+
+It falls back to a raw image at **LBA 64**, in the gap between the partition
+table and the first partition. That keeps a disk with no filesystem bootable;
+`make write-raw` puts one there. All three paths are exercised: file found,
+file missing with a raw image present, and neither.
 
 ## The payload format
 
@@ -66,17 +120,17 @@ make BOOT_SECTORS=512 write boot
 | | |
 |---|---|
 | `make` | build `bootrom.elf` |
-| `make disk` | create `hd.img`, 100 MB |
-| `make write` | build the payload, flatten it, write it from sector 0 |
-| `make boot` | run the machine — ROM loads sector 0 and jumps to it |
+| `make disk` | create `hd.img`, 100 MB, MBR + FAT16 |
+| `make write` | build the payload and copy it in as `KERNEL.ROM` |
+| `make write-raw` | instead put it raw in the boot gap at LBA 64 |
+| `make ls` | partition table and directory listing |
+| `make fsck` | check the filesystem |
+| `make boot` | run the machine — ROM mounts the disk and boots `KERNEL.ROM` |
 | `make clean` | remove build artifacts, keep the disk |
 | `make distclean` | also remove the disk image |
 
-`make write` uses `conv=notrunc`, so it overwrites the first few sectors and
-leaves the remaining 100 MB intact.
-
 To boot something other than the cube, point `PAYLOAD_DIR` and `PAYLOAD_ELF`
-at it. The only requirement is that it links at address 0 with a vector table
+at it — or just `mcopy` your own file in as `KERNEL.ROM`. The only requirement is that it links at address 0 with a vector table
 first — which `../tests/sage040.ld` already does.
 
 ## A bug this found
