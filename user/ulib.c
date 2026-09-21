@@ -46,6 +46,11 @@ static s32 sc3(u32 nr, u32 a1, u32 a2, u32 a3)
     return (s32)d0;
 }
 
+void reboot(int cmd)
+{
+    sc1(__NR_reboot, (u32)cmd);
+}
+
 int open(const char *path, int flags)
 {
     return (int)sc2(__NR_open, (u32)path, (u32)flags);

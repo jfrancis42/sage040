@@ -357,6 +357,18 @@ static inline u32 sm501_bswap32(u32 v)
 #define KBD_CCMD_KBD_TEST   0xAB
 #define KBD_CCMD_KBD_DISABLE 0xAD
 #define KBD_CCMD_KBD_ENABLE 0xAE
+/*
+ * Pulse the output port's low line, which on a PC is wired to the CPU's
+ * RESET. The keyboard controller resetting the processor is the most
+ * famous accident in the IBM PC's design -- there was a spare open-drain
+ * output on the 8042 and nowhere else to put the signal -- and it
+ * outlived every other part of that machine.
+ *
+ * It is the machine's only way to stop, so `shutdown` uses it. Under the
+ * emulator with -no-reboot a guest reset ends the process, which is
+ * exactly what is wanted; on real hardware the board would come back up.
+ */
+#define KBD_CCMD_RESET      0xFE
 
 /* Bits of the command byte. */
 #define KBD_MODE_KBD_INT    0x01   /* interrupt when a byte arrives   */

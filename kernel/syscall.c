@@ -19,8 +19,11 @@
 #include "syscall.h"
 #include "vfs.h"
 #include "exec.h"
+#include "job.h"
+#include "tty.h"
 #include "timer.h"
 #include "dev.h"
+#include "console.h"
 #include "errno.h"
 #include "string.h"
 
@@ -112,15 +115,118 @@ static int do_stime(const time_t *t)
 
 static void do_reboot(int cmd)
 {
-    /*
-     * There is no reset line to pull, so both commands end the same way:
-     * flush anything the filesystem is holding, then stop the CPU. QEMU
-     * keeps running; a harness watching the serial output is what
-     * notices.
-     */
     vfs_sync();
-    (void)cmd;
+
+    /*
+     * RB_HALT_SYSTEM stops the CPU and leaves the machine sitting there,
+     * which is what `halt` has always done here: the emulator keeps
+     * running and a harness watching the serial output is what notices.
+     *
+     * The other two ask for the machine to actually go away, and a
+     * driver may know how to make it. On this board one does -- the
+     * keyboard controller has a reset line, which is how every PC since
+     * 1984 has rebooted itself. If none does, saying so and halting is
+     * better than pretending, because "shutdown" that silently did
+     * nothing would be worse than one that says it cannot.
+     */
+    if ((u32)cmd != RB_HALT_SYSTEM) {
+        if (dev_poweroff() == 0) {
+            /* It worked; the machine is already going. */
+            for (;;) {
+                halt();
+            }
+        }
+        kputln("reboot: nothing on this board can cut the power; halting");
+    }
     halt();
+}
+
+/* --- jobs ---------------------------------------------------------- */
+
+static int info_state(int state)
+{
+    switch (state) {
+    case JOB_NEW:     return JOB_S_NEW;
+    case JOB_RUNNING: return JOB_S_RUNNING;
+    case JOB_STOPPED: return JOB_S_STOPPED;
+    default:          return JOB_S_DONE;
+    }
+}
+
+static int do_jobctl(int cmd, int arg, u32 p)
+{
+    struct job *j;
+
+    switch (cmd) {
+    case JOBCTL_INFO: {
+        struct job_info *out = (struct job_info *)p;
+
+        if (!out) {
+            return -EINVAL;
+        }
+        j = job_nth(arg);
+        if (!j) {
+            return -ENOENT;
+        }
+        out->id = j->id;
+        out->state = info_state(j->state);
+        out->background = j->background;
+        out->status = j->status;
+        out->signalled = j->signalled;
+        strncpy(out->cmd, j->cmd, sizeof(out->cmd) - 1);
+        out->cmd[sizeof(out->cmd) - 1] = '\0';
+        return 0;
+    }
+
+    case JOBCTL_FG:
+        /*
+         * Only a stopped job is resumed here. One that was queued with &
+         * has never run, so there is no context to return into -- the
+         * shell still has its command line and starts it the ordinary
+         * way, which is the same thing with less machinery.
+         */
+        return exec_continue(arg);
+
+    case JOBCTL_BG:
+        j = job_get(arg);
+        if (!j) {
+            return -ENOENT;
+        }
+        /*
+         * Running in the background means running while the shell also
+         * runs, and nothing here can do two things at once yet. The job
+         * keeps its place in the table and stays resumable with fg; what
+         * is missing is a scheduler, and saying so is more use than
+         * quietly running it in the foreground instead.
+         */
+        j->background = 1;
+        return -ENOSYS;
+
+    case JOBCTL_QUEUE:
+        if (!p) {
+            return -EINVAL;
+        }
+        return job_create((const char *)p, 1);
+
+    case JOBCTL_REAP:
+        job_reap();
+        return 0;
+
+    case JOBCTL_DROP:
+        j = job_get(arg);
+        if (!j) {
+            return -ENOENT;
+        }
+        if (j->state == JOB_RUNNING || j->state == JOB_STOPPED) {
+            return -EBUSY;
+        }
+        j->state = JOB_FREE;
+        job_reap();
+        return 0;
+
+    default:
+        return -EINVAL;
+    }
 }
 
 /*
@@ -130,7 +236,7 @@ static void do_reboot(int cmd)
  * approximate, because a call that silently does nothing is far harder
  * to find than one that says it does not exist.
  */
-s32 syscall_dispatch(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
+static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
 {
     (void)a4;
     (void)a5;
@@ -195,6 +301,9 @@ s32 syscall_dispatch(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
     case __NR_spawn:
         return exec_spawn((const char *)a1, (int)a2, (char **)a3);
 
+    case __NR_jobctl:
+        return do_jobctl((int)a1, (int)a2, a3);
+
     case __NR_times:
         return (s32)timer_jiffies();
 
@@ -234,6 +343,58 @@ s32 syscall_dispatch(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
     default:
         return -ENOSYS;
     }
+}
+
+/* ---------------------------------------------------------------- */
+/* How deep in the kernel we are                                     */
+/*                                                                    */
+/* Counted because ctrl-C has to know. Killing a program means        */
+/* throwing its whole stack away, and doing that from the middle of   */
+/* a directory update leaves the directory half written. So a signal  */
+/* raised while the kernel is working waits for the boundary, which   */
+/* is a few instructions away, and one raised while the program is    */
+/* running its own code is delivered by the timer tick straight away. */
+/*                                                                    */
+/* A count rather than a flag: the shell calls system calls too, and  */
+/* spawn runs a whole program from inside one.                        */
+/* ---------------------------------------------------------------- */
+
+static volatile int depth;
+
+int syscall_in_kernel(void)
+{
+    return depth != 0;
+}
+
+/*
+ * A program that was killed or exited left the count wherever it was
+ * when it jumped out, because nothing returned. exec.c calls this once
+ * it is back on its own stack.
+ */
+void syscall_depth_reset(void)
+{
+    depth = 0;
+}
+
+s32 syscall_dispatch(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
+{
+    s32 r;
+
+    depth++;
+    r = do_syscall(nr, a1, a2, a3, a4, a5);
+    depth--;
+
+    /*
+     * The boundary. The kernel has finished whatever it was doing and is
+     * about to hand control back, which makes this the one place a
+     * program can be killed or stopped without leaving anything half
+     * done. Note it happens on the way OUT: a read that was interrupted
+     * has already returned EINTR, and the program never sees it.
+     */
+    if (depth == 0) {
+        job_deliver(JOB_AT_SYSCALL);
+    }
+    return r;
 }
 
 /* ---------------------------------------------------------------- */
@@ -313,6 +474,11 @@ int sys_ioctl(int fd, u32 request, u32 arg)
 int sys_spawn(const char *path, int argc, char **argv)
 {
     return (int)syscall3(__NR_spawn, (u32)path, (u32)argc, (u32)argv);
+}
+
+int sys_jobctl(int cmd, int arg, void *p)
+{
+    return (int)syscall3(__NR_jobctl, (u32)cmd, (u32)arg, (u32)p);
 }
 
 u32 sys_times(void)

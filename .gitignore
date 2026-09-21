@@ -6,6 +6,7 @@
 # Emulator output captured during test runs
 *.out
 *.mon
+*.tmp
 *.usart
 *.usartin
 *.ppm
@@ -30,7 +31,10 @@ kernel/kernel.map
 user/cube
 user/hello
 user/fbtest
+user/shutdown
 
 # Scratch disk and log from kernel/fstest.sh
 kernel/hd-test.img
 kernel/fstest.log
+kernel/hd-edit.img
+kernel/edittest.log

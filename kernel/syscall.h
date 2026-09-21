@@ -29,6 +29,18 @@
 s32 syscall_dispatch(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5);
 
 /*
+ * Is the kernel inside a system call right now?
+ *
+ * Asked by the timer tick before it unwinds a program for ctrl-C: the
+ * answer decides whether throwing the stack away is safe or would leave
+ * a directory half written.
+ */
+int  syscall_in_kernel(void);
+
+/* Put the count back to zero after a program left without returning. */
+void syscall_depth_reset(void);
+
+/*
  * Make a system call the way a user program will -- through the trap,
  * not around it. The kernel's own code uses these so that the gate is
  * exercised by everything, rather than being a path only future user
@@ -55,6 +67,7 @@ int  sys_sync(void);
 int  sys_uname(struct utsname *u);
 int  sys_ioctl(int fd, u32 request, u32 arg);
 int  sys_spawn(const char *path, int argc, char **argv);
+int  sys_jobctl(int cmd, int arg, void *p);
 u32  sys_times(void);
 int  sys_nanosleep(const struct timespec *req, struct timespec *rem);
 void sys_exit(int status);

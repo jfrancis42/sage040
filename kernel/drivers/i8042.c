@@ -174,6 +174,32 @@ static void ring_put(u8 c)
 }
 
 /*
+ * What an extended key sends.
+ *
+ * The same escape sequences a VT100 sends down a serial line, so that
+ * everything above this driver sees one kind of terminal. The line
+ * editor parses these once and works identically whether the person is
+ * typing on the keyboard or on the other end of the wire -- which is
+ * the whole reason to bother: writing a second, scancode-shaped path
+ * for the same four arrow keys would be two things to keep in step.
+ */
+static const char *extended_seq(u8 code)
+{
+    switch (code) {
+    case 0x48: return "\033[A";     /* up        */
+    case 0x50: return "\033[B";     /* down      */
+    case 0x4d: return "\033[C";     /* right     */
+    case 0x4b: return "\033[D";     /* left      */
+    case 0x47: return "\033[H";     /* home      */
+    case 0x4f: return "\033[F";     /* end       */
+    case 0x53: return "\033[3~";    /* delete    */
+    case 0x49: return "\033[5~";    /* page up   */
+    case 0x51: return "\033[6~";    /* page down */
+    default:   return 0;
+    }
+}
+
+/*
  * One scancode in, at most one character out.
  *
  * A key release, a modifier and the second half of an extended sequence
@@ -198,13 +224,23 @@ static void decode(u8 code)
     if (extended) {
         /*
          * Arrows, Home, the right-hand control and alt, and the keypad
-         * divide, all arrive with the 0xE0 prefix. None of them produce
-         * a character this terminal has any use for yet, so they are
-         * consumed rather than translated into something invented.
+         * divide, all arrive with the 0xE0 prefix.
          */
+        const char *seq;
+
         extended = 0;
         if (code == SC_LCTRL) {
             ctrl = !release;        /* right control is E0 1D */
+            return;
+        }
+        if (release) {
+            return;
+        }
+        seq = extended_seq(code);
+        if (seq) {
+            while (*seq) {
+                ring_put((u8)*seq++);
+            }
         }
         return;
     }
@@ -369,6 +405,41 @@ int i8042_present(void)
     return reply == KBD_SELF_TEST_OK;
 }
 
+/*
+ * Reset the machine through the keyboard controller.
+ *
+ * The 8042 has a spare output line, and on the IBM PC it was wired to
+ * the processor's RESET pin because there was nowhere else to put it.
+ * Every PC has rebooted this way since, and QEMU models it: with
+ * -no-reboot a guest-requested reset ends the emulator, which is what
+ * makes `shutdown` able to actually stop this machine.
+ *
+ * Registered with the device model rather than called by name, so that
+ * reboot() does not have to know a keyboard is involved. On a board with
+ * a real power controller, that driver registers instead and nothing
+ * above here changes.
+ *
+ * Returns only if the pulse did not take.
+ */
+static int kbd_poweroff(void)
+{
+    if (kbd_command(KBD_CCMD_RESET) < 0) {
+        return -EIO;
+    }
+    /*
+     * Give it a moment. The reset is asynchronous -- the controller
+     * pulls the line and the machine goes away underneath us -- and
+     * returning "it worked" before it has is a race with nothing to win.
+     */
+    {
+        volatile u32 spin;
+
+        for (spin = 0; spin < 1000000; spin++) {
+        }
+    }
+    return -EIO;                /* still here, so it did not */
+}
+
 int i8042_init(void)
 {
     u8 mode = 0;
@@ -410,6 +481,9 @@ int i8042_init(void)
     if (err < 0) {
         return err;
     }
+
+    /* The one thing on this board that can stop the machine. */
+    dev_register_poweroff(kbd_poweroff);
 
     /* A source only. A keyboard is not somewhere output can go. */
     return tty_add_source(&kbd_dev);

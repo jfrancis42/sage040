@@ -35,6 +35,12 @@ u32    times(void);                  /* ticks since boot */
 int    nanosleep(const struct timespec *req, struct timespec *rem);
 void   msleep(u32 ms);
 void   exit(int status) __attribute__((noreturn));
+/*
+ * Stop the machine. RB_POWER_OFF asks the board to actually go away and
+ * RB_HALT_SYSTEM just stops the processor; whether either is possible is
+ * the kernel's business, not a program's. Does not return if it works.
+ */
+void   reboot(int cmd);
 
 /* Output helpers, all of them eventually write(). */
 void   putch(char c);

@@ -57,6 +57,32 @@ int exec_spawn(const char *path, int argc, char **argv);
  * to exit to. */
 int exec_exit(int status);
 
+/*
+ * End the running program from outside it: ctrl-C.
+ *
+ * Safe to call from an interrupt handler, which exec_exit() is not --
+ * the unwind behind this one puts the interrupt mask back, because
+ * nothing is going to execute an RTE and do it. Never returns.
+ */
+void exec_kill(int status) __attribute__((noreturn));
+
+/*
+ * Resume a stopped job. Returns its exit status, or SPAWN_STOPPED if it
+ * stopped again, or -errno.
+ */
+int exec_continue(int id);
+
+/*
+ * The context switch, in execasm.s.
+ *
+ * exec_stop() saves where the program is and returns to whoever is
+ * waiting for it; exec_resume() does the reverse. Between them they are
+ * the primitive a scheduler is built from, and they are here rather than
+ * in a scheduler because ctrl-Z needed them first.
+ */
+void exec_stop(u32 *saved_sp);
+int  exec_resume(u32 saved_sp);
+
 int exec_running(void);
 
 #endif /* EXEC_H */

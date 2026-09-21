@@ -981,6 +981,62 @@ ioctl(STDIN_FILENO, FIONREAD, (u32)&n);   /* n = 0 or 1 */
 `ulib.h` wraps that as `key_waiting()`, which is what `user/cube.c`
 actually calls.
 
+#### Raw mode, if you want the keystrokes yourself
+
+Canonical mode is the default because most programs want a line. A
+program that wants characters as they arrive — an editor, a game, a
+pager — clears `ICANON` and `ECHO` the way it would on Linux, with
+Linux's `struct termios`:
+
+```c
+struct termios saved, raw;
+
+ioctl(STDIN_FILENO, TCGETS, (u32)&saved);
+raw = saved;
+raw.c_lflag &= ~(u32)(ICANON | ECHO);
+ioctl(STDIN_FILENO, TCSETS, (u32)&raw);
+
+/* read() now returns as soon as anything has arrived */
+
+ioctl(STDIN_FILENO, TCSETS, (u32)&saved);     /* put it back */
+```
+
+**Leave `ISIG` alone.** Clearing it looks like asking for every
+keystroke and means ctrl-C stops working — the one thing a terminal
+must never stop doing. readline does not clear it either.
+
+Putting it back matters less than it looks: a program killed by ctrl-C
+never gets the chance, so the kernel restores the terminal itself when a
+program ends. Restore it anyway, because that will stop being true the
+moment programs are not the only thing running.
+
+`kernel/edit.c` is a worked example of all of this — it is the shell's
+line editor, and nothing in it is privileged.
+
+#### Arrow keys and other escape sequences
+
+Extended keys arrive as VT100 escape sequences from **both** inputs:
+`ESC [ A` through `ESC [ D` for the arrows, `ESC [ H` and `ESC [ F` for
+Home and End, `ESC [ 3 ~` for Delete. The keyboard driver emits the same
+bytes a serial terminal sends, so a program parses them once and does
+not know or care which one it is reading.
+
+#### ctrl-C and ctrl-Z
+
+The terminal raises them on your program; there is no `sigaction()` and
+nothing to catch. ctrl-C ends it with status 130, and it works even if
+you never call the kernel at all — the timer interrupt notices. ctrl-Z
+stops it, and `fg` resumes it from the system call it was in, which
+means **a program that makes no system calls cannot be stopped** (it can
+still be killed). A `read()` interrupted by ctrl-C returns `-EINTR`,
+exactly as it would on Linux.
+
+#### Stopping the machine
+
+`reboot(RB_POWER_OFF)` flushes the filesystem and stops the machine;
+`reboot(RB_HALT_SYSTEM)` stops the processor and leaves it there.
+`user/shutdown.c` is four lines around the first of those.
+
 ### The framebuffer
 
 `/dev/fb0`, drawn with ioctls:
@@ -1069,7 +1125,14 @@ machine it was tuned on.
 ### What a program cannot do yet
 
 - **Run at the same time as another.** One at a time; a nested `spawn`
-  returns `-EBUSY`.
+  returns `-EBUSY`, and so does one attempted while a job is stopped —
+  there is a single program area at 1 MB, and a stopped job is still
+  sitting in it.
+- **Run in the background.** `&` and `bg` are parsed and refused with a
+  reason: nothing can run while the shell runs until there is a
+  scheduler. The job is queued, and `fg` runs it.
+- **Catch a signal.** There is no `sigaction()`. ctrl-C and ctrl-Z are
+  things done *to* a program, not events it can handle.
 - **Run unprivileged.** Programs execute in supervisor mode. The gate is
   in place and the code above it is already on the right side of the
   line, but nothing yet enters user mode with an `RTE`.
@@ -1114,7 +1177,9 @@ devices      /dev/console /dev/tty  the terminal (sources + sinks)
 Worked, tested code for every device is in [`tests/`](tests/) — `t6` for the
 interrupt chain, `t7`/`t8`/`t9` for the MFP, `t3` for ATA, `t4` for ethernet,
 `t5` for the MMU, `t10` for video, `t11` for the clock and its NVRAM, `t12`
-for the keyboard.
+for the keyboard. Two scripted sessions test the system rather than a
+device: `kernel/fstest.sh` for the filesystem and `kernel/edittest.sh`
+for the line editor, history, ctrl-C, ctrl-Z, jobs and `shutdown`.
 
 Driver versions of most of them are in [`kernel/drivers/`](kernel/drivers/), which is
 where to look for code that has to keep working rather than code that only has

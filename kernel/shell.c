@@ -32,6 +32,7 @@
 #include "fbcon.h"
 #include "tty.h"
 #include "dev.h"
+#include "edit.h"
 #include "string.h"
 
 #define LINE_MAX    128
@@ -40,6 +41,9 @@
 #define OUTBUF_SIZE 256
 
 static char line[LINE_MAX];
+/* The line as it was typed, before split() chopped it into pieces. `&`
+ * puts this in the job table and `fg` gets it back. */
+static char cmdline_saved[LINE_MAX];
 static char *argv[MAX_ARGS];
 static u8 iobuf[IOBUF_SIZE];
 
@@ -175,12 +179,13 @@ static void err_usage(const char *usage)
  * `echo` with too many words printed some of them and looked like it had
  * worked, which is a worse failure than refusing.
  */
-static int split(char *s, const char **redir, int *append)
+static int split(char *s, const char **redir, int *append, int *background)
 {
     int argc = 0;
 
     *redir = 0;
     *append = 0;
+    *background = 0;
 
     while (*s) {
         char *tok;
@@ -198,6 +203,16 @@ static int split(char *s, const char **redir, int *append)
         }
         if (*s) {
             *s++ = '\0';
+        }
+
+        /*
+         * A trailing & asks for the background. Only a whole token and
+         * only at the end: `a&b` is a file name on this system, not two
+         * commands, because there is nothing to run two commands with.
+         */
+        if (tok[0] == '&' && tok[1] == '\0') {
+            *background = 1;
+            continue;
         }
 
         if (tok[0] == '>') {
@@ -282,14 +297,36 @@ static void cmd_help(void)
         "uptime               how long the machine has been up\n"
         "console [DEV on|off] show or change where console output goes\n"
         "sync                 flush pending writes to the disk\n"
-        "halt                 stop the machine\n"
+        "jobs                 list stopped and queued jobs\n"
+        "fg [%N]              run a stopped or queued job\n"
+        "bg [%N]              run one in the background (see below)\n"
+        "history              the lines remembered so far\n"
+        "halt                 stop the processor\n"
         "\n"
         "Anything else is looked up as a program on the disk and run --\n"
         "`cube` runs CUBE. Programs have no extension: the kernel decides\n"
         "what is executable by looking at the file, not at its name.\n"
+        "`shutdown` is a program, and stops the machine rather than just\n"
+        "the processor.\n"
         "\n"
         "> FILE and >> FILE redirect output, so `cat > notes.txt` writes\n"
-        "a file and `echo more >> notes.txt` adds to it.\n");
+        "a file and `echo more >> notes.txt` adds to it.\n"
+        "\n"
+        "EDITING, the way bash does it:\n"
+        "  ctrl-A / ctrl-E    start and end of the line   (also Home, End)\n"
+        "  ctrl-B / ctrl-F    back and forward one        (also the arrows)\n"
+        "  ctrl-P / ctrl-N    back and forward in history (also up, down)\n"
+        "  ctrl-R / ctrl-S    search the history, backwards and forwards\n"
+        "  ctrl-U / ctrl-K    delete to the start, to the end\n"
+        "  ctrl-W             delete the word before the cursor\n"
+        "  ctrl-D             delete forwards; on an empty line, end input\n"
+        "\n"
+        "JOBS:\n"
+        "  ctrl-C             end the running program\n"
+        "  ctrl-Z             stop it; `fg` starts it again\n"
+        "  CMD &              queue a job -- but nothing runs in the\n"
+        "                     background until there is a scheduler, so\n"
+        "                     `fg` is what actually runs it\n");
 }
 
 static void print_mode(u32 mode)
@@ -756,6 +793,189 @@ static void cmd_console(int argc, char **args)
 }
 
 /* ---------------------------------------------------------------- */
+/* Jobs                                                              */
+/* ---------------------------------------------------------------- */
+
+/*
+ * `jobs`, `fg` and `bg`, over one system call.
+ *
+ * What can honestly be done today is less than the vocabulary suggests,
+ * and the commands say so rather than pretending. ctrl-Z stops a
+ * program and `fg` resumes it, which works. The background does not:
+ * running a job while the shell also runs needs something to schedule
+ * them, and there is nothing. So `&` records the job and leaves it
+ * ready, and `bg` explains itself.
+ */
+static const char *state_word(int state)
+{
+    switch (state) {
+    case JOB_S_NEW:     return "queued ";
+    case JOB_S_RUNNING: return "running";
+    case JOB_S_STOPPED: return "stopped";
+    default:            return "done   ";
+    }
+}
+
+static void cmd_jobs(void)
+{
+    struct job_info info;
+    int i, any = 0;
+
+    for (i = 0; sys_jobctl(JOBCTL_INFO, i, &info) == 0; i++) {
+        any = 1;
+        out_putc('[');
+        out_putdec((u32)info.id);
+        out_puts("]  ");
+        out_puts(state_word(info.state));
+        out_puts("  ");
+        out_puts(info.cmd);
+        if (info.state == JOB_S_DONE && info.status != 0) {
+            out_puts("  (exit ");
+            out_putdec((u32)info.status);
+            out_putc(')');
+        }
+        out_putc('\n');
+    }
+    if (!any) {
+        out_puts("no jobs\n");
+    }
+    sys_jobctl(JOBCTL_REAP, 0, 0);
+}
+
+/* `fg %2`, `fg 2` or `fg` for the most recent one worth resuming. */
+static int job_arg(int argc, char **args)
+{
+    struct job_info info;
+    int i, best = 0;
+
+    if (argc > 1) {
+        const char *p = args[1];
+        int n = 0;
+
+        if (*p == '%') {
+            p++;
+        }
+        while (*p >= '0' && *p <= '9') {
+            n = n * 10 + (*p++ - '0');
+        }
+        return *p == '\0' ? n : 0;
+    }
+    /* No argument: the highest-numbered job that could be run. */
+    for (i = 0; sys_jobctl(JOBCTL_INFO, i, &info) == 0; i++) {
+        if (info.state == JOB_S_STOPPED || info.state == JOB_S_NEW) {
+            best = info.id;
+        }
+    }
+    return best;
+}
+
+static void report_status(const char *what, int status);
+
+/* Find a job by id and copy out what it is. */
+static int job_lookup(int id, struct job_info *out)
+{
+    int i;
+
+    for (i = 0; sys_jobctl(JOBCTL_INFO, i, out) == 0; i++) {
+        if (out->id == id) {
+            return 0;
+        }
+    }
+    return -ENOENT;
+}
+
+static void run_command(char *cmdline);
+
+static void cmd_fg(int argc, char **args)
+{
+    struct job_info info;
+    int id = job_arg(argc, args);
+    int status;
+
+    if (id <= 0 || job_lookup(id, &info) < 0) {
+        err_puts("fg: no such job\n");
+        return;
+    }
+
+    if (info.state == JOB_S_NEW) {
+        /*
+         * Queued with & and never started, so there is no context to
+         * return into -- the command line is all there is, and running
+         * it is the ordinary path. The job slot goes first so that the
+         * spawn does not trip over its own placeholder.
+         */
+        char cmdline[LINE_MAX];
+        int n;
+
+        strncpy(cmdline, info.cmd, sizeof(cmdline) - 1);
+        cmdline[sizeof(cmdline) - 1] = '\0';
+
+        /*
+         * Strip the & it was queued with. `fg` means run it in the
+         * foreground, and leaving the & on would put it straight back
+         * in the table it was just taken out of.
+         */
+        n = (int)strlen(cmdline);
+        while (n > 0 && (cmdline[n - 1] == ' ' || cmdline[n - 1] == '\t')) {
+            n--;
+        }
+        if (n > 0 && cmdline[n - 1] == '&') {
+            cmdline[n - 1] = '\0';
+        }
+
+        sys_jobctl(JOBCTL_DROP, id, 0);
+        out_puts(cmdline);
+        out_putc('\n');
+        out_flush();
+        run_command(cmdline);
+        return;
+    }
+
+    if (info.state != JOB_S_STOPPED) {
+        err_puts("fg: that job is not stopped\n");
+        return;
+    }
+
+    out_puts(info.cmd);
+    out_putc('\n');
+    out_flush();
+
+    status = sys_jobctl(JOBCTL_FG, id, 0);
+    if (status == SPAWN_STOPPED) {
+        return;                 /* it stopped again; already announced */
+    }
+    if (status < 0) {
+        err_report("fg", status);
+        return;
+    }
+    report_status(info.cmd, status);
+    sys_jobctl(JOBCTL_REAP, 0, 0);
+}
+
+static void cmd_bg(int argc, char **args)
+{
+    struct job_info info;
+    int id = job_arg(argc, args);
+    int err;
+
+    if (id <= 0 || job_lookup(id, &info) < 0) {
+        err_puts("bg: no such job\n");
+        return;
+    }
+    err = sys_jobctl(JOBCTL_BG, id, 0);
+    if (err == -ENOSYS) {
+        err_puts("bg: nothing can run in the background yet -- there is\n");
+        err_puts("    no scheduler. `fg ");
+        err_puts(args[0]);
+        err_puts("` will run it.\n");
+        return;
+    }
+    if (err < 0) {
+        err_report("bg", err);
+    }
+}
+
+/* ---------------------------------------------------------------- */
 
 static int need(int argc, int want, const char *usage)
 {
@@ -794,46 +1014,76 @@ static void redirect_end(void)
     out_fd = STDOUT_FILENO;
 }
 
-void shell(void)
+/*
+ * How a command ended, reported the way a shell reports it.
+ *
+ * Silent on success, and silent on ctrl-C: the terminal already echoed
+ * `^C` and the newline, and "interrupt" on the next line as well would
+ * be saying the same thing twice. Anything else is worth a word.
+ */
+static void report_status(const char *what, int status)
 {
-    for (;;) {
-        const char *redir;
-        int append;
-        int argc;
-        int err;
-        int i;
-        s32 n;
+    if (status == 0 || status == 128 + SIGINT) {
+        return;
+    }
+    err_puts(what);
+    if (status > 128 && status < 128 + 32) {
+        err_puts(status == 128 + SIGTSTP ? ": stopped\n" : ": killed\n");
+        return;
+    }
+    err_puts(": exited ");
+    {
+        char n[12];
+        int i = 0, v = status;
 
-        out_puts("sage$ ");
-        out_flush();
-
-        n = sys_read(STDIN_FILENO, line, sizeof(line) - 1);
-        if (n <= 0) {
-            /* End of input on the terminal. There is nowhere to exit to,
-             * so start a fresh line and carry on. */
-            out_putc('\n');
-            continue;
+        if (v == 0) {
+            n[i++] = '0';
         }
-        if (line[n - 1] == '\n') {
-            n--;
+        while (v > 0) {
+            n[i++] = (char)('0' + v % 10);
+            v /= 10;
         }
-        line[n] = '\0';
+        while (i > 0) {
+            char c = n[--i];
 
-        argc = split(line, &redir, &append);
+            sys_write(STDERR_FILENO, &c, 1);
+        }
+    }
+    err_puts("\n");
+}
+
+/*
+ * Run one command line.
+ *
+ * Separate from the read loop because `fg` on a job that was queued with
+ * & has a command line and no context -- it has to be able to run one
+ * without there being a prompt involved.
+ */
+static void run_command(char *cmdline)
+{
+    const char *redir;
+    int append;
+    int background;
+    int argc;
+    int err;
+    int i;
+
+    {
+        argc = split(cmdline, &redir, &append, &background);
         if (argc == -1) {
             err_puts("syntax error: > needs a file name\n");
-            continue;
+            return;
         }
         if (argc == -2) {
             err_puts("too many arguments\n");
-            continue;
+            return;
         }
         if (argc == 0) {
-            continue;
+            return;
         }
 
         if (redir && redirect(redir, append) != 0) {
-            continue;
+            return;
         }
 
         if (strcmp(argv[0], "help") == 0) {
@@ -926,6 +1176,23 @@ void shell(void)
             out_flush();
             sys_reboot(RB_HALT_SYSTEM);
 
+        } else if (strcmp(argv[0], "jobs") == 0) {
+            cmd_jobs();
+
+        } else if (strcmp(argv[0], "fg") == 0) {
+            cmd_fg(argc, argv);
+
+        } else if (strcmp(argv[0], "bg") == 0) {
+            cmd_bg(argc, argv);
+
+        } else if (strcmp(argv[0], "history") == 0) {
+            for (i = 0; i < edit_history_count(); i++) {
+                out_putdec_pad((u32)i + 1, 4);
+                out_puts("  ");
+                out_puts(edit_history_nth(i));
+                out_putc('\n');
+            }
+
         } else {
             /*
              * Not a builtin, so look for a program of that name. This is
@@ -935,9 +1202,37 @@ void shell(void)
             int status;
 
             out_flush();
+
+            if (background) {
+                /*
+                 * Nothing can run while the shell runs, so the job is
+                 * recorded and left ready rather than started. Saying so
+                 * is better than quietly running it in the foreground,
+                 * which is what `&` would otherwise appear to do -- and
+                 * the person would find out only from the fact that
+                 * their prompt never came back.
+                 */
+                int id = sys_jobctl(JOBCTL_QUEUE, 0, (void *)cmdline_saved);
+
+                if (id < 0) {
+                    err_report("&", id);
+                } else {
+                    out_putc('[');
+                    out_putdec((u32)id);
+                    out_puts("]  queued -- nothing runs in the background "
+                             "until there is a scheduler; `fg ");
+                    out_putdec((u32)id);
+                    out_puts("` runs it\n");
+                }
+                redirect_end();
+                return;
+            }
+
             status = sys_spawn(argv[0], argc, argv);
 
-            if (status == -ENOENT || status == -EINVAL) {
+            if (status == SPAWN_STOPPED) {
+                /* ctrl-Z. Already announced, and listed by `jobs`. */
+            } else if (status == -ENOENT || status == -EINVAL) {
                 /*
                  * EINVAL here means the name could not be a file on this
                  * volume at all -- more than eight characters before the
@@ -951,34 +1246,56 @@ void shell(void)
             } else if (status == -ENOEXEC) {
                 err_puts(argv[0]);
                 err_puts(": not an executable\n");
+            } else if (status == -EBUSY) {
+                err_puts(argv[0]);
+                err_puts(": a stopped job is holding the program area -- "
+                         "finish it with fg first\n");
             } else if (status < 0) {
                 err_report(argv[0], status);
-            } else if (status != 0) {
-                /* Report a non-zero exit the way a shell does when asked:
-                 * quietly enough not to be noise, loudly enough to see. */
-                err_puts(argv[0]);
-                err_puts(": exited ");
-                {
-                    char n[12];
-                    int i = 0, v = status;
-
-                    if (v == 0) {
-                        n[i++] = '0';
-                    }
-                    while (v > 0) {
-                        n[i++] = (char)('0' + v % 10);
-                        v /= 10;
-                    }
-                    while (i > 0) {
-                        char c = n[--i];
-
-                        sys_write(STDERR_FILENO, &c, 1);
-                    }
-                }
-                err_puts("\n");
+            } else {
+                report_status(argv[0], status);
+                sys_jobctl(JOBCTL_REAP, 0, 0);
             }
         }
 
         redirect_end();
+    }
+}
+
+/*
+ * The prompt loop.
+ *
+ * All the editing is in edit.c, above the system call boundary, the way
+ * a shell's is. What is left here is what a shell's loop actually is:
+ * read a line, remember it, run it.
+ */
+void shell(void)
+{
+    for (;;) {
+        int n = edit_readline("sage$ ", line, (int)sizeof(line));
+
+        if (n == -EINTR) {
+            continue;           /* ctrl-C: a fresh prompt, nothing run */
+        }
+        if (n < 0) {
+            /* End of input on the terminal. There is nowhere to exit to,
+             * so start a fresh line and carry on. */
+            out_putc('\n');
+            out_flush();
+            continue;
+        }
+        if (n == 0) {
+            continue;
+        }
+
+        /*
+         * Kept before split() chops it into pieces, because & needs the
+         * whole line to put in the job table and `fg` needs it back.
+         */
+        strncpy(cmdline_saved, line, sizeof(cmdline_saved) - 1);
+        cmdline_saved[sizeof(cmdline_saved) - 1] = '\0';
+
+        edit_history_add(line);
+        run_command(line);
     }
 }

@@ -67,26 +67,32 @@ takes. The disk image lives in the project root — see
 ## The shape of it
 
 ```
-                shell.c            a program that happens to be linked in
+            shell.c  edit.c        programs that happen to be linked in
    ------------------------------  trap #0
                 syscall.c          open read write lseek stat getdents ...
-                 vfs.c             paths, mounts, the descriptor table
+              vfs.c    job.c       descriptors; jobs and signals
         +-----------+-----------+
      fs/fat16.c           dev.c    filesystem types, device registries
         |                   |
    struct blockdev     chardev / netdev / rtcdev / timerdev / fbdev
         |                   |
-   drivers/ata.c       drivers/ns16550.c  m48t59.c  mfp.c
+   drivers/ata.c       drivers/ns16550.c  i8042.c  m48t59.c  mfp.c
                        sm501.c  smc91c111.c
 ```
 
 The layering is the point, so it is worth saying what it buys:
 
-- **`shell.c` includes `syscall.h` and nothing else from the kernel.**
-  Not `vfs.h`, not `dev.h`, not `console.h`. It cannot reach the
-  filesystem or a chip even by accident, which is how a claim like
-  "programs will run unprivileged later" stays true instead of becoming
-  a plan.
+- **The shell reaches the filesystem, the disk and the terminal only
+  through `trap #0`.** Every command in it — `ls`, `cat`, `date`, `fg` —
+  is system calls and nothing else, which is how a claim like "programs
+  will run unprivileged later" stays true instead of becoming a plan.
+  (`cmd_console` is the one exception, and it is listed below.)
+- **The line editor is above the boundary too.** `edit.c` does what
+  readline does: turn off `ICANON` and `ECHO` with `TCSETS`, read
+  characters, and do the editing, the history and the searching itself.
+  It includes `syscall.h` and nothing else, and it would compile
+  unchanged as an ordinary program. A kernel that remembered the last
+  sixteen things you typed would be a kernel doing a shell's job.
 - **The filesystem talks to a `struct blockdev`.** It asks for sector
   2048; it has no idea an ATA taskfile answers. A SCSI controller or a
   RAM disk is a new file in `drivers/` and one more line in `main.c`.
@@ -118,18 +124,22 @@ recognise.
 exit(1) read(3) write(4) open(5) close(6) unlink(10) time(13) lseek(19)
 stime(25) rename(38) times(43) ioctl(54) reboot(88) statfs(99) stat(106)
 fsync(118) uname(122) getdents(141) nanosleep(162) sync(166)
-spawn(400)
+spawn(400) jobctl(401)
 ```
 
-Two are not Linux's. `spawn` is above 400 because Linux has no such call
-— see below. `sync` is 166 rather than Linux's 36, which would have
-collided with this table's own use of 36–38. Everything else is Linux's
-number exactly.
+Three are not Linux's. `spawn` and `jobctl` are above 400 because Linux
+has no such calls — see below. `sync` is 166 rather than Linux's 36,
+which would have collided with this table's own use of 36–38. Everything
+else is Linux's number exactly.
 
-`reboot()` takes `RB_HALT_SYSTEM` or `RB_AUTOBOOT` and both do the same
-thing: flush the filesystem and stop the CPU. There is no reset line to
-pull, and QEMU keeps running — a harness watching the serial output is
-what notices.
+`ioctl` carries the terminal settings as well as the framebuffer's:
+`TCGETS` and `TCSETS` with Linux's `struct termios`, which is what the
+shell's line editor uses to turn canonical mode off.
+
+`reboot()` takes `RB_HALT_SYSTEM`, which stops the processor, or
+`RB_POWER_OFF`, which asks the board to actually go away — on this
+machine through the keyboard controller's reset line. See **Stopping the
+machine** below.
 
 Errors are Linux's too, by name and by number: `-ENOENT` is -2 here for
 the same reason it is -2 there. There is no global `errno` — a variable
@@ -153,6 +163,15 @@ correct while every caller shares the kernel's address space, and it is
 the function that will have to validate and copy them when that stops
 being true. The MMU is not turned on, so there is no address space to
 separate yet.
+
+**`cmd_console` in `shell.c` calls `tty_sink()` and `tty_source()`
+directly**, and so `shell.c` includes `tty.h` and `dev.h`. It is the
+only command that does, and it is a real break in the rule the rest of
+the file keeps: listing where console output goes is not something a
+program can ask through a system call yet. The fix is an ioctl on
+`/dev/console` that reports and enables sinks, and then the two includes
+come out. Until then this is stated here rather than quietly tolerated,
+because the value of the rule is that the exceptions are countable.
 
 ## Running programs
 
@@ -383,6 +402,131 @@ the ctrl-U or ctrl-D the line discipline is looking for. The `0xE0`
 extended sequences are consumed rather than turned into something
 invented, except for right control, which is real.
 
+## Editing a line
+
+The shell's line editor is `edit.c`, and the thing worth knowing about
+it is where it is: **above the system call boundary**, exactly where
+bash keeps readline. It sets the terminal to raw mode and does the work
+itself.
+
+```
+ctrl-A  ctrl-E     start and end of the line        Home, End
+ctrl-B  ctrl-F     back and forward one character   left, right
+ctrl-P  ctrl-N     back and forward in history      up, down
+ctrl-R  ctrl-S     search the history               ctrl-G abandons it
+ctrl-U  ctrl-K     delete to the start, to the end
+ctrl-W             delete the word before the cursor
+ctrl-D             delete forwards; end input on an empty line
+```
+
+Raw mode is Linux's termios, with Linux's numbers: `TCGETS` and `TCSETS`
+on descriptor 0, `ICANON` and `ECHO` cleared in `c_lflag`. **`ISIG` is
+deliberately left set**, which is what readline does and for the same
+reason — turning off every special character looks like "give me
+everything" and would mean ctrl-C stopped working, which is the one
+thing a terminal must never stop doing.
+
+Two constraints shaped the rest of it.
+
+**There are no cursor escapes.** The framebuffer console understands
+carriage return, backspace, tab and newline and drops everything else,
+so an editor written with `ESC [ nD` would work perfectly over the
+serial line and do nothing at all on the screen. Every movement here is
+built from `\r` and `\b`. That turns out to cost nothing: an editor that
+never leaves one line does not need more.
+
+**Redrawing is expensive on one of the two sinks.** A character on the
+serial line is a byte; on the framebuffer it is 128 pixels drawn
+individually. So nothing is redrawn that does not have to be. Typing at
+the end of the line — almost everything anyone does — echoes exactly one
+character. Moving left is backspaces; moving right re-echoes the
+characters passed over, which are already on screen and identical. Only
+an edit in the middle rewrites anything, and only as far as the end of
+the line.
+
+Arrow keys work from both inputs because `drivers/i8042.c` emits the
+same VT100 sequences a serial terminal sends. There is one escape
+parser, and it does not know which one it is reading.
+
+If the terminal refuses raw mode, the editor falls back to the kernel's
+own line assembly. Nothing does today, but that is the path a pipe or a
+file would take.
+
+## Jobs, ctrl-C and ctrl-Z
+
+A job is one command the shell started. They exist because ctrl-C has to
+be aimed somewhere, and because `fg %2` has to mean something.
+
+The terminal recognises the interrupt and suspend characters — `c_cc`,
+`VINTR` and `VSUSP` — and raises a signal on the foreground job. That is
+all it does: `job_signal_fg()` records a number, because it is called
+from interrupt context as often as not. What actually happens to the
+program happens in `job_deliver()`, and **where it is called from
+decides what it is allowed to do**:
+
+| Site | ctrl-C | ctrl-Z |
+|------|--------|--------|
+| `JOB_AT_SYSCALL` — the boundary of a system call | yes | yes |
+| `JOB_AT_TICK` — the timer interrupt, program in its own code | yes | deferred |
+
+Killing a program means discarding its whole stack. That is safe at a
+system call boundary, where the kernel has finished, and safe from the
+tick, where the kernel was never involved — but **not** from inside a
+system call, where the filesystem might be halfway through a directory
+entry. So `syscall.c` counts how deep in the kernel it is and the tick
+checks the count before doing anything.
+
+The tick is what makes ctrl-C work at all on a program like `cube`,
+which reads no input: nobody is looking at the keyboard while it spins,
+so a hundred times a second the tick looks instead. Anything it finds
+that is not a signal is pushed back and handed to the next reader in
+order.
+
+Stopping is different, because stopping means coming back. `exec_stop()`
+and `exec_resume()` in `execasm.s` are a context switch — each saves the
+callee-saved registers and the stack pointer in the frame layout
+`exec_call` already uses, and jumps to where the other left off. That
+works from a system call boundary, which is a C call boundary; it does
+not work from an arbitrary instruction, which would need every register
+and the program counter saved out of the exception frame. So a program
+that makes no system calls can be killed but not stopped, and the signal
+simply stays pending until it makes one.
+
+### What does not work yet, and why
+
+`&` and `bg` are parsed, tracked, and refused with a reason. Running a
+job in the background means running it while the shell also runs, and
+there is nothing to schedule two things. The job goes in the table and
+`fg` runs it. Quietly running it in the foreground instead would look
+like `&` working, and the person would find out only when their prompt
+never came back.
+
+A stopped job holds the program area, so nothing else can start while
+one exists — there is one image area at 1 MB and one program stack, and
+a second program would load straight over a stopped one. `exec.c`
+refuses the spawn rather than leaving that in a comment. It goes away
+with an MMU.
+
+## Stopping the machine
+
+`halt` stops the processor. `shutdown` stops the machine, and how it
+does it is a real piece of the hardware rather than an emulator
+courtesy: the Intel 8042 has a spare output line which on the IBM PC was
+wired to the processor's RESET pin, because there was nowhere else to
+put it. Every PC since has rebooted by asking its keyboard controller to
+do it, and this board inherited the part and the trick.
+
+`reboot(RB_POWER_OFF)` flushes the filesystem and asks the device model
+whether anything can cut the power; `drivers/i8042.c` registered itself
+as the thing that can. If nothing had, the kernel says so and halts
+instead of pretending.
+
+Under QEMU with `-no-reboot`, a guest-requested reset ends the process —
+so the machine stopping and the emulator exiting are the same event.
+**Every QEMU invocation in this tree passes `-no-reboot`.** Without it,
+the one command whose whole job is getting out would restart the machine
+instead.
+
 ## The filesystem
 
 FAT16, read and write, registered as the type `fat16` and mounted on
@@ -494,11 +638,18 @@ uname [-a]           system name, or name and version
 uptime               how long the machine has been up
 console [NAME on|off] show or change where console output goes
 sync                 flush pending writes
-halt                 stop the machine
+jobs                 list stopped and queued jobs
+fg [%N]              run a stopped or queued job
+bg [%N]              run one in the background — see Jobs, above
+history              the lines remembered so far
+halt                 stop the processor
 
 > FILE and >> FILE redirect output
+CMD &                queue a job
 
-Anything else is looked up as a program on the disk and run.
+Anything else is looked up as a program on the disk and run —
+including `shutdown`, which stops the machine rather than the
+processor.
 ```
 
 `cat > notes.txt` is how you write a file, because that is how a Unix
@@ -520,18 +671,21 @@ command. Errors go to descriptor 2 even when output is redirected.
 | `trap.c` | exception reporting |
 | `string.c` | `memcpy` and friends; there is no C library |
 | `errno.c` | error numbers as words, for every message the system prints |
-| `exec.c` | the ELF loader, and running a program |
+| `exec.c` | the ELF loader, running a program, stopping and resuming one |
+| `job.c` | the job table, and where ctrl-C and ctrl-Z land |
+| `edit.c` | the line editor and its history — a program, not a kernel facility |
 | `timer.c` | jiffies, and sleeping on them |
 | `fb.c` | /dev/fb0, and the drawing a driver did not do itself |
 | `tty.c` | the line discipline, and the fan-out to sinks |
 | `fbcon.c` | /dev/fbcon, the text console |
 | `font8x16.c` | the IBM PC font, and where it came from |
-| `execasm.s` | the stack switch into a program and the unwind out of it |
+| `execasm.s` | the stack switch into a program, the unwind out, and the context switch between |
 | `probe.c` | CPU, FPU and memory — the parts with no driver |
-| `shell.c` | a program, reaching the kernel only through `trap #0` |
+| `shell.c` | a program, reaching the kernel through `trap #0` (bar one command) |
 | `version.c` | the version and build stamp, defined once |
 | `uapi.h` | what crosses the system call boundary |
 | `drivers/` | `ns16550.c` `i8042.c` `ata.c` `m48t59.c` `mfp.c` `sm501.c` `smc91c111.c` |
 | `fs/fat16.c` | FAT16, read and write |
 | `fstest.sh` | scripted session, verified with host tools |
+| `edittest.sh` | the editor, history, ctrl-C, ctrl-Z, jobs and shutdown |
 | `kernel.ld` | vectors at 0, text at 0x400, stack at the top of RAM |

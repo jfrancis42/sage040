@@ -24,6 +24,11 @@ ksize_t strlen(const char *s);
 int     strcmp(const char *a, const char *b);
 int     strncmp(const char *a, const char *b, ksize_t n);
 char   *strcpy(char *dst, const char *src);
+/* Truncates rather than overruns, and does NOT terminate if it filled
+ * the buffer -- the standard's behaviour, warts and all, so that code
+ * written against it behaves the same here. Callers terminate. */
+char   *strncpy(char *dst, const char *src, ksize_t n);
+char   *strchr(const char *s, int c);
 int     stricmp(const char *a, const char *b);
 
 #endif /* KERNEL_STRING_H */

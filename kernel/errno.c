@@ -19,11 +19,14 @@ const char *strerror(int err)
     case 0:               return "success";
     case EPERM:           return "operation not permitted";
     case ENOENT:          return "no such file or directory";
+    case EINTR:           return "interrupted system call";
     case EIO:             return "input/output error";
     case ENXIO:           return "no such device or address";
     case E2BIG:           return "argument list too long";
     case ENOEXEC:         return "exec format error";
     case EBADF:           return "bad file descriptor";
+    case ECHILD:          return "no child processes";
+    case EAGAIN:          return "resource temporarily unavailable";
     case ENOMEM:          return "cannot allocate memory";
     case EACCES:          return "permission denied";
     case EBUSY:           return "device or resource busy";

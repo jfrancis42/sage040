@@ -128,3 +128,29 @@ int stricmp(const char *a, const char *b)
         }
     }
 }
+
+char *strncpy(char *dst, const char *src, ksize_t n)
+{
+    ksize_t i;
+
+    for (i = 0; i < n && src[i]; i++) {
+        dst[i] = src[i];
+    }
+    /* The standard pads the rest with NULs rather than stopping, which
+     * is the part everybody forgets and the part that makes it safe to
+     * use on a fixed buffer that will be compared byte for byte. */
+    for (; i < n; i++) {
+        dst[i] = '\0';
+    }
+    return dst;
+}
+
+char *strchr(const char *s, int c)
+{
+    for (; *s; s++) {
+        if (*s == (char)c) {
+            return (char *)s;
+        }
+    }
+    return c == '\0' ? (char *)s : 0;
+}

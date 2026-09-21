@@ -47,6 +47,62 @@
 #define FIONREAD      0x541B
 
 /*
+ * Terminal settings, Linux's numbers and Linux's structure.
+ *
+ * The reason these exist is that the line editor belongs in the shell,
+ * not in the kernel. bash does not ask the kernel for history or for
+ * ctrl-A; it turns canonical mode off and does the editing itself, in
+ * readline, in userspace. Doing the same here keeps the kernel's
+ * terminal small -- it assembles a line, or it hands over characters as
+ * they arrive -- and means the editor moves across the privilege
+ * boundary unchanged when programs stop running as the kernel.
+ *
+ * Not every flag is honoured. The ones that are, are the ones that
+ * change behaviour: ICANON, ECHO and ISIG on the way in, ICRNL and
+ * ONLCR on the translations, and the c_cc entries for the characters
+ * that mean something. The rest are accepted and stored so that a
+ * program can read back what it wrote, because a get/set pair that
+ * quietly drops fields is worse than one that refuses them.
+ */
+#define TCGETS        0x5401
+#define TCSETS        0x5402
+#define TCSETSW       0x5403    /* no output queue to drain: same as TCSETS */
+#define TCSETSF       0x5404    /* flushes input as well                   */
+
+#define NCCS          19
+
+struct termios {
+    u32 c_iflag;
+    u32 c_oflag;
+    u32 c_cflag;
+    u32 c_lflag;
+    u8  c_line;
+    u8  c_cc[NCCS];
+};
+
+/* c_iflag */
+#define ICRNL         0x0100    /* carriage return arrives as newline */
+
+/* c_oflag */
+#define OPOST         0x0001    /* do output processing at all        */
+#define ONLCR         0x0004    /* newline goes out as CR LF          */
+
+/* c_lflag */
+#define ISIG          0x0001    /* INTR and SUSP raise signals        */
+#define ICANON        0x0002    /* assemble whole lines               */
+#define ECHO          0x0008    /* echo what arrives                  */
+
+/* c_cc indices, Linux's order. */
+#define VINTR         0
+#define VQUIT         1
+#define VERASE        2
+#define VKILL         3
+#define VEOF          4
+#define VTIME         5
+#define VMIN          6
+#define VSUSP         10
+
+/*
  * Framebuffer ioctls, on /dev/fb0.
  *
  * Drawing through ioctl rather than through system calls of its own: a
@@ -191,6 +247,50 @@ struct statfs {
  * number goes away.
  */
 #define __NR_spawn     400
+#define __NR_jobctl    401
+
+/*
+ * What spawn() returns when the program was stopped by ctrl-Z rather
+ * than finishing. It is still in the job table, still holding the
+ * program area, and `fg` will resume it.
+ *
+ * Not an errno, because nothing went wrong, and not a plausible exit
+ * status either -- an exit status is a byte on any system that has
+ * waitpid, so nothing can legitimately return this.
+ */
+#define SPAWN_STOPPED  0x7fffffff
+
+/*
+ * jobctl() - ask about, or act on, the shell's jobs.
+ *
+ * Local to this system, like spawn, and for the same reason: Linux does
+ * this with fork, waitpid, kill and tcsetpgrp, none of which mean
+ * anything without processes. One call with a command keeps the
+ * placeholder small and obvious rather than spreading four fictional
+ * Linux numbers through the table. It goes away in the same change that
+ * makes spawn into fork and execve.
+ */
+#define JOBCTL_INFO    0        /* a2 = struct job_info *, by index  */
+#define JOBCTL_FG      1        /* resume a stopped job              */
+#define JOBCTL_BG      2        /* run one in the background         */
+#define JOBCTL_QUEUE   3        /* a2 = command line; create JOB_NEW */
+#define JOBCTL_REAP    4        /* forget the finished ones          */
+#define JOBCTL_DROP    5        /* forget one by id                  */
+
+/* Job states, as JOBCTL_INFO reports them. */
+#define JOB_S_NEW      1
+#define JOB_S_RUNNING  2
+#define JOB_S_STOPPED  3
+#define JOB_S_DONE     4
+
+struct job_info {
+    int  id;
+    int  state;
+    int  background;
+    int  status;
+    int  signalled;
+    char cmd[128];
+};
 
 /*
  * times() here returns ticks since boot and takes no struct tms: there
@@ -223,8 +323,27 @@ struct utsname {
     char version[32];
 };
 
+/*
+ * Signals.
+ *
+ * Only the ones the terminal can raise, with Linux's numbers. There is
+ * no sigaction() and no handler: a signal here is something the kernel
+ * does TO a job, not something a program catches. That is enough for
+ * what a terminal needs -- interrupt, stop, continue -- and it is the
+ * part that has to exist before ctrl-C can mean anything.
+ *
+ * A program killed by one exits with 128 + the number, which is the
+ * convention every Unix shell reports and the one `echo $?` would show.
+ */
+#define SIGINT          2
+#define SIGKILL         9
+#define SIGTERM         15
+#define SIGCONT         18
+#define SIGTSTP         20      /* ctrl-Z */
+
 /* reboot() commands, Linux's magic values cut down to what is useful. */
 #define RB_HALT_SYSTEM  0xcdef0123
 #define RB_AUTOBOOT     0x01234567
+#define RB_POWER_OFF    0x4321fedc
 
 #endif /* UAPI_H */

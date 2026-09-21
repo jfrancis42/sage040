@@ -203,4 +203,25 @@ int  dev_register_net(struct netdev *n);
 struct netdev *dev_find_net(const char *name);
 struct netdev *dev_first_net(void);
 
+/* ---------------------------------------------------------------- */
+/* Cutting the power                                                 */
+/*                                                                    */
+/* Not a class of device, because it is not a device: it is one thing */
+/* that one chip on the board happens to be able to do. On this       */
+/* machine the keyboard controller can pull the reset line, which is  */
+/* how every PC since 1984 has rebooted itself -- an accident of the  */
+/* IBM PC's design that outlived every other part of it.              */
+/*                                                                    */
+/* Registered rather than called by name so that reboot() does not    */
+/* have to know that, which is the same reason everything else here   */
+/* is a structure of function pointers. A board with a power          */
+/* controller registers that instead and nothing above changes.       */
+/* ---------------------------------------------------------------- */
+
+void dev_register_poweroff(int (*fn)(void));
+
+/* Returns 0 if something took it -- in which case the machine is on its
+ * way out and this may not return at all -- or -ENODEV if nothing on
+ * this board can. */
+int  dev_poweroff(void);
 #endif /* DEV_H */

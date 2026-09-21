@@ -53,4 +53,19 @@ struct chardev *tty_source(int index);
 
 struct chardev *tty_device(void);
 
+/*
+ * Look for an interrupt or stop character, from the timer tick.
+ *
+ * Only useful while a program is running and reading nothing -- which is
+ * exactly the program that would otherwise be impossible to interrupt.
+ * Anything it finds that is not a signal is handed to the next reader
+ * untouched.
+ */
+void tty_poll_signals(void);
+
+/* Canonical mode, echo on, signals on: the state a shell hands to a
+ * program, and the state to put back after one that changed it was
+ * killed before it could. */
+void tty_reset(void);
+
 #endif /* TTY_H */

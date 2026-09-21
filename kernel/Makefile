@@ -49,7 +49,7 @@ LDFLAGS  := $(CPUFLAGS) -ffreestanding -nostdlib -T kernel.ld \
 # the first group names a chip; everything in the second does, and only
 # there.
 SRCS := main.c version.c console.c trap.c syscall.c vfs.c dev.c \
-        time.c timer.c errno.c string.c exec.c tty.c fb.c fbcon.c \
+        time.c timer.c errno.c string.c exec.c job.c tty.c edit.c fb.c fbcon.c \
         font8x16.c \
         probe.c shell.c \
         drivers/ns16550.c drivers/ata.c drivers/m48t59.c \
@@ -82,8 +82,14 @@ kernel.rom: kernel.elf
 
 # Run the kernel straight from the ELF. Quicker to iterate on than a full
 # boot, and the disk is attached either way, so the filesystem works.
+#
+# -no-reboot is what makes `shutdown` work. The machine stops by telling
+# the keyboard controller to pull the reset line, the way a PC always
+# has; without this the emulator would dutifully reset and start over,
+# and the one command whose whole job is getting out would be the one
+# that could not.
 run: kernel.elf $(DISK)
-	$(QEMU) $(MACHINE) -kernel kernel.elf \
+	$(QEMU) $(MACHINE) -no-reboot -kernel kernel.elf \
 	    -drive file=$(DISK),format=raw,if=ide \
 	    -serial mon:stdio
 

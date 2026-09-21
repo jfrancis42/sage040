@@ -365,6 +365,13 @@ nothing is stubbed. 11 programs, all passing.
 | `t11-rtc` | NVRAM is real memory and does not alias onto the clock, the oscillator advances, a written date reads back, and 30 February rolls into 1 March |
 | `t12-kbd` | Self test, the command byte, and which scancode set arrives — `a` as `0x1E` not `0x1C`, a release as `0x9E` with no `0xF0` prefix. Keys injected through QEMU's monitor |
 
+Two scripted sessions check the system rather than a device.
+`kernel/fstest.sh` drives the filesystem from the console and verifies
+the result with the host's own MS-DOS tools — 31 checks. `kernel/edittest.sh`
+drives the line editor, the history, ctrl-C, ctrl-Z, jobs and `shutdown`
+by writing control characters into the serial line, which the editor
+cannot tell from a keyboard — 23 checks. `make test` runs all three.
+
 ### Booting from disk
 
 `bootrom/` is a boot ROM that mounts a **real MS-DOS disk**, finds
@@ -520,8 +527,16 @@ is the beginning of an operating system rather than a port of one. Bare metal
 still works and is still the point: the test suite and the cube run with no
 kernel underneath them at all.
 
+The shell has the editing a shell should have — ctrl-A, ctrl-E, the
+arrow keys, history, ctrl-R to search it — done above the system call
+boundary in `edit.c`, the way bash keeps that work in readline rather
+than in the kernel. ctrl-C ends a running program and ctrl-Z stops one,
+which `fg` then resumes.
+
 What is not there yet: preemption, more than one program at a time, user
-mode, and a TCP/IP stack. Input is still polled, though both the keyboard
+mode, and a TCP/IP stack. `&` and `bg` are parsed and refused with a
+reason rather than faked — nothing can run while the shell runs until
+there is a scheduler. Input is still polled, though both the keyboard
 and the serial port have interrupt lines wired to the MFP. The ethernet
 driver exists and registers `eth0`, but nothing above it sends a packet
 yet. `design.md` tracks what is decided and what is not.

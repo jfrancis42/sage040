@@ -366,7 +366,7 @@ supervisor mode from its first instruction and never leaves it.
 ### The shape
 
 ```
-              shell.c            a program that happens to be linked in
+          shell.c  edit.c        programs that happen to be linked in
  ------------------------------  trap #0
               syscall.c          open read write lseek stat getdents ...
                vfs.c             paths, mounts, the descriptor table
@@ -382,9 +382,16 @@ supervisor mode from its first instruction and never leaves it.
 Three properties are worth stating because they are what the layering is
 for, and each is checkable rather than aspirational:
 
-- **`shell.c` includes `syscall.h` and nothing else from the kernel.** Not
-  `vfs.h`, not `dev.h`, not `console.h`. It cannot reach a filesystem or a
-  chip even by accident.
+- **The shell reaches the filesystem, the disk and the terminal only
+  through `trap #0`.** Every command in it is system calls and nothing
+  else. One exception is known and listed in `kernel/README.md`:
+  `cmd_console` calls `tty_sink()` directly, because there is no ioctl
+  yet for asking where console output goes.
+- **The line editor is above the boundary too.** `edit.c` clears
+  `ICANON` and `ECHO` with `TCSETS` and does the editing, the history
+  and the searching itself, which is where bash keeps that work. It
+  includes `syscall.h` and nothing else and would compile unchanged as
+  an ordinary program.
 - **The filesystem talks to a `struct blockdev`** and has no idea an ATA
   taskfile answers. A SCSI controller or a RAM disk is a new file in
   `drivers/` and one more line in `main.c`.
@@ -566,6 +573,26 @@ memory probe walking off the end of RAM, faulting address in `a0`.
    already does.
 3. **A scheduler.** The tick exists and drives `nanosleep`; what it does not
    yet do is preempt anything, because there is only one thing to run.
+
+   **Two thirds of the plumbing is already there, and it was put there
+   by ctrl-Z rather than planned.** `job.c` holds a table of jobs with
+   states and pending signals; `exec_stop()` and `exec_resume()` in
+   `execasm.s` are a context switch — each saves the callee-saved
+   registers and the stack pointer and jumps to where the other left
+   off. `fg` on a stopped job uses exactly that. What a scheduler adds
+   is a run queue, a decision at the tick, and a **full** context save:
+   today a job can only be stopped at a system call boundary, because
+   resuming from an arbitrary instruction means saving every register
+   and the program counter out of the exception frame. ctrl-C already
+   does unwind from the tick, so the interrupt-side half of that is
+   proven.
+
+   Two things are refused today for want of it, and both are enforced
+   rather than documented. `&` and `bg` record a job and say plainly
+   that nothing can run in the background yet. And only one program can
+   be loaded at a time — a stopped job holds the image area at 1 MB, so
+   `exec.c` refuses a second spawn instead of loading over it. That one
+   goes away with the MMU rather than the scheduler.
 4. **An interrupt-driven console.** The UART's IRQ already reaches MFP channel
    7 and `t6` proves the whole path. `kgetc()` takes from a ring buffer instead
    of the line status register and nothing above it moves.

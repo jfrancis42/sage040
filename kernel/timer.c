@@ -5,13 +5,37 @@
  */
 #include "timer.h"
 #include "dev.h"
+#include "tty.h"
+#include "job.h"
+#include "exec.h"
+#include "syscall.h"
 #include "errno.h"
 
 volatile u32 jiffies;
 
+/*
+ * Called from the timer driver's interrupt handler.
+ *
+ * Counting is the obvious half. The other half is why ctrl-C works at
+ * all on a program that never calls the kernel: nobody is reading the
+ * keyboard while a cube spins, so nobody would ever see the keystroke.
+ * A hundred times a second this looks for one, and if it is the
+ * interrupt character the program is unwound from here.
+ *
+ * Only while a program is running, and only while the kernel is not in
+ * the middle of a system call -- an unwind from inside one would leave
+ * whatever it was doing half done. In every other case this is two
+ * comparisons and a return.
+ */
 void timer_tick(void)
 {
     jiffies++;
+
+    if (!exec_running() || syscall_in_kernel()) {
+        return;
+    }
+    tty_poll_signals();
+    job_deliver(JOB_AT_TICK);
 }
 
 u32 timer_jiffies(void)

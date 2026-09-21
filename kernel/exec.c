@@ -26,6 +26,9 @@
  */
 #include "exec.h"
 #include "vfs.h"
+#include "job.h"
+#include "tty.h"
+#include "syscall.h"
 #include "console.h"
 #include "errno.h"
 #include "string.h"
@@ -73,6 +76,7 @@ static u32 be32(const u8 *p)
 
 extern int exec_call(u32 entry, u32 stack_top, int argc, char **argv);
 extern void exec_longjmp(int status) __attribute__((noreturn));
+extern void exec_abort(int status) __attribute__((noreturn));
 
 static int running;
 
@@ -94,6 +98,20 @@ int exec_exit(int status)
     running = 0;
     exec_longjmp(status);
     return 0;                   /* not reached */
+}
+
+/*
+ * Killed rather than exited: ctrl-C.
+ *
+ * Goes out through exec_abort rather than exec_longjmp because the
+ * caller may be the timer interrupt handler, where the interrupt mask
+ * has to be put back by hand -- nothing is going to execute an RTE and
+ * restore it. The two are otherwise the same unwind.
+ */
+void exec_kill(int status)
+{
+    running = 0;
+    exec_abort(status);
 }
 
 /* --- loading -------------------------------------------------------- */
@@ -231,14 +249,60 @@ static int load_image(int fd, u32 *entry)
     return loaded > 0 ? 0 : -ENOEXEC;
 }
 
+/* The command line, for the job table to show and for `fg` to name. */
+static void describe(char *out, u32 max, int argc, char **argv)
+{
+    u32 n = 0;
+    int i;
+
+    for (i = 0; i < argc && n + 1 < max; i++) {
+        const char *p = argv[i];
+
+        if (i > 0) {
+            out[n++] = ' ';
+        }
+        while (*p && n + 1 < max) {
+            out[n++] = *p++;
+        }
+    }
+    out[n] = '\0';
+}
+
+/*
+ * Is a stopped job holding the program area?
+ *
+ * There is one image area and one program stack, so a second program
+ * would load straight over a stopped one -- and `fg` would then resume
+ * into whatever had replaced it, which is not a failure that announces
+ * itself. Refusing is the enforceable version of a restriction that
+ * otherwise only exists in a comment, and it goes away with an MMU.
+ */
+static int area_held(void)
+{
+    struct job *j;
+    int i;
+
+    for (i = 0; (j = job_nth(i)) != 0; i++) {
+        if (j->state == JOB_STOPPED) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int exec_spawn(const char *path, int argc, char **argv)
 {
+    char cmd[JOB_CMD_MAX];
+    struct job *j;
     u32 entry = 0;
-    int fd, err, status;
+    int fd, err, status, id, prev_fg;
 
     if (running) {
         /* One at a time: execasm.s has room for one saved context, and a
          * second spawn would overwrite the first's way home. */
+        return -EBUSY;
+    }
+    if (area_held()) {
         return -EBUSY;
     }
     if (argc < 0 || argc > EXEC_MAX_ARGS) {
@@ -255,9 +319,36 @@ int exec_spawn(const char *path, int argc, char **argv)
         return err;
     }
 
+    describe(cmd, sizeof(cmd), argc, argv);
+    id = job_create(cmd, 0);
+    if (id < 0) {
+        return id;
+    }
+    j = job_get(id);
+    j->state = JOB_RUNNING;
+
+    /* From here the terminal's ctrl-C and ctrl-Z mean this program. */
+    prev_fg = job_foreground();
+    job_set_foreground(id);
+
     running = 1;
     status = exec_call(entry, USER_STACK_TOP, argc, argv);
     running = 0;
+    job_set_foreground(prev_fg);
+
+    /*
+     * The system call depth is counted, and a program that was killed or
+     * exited left the count wherever it was when it jumped out. Nothing
+     * unwound it, because nothing returned.
+     */
+    syscall_depth_reset();
+
+    /*
+     * Put the terminal back. A program that set raw mode and was then
+     * killed by ctrl-C never got the chance to, and a console left with
+     * echo off looks exactly like a machine that has crashed.
+     */
+    tty_reset();
 
     /*
      * Whatever the program left on the disk should be on the disk. It
@@ -266,5 +357,64 @@ int exec_spawn(const char *path, int argc, char **argv)
      * happened.
      */
     vfs_sync();
+
+    if (j->state == JOB_STOPPED) {
+        /* Still alive, still holding the program area, listed by `jobs`
+         * and resumable with `fg`. Nothing went wrong, so this is not an
+         * errno. */
+        return SPAWN_STOPPED;
+    }
+
+    if (j->state == JOB_DONE) {
+        status = j->status;     /* killed: 128 + the signal */
+    } else {
+        j->state = JOB_DONE;
+        j->status = status;
+    }
+    return status;
+}
+
+/*
+ * Resume a stopped job. Returns its exit status, or SPAWN_STOPPED if it
+ * stopped again.
+ */
+int exec_continue(int id)
+{
+    struct job *j = job_get(id);
+    int status, prev_fg;
+
+    if (!j) {
+        return -ENOENT;
+    }
+    if (j->state != JOB_STOPPED) {
+        return -EINVAL;
+    }
+    if (running) {
+        return -EBUSY;
+    }
+
+    prev_fg = job_foreground();
+    job_set_foreground(id);
+    j->state = JOB_RUNNING;
+    j->signalled = 0;
+
+    running = 1;
+    status = exec_resume(j->saved_sp);
+    running = 0;
+    job_set_foreground(prev_fg);
+
+    syscall_depth_reset();
+    tty_reset();
+    vfs_sync();
+
+    if (j->state == JOB_STOPPED) {
+        return SPAWN_STOPPED;
+    }
+    if (j->state == JOB_DONE) {
+        status = j->status;
+    } else {
+        j->state = JOB_DONE;
+        j->status = status;
+    }
     return status;
 }
