@@ -35,6 +35,7 @@
 #include "timer.h"
 #include "fb.h"
 #include "fbcon.h"
+#include "tty.h"
 #include "drivers/drivers.h"
 
 static void banner(void)
@@ -193,6 +194,26 @@ static void start_drivers(void)
                 kputc('x');
                 kputdec((u32)fbcon_rows());
                 kputs(" of IBM PC 8x16, green on black\n");
+                status("console");
+                kputs("output to");
+                {
+                    struct chardev *d;
+                    int i, on;
+
+                    for (i = 0; (d = tty_sink(i, &on)) != 0; i++) {
+                        kputc(' ');
+                        kputs(d->name);
+                        if (!on) {
+                            kputs("(off)");
+                        }
+                    }
+                    kputs(", input from");
+                    for (i = 0; (d = tty_source(i)) != 0; i++) {
+                        kputc(' ');
+                        kputs(d->name);
+                    }
+                }
+                kputc('\n');
             }
         }
     }
@@ -265,10 +286,17 @@ static void mount_root(void)
 
 void kmain(void)
 {
-    /* The console first, and through the driver model like everything
-     * else -- it registers /dev/console and binds descriptors 0, 1, 2. */
+    /*
+     * The serial port first, then the terminal on top of it. Nothing can
+     * report a failure before both are up, so neither gets to fail
+     * politely: the port is the console of last resort and the terminal
+     * is what everything writes through.
+     */
     if (ns16550_init() < 0) {
         halt();                 /* nothing could report this anyway */
+    }
+    if (tty_init() < 0) {
+        halt();
     }
     banner();
 

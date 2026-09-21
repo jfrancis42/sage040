@@ -7,15 +7,15 @@
  * 640x480 divided by the character cell, which is exactly the geometry
  * a VGA text mode had, for exactly the same reason.
  *
- * Registered as /dev/fbcon, and `console fb` in the shell points the
- * kernel's messages and the standard descriptors at it.
+ * Registered as /dev/fbcon and handed to the terminal layer as an
+ * output sink, so everything written to the console appears here as well
+ * as on the serial line.
  *
- * IT CANNOT READ. This machine has no keyboard -- input arrives on the
- * serial line and nowhere else -- so fbcon_read() hands the call
- * straight to the serial terminal. That is not a workaround for
- * something missing here; it is what the machine is. Output on the
- * screen, input from the wire, and a program cannot tell the difference
- * because both arrive through the same descriptor.
+ * IT ONLY WRITES. A screen is not an input device; on this machine
+ * characters arrive on the serial port, and will shortly also arrive
+ * from a keyboard. Neither is this file's business -- tty.c collects
+ * input from wherever it comes and sends output to wherever it goes,
+ * and this is one of the wheres.
  *
  * Everything it draws goes through `struct fbdev`, so it does not know
  * an SM501 is underneath and would work over anything that can set a
@@ -25,7 +25,7 @@
 #include "font.h"
 #include "dev.h"
 #include "vfs.h"
-#include "console.h"
+#include "tty.h"
 #include "errno.h"
 #include "string.h"
 
@@ -39,12 +39,10 @@
 
 static struct fbdev *fb;
 static struct chardev fbcon_dev;
-static struct chardev *serial;  /* where input comes from */
 
 static int cols, rows;
 static int cur_col, cur_row;
 static int cursor_drawn;
-static int mirror;              /* also write to the serial console */
 
 /*
  * What is on the screen.
@@ -244,6 +242,7 @@ static s32 fbcon_write(struct file *f, const void *buf, u32 len)
     const u8 *p = buf;
     u32 i;
 
+    (void)f;
     if (!fb) {
         return -ENODEV;
     }
@@ -264,39 +263,26 @@ static s32 fbcon_write(struct file *f, const void *buf, u32 len)
     }
     draw_cursor();
 
-    if (mirror && serial && serial->ops->write) {
-        struct file sf;
-
-        memset(&sf, 0, sizeof(sf));
-        sf.ops = serial->ops;
-        sf.priv = serial->priv;
-        sf.used = 1;
-        serial->ops->write(&sf, buf, len);
-    }
-
-    (void)f;
     return (s32)len;
 }
 
 /*
- * Reading the screen means reading the keyboard, and there is not one.
- * The call goes to the serial terminal, which is where every character
- * this machine has ever been typed at came from.
+ * A screen cannot be read from. Saying so plainly is better than
+ * quietly forwarding the call somewhere else: input has a path of its
+ * own through tty.c, and a caller that ends up here has the wrong
+ * device rather than a device that needs helping along.
  */
 static s32 fbcon_read(struct file *f, void *buf, u32 len)
 {
-    if (!serial || !serial->ops->read) {
-        return -ENODEV;
-    }
-    return serial->ops->read(f, buf, len);
+    (void)f; (void)buf; (void)len;
+    return -EINVAL;
 }
 
 static int fbcon_ioctl(struct file *f, u32 request, u32 arg)
 {
-    /* Whatever the terminal answers, since that is what input is. */
-    if (serial && serial->ops->ioctl) {
-        return serial->ops->ioctl(f, request, arg);
-    }
+    (void)f; (void)request; (void)arg;
+    /* Nothing to configure, and nothing to report: FIONREAD on a screen
+     * would be answering a question about input, which this is not. */
     return -ENOTTY;
 }
 
@@ -313,12 +299,6 @@ static const struct file_ops fbcon_ops = {
     fbcon_ioctl,
     fbcon_close
 };
-
-int fbcon_mirror(int on)
-{
-    mirror = on ? 1 : 0;
-    return 0;
-}
 
 int fbcon_rows(void)
 {
@@ -351,12 +331,6 @@ int fbcon_init(void)
         rows = MAX_ROWS;
     }
 
-    /* Input comes from the serial terminal, so there has to be one. */
-    serial = dev_find_char("console");
-    if (!serial) {
-        return -ENODEV;
-    }
-
     if (fb->setdouble) {
         fb->setdouble(fb, 0);
     }
@@ -372,7 +346,9 @@ int fbcon_init(void)
     }
 
     fbcon_clear();
-    return 0;
+
+    /* From here on everything written to the console appears here too. */
+    return tty_add_sink(&fbcon_dev);
 }
 
 struct chardev *fbcon_device(void)

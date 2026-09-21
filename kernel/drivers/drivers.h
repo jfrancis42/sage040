@@ -20,8 +20,9 @@ void mfp_interrupts_on(void);
 int mfp_request_irq(int channel, void (*handler)(void *), void *arg);
 u32 mfp_spurious(void);
 
-int ns16550_init(void);     /* console terminal  -> /dev/console, /dev/tty */
+int ns16550_init(void);     /* serial port       -> /dev/ttyS0             */
 int ns16550_present(void);
+struct chardev *ns16550_device(void);
 int ata_init(void);         /* disk              -> block device "hda"     */
 int m48t59_init(void);      /* clock and NVRAM   -> the system clock       */
 int sm501_init(void);       /* video             -> framebuffer "fb0"      */

@@ -30,6 +30,7 @@
 #include "timer.h"
 #include "console.h"
 #include "fbcon.h"
+#include "tty.h"
 #include "dev.h"
 #include "string.h"
 
@@ -279,7 +280,7 @@ static void cmd_help(void)
         "date -s DATE [TIME]  set them: YYYY-MM-DD and HH:MM[:SS]\n"
         "uname [-a]           system name, or name and version\n"
         "uptime               how long the machine has been up\n"
-        "console [WHERE]      serial, fb, or both\n"
+        "console [DEV on|off] show or change where console output goes\n"
         "sync                 flush pending writes to the disk\n"
         "halt                 stop the machine\n"
         "\n"
@@ -695,61 +696,63 @@ static void cmd_date(int argc, char **args)
 }
 
 /* ---------------------------------------------------------------- */
-/* Where the console is                                              */
+/* Where the console goes                                            */
 /* ---------------------------------------------------------------- */
 
 /*
- * Move the console between the serial line and the screen.
+ * Console output goes to every enabled sink at once -- the screen and
+ * the serial line both -- and input is taken from every source. So this
+ * does not move the shell anywhere; it turns one of the places output
+ * appears on or off.
  *
- * "both" is the framebuffer with the serial console mirrored, not two
- * consoles: input still comes from the serial line whichever is chosen,
- * because that is the only thing on this machine that can type.
+ * That is the useful shape for a machine like this. The serial log stays
+ * complete whatever the screen is doing, which is exactly when you want
+ * it, and the test harnesses drive the machine over the wire with the
+ * display switched off entirely.
  */
 static void cmd_console(int argc, char **args)
 {
-    struct chardev *serial = dev_find_char("console");
-    struct chardev *screen = fbcon_device();
+    struct chardev *d;
+    int i, on, err;
 
     if (argc == 1) {
-        struct chardev *now = console_get();
-
-        out_puts("console is ");
-        out_puts(now ? now->name : "nowhere");
-        out_puts("\n  serial   the NS16550A, in and out\n");
-        if (screen) {
-            out_puts("  fb       the framebuffer, with input still from "
-                     "the serial line\n");
-            out_puts("  both     the framebuffer, mirrored to the serial "
-                     "line\n");
-        } else {
-            out_puts("  (no framebuffer console on this machine)\n");
+        out_puts("output to:\n");
+        for (i = 0; (d = tty_sink(i, &on)) != 0; i++) {
+            out_puts("  ");
+            out_puts(d->name);
+            out_puts(on ? "   on\n" : "   off\n");
         }
+        out_puts("input from:\n");
+        for (i = 0; (d = tty_source(i)) != 0; i++) {
+            out_puts("  ");
+            out_puts(d->name);
+            out_putc('\n');
+        }
+        out_puts("\nturn one off with `console NAME off`\n");
         return;
     }
 
-    if (strcmp(args[1], "serial") == 0) {
-        if (!serial) {
-            err_puts("console: no serial console\n");
-            return;
-        }
-        fbcon_mirror(0);
-        out_flush();
-        console_use(serial);
+    if (argc < 3) {
+        err_usage("console [NAME on|off]");
         return;
     }
 
-    if (strcmp(args[1], "fb") == 0 || strcmp(args[1], "both") == 0) {
-        if (!screen) {
-            err_puts("console: no framebuffer console\n");
-            return;
-        }
-        fbcon_mirror(strcmp(args[1], "both") == 0);
-        out_flush();
-        console_use(screen);
+    if (strcmp(args[2], "on") == 0) {
+        on = 1;
+    } else if (strcmp(args[2], "off") == 0) {
+        on = 0;
+    } else {
+        err_usage("console [NAME on|off]");
         return;
     }
 
-    err_usage("console [serial|fb|both]");
+    out_flush();
+    err = tty_sink_enable(args[1], on);
+    if (err == -EBUSY) {
+        err_puts("console: that is the only one left\n");
+    } else if (err < 0) {
+        err_report(args[1], err);
+    }
 }
 
 /* ---------------------------------------------------------------- */

@@ -449,8 +449,9 @@ the kernel that names a part at all.
 **There is a 100 Hz tick, a framebuffer, and a text console on it.** The
 MC68901's timer D drives `nanosleep()`; the SM501 is `/dev/fb0` and draws
 through ioctls; `/dev/fbcon` puts 80×30 of the IBM PC 8×16 font on it, in
-green, and `console fb` moves the shell there. Input still arrives on the
-serial line, because nothing else on this machine can type.
+green. Console output goes to the screen **and** the serial line at once
+— the terminal has a list of sinks, not a current one — so the serial log
+stays complete whatever the display is doing.
 
 **The shell is a program that happens to be linked in.** It includes
 `syscall.h` and nothing else from the kernel: not the VFS, not the device

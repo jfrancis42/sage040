@@ -202,7 +202,7 @@ Six kinds, each with one interface (see [`dev.h`](dev.h)):
 
 | | |
 |---|---|
-| `struct chardev` | a byte stream — the console, and the `/dev` names |
+| `struct chardev` | a byte stream — `/dev/ttyS0`, `/dev/fbcon`, `/dev/fb0` |
 | `struct blockdev` | addressable sectors — what a filesystem mounts |
 | `struct netdev` | packets — an ethernet interface |
 | `struct rtcdev` | seconds since 1970, and nothing else |
@@ -292,23 +292,8 @@ driver gets told apart from a broken program that uses one.
 black. 640x480 divided by the character cell, which is exactly the
 geometry a VGA text mode had and for exactly the same reason.
 
-```
-sage$ console fb          the screen
-sage$ console both        the screen, mirrored to the serial line
-sage$ console serial      back to the wire
-```
-
-**It cannot read.** This machine has no keyboard — input arrives on the
-serial line and nowhere else — so a read of `/dev/fbcon` is handed to the
-serial terminal. That is not a gap; it is what the machine is. Output on
-the screen, input from the wire, and a program cannot tell, because both
-arrive through the same descriptor.
-
-Which meant one thing had to move: **echo belongs to the console, not to
-the UART.** The line discipline used to echo through its own write, so
-with the console on the screen your keystrokes went to the wire and you
-typed blind. It now echoes through `console_write()`, whatever that
-currently is.
+**It only writes.** A screen is not an input device. Input arrives
+through the terminal layer, from whatever sources it has — see below.
 
 Scrolling is one `copy()` — the SM501's blitter moves 29 rows up in a
 single operation. A framebuffer without a blitter leaves `copy` null, and
@@ -321,27 +306,56 @@ from and how to reproduce it.
 
 ## The terminal
 
-`drivers/ns16550.c` is a terminal, not just a UART, and the difference
-is the line discipline: `read()` returns one whole line, echoed as it is
-typed, with backspace and ctrl-U doing what a person expects and ctrl-D
-returning 0 for end of input. That is canonical mode, and it belongs in
-the driver for the same reason it belongs in the tty layer on a real
-system — otherwise every program that reads a line implements it again,
-slightly differently.
+`/dev/console` and `/dev/tty` are `tty.c`, not a UART. A terminal is a
+line discipline plus a set of places characters come from and go to; a
+UART is one of those places, and so is a screen.
+
+```
+sage$ console
+output to:
+  ttyS0   on
+  fbcon   on
+input from:
+  ttyS0
+```
+
+**Output goes to every enabled sink at once; input is taken from every
+source.** So the shell is on the screen and on the serial line
+simultaneously, rather than on one of them. `console NAME off` silences
+a sink when the duplication is in the way — and the last one cannot be
+turned off, because a machine with no console output is one that cannot
+tell you why.
+
+That shape is not a preference. The test harnesses drive this machine
+over the serial line with `-display none`, and QEMU delivers no keyboard
+input at all without a display, so serial has to stay fully live. Making
+the console exclusive would break every test in the tree.
+
+`read()` returns one whole line, echoed as it is typed, with backspace
+and ctrl-U doing what a person expects and ctrl-D returning 0 for end of
+input — canonical mode, in the terminal rather than in a driver, so that
+every program that reads a line does not implement it again slightly
+differently.
 
 Two translations, named after the termios flags that do the same job:
 
 - **ONLCR** — a newline written out becomes CR + LF, because a terminal
-  needs both. A file written through the same `write()` gets the bare
-  newline it should have.
-- **ICRNL** — the carriage return the terminal sends on enter arrives as
-  a newline, because that is what C code expects at the end of a line.
+  needs both. A file written through a descriptor gets the bare newline
+  it should have.
+- **ICRNL** — the carriage return a terminal sends on enter arrives as a
+  newline, because that is what C code expects at the end of a line.
 
-Polled in both directions, on purpose: a polled console works before
-interrupts are set up, works inside a panic, and cannot deadlock against
-the code reporting the fault. The chip's interrupt already reaches MFP
-channel 7; moving to it means changing `tty_read()` to take from a ring
-buffer, and nothing above the driver moves.
+**Echo goes to the sinks, not back to the source.** That is why the line
+discipline had to leave the UART driver: what you type has to appear on
+the screen you are looking at, which is not necessarily the wire the
+character arrived on.
+
+A source is any device whose `ioctl` answers `FIONREAD` — that is how
+the terminal asks whether a character is waiting without committing to a
+read that would block. Polled, for now: when the UART and the keyboard
+are both interrupt-driven they should feed one ring buffer and the poll
+loop becomes a drain of it, which is a change inside `tty.c` and nowhere
+else.
 
 ## The filesystem
 
@@ -401,7 +415,7 @@ uses it yet; boot settings are the obvious tenant.
 `./fstest.sh` boots the kernel on a scratch image, drives a console
 session, and then checks the result with `mdir`, `mtype` and `fsck.fat`.
 The second half is the part that matters: a filesystem only the kernel
-can read would prove nothing. 29 checks.
+can read would prove nothing. 30 checks.
 
 The device tests in [`../tests/`](../tests/) exercise the same hardware
 from bare metal, with no kernel underneath — including `t11-rtc` for the
@@ -452,7 +466,7 @@ echo TEXT            print a line
 date [-s DATE [TIME]] show or set the clock
 uname [-a]           system name, or name and version
 uptime               how long the machine has been up
-console [WHERE]      serial, fb, or both
+console [NAME on|off] show or change where console output goes
 sync                 flush pending writes
 halt                 stop the machine
 
@@ -483,6 +497,7 @@ command. Errors go to descriptor 2 even when output is redirected.
 | `exec.c` | the ELF loader, and running a program |
 | `timer.c` | jiffies, and sleeping on them |
 | `fb.c` | /dev/fb0, and the drawing a driver did not do itself |
+| `tty.c` | the line discipline, and the fan-out to sinks |
 | `fbcon.c` | /dev/fbcon, the text console |
 | `font8x16.c` | the IBM PC font, and where it came from |
 | `execasm.s` | the stack switch into a program and the unwind out of it |

@@ -1037,13 +1037,14 @@ int con = open("/dev/fbcon", O_WRONLY);
 write(con, "hello\n", 6);
 ```
 
-Or move the whole console there, which is what the shell's `console fb`
-does: after that, `write(1, ...)` goes to the screen.
+You rarely need to: `/dev/console` already writes to the screen **and**
+the serial line at once. The terminal has a list of output sinks, and
+`/dev/fbcon` is one of them, so `write(1, ...)` reaches both.
 
-**It cannot be read from as a keyboard.** There is no keyboard on this
-machine — every character ever typed at it arrived on the serial line —
-so a read of `/dev/fbcon` is handed to the serial terminal. A program
-does not have to care: descriptor 0 works either way.
+**It cannot be read from.** A screen is not an input device. Input comes
+through the terminal, from whatever sources it has — today the serial
+port, tomorrow a keyboard as well — and a program never has to know
+which: descriptor 0 works either way.
 
 Note that writing to it turns double buffering **off**, because a console
 draws a character at a time and each one has to appear. A program that
@@ -1101,7 +1102,10 @@ MFP tick     timer D, /200, reload 123 -> 99.9 Hz (the kernel's HZ=100)
 
 syscalls     d0 = number, d1-d5 = args, trap #0, d0 = result or -errno
              Linux/m68k convention, Linux i386 numbers, Linux errnos
-devices      /dev/console  /dev/tty  /dev/fb0  /dev/fbcon
+devices      /dev/console /dev/tty  the terminal (sources + sinks)
+             /dev/ttyS0   the serial port, raw
+             /dev/fbcon   the text console, output only
+             /dev/fb0     the framebuffer
 ```
 
 Worked, tested code for every device is in [`tests/`](tests/) — `t6` for the

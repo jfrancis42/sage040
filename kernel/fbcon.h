@@ -3,9 +3,10 @@
 /*
  * fbcon.h - the text console on the framebuffer.
  *
- * Registers /dev/fbcon over whatever `struct fbdev` was registered. It
- * writes glyphs and reads nothing: input on this machine arrives on the
- * serial line, so a read of /dev/fbcon is handed to the serial terminal.
+ * Registers /dev/fbcon over whatever `struct fbdev` was registered, and
+ * adds it to the terminal's output sinks. It writes glyphs and reads
+ * nothing -- a screen is not an input device, and input has its own path
+ * through tty.c.
  */
 #ifndef FBCON_H
 #define FBCON_H
@@ -18,10 +19,6 @@ int  fbcon_init(void);
 void fbcon_clear(void);
 int  fbcon_rows(void);
 int  fbcon_cols(void);
-
-/* Also send everything to the serial console, so a captured serial log
- * still has what the screen shows. */
-int  fbcon_mirror(int on);
 
 struct chardev *fbcon_device(void);
 
