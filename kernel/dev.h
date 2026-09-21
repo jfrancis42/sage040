@@ -30,6 +30,7 @@
 #define DEV_H
 
 #include "kernel.h"
+#include "uapi.h"       /* struct stat, for the fstat op below */
 
 struct file;
 
@@ -43,6 +44,17 @@ struct file_ops {
     s32 (*lseek)(struct file *f, s32 offset, int whence);
     int (*ioctl)(struct file *f, u32 request, u32 arg);
     int (*close)(struct file *f);
+
+    /*
+     * Describe an OPEN file, which is not the same question as
+     * describing a path. A ported program stats descriptors constantly
+     * -- to size a file it is about to read, or to find out whether
+     * what it has is a terminal -- and it has no path to ask about.
+     *
+     * Null means "no better answer than the defaults", which the VFS
+     * fills in.
+     */
+    int (*fstat)(struct file *f, struct stat *st);
 };
 
 struct file {

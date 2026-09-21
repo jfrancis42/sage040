@@ -20,7 +20,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: all boot run test tests fstest edittest vmtest nettest cube programs clean distclean
+.PHONY: all boot run test tests fstest edittest vmtest nettest apitest cube programs clean distclean
 
 all:
 	$(MAKE) -C bootrom
@@ -54,7 +54,7 @@ programs:
 run:
 	$(MAKE) -C kernel run
 
-test: tests fstest edittest vmtest nettest
+test: tests fstest apitest edittest vmtest nettest
 
 tests:
 	$(MAKE) -C tests run
@@ -70,6 +70,11 @@ vmtest:
 
 nettest:
 	cd kernel && ./nettest.sh
+
+# The system call surface a ported program expects. Grows with the
+# porting work; see progress.md.
+apitest:
+	cd kernel && ./apitest.sh
 
 cube:
 	$(MAKE) -C cube

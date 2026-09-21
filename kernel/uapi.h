@@ -221,6 +221,12 @@ struct fb_palette {
 #define S_ISDIR(m)    (((m) & S_IFMT) == S_IFDIR)
 #define S_ISCHR(m)    (((m) & S_IFMT) == S_IFCHR)
 
+/* access() modes, Linux's values. */
+#define F_OK          0
+#define X_OK          1
+#define W_OK          2
+#define R_OK          4
+
 struct stat {
     u32    st_mode;
     u32    st_size;
@@ -268,6 +274,10 @@ struct statfs {
 #define __NR_reboot     88
 #define __NR_statfs     99
 #define __NR_stat      106
+#define __NR_fstat     108      /* describe an open descriptor        */
+#define __NR_access     33      /* answered from stat; see vfs.c      */
+#define __NR_dup        41
+#define __NR_dup2       63
 #define __NR_fsync     118
 #define __NR_sysinfo   116
 #define __NR_uname     122

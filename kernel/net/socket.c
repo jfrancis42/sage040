@@ -261,12 +261,28 @@ static int sock_close(struct file *f)
     return 0;
 }
 
+
+/*
+ * A character device has no size and no meaningful time; what a caller
+ * actually wants from this is S_ISCHR, which is how isatty() is built.
+ */
+static int sock_fstat(struct file *f, struct stat *st)
+{
+    (void)f;
+    st->st_mode = S_IFCHR;
+    st->st_size = 0;
+    st->st_mtime = 0;
+    st->st_blocks = 0;
+    return 0;
+}
+
 static const struct file_ops sock_ops = {
     sock_read,
     sock_write,
     0,                          /* a socket is not seekable */
     sock_ioctl,
-    sock_close
+    sock_close,
+    sock_fstat,
 };
 
 /* --- the system calls ------------------------------------------------ */

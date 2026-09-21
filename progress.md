@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: task 0 in progress. 0 of 23 complete.**
+**Status: task 0 done, 1 next. 1 of 23 complete.** 130 checks pass.
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -29,7 +29,7 @@ drive almost all of it:
 
 | # | Task | Why here | State |
 |---|------|----------|-------|
-| 0 | Groundwork: bigger RAM and disk, per-task cwd, `fstat`/`access`/`dup` | small things everything else trips over | **in progress** |
+| 0 | Groundwork: bigger RAM and disk, per-task cwd, `fstat`/`access`/`dup` | small things everything else trips over | **done** |
 | 1 | Grow the user address space | nothing else fits until this | todo |
 | 2 | `brk`/`sbrk` | the smaller half of memory; enough for `malloc` | todo |
 | 3 | `mmap`/`munmap`/`mprotect` | what a runtime and a libc expect | todo |
@@ -119,7 +119,62 @@ The disk is a fresh 512 MB FAT16 with 8 KB clusters (65,370 of them,
 inside FAT16's 65,524 limit). `fsck.fat` is clean, the kernel reads and
 writes it, and programs load from it.
 
-**Still to do in this task:** the per-task cwd, and `fstat`/`access`/`dup`.
+**The working directory belongs to a task now.** It was a single
+`static struct dir cwd` in `fs/fat16.c`, so a `chdir` anywhere moved
+every task, including the shell. The *storage* is in `struct task`
+beside the descriptors and is inherited by `task_create()` and `exec`
+the same way they are; the *meaning* stays in the filesystem, which is
+what `vfs_cwd_ino()` / `vfs_cwd_set()` / `vfs_cwd_path()` are for — the
+task layer holds a `u32` and does not know it is a cluster number, so
+`fs/` still does not include `task.h`.
+
+Task 0 is built by hand in `task_init()` rather than through
+`alloc_task()`, so its cwd has to be set there too. Missing that gave
+every task in the machine an empty working directory, because
+everything inherits from it.
+
+**`fstat`, `access`, `dup` and `dup2` added.** `fstat` needed a new op
+on `struct file_ops`: describing an *open file* is a different question
+from describing a path, and a ported program asks it constantly — to
+size a file it is about to read, or to find out whether what it has is
+a terminal. Every device implements it as `S_IFCHR`, which is what
+makes `isatty()` work, and `isatty()` is what an editor checks before
+it does anything at all.
+
+`dup` and `dup2` turned out to be **already implemented** in `vfs.c`
+with no system call wired to them, so they cost two lines each.
+
+*Decision:* `access(X_OK)` is answered by the same first-four-bytes ELF
+test that `exec` uses, not by a mode bit — this volume has none. That
+way `access(X_OK)` and `exec()` can never disagree, which is the whole
+value of the call. `W_OK` is always true and says so.
+
+#### A latent bug, found by the per-task cwd and much worse than it
+
+**`vfs.c` stripped the leading slash off every path before handing it to
+the filesystem**, on the reasoning that the mounted volume *is* the root
+so the slash says nothing. That was true while the root was the only
+directory anybody could stand in.
+
+`path_walk()` resolves a name with no leading slash **relative to the
+current directory**. So `/etc/rc` arrived as `etc/rc` and meant
+`/etc/etc/rc` from inside `/etc` — while working perfectly from the
+root, which is where everything had ever been tested. Measured:
+
+```
+/$ cat /etc/rc          -> echo booted from /etc/rc
+/etc$ cat /etc/rc       -> /etc/rc: no such file or directory
+/etc$ /bin/ifconfig     -> command not found
+```
+
+An absolute path silently meant something different depending on where
+the caller happened to be standing. `path_walk()` had handled a leading
+slash correctly all along — it resets to the root and skips it — so the
+fix was to delete `strip_root()` and pass the path through unchanged.
+
+This was pre-existing and nothing had caught it, because the shell was
+the only thing that ever called `chdir` and every test ran from `/`.
+`fstest.sh` and `apitest.sh` both check it now.
 
 #### Found along the way
 
@@ -134,6 +189,27 @@ claimed there was no redirection at all; they now say what actually
 happens.
 
 ---
+
+### A test suite for the ABI itself
+
+`kernel/apitest.sh` is new, and it is where the porting work gets its
+regressions. The other suites test subsystems — the filesystem, memory
+protection, the editor, the network. This one tests the **system call
+surface**: the calls that exist so other people's software will build
+and run, which are individually dull and collectively the whole point.
+
+Its checks are made by **programs** in `apps/`, not by the shell,
+because the thing being demonstrated is that a program can do these
+things. Each program prints `ok` or `FAIL` per line and the script
+counts them and reports each under its own name, so adding a check is a
+line of C rather than a line of shell.
+
+It grows one group per task, and a group is only added once its calls
+work — so a failure there is always a regression, never a thing not
+written yet.
+
+**130 checks across six suites now:** 12 device programs, 41 fs, 20
+api, 29 edit, 15 vm, 13 net.
 
 ## Decisions worth knowing about
 

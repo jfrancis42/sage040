@@ -89,10 +89,33 @@ static struct task *alloc_task(const char *name)
             strncpy(t->name, name, TASK_NAME_MAX - 1);
             t->name[TASK_NAME_MAX - 1] = '\0';
             t->slice = TASK_SLICE;
+            /* The root, until somebody inherits or chdirs. */
+            t->cwd_ino = 0;
+            strcpy(t->cwd_path, "/");
             return t;
         }
     }
     return 0;
+}
+
+/*
+ * The working directory is inherited the same way descriptors are, and
+ * for the same reason: a child starts where its parent was standing.
+ * A shell that spawns `ls` in /bin and gets a listing of / would be
+ * reporting on a directory nobody asked about.
+ */
+void task_cwd_inherit(struct task *t, struct task *from)
+{
+    if (!t) {
+        return;
+    }
+    if (!from) {
+        t->cwd_ino = 0;
+        strcpy(t->cwd_path, "/");
+        return;
+    }
+    t->cwd_ino = from->cwd_ino;
+    memcpy(t->cwd_path, from->cwd_path, sizeof(t->cwd_path));
 }
 
 /*
@@ -168,6 +191,7 @@ struct task *task_create(const char *name, void (*entry)(void))
      */
     t->parent = current;
     fd_inherit(t, current);
+    task_cwd_inherit(t, current);
 
     /*
      * A kernel task is the shell or something like it, and a shell must
@@ -551,5 +575,11 @@ void task_init(void)
     current->slice = TASK_SLICE;
     strcpy(current->name, "idle");
     strcpy(current->cmd, "idle");
+    /* The root. Task 0 is built by hand rather than through
+     * alloc_task(), so it has to be said here too -- and everything
+     * else inherits from it, so an empty string here is an empty
+     * working directory for every task the machine ever runs. */
+    current->cwd_ino = 0;
+    strcpy(current->cwd_path, "/");
     idle = current;
 }

@@ -391,12 +391,28 @@ static int fbcon_close(struct file *f)
     return 0;
 }
 
+
+/*
+ * A character device has no size and no meaningful time; what a caller
+ * actually wants from this is S_ISCHR, which is how isatty() is built.
+ */
+static int fbcon_fstat(struct file *f, struct stat *st)
+{
+    (void)f;
+    st->st_mode = S_IFCHR;
+    st->st_size = 0;
+    st->st_mtime = 0;
+    st->st_blocks = 0;
+    return 0;
+}
+
 static const struct file_ops fbcon_ops = {
     fbcon_read,
     fbcon_write,
     0,                          /* not seekable */
     fbcon_ioctl,
-    fbcon_close
+    fbcon_close,
+    fbcon_fstat,
 };
 
 int fbcon_rows(void)

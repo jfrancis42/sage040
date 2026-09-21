@@ -166,10 +166,26 @@ static struct chardev *resolve_dev(const char *path)
     return dev_find_char(path + DEV_PREFIX_LEN);
 }
 
-static const char *strip_root(const char *path)
-{
-    return (path[0] == '/') ? path + 1 : path;
-}
+/*
+ * THE LEADING SLASH IS LOAD-BEARING AND MUST BE PASSED DOWN.
+ *
+ * There used to be a strip_root() here that removed it before handing
+ * the path to the filesystem, on the reasoning that the mounted volume
+ * IS the root so the slash says nothing. That was true while the root
+ * was the only directory anybody could stand in.
+ *
+ * It stopped being true when there was a working directory, and it
+ * failed in the worst available way: path_walk() resolves a name with
+ * no leading slash RELATIVE TO THE CURRENT DIRECTORY, so `/etc/rc`
+ * arrived as `etc/rc` and resolved to `/etc/etc/rc` from inside /etc --
+ * while working perfectly from the root, which is where everything was
+ * tested. An absolute path silently meant something different
+ * depending on where the caller happened to be.
+ *
+ * path_walk() has handled a leading slash all along: it resets to the
+ * root and skips it. So the fix is to pass the path through unchanged,
+ * and there is nothing here to replace strip_root with.
+ */
 
 /* ---------------------------------------------------------------- */
 /* Descriptors                                                       */
@@ -314,7 +330,7 @@ int fd_open(const char *path, int flags)
             return -ENFILE;
         }
         f->flags = flags;
-        err = mounted_fs->open(strip_root(path), flags, f);
+        err = mounted_fs->open(path, flags, f);
         if (err < 0) {
             f->used = 0;
             return err;
@@ -475,7 +491,7 @@ int vfs_mkdir(const char *path)
     if (!mounted_fs || !mounted_fs->mkdir) {
         return -ENOSYS;
     }
-    return mounted_fs->mkdir(strip_root(path));
+    return mounted_fs->mkdir(path);
 }
 
 int vfs_rmdir(const char *path)
@@ -483,7 +499,7 @@ int vfs_rmdir(const char *path)
     if (!mounted_fs || !mounted_fs->rmdir) {
         return -ENOSYS;
     }
-    return mounted_fs->rmdir(strip_root(path));
+    return mounted_fs->rmdir(path);
 }
 
 int vfs_chdir(const char *path)
@@ -513,7 +529,7 @@ int vfs_unlink(const char *path)
     if (!mounted_fs->unlink) {
         return -ENOSYS;
     }
-    return mounted_fs->unlink(strip_root(path));
+    return mounted_fs->unlink(path);
 }
 
 int vfs_rename(const char *from, const char *to)
@@ -527,7 +543,7 @@ int vfs_rename(const char *from, const char *to)
     if (!mounted_fs->rename) {
         return -ENOSYS;
     }
-    return mounted_fs->rename(strip_root(from), strip_root(to));
+    return mounted_fs->rename(from, to);
 }
 
 int vfs_stat(const char *path, struct stat *st)
@@ -545,7 +561,7 @@ int vfs_stat(const char *path, struct stat *st)
     if (!mounted_fs->stat) {
         return -ENOSYS;
     }
-    return mounted_fs->stat(strip_root(path), st);
+    return mounted_fs->stat(path, st);
 }
 
 int vfs_readdir(int index, struct dirent *d)
@@ -557,6 +573,94 @@ int vfs_readdir(int index, struct dirent *d)
         return -ENOSYS;
     }
     return mounted_fs->readdir(index, d);
+}
+
+/*
+ * Describe an open descriptor.
+ *
+ * Asked of the file itself rather than of a path, because the caller
+ * may not have one -- and because the file's own answer is the current
+ * one. A file written and not yet flushed is longer than its directory
+ * entry says.
+ */
+int vfs_fstat(int fd, struct stat *st)
+{
+    struct file *f = fd_get(fd);
+
+    if (!f) {
+        return -EBADF;
+    }
+    memset(st, 0, sizeof(*st));
+
+    if (f->ops && f->ops->fstat) {
+        return f->ops->fstat(f, st);
+    }
+
+    /*
+     * No opinion from the driver. A descriptor that exists and cannot
+     * describe itself is reported as a character device of no size,
+     * which is what an unknown stream is.
+     */
+    st->st_mode = S_IFCHR;
+    return 0;
+}
+
+/*
+ * access(), answered from stat().
+ *
+ * THE ANSWERS ARE HONEST RATHER THAN INVENTED. This filesystem has no
+ * permission bits, so:
+ *
+ *   F_OK  does it exist -- a real answer
+ *   R_OK  yes, if it exists; everything readable is readable by all
+ *   W_OK  yes, if it exists; there is no read-only bit consulted here
+ *   X_OK  whether it is executable, which on this machine is decided
+ *         by the first four bytes of the file and not by a mode -- so
+ *         it is answered the same way exec() answers it
+ *
+ * Returning a plausible "yes" for X_OK on a text file would be the kind
+ * of lie a shell turns into a confusing error much later.
+ */
+static int looks_executable(const char *path)
+{
+    /*
+     * The same question exec() asks, asked the same way: a FAT16 volume
+     * has no execute bit, so the file's first four bytes decide. Asking
+     * it here rather than duplicating exec's rule means access(X_OK)
+     * and exec() can never disagree.
+     */
+    u8 magic[4];
+    int fd = fd_open(path, O_RDONLY);
+    s32 n;
+
+    if (fd < 0) {
+        return 0;
+    }
+    n = fd_read(fd, magic, sizeof(magic));
+    fd_close(fd);
+
+    return n == (s32)sizeof(magic) &&
+           magic[0] == 0x7f && magic[1] == 'E' &&
+           magic[2] == 'L'  && magic[3] == 'F';
+}
+
+int vfs_access(const char *path, int mode)
+{
+    struct stat st;
+    int err = vfs_stat(path, &st);
+
+    if (err < 0) {
+        return err;
+    }
+    if (mode & X_OK) {
+        if (S_ISDIR(st.st_mode)) {
+            return 0;           /* a directory is "executable": you can cd */
+        }
+        if (!looks_executable(path)) {
+            return -EACCES;
+        }
+    }
+    return 0;
 }
 
 int vfs_statfs(struct statfs *s)
@@ -576,4 +680,28 @@ int vfs_sync(void)
         return 0;
     }
     return mounted_fs->sync();
+}
+
+/* --- the working directory ------------------------------------------ */
+
+u32 vfs_cwd_ino(void)
+{
+    return current ? current->cwd_ino : 0;
+}
+
+void vfs_cwd_set(u32 ino, const char *path)
+{
+    if (!current) {
+        return;
+    }
+    current->cwd_ino = ino;
+    if (path) {
+        strncpy(current->cwd_path, path, PATH_MAX - 1);
+        current->cwd_path[PATH_MAX - 1] = '\0';
+    }
+}
+
+const char *vfs_cwd_path(void)
+{
+    return current ? current->cwd_path : "/";
 }

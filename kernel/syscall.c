@@ -792,6 +792,32 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
         return store(a2, &st, sizeof(st));
     }
 
+    case __NR_fstat: {
+        struct stat st;
+        int err = vfs_fstat((int)a1, &st);
+
+        if (err < 0) {
+            return err;
+        }
+        return store(a2, &st, sizeof(st));
+    }
+
+    case __NR_access: {
+        char path[PATH_MAX];
+        int err = fetch_str(path, a1, sizeof(path));
+
+        if (err < 0) {
+            return err;
+        }
+        return vfs_access(path, (int)a2);
+    }
+
+    case __NR_dup:
+        return fd_dup((int)a1);
+
+    case __NR_dup2:
+        return fd_dup2((int)a1, (int)a2);
+
     case __NR_getdents: {
         struct dirent d;
         int err = vfs_readdir((int)a1, &d);

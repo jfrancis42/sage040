@@ -383,3 +383,53 @@ int key_waiting(void)
     }
     return n > 0;
 }
+
+int chdir(const char *path)
+{
+    return (int)sc1(__NR_chdir, (u32)path);
+}
+
+int getcwd(char *buf, u32 size)
+{
+    return (int)sc2(__NR_getcwd, (u32)buf, size);
+}
+
+int mkdir(const char *path)
+{
+    return (int)sc1(__NR_mkdir, (u32)path);
+}
+
+int rmdir(const char *path)
+{
+    return (int)sc1(__NR_rmdir, (u32)path);
+}
+
+int fstat(int fd, struct stat *st)
+{
+    return (int)sc2(__NR_fstat, (u32)fd, (u32)st);
+}
+
+int access(const char *path, int mode)
+{
+    return (int)sc2(__NR_access, (u32)path, (u32)mode);
+}
+
+int dup(int fd)
+{
+    return (int)sc1(__NR_dup, (u32)fd);
+}
+
+int dup2(int oldfd, int newfd)
+{
+    return (int)sc2(__NR_dup2, (u32)oldfd, (u32)newfd);
+}
+
+int isatty(int fd)
+{
+    struct stat st;
+
+    if (fstat(fd, &st) < 0) {
+        return 0;
+    }
+    return S_ISCHR(st.st_mode) ? 1 : 0;
+}

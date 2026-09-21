@@ -143,6 +143,8 @@ printf '%s\n' \
   'echo written in a subdirectory > sub.txt' \
   'cat sub.txt' \
   'ls' \
+  'cat /etc/sub.txt' \
+  'stat /etc/sub.txt' \
   'cd ..' \
   'pwd' \
   'cat /etc/sub.txt' \
@@ -282,6 +284,18 @@ check "making a directory that already exists is refused" $?
 
 contains "$LOG" "directory not empty"
 check "removing a directory with something in it is refused" $?
+
+# An absolute path has to mean the same thing wherever the caller is
+# standing. vfs.c used to strip the leading slash before handing the
+# path to the filesystem, which resolves a slashless name RELATIVE to
+# the current directory -- so `/etc/sub.txt` became `/etc/etc/sub.txt`
+# from inside /etc, while working perfectly from the root, which is
+# where everything was tested.
+test "$(grep -c 'written in a subdirectory' "$LOG")" -ge 3
+check "an absolute path works from INSIDE the directory it names" $?
+
+contains "$LOG" "  size"
+check "  and stat resolves one from there too" $?
 
 echo "=== checks: what the host sees afterwards ==="
 

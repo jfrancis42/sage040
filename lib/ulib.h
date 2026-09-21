@@ -27,7 +27,22 @@ s32    lseek(int fd, s32 offset, int whence);
 int    ioctl(int fd, u32 request, u32 arg);
 int    unlink(const char *path);
 int    stat(const char *path, struct stat *st);
+int    fstat(int fd, struct stat *st);
+int    access(const char *path, int mode);
+int    dup(int fd);
+int    dup2(int oldfd, int newfd);
+
+/* Is this descriptor a terminal? Built on fstat, the way it is
+ * everywhere: there is no separate call to ask. */
+int    isatty(int fd);
 int    getdents(int index, struct dirent *d);
+
+/* Directories. The working directory is per task, so a chdir() here
+ * moves this program and nothing else. */
+int    chdir(const char *path);
+int    getcwd(char *buf, u32 size);
+int    mkdir(const char *path);
+int    rmdir(const char *path);
 int    uname(struct utsname *u);
 time_t time(time_t *t);
 int    fsync(int fd);

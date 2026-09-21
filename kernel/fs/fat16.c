@@ -764,24 +764,39 @@ static int path_walk(const struct dir *start, const char *path,
 /*
  * The directory a task is working in.
  *
- * One per task would live in `struct task`; it is here for now because
- * the filesystem is the only thing that knows what a directory IS, and
- * moving it out means giving the task layer a filesystem-independent
- * handle. That is the right shape and it is not needed until there is a
- * second filesystem.
+ * The STORAGE is in `struct task`, reached through vfs_cwd_*(), because
+ * a working directory belongs to a task exactly the way its descriptors
+ * do. The MEANING stays here: the task layer holds a u32 and does not
+ * know it is a cluster number.
+ *
+ * It used to be the two statics below this comment, which meant a
+ * chdir() in any task moved every other task's idea of where it was --
+ * including the shell's. Nothing had caught it because the shell was
+ * the only thing that ever called chdir.
  */
-static struct dir cwd = { 0 };
-static char cwd_path[PATH_MAX] = "/";
+static struct dir cwd_of_current(void)
+{
+    struct dir d;
+
+    d.cluster = vfs_cwd_ino();
+    return d;
+}
 
 static int fat_chdir(const char *path)
 {
+    struct dir cwd = cwd_of_current();
+    char cwd_path[PATH_MAX];
     struct dir d;
     char name[11];
     int last_is_dir;
-    int err = path_walk(&cwd, path, &d, name, &last_is_dir);
+    int err;
     u8 ent[DIRENT_SIZE];
     int idx;
 
+    strncpy(cwd_path, vfs_cwd_path(), sizeof(cwd_path) - 1);
+    cwd_path[sizeof(cwd_path) - 1] = '\0';
+
+    err = path_walk(&cwd, path, &d, name, &last_is_dir);
     if (err != 0) {
         return err;
     }
@@ -830,12 +845,14 @@ static int fat_chdir(const char *path)
     if (!cwd.cluster) {
         strcpy(cwd_path, "/");
     }
+
+    vfs_cwd_set(cwd.cluster, cwd_path);
     return 0;
 }
 
 static const char *fat_getcwd(void)
 {
-    return cwd_path;
+    return vfs_cwd_path();
 }
 
 /*
@@ -1231,6 +1248,7 @@ static int entry_is_open(u32 dir_index)
 
 static int fat_handle_open(const char *name, int flags)
 {
+    struct dir cwd = cwd_of_current();
     char n83[11];
     u8 ent[DIRENT_SIZE];
     struct fat_file *f;
@@ -1560,6 +1578,7 @@ static int fat_unlink(const char *name)
 
 static int fat_rename(const char *from, const char *to)
 {
+    struct dir cwd = cwd_of_current();
     struct dir fdir, tdir;
     char f83[11], t83[11];
     u8 ent[DIRENT_SIZE];
@@ -1619,6 +1638,7 @@ static void fill_dirent(const u8 *ent, struct dirent *out)
 
 static int fat_lookup_dirent(const char *name, struct dirent *out)
 {
+    struct dir cwd = cwd_of_current();
     struct dir d;
     char n83[11];
     u8 ent[DIRENT_SIZE];
@@ -1671,6 +1691,7 @@ static int fat_stat(const char *name, struct stat *st)
 
 static int fat_readdir(int index, struct dirent *out)
 {
+    struct dir cwd = cwd_of_current();
     u32 i;
     int seen = 0;
     u8 ent[DIRENT_SIZE];
@@ -1740,12 +1761,36 @@ static int fat_file_close(struct file *f)
     return fat_handle_close(priv_to_handle(f));
 }
 
+
+/*
+ * Describe an open file. The size and the time come from the in-memory
+ * handle rather than from the directory entry on disk, because a file
+ * that has been written and not yet flushed is longer than its entry
+ * says -- and a program that stats its own descriptor to find out how
+ * much it wrote deserves the true answer.
+ */
+static int fat_file_fstat(struct file *f, struct stat *st)
+{
+    struct fat_file *ff = f->priv;
+
+    if (!ff || !ff->used) {
+        return -EBADF;
+    }
+    st->st_mode = S_IFREG;
+    st->st_size = ff->size;
+    st->st_mtime = 0;
+    st->st_blocks = cluster_bytes
+                    ? (ff->size + cluster_bytes - 1) / cluster_bytes : 0;
+    return 0;
+}
+
 static const struct file_ops fat_file_ops = {
     fat_file_read,
     fat_file_write,
     fat_file_lseek,
     0,                          /* no ioctl on a regular file */
-    fat_file_close
+    fat_file_close,
+    fat_file_fstat,
 };
 
 static int fat_open(const char *path, int flags, struct file *f)
@@ -1801,6 +1846,7 @@ static int fat_umount(void)
  */
 static int fat_mkdir(const char *path)
 {
+    struct dir cwd = cwd_of_current();
     struct dir parent, self;
     char n83[11];
     u8 ent[DIRENT_SIZE];
@@ -1886,6 +1932,7 @@ static int fat_mkdir(const char *path)
  */
 static int fat_rmdir(const char *path)
 {
+    struct dir cwd = cwd_of_current();
     struct dir parent, self;
     char n83[11];
     u8 ent[DIRENT_SIZE];

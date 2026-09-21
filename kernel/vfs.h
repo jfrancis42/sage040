@@ -117,8 +117,27 @@ int  vfs_chdir(const char *path);
 const char *vfs_getcwd(void);
 int  vfs_rename(const char *from, const char *to);
 int  vfs_stat(const char *path, struct stat *st);
+int  vfs_fstat(int fd, struct stat *st);
+int  vfs_access(const char *path, int mode);
 int  vfs_readdir(int index, struct dirent *d);
 int  vfs_statfs(struct statfs *s);
 int  vfs_sync(void);
+
+
+/*
+ * The calling task's working directory.
+ *
+ * The filesystem owns the MEANING of `ino` -- for FAT16 it is a cluster
+ * number, with 0 meaning the fixed root -- and the task layer owns the
+ * storage, because a working directory belongs to a task the same way
+ * its descriptors do. These two functions are the seam, which is why
+ * fs/ does not include task.h.
+ *
+ * This used to be a single static in fs/fat16.c, so a chdir() anywhere
+ * moved every task's idea of where it was, including the shell's.
+ */
+u32  vfs_cwd_ino(void);
+void vfs_cwd_set(u32 ino, const char *path);
+const char *vfs_cwd_path(void);
 
 #endif /* VFS_H */

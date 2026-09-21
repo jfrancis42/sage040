@@ -92,6 +92,20 @@ struct task {
     int   exiting;
     int   stop_reported;        /* its stop has been told to the parent */
 
+    /*
+     * The working directory, as two halves: what the filesystem uses to
+     * find it, and a printable form for pwd. It is per task because
+     * that is what it means -- a program that does chdir() must not
+     * move its parent, or its siblings, or the shell.
+     *
+     * The cluster number is stored as a plain u32 rather than a
+     * filesystem type, so that nothing above the filesystem has to know
+     * what a directory IS. Any other filesystem would put an inode
+     * number here and be equally well served.
+     */
+    u32   cwd_ino;
+    char  cwd_path[PATH_MAX];
+
     char  name[TASK_NAME_MAX];
     char  cmd[JOB_CMD_MAX];     /* the command line, for `jobs`        */
 
@@ -145,6 +159,9 @@ void task_tick(void);
  * the kernel rather than into a program.
  */
 void task_ret_to_user(u32 saved_sr);
+
+/* Give `t` the working directory `from` is standing in. */
+void task_cwd_inherit(struct task *t, struct task *from);
 
 /* Never returns. */
 void task_exit(int status) __attribute__((noreturn));
