@@ -894,6 +894,62 @@ optional** — because a fuller `fbcon.c` plus a compiled-in terminal is
 enough to run a real editor, and that is the point of the exercise.
 `emacs.md` costs this out against actual editors.
 
+### The POSIX surface a ported program expects
+
+Everything in this subsection exists because `emacs.md` went looking for
+it and did not find it. That document costs out one concrete program;
+this is the same list as kernel work. **The numbering matches
+`emacs.md`'s work list**, so the two can be read against each other.
+
+**(4) Signal handlers, and `sigreturn`.** Signals here have default
+actions only and a program cannot install one. Delivering a signal to
+user code means building a signal frame on the user stack, returning to
+the handler in user mode, and providing a `sigreturn` that unwinds it —
+real work in `trap.c` and `execasm.s`, and the largest single kernel item
+on this list at perhaps 350 lines. `sigaction`, `sigprocmask` and a
+`sigaltstack` for the stack-overflow case. **Almost every interactive
+program needs at least `SIGWINCH` and `SIGCHLD`.**
+
+**(5) `select` or `poll`.** Nothing can wait on more than one thing at a
+time, which is exactly the constraint that bites a program with both a
+socket and a terminal. The wait-queue machinery in `wait.c` is the right
+foundation: a task registers on several queues and is woken by whichever
+fires first. ~250 lines, and it is the other half of what an event loop
+needs.
+
+**(6) Interval timers.** `timer_create`/`timer_settime`, or the older
+`setitimer`. The tick is already there and `sleep_on_timeout` already
+expresses a deadline; what is missing is per-task timers that deliver a
+signal rather than waking a sleeper. ~150 lines, and it depends on (4).
+
+**(8) The small missing calls.** Individually trivial, collectively the
+difference between a program building and not:
+
+| | |
+|---|---|
+| `fstat` | distinct from `stat`; ported code stats descriptors constantly |
+| `access` | can be expressed over `stat` |
+| `dup`, `dup2` | needed by redirection; see *Pipelines* above |
+| `umask`, `chmod`, `utime` | preserving mode and mtime across a save — and FAT16 has nowhere to put mode, so these must fail honestly rather than silently |
+| `getuid`, `getgid`, `getpwuid` | `~` expansion and `user-login-name` |
+| `readlink`, `symlink` | no links here, so returning `EINVAL` is the correct answer, not a stub |
+| `TIOCGWINSZ` | window size; without it every program assumes 80×24 and the framebuffer console's bottom six rows go unused |
+| `fchdir` | Vim uses it |
+
+~300 lines for the lot.
+
+**(9) Subprocesses.** `spawn` creates a task, but there is no way to talk
+to one and no `execve` to replace an image in place. A ported program
+that wants to run `grep`, or a compiler, or a shell needs `fork` (or a
+`posix_spawn`-shaped call with file actions), `execve` and `waitpid`
+working together with pipes. `waitpid` exists already. ~300 lines, and it
+is downstream of *Pipelines and redirection*.
+
+Items (1) and (2) are *Memory* above; (3) is *A C library*; (7) is *Long
+file names* below; (10) and (11) are *The console*. Nothing in
+`emacs.md`'s list is missing from this section — which is the point of
+numbering them the same way.
+
 ### Long file names
 
 FAT16's 8.3 names are the single biggest practical limitation of the
@@ -969,14 +1025,8 @@ address space: 256 MB of virtual address space on a 4 MB machine is only
 useful if the unused parts need not be resident. Sequenced after `mmap`,
 which shares most of the same machinery.
 
-### Longer-term
+### Loose ends
 
-- **Signal handlers.** `sigaction`, a signal frame built on the user
-  stack, and a `sigreturn` to unwind it. Today signals have default
-  actions only, which is deliberate but limiting.
-- **`select` or `poll`.** Nothing can wait on more than one thing at a
-  time, which is the constraint that would bite a program with both a
-  socket and a terminal.
 - **TCP's remaining options:** window scaling, SACK, timestamps and PAWS,
   and keepalives. All are negotiated and a peer works fine without them.
   **`TIME_WAIT` is 10 seconds rather than 2 MSL**, which is a real

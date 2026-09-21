@@ -30,14 +30,19 @@ like this. Sections 1–14 are written for you.
 
 **A program.** The kernel is already running, owns the hardware, and you reach
 it through `trap #0`. You get file descriptors, a filesystem, a terminal, a
-framebuffer and a clock, and you touch no registers at all. `user/` is like
-this. **Section 15** is written for you, and the rest of this guide is then
-background rather than instruction.
+framebuffer and a clock, and you touch no registers at all. `system/` and
+`apps/` are like this. **Section 15** is written for you, and the rest of
+this guide is then background rather than instruction.
 
-The difference is not a matter of taste. A program that pokes a register still
-*works* — there is no MMU turned on to stop it — which is exactly why it is
-worth being deliberate about which one you are writing. The include paths
-enforce it: `user/Makefile` does not put the hardware header on the path.
+The difference is not a matter of taste, and it is no longer a matter of
+discipline either. **The MMU is on and programs run unprivileged**, so a
+program that pokes a register does not quietly work — it takes a bus
+error and is killed, and the shell says so and carries on. This used to
+say the opposite, which was true when it was written and stopped being
+true when user mode arrived.
+
+Two things enforce the split: the hardware, as above, and the include
+paths — `lib/program.mk` does not put the hardware header on the path.
 
 ---
 
@@ -820,7 +825,7 @@ Everything above is about owning the machine. This section is about not
 owning it: the kernel is running, it owns the hardware, and a program
 reaches it through `trap #0`.
 
-See [`user/`](user/) for working examples — `hello.c` is thirty lines,
+See [`apps/`](apps/) and [`system/`](system/) for working examples — `hello.c` is thirty lines,
 `fbtest.c` draws one of everything, `cube.c` is a real one.
 
 ### The system call interface
@@ -839,14 +844,28 @@ architecture and there is nothing to improve on. The numbers are Linux's
 i386 numbers, so `__NR_write` is 4, and the error values are Linux's, so
 `-ENOENT` is `-2`.
 
+Forty of them.
+
 | | |
 |---|---|
 | `exit` 1, `read` 3, `write` 4, `open` 5, `close` 6 | the usual |
 | `unlink` 10, `rename` 38, `stat` 106, `getdents` 141 | files |
 | `lseek` 19, `fsync` 118, `sync` 166, `statfs` 99 | more files |
+| `mkdir` 39, `rmdir` 40, `chdir` 12, `getcwd` 183 | directories |
 | `time` 13, `stime` 25, `times` 43, `nanosleep` 162 | time |
-| `ioctl` 54, `uname` 122, `reboot` 88 | the rest |
-| `spawn` 400 | **not Linux** — see below |
+| `getpid` 20, `kill` 37, `waitpid` 7, `sched_yield` 158 | tasks |
+| `socket` 359, `bind` 361, `connect` 362, `listen` 363 | sockets |
+| `accept` 364, `sendto` 369, `recvfrom` 371, `shutdown` 373 | more sockets |
+| `ioctl` 54, `uname` 122, `sysinfo` 116, `reboot` 88 | the rest |
+| `spawn` 400, `jobctl` 401, `netctl` 402 | **not Linux** — see below |
+
+The three above 400 are local because Linux has nothing to match.
+`spawn` takes a path and an argument vector and creates a task directly
+— there is no copy-on-write here, so a `fork` would copy an address
+space only for the child to throw it away. `jobctl` is what `fg`, `bg`,
+`jobs` and `ps` are built on; `netctl` is what `ifconfig`, `ping` and
+`netstat` are built on, being the operations that configure an interface
+or send one echo request and so have no socket to hang off.
 
 There is **no global `errno`**: a call returns a non-negative result or
 the negated error. A global would only start making sense once there are
@@ -869,26 +888,42 @@ Two headers, and only two:
 which pulls in `kernel/uapi.h`, the ABI — call numbers, `O_CREAT`,
 `struct stat`, the ioctl numbers. A program does **not** get `kernel.h`,
 `vfs.h`, `dev.h`, anything under `drivers/`, or the machine's hardware
-header. `user/Makefile` deliberately leaves `../tests` off the include
+header. `lib/program.mk` deliberately leaves `tests/` off the include
 path, so reaching a chip means editing a Makefile rather than adding an
 `#include` — which makes it a decision instead of a slip.
 
 ### Building one
 
+Drop the source into `apps/` (or `system/`, if it is part of the system
+rather than something somebody chose to run) and add its name to that
+directory's `PROGS`. The rules live in one place, `lib/program.mk`, so
+the two cannot drift apart:
+
 ```make
+LIB := $(TOPDIR)/lib
+
 CFLAGS  := -mcpu=68040 -ffreestanding -nostdlib -nostdinc -O2 \
            -Wall -Wextra -Werror -fno-builtin -fno-stack-protector \
-           -I. -I.. -I../kernel
-LDFLAGS := -mcpu=68040 -ffreestanding -nostdlib -T user.ld \
+           -I$(LIB) -I$(TOPDIR) -I$(TOPDIR)/kernel
+LDFLAGS := -mcpu=68040 -ffreestanding -nostdlib -T $(LIB)/user.ld \
            -Wl,--build-id=none -Wl,--no-warn-rwx-segments
 
-myprog: myprog.c crt0.s ulib.c user.ld
+COMMON := $(LIB)/crt0.s $(LIB)/ulib.c $(LIB)/ulib.h $(LIB)/user.ld
+
+myprog: myprog.c $(COMMON)
 	$(CC) $(CFLAGS) $(LDFLAGS) \
-	    -x assembler-with-cpp crt0.s -x c ulib.c $< -o $@
+	    -x assembler-with-cpp $(LIB)/crt0.s -x c $(LIB)/ulib.c $< -o $@
 ```
 
-`user.ld` links at **1 MB** and has no vector table — a program is
-entered at its ELF entry point, not found at a fixed address by a ROM.
+Note what is **not** on the include path: `tests/`, where the machine's
+hardware header lives. A program cannot reach a chip by accident, and if
+one ever needs to, the include path is what has to change — which makes
+it a decision rather than a slip.
+
+`lib/user.ld` links at **`0x10000000`**, not 1 MB, and the program area
+is 2 MB with 64 KB of stack at the top. It has no vector table — a
+program is entered at its ELF entry point, not found at a fixed address
+by a ROM.
 
 There is no flattening step. The kernel loads ELF directly, which is why
 `make` produces something runnable.
@@ -928,7 +963,7 @@ from wherever the allocator had some.
 Outside that, nothing. Not the kernel, not the UART, not the
 framebuffer, not video memory -- an access to any of them is a bus
 error and the kernel kills the program with a segmentation fault. That
-is not a convention to respect, it is a page table: `user/faulter.c`
+is not a convention to respect, it is a page table: `apps/faulter.c`
 tries all of them and `kernel/vmtest.sh` checks that every one fails.
 
 **A pointer you pass to a system call is checked.** The kernel cannot
@@ -944,32 +979,21 @@ call or an ioctl.
 
 
 
-```
-0x00000000  kernel
-0x00100000  your image            <- USER_BASE, what user.ld links at
-0x002f0000  the loader refuses anything above here   <- USER_LIMIT
-0x002ffff0  your stack, growing down
-0x00300000  unused gap
-0x003ffff0  kernel supervisor stack
-```
-
-`USER_LIMIT` is 64 KB below the stack top, which is why `user.ld` gives
-itself `2M - 64K`: a segment that reached the stack would be loaded on
-top of it.
-
-The kernel bounds-checks every `PT_LOAD` segment against that window
-before reading a byte of it. With no MMU that check is the only thing
-between a mislinked program and the kernel's own memory — and note it
-protects *loading*, not *running*. Once your code executes it can write
-anywhere it likes.
+The kernel bounds-checks every `PT_LOAD` segment against the program
+window before reading a byte of it — a mislinked program is refused
+rather than loaded. That check is about *loading*; what protects the
+machine while your code *runs* is the MMU, which is a separate thing and
+is described above.
 
 `.bss` is zeroed by the kernel, not by `crt0.s`: the loader knows which
 part of a segment came from the file and the program does not.
 
-`argc` and `argv` arrive on the stack, below the return address the
-`jsr` pushed. `crt0.s` picks them up at `4(%sp)` and `8(%sp)` — getting
-that off by one slot gives a plausible-looking garbage `argc` and a bus
-error shortly after.
+`argc`, `argv` and `envp` arrive on the stack, below the return address
+the `jsr` pushed. `crt0.s` picks them up at `4(%sp)`, `8(%sp)` and
+`12(%sp)`, and stores the third in `environ` before calling `main` —
+which is what makes `getenv()` work and what makes the shell's exported
+variables visible to you. Getting those offsets off by one slot gives a
+plausible-looking garbage `argc` and a bus error shortly after.
 
 ### Files
 
@@ -984,7 +1008,10 @@ close(fd);
 two bits the way POSIX has it, so **`O_RDONLY` is zero** and testing for
 it with `&` does not work — use `(flags & O_ACCMODE)`.
 
-The volume is FAT16, root directory only, 8.3 names, case-insensitive.
+The volume is FAT16 with subdirectories, 8.3 names, case-insensitive.
+There is a working directory per task: `chdir`, `getcwd`, `mkdir` and
+`rmdir` all work, and a path may be absolute or relative. What is still
+missing is long names -- 8.3 is a hard limit, not a convention.
 `getdents(index, &dirent)` walks it by index and returns `-ENOENT` when
 there are no more.
 
@@ -1011,7 +1038,7 @@ u32 n;
 ioctl(STDIN_FILENO, FIONREAD, (u32)&n);   /* n = 0 or 1 */
 ```
 
-`ulib.h` wraps that as `key_waiting()`, which is what `user/cube.c`
+`ulib.h` wraps that as `key_waiting()`, which is what `apps/cube.c`
 actually calls.
 
 #### Raw mode, if you want the keystrokes yourself
@@ -1059,10 +1086,16 @@ not know or care which one it is reading.
 The terminal raises them on your program; there is no `sigaction()` and
 nothing to catch. ctrl-C ends it with status 130, and it works even if
 you never call the kernel at all — the timer interrupt notices. ctrl-Z
-stops it, and `fg` resumes it from the system call it was in, which
-means **a program that makes no system calls cannot be stopped** (it can
-still be killed). A `read()` interrupted by ctrl-C returns `-EINTR`,
-exactly as it would on Linux.
+stops it, and `fg` resumes it from the system call it was in. A `read()`
+interrupted by ctrl-C returns `-EINTR`, exactly as it would on Linux.
+
+This used to carry the caveat that a program making no system calls could
+not be stopped. It no longer applies to ctrl-C, which is delivered from
+the tick as well as at the system call boundary -- `apps/spin` makes no
+system calls at all and is still interruptible. ctrl-Z is different and
+deliberately so: it is only ever delivered at a system call, because
+stopping means being resumable and an interrupted instruction stream is
+not.
 
 #### Where the console is
 
@@ -1113,8 +1146,8 @@ close(fd);
 ```
 
 `bind()`, `listen()` and `accept()` work the other way round;
-`user/httpd.c` is a worked example that serves files off the disk, and
-`user/fetch.c` is the client side.
+`apps/httpd.c` is a worked example that serves files off the disk, and
+`apps/fetch.c` is the client side.
 
 `htons()` and friends are the identity on this machine, because network
 byte order is big-endian and so is a 68040. **Call them anyway** — the
@@ -1125,15 +1158,17 @@ UDP uses `sendto()` and `recvfrom()` with the same descriptor type.
 **There is no resolver**, so addresses are numeric. That is the next
 thing missing rather than an oversight.
 
-**Blocking is a spin.** A `read()` on a socket with nothing waiting
-burns the processor until something arrives or it times out, the same
-way the console does. It becomes a real sleep when there is a scheduler.
+**Blocking is a real sleep.** A `read()` on a socket with nothing waiting
+puts the task on a wait queue and yields; something else runs until data
+arrives or the timeout expires, and the same is true of the console. This
+used to be a spin, and the note promising it would become a real sleep
+"when there is a scheduler" has been discharged.
 
 #### Stopping the machine
 
 `reboot(RB_POWER_OFF)` flushes the filesystem and stops the machine;
 `reboot(RB_HALT_SYSTEM)` stops the processor and leaves it there.
-`user/shutdown.c` is four lines around the first of those.
+`system/shutdown.c` is four lines around the first of those.
 
 ### The framebuffer
 
@@ -1198,14 +1233,14 @@ the serial line at once. The terminal has a list of output sinks, and
 `/dev/fbcon` is one of them, so `write(1, ...)` reaches both.
 
 **It cannot be read from.** A screen is not an input device. Input comes
-through the terminal, from whatever sources it has — today the serial
-port, tomorrow a keyboard as well — and a program never has to know
-which: descriptor 0 works either way.
+through the terminal, from whatever sources it has — the serial port
+**and** the 8042 keyboard, both live at once — and a program never has to
+know which: descriptor 0 works either way.
 
 Note that writing to it turns double buffering **off**, because a console
 draws a character at a time and each one has to appear. A program that
 wants to animate afterwards must ask for it back with
-`ioctl(fb, FBIO_DOUBLE, 1)`, which is why `user/cube.c` does.
+`ioctl(fb, FBIO_DOUBLE, 1)`, which is why `apps/cube.c` does.
 
 ### Time
 
@@ -1225,26 +1260,47 @@ Sleeping uses `STOP` in the kernel, so a sleeping program costs the
 host nothing — prefer it to a delay loop, which is only ever right on the
 machine it was tuned on.
 
+### What a program can do that it once could not
+
+Kept because this list used to say the opposite, and somebody reading an
+older copy should know which way round it is now.
+
+- **Run at the same time as another.** Each task has its own address
+  space; several programs run at once. The single program area at 1 MB
+  and the `-EBUSY` from a nested `spawn` are both gone.
+- **Run in the background.** `&` and `bg` really run things, `jobs`
+  lists them and `fg` brings one back.
+- **Signal another program.** `kill(2)`, `getpid(2)` and `waitpid(2)`
+  exist.
+- **Open a network socket.** `socket`, `connect`, `bind`, `listen`,
+  `accept`, `sendto` and `recvfrom` all work, and a socket is a
+  descriptor, so `read()` and `write()` work on one.
+- **Use subdirectories**, a working directory, and relative paths.
+- **Read its environment.** `getenv()`, inherited from the shell.
+
 ### What a program cannot do yet
 
-- **Run at the same time as another.** One at a time; a nested `spawn`
-  returns `-EBUSY`, and so does one attempted while a job is stopped —
-  there is a single program area at 1 MB, and a stopped job is still
-  sitting in it.
-- **Run in the background.** `&` and `bg` are parsed and refused with a
-  reason: nothing can run while the shell runs until there is a
-  scheduler. The job is queued, and `fg` runs it.
-- **Catch a signal.** There is no `sigaction()`. ctrl-C and ctrl-Z are
-  things done *to* a program, not events it can handle.
+- **Catch a signal.** There is no `sigaction()`. Signals have default
+  actions only; ctrl-C and ctrl-Z are things done *to* a program, not
+  events it can handle.
+- **Grow its memory.** There is no `mmap`, no `brk` and no `malloc`:
+  what a program gets is its image and 64 KB of stack, decided when it
+  was loaded, inside a 2 MB address space. **This is the constraint that
+  decides what can be ported** — see `emacs.md`.
+- **Use a C library.** `ulib` is a syscall wrapper plus a handful of
+  string helpers. No `stdio`, no `printf`, no `setjmp`, no math.
+- **Map the framebuffer.** No `mmap`, so drawing goes through the
+  `FBIO_*` ioctls rather than through the memory itself.
+- **Wait on more than one thing.** There is no `select` or `poll`.
+- **Use a pipe, or redirect.** No `pipe`, `dup`, `dup2` or `fcntl`, and
+  so no shell pipelines either.
+- **Start a child and talk to it.** `spawn` creates a task, but without
+  pipes there is no way to communicate with one.
+- **Use long file names.** 8.3 only.
+- **Resolve a name.** Addresses are numeric; there is no DNS.
 
-- **Map the framebuffer.** There is no `mmap`, so drawing goes through
-  the `FBIO_*` ioctls rather than through the memory itself.
-- **Grow its memory.** There is no `brk` and no `malloc`: what a
-  program gets is its image and 64 KB of stack, decided when it was
-  loaded.
-- **Open a network socket.** `eth0` exists and has a driver; nothing
-  above it sends a packet yet.
-- **Use subdirectories or long file names.** The filesystem has neither.
+`design.md` §11 is the open-items list, and `emacs.md` costs the whole
+set out against one real program.
 
 ---
 
@@ -1274,16 +1330,21 @@ syscalls     d0 = number, d1-d5 = args, trap #0, d0 = result or -errno
              Linux/m68k convention, Linux i386 numbers, Linux errnos
 devices      /dev/console /dev/tty  the terminal (sources + sinks)
              /dev/ttyS0   the serial port, raw
+             /dev/kbd0    the 8042 keyboard, an input source
              /dev/fbcon   the text console, output only
              /dev/fb0     the framebuffer
+             /dev/hda     the disk
 ```
 
 Worked, tested code for every device is in [`tests/`](tests/) — `t6` for the
 interrupt chain, `t7`/`t8`/`t9` for the MFP, `t3` for ATA, `t4` for ethernet,
 `t5` for the MMU, `t10` for video, `t11` for the clock and its NVRAM, `t12`
-for the keyboard. Two scripted sessions test the system rather than a
-device: `kernel/fstest.sh` for the filesystem and `kernel/edittest.sh`
-for the line editor, history, ctrl-C, ctrl-Z, jobs and `shutdown`.
+for the keyboard. **Four scripted sessions** test the system rather than
+a device: `kernel/fstest.sh` for the filesystem (39 checks),
+`kernel/edittest.sh` for the line editor, history, job control and
+`shutdown` (27), `kernel/vmtest.sh` for memory protection (15), and
+`kernel/nettest.sh` for DHCP, ARP, ICMP and TCP against a web server on
+the host (13).
 
 Driver versions of most of them are in [`kernel/drivers/`](kernel/drivers/), which is
 where to look for code that has to keep working rather than code that only has
