@@ -72,6 +72,7 @@ mcopy -o -i "$MIMG" ../apps/statfs ::/STATFS
 mcopy -o -i "$MIMG" ../apps/cdtest ::/CDTEST
 mcopy -o -i "$MIMG" ../apps/hello ::/HELLO
 mcopy -o -i "$MIMG" ../apps/memtest ::/MEMTEST
+mcopy -o -i "$MIMG" ../apps/malloctest ::/MALLOCTE
 mmd -i "$MIMG" ::/ETC
 mmd -i "$MIMG" ::/BIN
 mcopy -o -i "$MIMG" ../system/env ::/BIN/ENV
@@ -106,7 +107,8 @@ mcopy -o -i "$MIMG" "$SCRATCH/rc.tmp" ::/ETC/RC
     printf 'memtest readonly\r';        sleep 2
     printf 'memtest none\r';            sleep 2
 
-    printf 'echo SHELL-SURVIVED\r'
+    # --- the allocator: its workload runs as long as the host takes ---
+    printf 'mallocte\r'
 } >> "$SCRATCH/session.tmp"
 
 rm -f "$SCRATCH/in.fifo"
@@ -123,6 +125,20 @@ qemu_pid=$!
 exec 3> "$SCRATCH/in.fifo"
 sleep "$BOOT_WAIT"
 cat "$SCRATCH/session.tmp" >&3
+
+# Waited for rather than slept past: how long 40000 allocations take is
+# a property of the host, and a sleep sized on a fast one fails on a slow
+# one. Anything typed meanwhile would go to malloctest, not the shell.
+for _ in $(seq 1 600); do
+    if grep -qF "malloctest: done" "$LOG" 2>/dev/null; then break; fi
+    if ! kill -0 "$qemu_pid" 2>/dev/null; then break; fi
+    sleep 0.2
+done
+sleep 0.5
+{
+    printf 'mallocte doublefree\r';     sleep 2
+    printf 'echo SHELL-SURVIVED\r'
+} >&3
 
 for _ in $(seq 1 200); do
     if grep -qF "SHELL-SURVIVED" "$LOG" 2>/dev/null; then break; fi
@@ -154,6 +170,9 @@ check "statfs ran to the end" $?
 
 grep -q "memtest: done" "$C"
 check "memtest ran to the end" $?
+
+grep -q "malloctest: done" "$C"
+check "malloctest ran to the end" $?
 
 test "$(grep -c '^  FAIL ' "$C")" -eq 0
 check "  and every check inside them passed" $?
@@ -220,6 +239,17 @@ after=$(used_after FREE-AFTER)
 echo "  used pages: before=${before:-?} after=${after:-?}"
 test -n "$before" && test -n "$after" && [ "$before" -eq "$after" ]
 check "memtest left mappings, PROT_NONE pages and a file behind, and none leaked" $?
+
+echo "=== checks: the allocator catches a double free ==="
+
+grep -q "malloctest: freeing the same block twice" "$C"
+check "malloctest freed a block twice" $?
+
+grep -q "free(): invalid pointer or double free at 0x" "$C"
+check "  and free() said so" $?
+
+! grep -q "NOT-CAUGHT" "$C"
+check "  and the program did not carry on" $?
 
 echo "=== checks: nothing broke ==="
 

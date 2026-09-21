@@ -30,11 +30,16 @@ LIB := $(TOPDIR)/lib
 CPUFLAGS := -mcpu=68040
 CFLAGS   := $(CPUFLAGS) -ffreestanding -nostdlib -nostdinc -O2 \
             -Wall -Wextra -Werror -fno-builtin -fno-stack-protector \
+            -ffunction-sections -fdata-sections \
             -I$(LIB) -I$(TOPDIR) -I$(TOPDIR)/kernel
+# Every program is compiled with the whole library, so the linker drops
+# what a program does not call: a program that never allocates does not
+# carry the allocator.
 LDFLAGS  := $(CPUFLAGS) -ffreestanding -nostdlib -T $(LIB)/user.ld \
-            -Wl,--build-id=none -Wl,--no-warn-rwx-segments
+            -Wl,--build-id=none -Wl,--no-warn-rwx-segments -Wl,--gc-sections
 
-COMMON := $(LIB)/crt0.s $(LIB)/ulib.c $(LIB)/ulib.h $(LIB)/user.ld
+COMMON := $(LIB)/crt0.s $(LIB)/ulib.c $(LIB)/ulib.h $(LIB)/malloc.c \
+          $(LIB)/malloc.h $(LIB)/user.ld
 
 .PHONY: all install list clean
 
@@ -43,7 +48,7 @@ all: $(PROGS)
 %: %.c $(COMMON)
 	$(CC) $(CFLAGS) $(LDFLAGS) \
 	    -x assembler-with-cpp $(LIB)/crt0.s \
-	    -x c $(LIB)/ulib.c $< -o $@
+	    -x c $(LIB)/ulib.c $(LIB)/malloc.c $< -o $@
 	@$(SIZE) $@
 
 install: $(PROGS) $(DISK)

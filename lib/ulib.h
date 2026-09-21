@@ -18,6 +18,9 @@
 
 #include "uapi.h"
 
+/* malloc, free, calloc, realloc: where <stdlib.h> would put them. */
+#include "malloc.h"
+
 /* Error numbers are part of the ABI: every call here returns one,
  * negated, on failure. Pure macros, and Linux's values. */
 #include "errno.h"

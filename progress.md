@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: 4 of 23 complete.**
+**Status: 5 of 23 complete.**
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -33,7 +33,7 @@ drive almost all of it:
 | 1 | Grow the user address space | nothing else fits until this | **done** |
 | 2 | `brk`/`sbrk` | the smaller half of memory; enough for `malloc` | **done** |
 | 3 | `mmap`/`munmap`/`mprotect` | what a runtime and a libc expect | **done** |
-| 4 | `malloc` in `lib/` | so tasks 5–12 have something to test against | todo |
+| 4 | `malloc` in `lib/` | so tasks 5–12 have something to test against | **done** |
 | 5 | Signals: `sigaction`, handlers, `sigreturn` | the largest kernel item; editors need it | todo |
 | 6 | `select`/`poll` | the other half of an event loop | todo |
 | 7 | Interval timers | depends on 5 | todo |
@@ -207,7 +207,7 @@ It grows one group per task, and a group is only added once its calls
 work — so a failure there is always a regression, never a thing not
 written yet.
 
-**220 checks across six suites now:** 12 device programs, 41 fs, 107
+**251 checks across six suites now:** 12 device programs, 41 fs, 138
 api, 29 edit, 18 vm, 13 net.
 
 ### 1. Grow the user address space — done
@@ -404,6 +404,64 @@ both times.
 checks fail. That is exactly the stale-descriptor failure the working notes
 warns about, now caught by a test instead of by an afternoon.
 
+### 4. `malloc` in `lib/` — done
+
+`lib/malloc.c`: `malloc`, `free`, `calloc`, `realloc`, plus
+`malloc_check()` and glibc's `mallinfo()`. **It is written to be
+thrown away when the C library arrives (task 13),** as decided in
+advance. It exists so that tasks 5–12 do not wait on the largest item
+on the list.
+
+The note planned first fit over one free list. What was built is a
+little more, each piece for a reason:
+
+- **Boundary tags** in the dlmalloc style: a 4-byte header, a footer
+  only on free blocks, and a "previous in use" bit in the *next*
+  block's header. Every merge is O(1), and a block in use costs 4
+  bytes.
+- **Segregated free lists,** one per power of two, first fit within a
+  list. A single list makes every `malloc` walk every free block, which
+  an editor making thousands of small allocations would feel.
+- **Requests of 128 KB and up come from `mmap`,** as glibc does, and
+  `free` gives them straight back with `munmap`. That is what makes
+  loading a big file and letting it go actually return the memory.
+- **The top of the heap is trimmed** with a negative `sbrk` once more
+  than 256 KB there is free.
+- **`realloc` grows in place,** into a free neighbour or, for the last
+  block, by moving the break. The note asked for this because an
+  editor's gap buffer grows by reallocating.
+- **A double free, or a pointer `malloc` never returned,** is reported
+  on stderr and ends the program with status 134, which the shell reads
+  as `SIGABRT`. Carrying on would corrupt the lists.
+- **A segment starts on an 8-byte boundary** even when the program has
+  moved the break to an odd address itself. Found on review, not in a
+  test.
+
+**Programs are now linked with `--gc-sections`.** Every program compiles
+the whole library, so without it every one of them would carry the
+allocator. With it, every program *shrank* by about 3 KB, because
+unused `ulib` functions go too.
+
+**`lib/user.ld` still said `LENGTH = 2M - 64K`**, missed in task 1. It
+would have refused to link any program bigger than about 1.9 MB,
+exactly the kind of program the porting work is for. It is now
+`256M - 1M - 4K`, which is everything up to the stack's guard page.
+
+**Tests:** `apps/malloctest`, 27 checks. The fixed ones cover
+alignment, `malloc(0)`, `free(NULL)`, `calloc` zeroing reused dirty
+memory, `calloc` overflow, an impossible request returning NULL,
+`realloc` preserving contents and growing in place, the `mmap` path
+out and back, and trimming. Then the randomised workload: 40,000
+operations across 512 slots, sizes mostly small with some over 128 KB.
+Every block carries a pattern naming its slot, checked before every
+free and after every `realloc`, and `malloc_check()` walks the whole
+heap every 500 operations. At the end everything is freed, and nothing
+may remain in use. `apitest.sh` checks the double free from outside,
+and **waits for the workload to finish rather than sleeping past it**,
+because how long 40,000 allocations take depends on the host. With
+backward merging disabled in `coalesce()`, `malloc_check()` reports
+"two free blocks are adjacent" and six checks fail.
+
 ---
 
 ## Design notes for the tasks not yet started
@@ -411,25 +469,6 @@ warns about, now caught by a test instead of by an afternoon.
 Written while the shell was down, because thinking does not need one.
 These are decisions, not code — the point is that the next session
 starts by typing rather than by deciding.
-
-### 4. `malloc` in `lib/`
-
-First fit over `sbrk`, coalescing on free, free list threaded through
-the blocks. `malloc`, `free`, `realloc`, `calloc`. Perhaps 250 lines.
-
-*Decision made in advance:* **write it, even though task 13 brings a
-libc that has one.** Tasks 5–12 all want an allocator to test against,
-and waiting for the picolibc port would block every one of them behind
-the largest single piece of work on the list. It is meant to be thrown
-away.
-
-`realloc` should grow in place when the next block is free. That
-matters more than it sounds: an editor's gap buffer grows by
-reallocating, and copying a few hundred KB on every insertion is
-visible on a 25 MHz machine.
-
-Test it with a randomised allocate/free workload that checks free-list
-integrity, not just with a few calls.
 
 ### 5. Signals: `sigaction`, handlers, `sigreturn`
 

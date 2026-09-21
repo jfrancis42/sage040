@@ -818,10 +818,12 @@ Four things, in dependency order:
    that paging wants. There is no table of mappings: the page tables are
    the record, which is why partial `munmap` needs no splitting.
 
-4. **`malloc`/`free`/`realloc`/`calloc`.** Once there is a way to get
-   pages this is ordinary user-space code — and the right move is not to
-   write it, but to take the one that comes with a libc. See *A C
-   library* below.
+4. **`malloc`/`free`/`realloc`/`calloc`.** In the long run, the one
+   that comes with a libc (see *A C library* below). For now,
+   `lib/malloc.c`: boundary tags, segregated free lists, `mmap` for
+   large blocks, and a checker the tests call. It is written to be
+   thrown away when the libc arrives, and exists so that nothing
+   between here and there waits on it.
 
 The ordering matters because each step is usable on its own: a bigger
 address space helps immediately, `brk` alone unlocks `malloc`, and `mmap`
@@ -832,8 +834,9 @@ can arrive later without invalidating either.
 `lib/ulib.c` is not a libc and does not pretend to be. It is a thin
 wrapper over the system calls plus `strlen`, `strcmp`, `memset`, `memcpy`
 and a few output helpers — enough for the programs in `system/` and
-`apps/`, and enough for nothing else. There is no `stdio`, no `malloc`, no
-`printf`, no `qsort`, no `setjmp`, no locale, no math.
+`apps/`, and enough for nothing else. There is a stand-in `malloc`
+(`lib/malloc.c`), but no `stdio`, no `printf`, no `qsort`, no `setjmp`,
+no locale and no math.
 
 **This is the second-biggest barrier to running anything written by
 somebody else**, after the address space. Every portable C program assumes

@@ -549,8 +549,8 @@ straight into the kernel, which was a layering violation with a
 command-line interface.
 
 `ulib` is a thin wrapper over the system calls plus the handful of string
-and output helpers that every program needs. **There is no malloc, no
-stdio, no libc.** A program that wants memory declares it.
+and output helpers that every program needs, and `lib/malloc.c`, a
+stand-in allocator. **There is no stdio and no libc.**
 
 `crt0.s` reads `argc` and `argv` at `4(%sp)` and `8(%sp)`, not 0 and 4 —
 the kernel enters a program with `jsr`, which pushes a return address
@@ -639,9 +639,10 @@ an address space for the child to discard immediately.
 **No signal handlers.** Default actions only. No `signal`, no `sigaction`,
 no `sigprocmask` from user mode.
 
-**No `malloc` yet.** The address space is 256 MB, with `brk`/`sbrk`,
-and `mmap`/`munmap`/`mprotect` for anonymous memory and file copies;
-the allocator is `progress.md` task 4.
+**Memory is Linux-shaped.** A 256 MB address space with `brk`/`sbrk`,
+`mmap`/`munmap`/`mprotect` for anonymous memory and file copies, and
+`malloc`/`free`/`calloc`/`realloc` in `lib/malloc.c`, a stand-in until
+there is a C library.
 
 **No pipes, no `dup2`, no `fcntl`, no `select` or `poll`.** So no shell
 pipelines, and no input redirection.

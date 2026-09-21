@@ -986,6 +986,18 @@ quietly not writing the file. `PROT_EXEC` means nothing because the
 own, including `PROT_NONE`. `mmap()` in `ulib` returns `MAP_FAILED`;
 `syscall(__NR_mmap2, ...)` gives you the errno.
 
+**`malloc`, `free`, `calloc` and `realloc` are in `lib/malloc.c`**,
+declared through `ulib.h`. Blocks are 8-byte aligned. Requests of 128
+KB or more get pages of their own from `mmap` and go back to the system
+when freed. `realloc` grows a block in place when it can. A double free
+or a pointer `malloc` never returned ends the program with status 134
+and a message, rather than corrupting the heap. `malloc_check()` walks
+the heap and verifies it, and `mallinfo()` reports on it with glibc's
+field names. It is a stand-in: the C library will replace it.
+
+Programs are linked with `--gc-sections`, so one that never allocates
+does not carry the allocator.
+
 **A pointer you pass to a system call is checked.** The kernel cannot
 dereference your addresses -- they mean nothing in its own space -- so
 it walks your page tables and copies. A bad pointer comes back as
@@ -1311,8 +1323,6 @@ older copy should know which way round it is now.
 - **Catch a signal.** There is no `sigaction()`. Signals have default
   actions only; ctrl-C and ctrl-Z are things done *to* a program, not
   events it can handle.
-- **Call `malloc`.** `brk`, `sbrk`, `mmap`, `munmap` and `mprotect`
-  work; the allocator above them is `progress.md` task 4.
 - **Use a C library.** `ulib` is a syscall wrapper plus a handful of
   string helpers. No `stdio`, no `printf`, no `setjmp`, no math.
 - **Map the framebuffer.** `mmap` exists, but `/dev/fb0` does not
