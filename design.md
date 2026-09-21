@@ -580,8 +580,58 @@ memory probe walking off the end of RAM, faulting address in `a0`.
 3. **A scheduler.** The tick exists and drives `nanosleep`; what it does not
    yet do is preempt anything, because there is only one thing to run.
 
-   **Two thirds of the plumbing is already there, and it was put there
-   by ctrl-Z rather than planned.** `job.c` holds a table of jobs with
+   **The memory half is now done.** Every program runs in user mode in
+   an address space of its own, with its own page tables, its own
+   physical pages and its own kernel stack. Two programs would not
+   collide, and `kernel/vmtest.sh` demonstrates that neither can reach
+   the kernel, the devices, or anything it was not given.
+
+   **What tasks still need, in the order they will be wanted:**
+
+   - **A run queue**, and a `struct task` that `struct job` becomes.
+     The job table already carries state, a saved context, an address
+     space and a kernel stack; what it lacks is a notion of
+     runnable-versus-blocked and something to pick the next one.
+   - **A full context switch.** `exec_stop`/`exec_resume` save only the
+     callee-saved registers, which is enough at a C call boundary and
+     not enough anywhere else. Preemption means saving every register
+     and the PC out of the exception frame.
+   - **Wait queues.** A blocked task has to be somewhere. Every
+     polling loop in the system -- `tty.c`'s `next_char()` above all --
+     becomes a sleep on a queue that the driver's interrupt wakes,
+     which is also what finally removes the spin loops.
+   - **Mutexes**, once more than one task can be inside the kernel at
+     once. The VFS, the block layer and the terminal all hold state
+     that is currently safe only because nothing else can run.
+     Interrupt handlers will need the non-blocking kind.
+   - **Real signals.** What exists now is one-directional: the kernel
+     does something *to* a job. Tasks need delivery to a handler,
+     blocking and pending sets, and `kill()` between tasks -- at which
+     point `job_signal_fg` becomes the terminal's special case of a
+     general mechanism rather than the whole of it.
+
+4. **An environment, and a PATH.** The shell looks a command up by name
+   in the one directory this volume has, because that is all there is;
+   a `PATH` implies an environment to keep it in, and an environment
+   implies that programs inherit one.
+
+   The mechanism is already half built and in the right place.
+   `setup_stack()` copies the argument vector into the new address
+   space -- strings first, then an array of pointers to them -- because
+   the shell's own memory is not reachable from a program any more. An
+   environment is the same operation a second time, and it lands next
+   to the first: the conventional Unix layout puts `envp` directly
+   above `argv` on the stack, with `crt0.s` taking a third argument and
+   `main(argc, argv, envp)` behind it. What has to be decided is where
+   the shell keeps its own copy, since it has no heap, and how much of
+   a fixed budget a program's environment may occupy.
+
+   `PATH` itself then needs the filesystem to have more than one
+   directory, which FAT16 has and this kernel does not yet use -- so
+   the two are worth doing together.
+
+   **Two thirds of the context-switch plumbing is already there, and it
+   was put there by ctrl-Z rather than planned.** `job.c` holds a table of jobs with
    states and pending signals; `exec_stop()` and `exec_resume()` in
    `execasm.s` are a context switch — each saves the callee-saved
    registers and the stack pointer and jumps to where the other left

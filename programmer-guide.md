@@ -911,6 +911,39 @@ file named `CUBE.EXE` is still refused.
 
 ### The memory a program gets
 
+**A program runs unprivileged, in an address space of its own.** It
+begins at `0x10000000` and has two megabytes of virtual space. Every
+program has the same addresses, because no two of them can see each
+other: the numbers are virtual and the physical pages behind them come
+from wherever the allocator had some.
+
+```
+0x10000000  your image: text, rodata, data, bss
+...         UNMAPPED -- a runaway stack faults here
+0x101f0000  your stack, 64 KB, growing down
+0x101ffff0  the top of it, where argc and argv were put
+0x10200000  the end of everything you can reach
+```
+
+Outside that, nothing. Not the kernel, not the UART, not the
+framebuffer, not video memory -- an access to any of them is a bus
+error and the kernel kills the program with a segmentation fault. That
+is not a convention to respect, it is a page table: `user/faulter.c`
+tries all of them and `kernel/vmtest.sh` checks that every one fails.
+
+**A pointer you pass to a system call is checked.** The kernel cannot
+dereference your addresses -- they mean nothing in its own space -- so
+it walks your page tables and copies. A bad pointer comes back as
+`-EFAULT` and your program keeps running; it does not take the machine
+with it.
+
+**You cannot mask an interrupt, halt the processor, or touch a control
+register.** Those instructions are privileged and attempting one is an
+exception. The way to ask for anything the hardware can do is a system
+call or an ioctl.
+
+
+
 ```
 0x00000000  kernel
 0x00100000  your image            <- USER_BASE, what user.ld links at
@@ -1167,11 +1200,12 @@ machine it was tuned on.
   scheduler. The job is queued, and `fg` runs it.
 - **Catch a signal.** There is no `sigaction()`. ctrl-C and ctrl-Z are
   things done *to* a program, not events it can handle.
-- **Run unprivileged.** Programs execute in supervisor mode. The gate is
-  in place and the code above it is already on the right side of the
-  line, but nothing yet enters user mode with an `RTE`.
-- **Be isolated.** No MMU, so a wild pointer reaches the kernel.
-- **Map the framebuffer**, for the same reason.
+
+- **Map the framebuffer.** There is no `mmap`, so drawing goes through
+  the `FBIO_*` ioctls rather than through the memory itself.
+- **Grow its memory.** There is no `brk` and no `malloc`: what a
+  program gets is its image and 64 KB of stack, decided when it was
+  loaded.
 - **Open a network socket.** `eth0` exists and has a driver; nothing
   above it sends a packet yet.
 - **Use subdirectories or long file names.** The filesystem has neither.

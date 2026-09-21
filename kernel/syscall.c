@@ -24,6 +24,8 @@
 #include "timer.h"
 #include "dev.h"
 #include "console.h"
+#include "uaccess.h"
+#include "pmm.h"
 #include "errno.h"
 #include "string.h"
 
@@ -70,6 +72,110 @@ s32 syscall3(u32 nr, u32 a1, u32 a2, u32 a3)
                       : "+d"(d0)
                       : "d"(d1), "d"(d2), "d"(d3) : "memory", "cc");
     return (s32)d0;
+}
+
+/* ---------------------------------------------------------------- */
+/* Getting at the caller's memory                                    */
+/*                                                                    */
+/* A program's pointers are addresses in ITS address space and mean   */
+/* nothing in the kernel's, so every one of them has to be fetched    */
+/* rather than dereferenced.                                          */
+/*                                                                    */
+/* The shell is the exception, and it is a transitional one. It runs  */
+/* inside the kernel and reaches the system through this same gate,   */
+/* so its pointers ARE kernel pointers. uaccess_current() is non-null */
+/* only while a user program is running, which distinguishes the two  */
+/* exactly. When the shell moves out of the kernel -- which is the    */
+/* whole direction of travel -- every branch below collapses to its   */
+/* user side and these helpers become copy_from_user and friends.     */
+/* ---------------------------------------------------------------- */
+
+static int from_program(void)
+{
+    return uaccess_current() != 0;
+}
+
+static int fetch(void *dst, u32 p, u32 len)
+{
+    if (!p) {
+        return -EFAULT;
+    }
+    if (!from_program()) {
+        memcpy(dst, (const void *)p, len);
+        return 0;
+    }
+    return copy_from_user(dst, p, len);
+}
+
+static int store(u32 p, const void *src, u32 len)
+{
+    if (!p) {
+        return -EFAULT;
+    }
+    if (!from_program()) {
+        memcpy((void *)p, src, len);
+        return 0;
+    }
+    return copy_to_user(p, src, len);
+}
+
+/* Returns the length, or -errno. */
+static int fetch_str(char *dst, u32 p, u32 max)
+{
+    if (!p) {
+        return -EFAULT;
+    }
+    if (!from_program()) {
+        const char *src = (const char *)p;
+        u32 i;
+
+        for (i = 0; i < max; i++) {
+            dst[i] = src[i];
+            if (!src[i]) {
+                return (int)i;
+            }
+        }
+        return -ENAMETOOLONG;
+    }
+    return strncpy_from_user(dst, p, max);
+}
+
+/*
+ * read() and write() move bulk data, and bouncing it through a kernel
+ * buffer would copy every byte twice for no reason. Instead the user
+ * buffer is walked a page at a time -- which is as far as it is
+ * guaranteed to be contiguous in physical memory -- and the filesystem
+ * reads or writes straight into it.
+ */
+static s32 rw_user(int fd, u32 ubuf, u32 len, int writing)
+{
+    s32 total = 0;
+
+    if (!from_program()) {
+        return writing ? fd_write(fd, (const void *)ubuf, len)
+                       : fd_read(fd, (void *)ubuf, len);
+    }
+
+    while (len > 0) {
+        u32 n = len;
+        void *k = uaccess_chunk(ubuf, &n, !writing);
+        s32 got;
+
+        if (!k) {
+            return total > 0 ? total : -EFAULT;
+        }
+        got = writing ? fd_write(fd, k, n) : fd_read(fd, k, n);
+        if (got < 0) {
+            return total > 0 ? total : got;
+        }
+        total += got;
+        if ((u32)got < n) {
+            break;              /* short: end of file, or a full device */
+        }
+        ubuf += n;
+        len -= n;
+    }
+    return total;
 }
 
 /* ---------------------------------------------------------------- */
@@ -141,6 +247,139 @@ static void do_reboot(int cmd)
     halt();
 }
 
+/* --- ioctl --------------------------------------------------------- */
+
+/*
+ * ioctl is the awkward one: what its third argument means depends
+ * entirely on the second. Some requests pass a value, some a pointer to
+ * a structure going in, some a pointer to one coming out, and one passes
+ * a structure that goes both ways.
+ *
+ * A table, rather than a case for each, because the alternative is the
+ * same six lines written a dozen times and a new device driver quietly
+ * forgetting them. A request that is not in the table takes its argument
+ * by value -- which is right for FBIO_CLEAR and FBIO_DOUBLE, and is also
+ * what makes an unknown request reach the driver and come back -ENOTTY
+ * instead of being rejected here.
+ */
+#define IO_IN   1
+#define IO_OUT  2
+
+static const struct {
+    u32 request;
+    u16 size;
+    u8  dir;
+} ioctl_args[] = {
+    { FIONREAD,     sizeof(u32),                  IO_OUT },
+    { TCGETS,       sizeof(struct termios),       IO_OUT },
+    { TCSETS,       sizeof(struct termios),       IO_IN  },
+    { TCSETSW,      sizeof(struct termios),       IO_IN  },
+    { TCSETSF,      sizeof(struct termios),       IO_IN  },
+    { TIOCGCONS,    sizeof(struct console_info),  IO_IN | IO_OUT },
+    { TIOCSCONS,    sizeof(struct console_set),   IO_IN  },
+    { FBIO_GETINFO, sizeof(struct fb_info),       IO_OUT },
+    { FBIO_SETMODE, sizeof(struct fb_mode),       IO_IN  },
+    { FBIO_POINT,   sizeof(struct fb_point),      IO_IN  },
+    { FBIO_LINE,    sizeof(struct fb_line),       IO_IN  },
+    { FBIO_RECT,    sizeof(struct fb_rect),       IO_IN  },
+    { FBIO_COPY,    sizeof(struct fb_copy),       IO_IN  },
+    { FBIO_PALETTE, sizeof(struct fb_palette),    IO_IN  }
+};
+
+#define IOCTL_BUF_MAX  64
+
+static int do_ioctl(int fd, u32 request, u32 arg)
+{
+    u8 buf[IOCTL_BUF_MAX];
+    unsigned i;
+    int err;
+
+    if (!from_program()) {
+        return fd_ioctl(fd, request, arg);
+    }
+
+    for (i = 0; i < sizeof(ioctl_args) / sizeof(ioctl_args[0]); i++) {
+        if (ioctl_args[i].request != request) {
+            continue;
+        }
+        if (ioctl_args[i].size > IOCTL_BUF_MAX) {
+            return -EINVAL;     /* the table outgrew the buffer */
+        }
+        memset(buf, 0, sizeof(buf));
+
+        if (ioctl_args[i].dir & IO_IN) {
+            err = fetch(buf, arg, ioctl_args[i].size);
+            if (err < 0) {
+                return err;
+            }
+        }
+        err = fd_ioctl(fd, request, (u32)buf);
+        if (err < 0) {
+            return err;
+        }
+        if (ioctl_args[i].dir & IO_OUT) {
+            int e2 = store(arg, buf, ioctl_args[i].size);
+
+            if (e2 < 0) {
+                return e2;
+            }
+        }
+        return err;
+    }
+
+    /* By value. */
+    return fd_ioctl(fd, request, arg);
+}
+
+/* --- spawn --------------------------------------------------------- */
+
+/*
+ * Copying in a whole argument vector.
+ *
+ * Two levels of user pointer: the array itself, and every string in it.
+ * Both have to be fetched, and the strings have to end up in kernel
+ * memory because exec_spawn will copy them into a DIFFERENT address
+ * space -- the new program's -- by which time the old one may not even
+ * be mapped.
+ */
+#define SPAWN_ARG_MAX  64
+
+static int do_spawn(u32 upath, int argc, u32 uargv)
+{
+    char path[PATH_MAX];
+    char argstore[EXEC_MAX_ARGS][SPAWN_ARG_MAX];
+    char *argv[EXEC_MAX_ARGS];
+    u32 uptr[EXEC_MAX_ARGS];
+    int i, err;
+
+    if (argc < 0 || argc > EXEC_MAX_ARGS) {
+        return -E2BIG;
+    }
+    err = fetch_str(path, upath, sizeof(path));
+    if (err < 0) {
+        return err;
+    }
+
+    if (!from_program()) {
+        return exec_spawn(path, argc, (char **)uargv);
+    }
+
+    if (argc > 0) {
+        err = fetch(uptr, uargv, (u32)argc * 4);
+        if (err < 0) {
+            return err;
+        }
+    }
+    for (i = 0; i < argc; i++) {
+        err = fetch_str(argstore[i], uptr[i], SPAWN_ARG_MAX);
+        if (err < 0) {
+            return err;
+        }
+        argv[i] = argstore[i];
+    }
+    return exec_spawn(path, argc, argv);
+}
+
 /* --- jobs ---------------------------------------------------------- */
 
 static int info_state(int state)
@@ -159,23 +398,21 @@ static int do_jobctl(int cmd, int arg, u32 p)
 
     switch (cmd) {
     case JOBCTL_INFO: {
-        struct job_info *out = (struct job_info *)p;
+        struct job_info out;
 
-        if (!out) {
-            return -EINVAL;
-        }
         j = job_nth(arg);
         if (!j) {
             return -ENOENT;
         }
-        out->id = j->id;
-        out->state = info_state(j->state);
-        out->background = j->background;
-        out->status = j->status;
-        out->signalled = j->signalled;
-        strncpy(out->cmd, j->cmd, sizeof(out->cmd) - 1);
-        out->cmd[sizeof(out->cmd) - 1] = '\0';
-        return 0;
+        memset(&out, 0, sizeof(out));
+        out.id = j->id;
+        out.state = info_state(j->state);
+        out.background = j->background;
+        out.status = j->status;
+        out.signalled = j->signalled;
+        strncpy(out.cmd, j->cmd, sizeof(out.cmd) - 1);
+        out.cmd[sizeof(out.cmd) - 1] = '\0';
+        return store(p, &out, sizeof(out));
     }
 
     case JOBCTL_FG:
@@ -202,11 +439,15 @@ static int do_jobctl(int cmd, int arg, u32 p)
         j->background = 1;
         return -ENOSYS;
 
-    case JOBCTL_QUEUE:
-        if (!p) {
-            return -EINVAL;
+    case JOBCTL_QUEUE: {
+        char cmd[JOB_CMD_MAX];
+        int err = fetch_str(cmd, p, sizeof(cmd));
+
+        if (err < 0) {
+            return err;
         }
-        return job_create((const char *)p, 1);
+        return job_create(cmd, 1);
+    }
 
     case JOBCTL_REAP:
         job_reap();
@@ -242,38 +483,90 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
     (void)a5;
 
     switch (nr) {
-    case __NR_open:
-        return fd_open((const char *)a1, (int)a2);
+    case __NR_open: {
+        char path[PATH_MAX];
+        int err = fetch_str(path, a1, sizeof(path));
+
+        if (err < 0) {
+            return err;
+        }
+        return fd_open(path, (int)a2);
+    }
 
     case __NR_close:
         return fd_close((int)a1);
 
     case __NR_read:
-        return fd_read((int)a1, (void *)a2, a3);
+        return rw_user((int)a1, a2, a3, 0);
 
     case __NR_write:
-        return fd_write((int)a1, (const void *)a2, a3);
+        return rw_user((int)a1, a2, a3, 1);
 
     case __NR_lseek:
         return fd_lseek((int)a1, (s32)a2, (int)a3);
 
     case __NR_ioctl:
-        return fd_ioctl((int)a1, a2, a3);
+        return do_ioctl((int)a1, a2, a3);
 
-    case __NR_unlink:
-        return vfs_unlink((const char *)a1);
+    case __NR_unlink: {
+        char path[PATH_MAX];
+        int err = fetch_str(path, a1, sizeof(path));
 
-    case __NR_rename:
-        return vfs_rename((const char *)a1, (const char *)a2);
+        if (err < 0) {
+            return err;
+        }
+        return vfs_unlink(path);
+    }
 
-    case __NR_stat:
-        return vfs_stat((const char *)a1, (struct stat *)a2);
+    case __NR_rename: {
+        char from[PATH_MAX], to[PATH_MAX];
+        int err = fetch_str(from, a1, sizeof(from));
 
-    case __NR_getdents:
-        return vfs_readdir((int)a1, (struct dirent *)a2);
+        if (err < 0) {
+            return err;
+        }
+        err = fetch_str(to, a2, sizeof(to));
+        if (err < 0) {
+            return err;
+        }
+        return vfs_rename(from, to);
+    }
 
-    case __NR_statfs:
-        return vfs_statfs((struct statfs *)a1);
+    case __NR_stat: {
+        char path[PATH_MAX];
+        struct stat st;
+        int err = fetch_str(path, a1, sizeof(path));
+
+        if (err < 0) {
+            return err;
+        }
+        err = vfs_stat(path, &st);
+        if (err < 0) {
+            return err;
+        }
+        return store(a2, &st, sizeof(st));
+    }
+
+    case __NR_getdents: {
+        struct dirent d;
+        int err = vfs_readdir((int)a1, &d);
+
+        if (err < 0) {
+            return err;
+        }
+        err = store(a2, &d, sizeof(d));
+        return err < 0 ? err : 0;
+    }
+
+    case __NR_statfs: {
+        struct statfs sf;
+        int err = vfs_statfs(&sf);
+
+        if (err < 0) {
+            return err;
+        }
+        return store(a1, &sf, sizeof(sf));
+    }
 
     case __NR_fsync:
     case __NR_sync:
@@ -283,23 +576,57 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
         time_t now = clock_now();
 
         if (a1) {
-            *(time_t *)a1 = now;
+            int err = store(a1, &now, sizeof(now));
+
+            if (err < 0) {
+                return err;
+            }
         }
         return (s32)now;
     }
 
-    case __NR_stime:
-        return do_stime((const time_t *)a1);
+    case __NR_stime: {
+        time_t t;
+        int err = fetch(&t, a1, sizeof(t));
 
-    case __NR_uname:
-        return do_uname((struct utsname *)a1);
+        if (err < 0) {
+            return err;
+        }
+        return do_stime(&t);
+    }
+
+    case __NR_sysinfo: {
+        struct sysinfo si;
+        struct job *j;
+        int i;
+
+        memset(&si, 0, sizeof(si));
+        si.uptime = timer_jiffies() / HZ;
+        si.totalram = pmm_total();
+        si.freeram = pmm_available();
+        si.mem_unit = (u32)PAGE_SIZE;
+        for (i = 0; (j = job_nth(i)) != 0; i++) {
+            si.procs++;
+        }
+        return store(a1, &si, sizeof(si));
+    }
+
+    case __NR_uname: {
+        struct utsname u;
+        int err = do_uname(&u);
+
+        if (err < 0) {
+            return err;
+        }
+        return store(a1, &u, sizeof(u));
+    }
 
     case __NR_reboot:
         do_reboot((int)a1);
         return 0;               /* not reached */
 
     case __NR_spawn:
-        return exec_spawn((const char *)a1, (int)a2, (char **)a3);
+        return do_spawn(a1, (int)a2, a3);
 
     case __NR_jobctl:
         return do_jobctl((int)a1, (int)a2, a3);
@@ -308,11 +635,13 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
         return (s32)timer_jiffies();
 
     case __NR_nanosleep: {
-        const struct timespec *req = (const struct timespec *)a1;
+        struct timespec ts;
+        const struct timespec *req = &ts;
         u32 ms;
+        int err = fetch(&ts, a1, sizeof(ts));
 
-        if (!req) {
-            return -EINVAL;
+        if (err < 0) {
+            return err;
         }
         if (req->tv_nsec >= 1000000000UL) {
             return -EINVAL;
@@ -322,14 +651,18 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
          * arithmetic clear of overflow. */
         ms = req->tv_sec * 1000 + req->tv_nsec / 1000000;
         if (a2) {
-            struct timespec *rem = (struct timespec *)a2;
+            struct timespec rem;
 
             /* Nothing interrupts a sleep yet -- no signals, one program
              * -- so there is never any remaining. Zeroed rather than
              * left alone, because a caller checking it deserves a
              * defined answer. */
-            rem->tv_sec = 0;
-            rem->tv_nsec = 0;
+            rem.tv_sec = 0;
+            rem.tv_nsec = 0;
+            err = store(a2, &rem, sizeof(rem));
+            if (err < 0) {
+                return err;
+            }
         }
         return timer_sleep_ms(ms);
     }
@@ -367,13 +700,35 @@ int syscall_in_kernel(void)
 }
 
 /*
- * A program that was killed or exited left the count wherever it was
- * when it jumped out, because nothing returned. exec.c calls this once
- * it is back on its own stack.
+ * THE COUNT BELONGS TO THE PROGRAM, NOT TO THE MACHINE.
+ *
+ * A program is started from inside a system call -- the shell's spawn --
+ * so the count is already 1 when the program begins. Every system call
+ * the program then makes goes 1 to 2 and back to 1, and never reaches
+ * zero: its boundaries are invisible, the tick thinks the kernel is
+ * always busy, and neither ctrl-C nor ctrl-Z can ever be delivered.
+ *
+ * So entering a program swaps the count to zero and leaving it swaps the
+ * caller's back. A stopped job keeps its own count with it, because it
+ * is stopped in the middle of a system call and has to come back to
+ * exactly that depth.
+ *
+ * This also replaces resetting the count after a program is killed: a
+ * program that jumped out without returning left the count wherever it
+ * was, and the swap on the way out puts back the right value rather than
+ * guessing at zero.
  */
-void syscall_depth_reset(void)
+int syscall_depth_swap(int d)
 {
-    depth = 0;
+    int old = depth;
+
+    depth = d;
+    return old;
+}
+
+int syscall_depth(void)
+{
+    return depth;
 }
 
 s32 syscall_dispatch(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
@@ -459,6 +814,11 @@ int sys_fsync(int fd)
 int sys_sync(void)
 {
     return (int)syscall0(__NR_sync);
+}
+
+int sys_sysinfo(struct sysinfo *si)
+{
+    return (int)syscall1(__NR_sysinfo, (u32)si);
 }
 
 int sys_uname(struct utsname *u)

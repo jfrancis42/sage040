@@ -27,6 +27,8 @@
  */
 #include "kernel.h"
 #include "console.h"
+#include "pmm.h"
+#include "vm.h"
 #include "dev.h"
 #include "vfs.h"
 #include "syscall.h"
@@ -88,6 +90,56 @@ static void check_syscall_gate(void)
         return;
     }
     kputs("verified\n");
+}
+
+/*
+ * Physical memory, then the MMU.
+ *
+ * Before the drivers, because after this the kernel is running
+ * translated and anything that comes up afterwards comes up in the world
+ * it will live in -- rather than being brought up in one addressing
+ * model and then having the ground moved underneath it.
+ *
+ * The pool starts at the end of the kernel image and stops below the
+ * supervisor stack, with 64 KB left for the stack to grow into. Nothing
+ * hands out a page the kernel is standing on, which is the only reason
+ * it is safe to give a page to a program that will write anything it
+ * likes to it.
+ */
+#define KSTACK_RESERVE  (64UL * 1024)
+
+static void start_memory(void)
+{
+    u32 ram = probe_memory();
+    u32 first = PAGE_ALIGN_UP((u32)_end);
+    /*
+     * Everything from the end of the kernel to just under its stack.
+     *
+     * There is no longer a region set aside for programs: a program's
+     * image, its stack and its page tables all come from here like
+     * everything else, and where they physically land is the
+     * allocator's business rather than a constant in a header.
+     */
+    u32 last  = PAGE_ALIGN_DOWN((u32)_stack_top - KSTACK_RESERVE);
+
+    pmm_init(first, last);
+
+    status("pages");
+    kputdec(pmm_total());
+    kputs(" of ");
+    kputdec((u32)PAGE_SIZE / 1024);
+    kputs(" KB free from 0x");
+    kputhex32(first);
+    kputs(" to 0x");
+    kputhex32(last);
+    kputc('\n');
+
+    vm_init(ram);
+
+    status("mmu");
+    kputs("on, 4 KB pages, kernel identity-mapped supervisor-only, ");
+    kputdec(pmm_total() - pmm_available());
+    kputs(" pages of tables\n");
 }
 
 static void start_drivers(void)
@@ -328,6 +380,7 @@ void kmain(void)
 
     check_syscall_gate();
     probe_all();
+    start_memory();
     start_drivers();
     report_console();
     mount_root();

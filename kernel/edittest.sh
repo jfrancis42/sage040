@@ -72,6 +72,7 @@ mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
     $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
 mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
 mcopy -o -i "$MIMG" ../user/cube ::/CUBE
+mcopy -o -i "$MIMG" ../user/spin ::/SPIN
 mcopy -o -i "$MIMG" ../user/hello ::/HELLO
 mcopy -o -i "$MIMG" ../user/shutdown ::/SHUTDOWN
 
@@ -136,24 +137,44 @@ mcopy -o -i "$MIMG" ../user/shutdown ::/SHUTDOWN
     # --- the history builtin ---
     printf 'history\r'
 
-    # --- ctrl-C on a running program: cube never stops on its own ---
-    printf 'cube\r'
+    # --- ctrl-C on a program that will not stop on its own ---
+    #
+    # `spin` and not `cube`. cube polls the keyboard and exits on any
+    # key, so ctrl-C appears to work on it whether or not signals do
+    # anything at all -- which is exactly what this test used to be
+    # fooled by. spin never reads and never exits, so the only way out
+    # of it is the kernel taking it away.
+    #
+    # The bare form makes no system calls whatsoever, so nothing but the
+    # timer interrupt can notice the keystroke.
+    printf 'spin\r'
     sleep 2
     printf '\003'
-    sleep 1
-    printf 'echo ok-cube-interrupted\r'
+    sleep 2
+    printf 'echo ok-bare-spin-interrupted\r'
+
+    # And the form that does make system calls, where the boundary path
+    # is what notices.
+    printf 'spin calls\r'
+    sleep 2
+    printf '\003'
+    sleep 2
+    printf 'echo ok-calling-spin-interrupted\r'
 
     # --- ctrl-Z stops a program, jobs lists it, fg resumes and ctrl-C
-    #     ends it ---
-    printf 'cube\r'
+    #     ends it. A program can only be stopped at a system call
+    #     boundary, so this is the calling form. ---
+    printf 'spin calls\r'
     sleep 2
     printf '\032'
-    sleep 1
+    sleep 2
     printf 'jobs\r'
     printf 'echo ok-stopped-and-listed\r'
     printf 'fg\r'
     sleep 2
     printf '\003'
+    sleep 2
+    printf 'echo ok-resumed-then-killed\r'
     sleep 1
 
     # --- & queues a job and says why it cannot run it ---
@@ -280,8 +301,11 @@ check "the abandoned line was echoed but never run" $?
 grep -qF -- "^C" clean.tmp
 check "  and the shell showed ^C the way a shell does" $?
 
-contains clean.tmp "ok-cube-interrupted"
-check "ctrl-C ended a program that reads no input, and the shell came back" $?
+contains clean.tmp "ok-bare-spin-interrupted"
+check "ctrl-C ended a program making NO system calls -- the timer noticed" $?
+
+contains clean.tmp "ok-calling-spin-interrupted"
+check "ctrl-C ended one that was making them, at the boundary" $?
 
 echo "=== checks: jobs ==="
 
@@ -290,6 +314,14 @@ check "ctrl-Z stopped the running program" $?
 
 contains clean.tmp "ok-stopped-and-listed"
 check "the shell was usable while a job was stopped" $?
+
+contains clean.tmp "ok-resumed-then-killed"
+check "fg resumed the stopped job and it was still killable" $?
+
+# A program resumed into a clobbered context dies on its own rather than
+# running until it is killed, so a fault here means fg is lying.
+! grep -q "exception" clean.tmp
+check "  and nothing faulted doing it" $?
 
 contains clean.tmp "queued -- nothing runs in the background"
 check "& queued a job rather than pretending to run it" $?

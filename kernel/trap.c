@@ -19,6 +19,9 @@
  */
 #include "kernel.h"
 #include "console.h"
+#include "exec.h"
+#include "job.h"
+#include "uapi.h"
 
 #define VEC_TRAP0   32          /* vectors 32..47 are TRAP #0..#15 */
 
@@ -38,6 +41,34 @@
 static u32 frame_pc(const u16 *f)
 {
     return ((u32)f[1] << 16) | (u32)f[2];
+}
+
+/*
+ * Did this come from user mode?
+ *
+ * The saved SR is the first word of every frame format, and bit 13 is
+ * the supervisor bit. If it is clear the exception happened in a
+ * program, and a program's mistake is not the kernel's to die of.
+ */
+#define SR_SUPERVISOR   0x2000
+
+static int from_user(const u16 *f)
+{
+    return (f[0] & SR_SUPERVISOR) == 0;
+}
+
+/*
+ * The address that could not be reached.
+ *
+ * Only meaningful in a format 7 frame, which is what the 68040 pushes
+ * for an access fault. Offset 0x14 from the start of the frame, per the
+ * layout in chapter 8 -- and worth taking from the frame rather than
+ * from a register, because the register that held it has usually been
+ * reused by the time anything reads it.
+ */
+static u32 fault_address(const u16 *f)
+{
+    return ((u32)f[10] << 16) | (u32)f[11];
 }
 
 static const char *exception_name(unsigned vec)
@@ -88,6 +119,40 @@ void exception_handler(const u32 *regs, const u16 *frame)
     unsigned vec = (unsigned)((frame[3] & 0x0fff) >> 2);
     unsigned fmt = (unsigned)(frame[3] >> 12);
     int i;
+
+    /*
+     * A fault in a program kills the program, not the machine.
+     *
+     * This is the first thing the MMU actually buys, and it only works
+     * because the exception came from user mode: the kernel is intact,
+     * its stack is its own, and the only thing that has to go is the
+     * address space of whatever ran off the end of itself.
+     *
+     * Note what is NOT done here: returning. The 68040 pushes the
+     * address of the FAULTING INSTRUCTION, so an rte re-runs it and
+     * faults again, forever. There is nothing to resume to -- no
+     * demand paging, no swap -- so the only honest answer is to end the
+     * program.
+     */
+    if (from_user(frame) && exec_running()) {
+        kputs("\n");
+        kputs(exception_name(vec));
+        if (fmt == 7) {
+            kputs(" at 0x");
+            kputhex32(fault_address(frame));
+        }
+        kputs(", pc=0x");
+        kputhex32(frame_pc(frame));
+        kputln("");
+        /*
+         * 139 is what a shell reports for a program killed by a
+         * segmentation fault: 128 plus the signal number. Nothing
+         * catches signals here, but the number a person sees should
+         * still be the number they would see anywhere else.
+         */
+        job_kill_fg(SIGSEGV);
+        exec_kill(128 + SIGSEGV);
+    }
 
     kputs("\n*** exception ");
     kputdec(vec);

@@ -6,6 +6,7 @@
 #include "job.h"
 #include "exec.h"
 #include "tty.h"
+#include "syscall.h"
 #include "console.h"
 #include "errno.h"
 #include "string.h"
@@ -120,6 +121,19 @@ void job_signal_fg(int sig)
     j->pending = sig;
 }
 
+void job_kill_fg(int sig)
+{
+    struct job *j = job_get(fg_id);
+
+    if (!j) {
+        return;
+    }
+    j->pending = 0;
+    j->state = JOB_DONE;
+    j->signalled = sig;
+    j->status = 128 + sig;
+}
+
 int job_signal_pending(void)
 {
     struct job *j = job_get(fg_id);
@@ -145,6 +159,9 @@ const char *job_signal_name(int sig)
     case SIGKILL: return "killed";
     case SIGTERM: return "terminated";
     case SIGTSTP: return "stopped";
+    case SIGSEGV: return "segmentation fault";
+    case SIGILL:  return "illegal instruction";
+    case SIGFPE:  return "arithmetic exception";
     case SIGCONT: return "continued";
     default:      return "signal";
     }
@@ -190,6 +207,12 @@ void job_deliver(int site)
         kputdec((u32)j->id);
         kputs("]+  stopped   ");
         kputln(j->cmd);
+        /*
+         * It is stopping inside a system call, and has to come back to
+         * exactly that depth -- the shell is about to run with a count
+         * of its own.
+         */
+        j->depth = syscall_depth();
         exec_stop(&j->saved_sp);
         /*
          * Reached again when fg resumes it. The job is running once

@@ -37,8 +37,16 @@ s32 syscall_dispatch(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5);
  */
 int  syscall_in_kernel(void);
 
-/* Put the count back to zero after a program left without returning. */
-void syscall_depth_reset(void);
+/*
+ * Install a new system-call depth and return the old one.
+ *
+ * Used when control crosses between the kernel's own work and a
+ * program's: the count is per-program, because a program entered from
+ * inside the shell's spawn would otherwise never appear to reach a
+ * system call boundary at all.
+ */
+int  syscall_depth_swap(int d);
+int  syscall_depth(void);
 
 /*
  * Make a system call the way a user program will -- through the trap,
@@ -65,6 +73,7 @@ int  sys_statfs(void *sfs);
 int  sys_fsync(int fd);
 int  sys_sync(void);
 int  sys_uname(struct utsname *u);
+int  sys_sysinfo(struct sysinfo *si);
 int  sys_ioctl(int fd, u32 request, u32 arg);
 int  sys_spawn(const char *path, int argc, char **argv);
 int  sys_jobctl(int cmd, int arg, void *p);

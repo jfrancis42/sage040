@@ -1,0 +1,525 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 Jeff Francis */
+/*
+ * vm.c - page tables, and turning the MMU on.
+ *
+ * Reference: Motorola M68040 User's Manual, chapter 3.
+ *
+ * The 4 KB address decomposition, which everything here is built from:
+ *
+ *   root index    = (va >> 25) & 0x7f     128 entries, 512-byte table
+ *   pointer index = (va >> 18) & 0x7f     128 entries, 512-byte table
+ *   page index    = (va >> 12) & 0x3f      64 entries, 256-byte table
+ *   offset        =  va & 0xfff
+ *
+ * So one root entry covers 32 MB, one pointer entry 256 KB, and one page
+ * table 256 KB.
+ *
+ * Descriptor bits worth stating rather than looking up:
+ *
+ *   bits 1-0   UDT/PDT   00 invalid, 01 or 11 resident, 10 indirect
+ *   bit 2      W         write protected
+ *   bit 3      U         used      -- set by hardware, not by us
+ *   bit 4      M         modified  -- set by hardware, not by us
+ *   bits 6-5   CM        cache mode
+ *   bit 7      S         supervisor only
+ *
+ * TWO THINGS THE HARDWARE DOES THAT ARE EASY TO FORGET.
+ *
+ * The CPU WRITES to the page tables: it sets U on every descriptor it
+ * walks and M on a page it stores to. Tables therefore have to live in
+ * ordinary writable RAM, and a table that looks modified when nothing
+ * modified it is the hardware, not a bug.
+ *
+ * And there is no S bit on a table descriptor. A supervisor-only region
+ * has to carry the bit on every one of its PAGE descriptors; there is no
+ * way to mark a whole subtree. Getting that wrong does not fail loudly,
+ * it just leaves the kernel readable from user mode.
+ *
+ * WHAT THE EMULATOR DOES NOT DO, which matters for anyone reading this
+ * on real hardware: QEMU ignores the CM bits entirely and implements
+ * cinv and cpush as no-ops, because it has no cache model. The cache
+ * modes below are set correctly anyway -- a real 68040 with its device
+ * registers marked cachable would be a machine that reads a stale UART
+ * status forever, and the day this runs on one is not the day to find
+ * that out.
+ */
+#include "vm.h"
+#include "pmm.h"
+#include "console.h"
+#include "string.h"
+
+/* --- descriptor bits ----------------------------------------------- */
+
+#define UDT_RESIDENT    0x002
+#define PDT_RESIDENT    0x001
+
+#define DESC_WP         0x004           /* write protected              */
+#define DESC_CM_CB      0x020           /* cachable, copyback           */
+#define DESC_CM_NC      0x060           /* noncachable                  */
+#define DESC_SUPER      0x080           /* supervisor only              */
+
+#define PTR_TABLE_MASK  0xfffffe00UL    /* root descriptor -> pointer table */
+#define PAGE_TABLE_MASK 0xffffff00UL    /* pointer descriptor -> page table */
+#define PAGE_ADDR_MASK  0xfffff000UL    /* page descriptor -> the page      */
+
+#define ROOT_INDEX(va)  (((va) >> 25) & 0x7f)
+#define PTR_INDEX(va)   (((va) >> 18) & 0x7f)
+#define PAGE_INDEX(va)  (((va) >> 12) & 0x3f)
+
+#define ROOT_ENTRIES    128
+#define PTR_ENTRIES     128
+#define PAGE_ENTRIES    64
+
+#define ROOT_BYTES      (ROOT_ENTRIES * 4)      /* 512 */
+#define PTR_BYTES       (PTR_ENTRIES * 4)       /* 512 */
+#define PAGE_BYTES      (PAGE_ENTRIES * 4)      /* 256 */
+
+/* --- translation control ------------------------------------------- */
+
+#define TC_ENABLE       0x8000          /* bit 14 clear = 4 KB pages */
+
+/*
+ * Transparent translation, which maps a power-of-two range with no table
+ * entry at all. Bits 31-24 are the base and bits 23-16 the mask, where a
+ * SET mask bit means "do not compare this bit" -- so a mask of 0x00
+ * matches one 16 MB block and 0x03 matches 64 MB.
+ *
+ * Bit 15 enables; bits 14-13 are the mode field, where 01 is supervisor
+ * only. Every one of these is supervisor only, which is what keeps a
+ * user program away from the device registers: its access does not match
+ * the register at all, falls through to its own page tables, and finds
+ * nothing there.
+ */
+#define TT_ENABLE       0x8000
+#define TT_SUPER        0x2000
+
+#define ITT0_KERNEL     (0x0003UL << 16 | TT_ENABLE | TT_SUPER | DESC_CM_CB)
+#define DTT0_IO         (0xff00UL << 16 | TT_ENABLE | TT_SUPER | DESC_CM_NC)
+#define DTT1_VRAM       (0xf000UL << 16 | TT_ENABLE | TT_SUPER | DESC_CM_NC)
+
+static u32 kernel_root;
+static int enabled;
+
+/* --- the instructions ---------------------------------------------- */
+
+static void set_tc(u32 v)   { __asm__ volatile("movec %0,%%tc"   :: "d"(v)); }
+static void set_srp(u32 v)  { __asm__ volatile("movec %0,%%srp"  :: "d"(v)); }
+static void set_urp(u32 v)  { __asm__ volatile("movec %0,%%urp"  :: "d"(v)); }
+static void set_itt0(u32 v) { __asm__ volatile("movec %0,%%itt0" :: "d"(v)); }
+static void set_itt1(u32 v) { __asm__ volatile("movec %0,%%itt1" :: "d"(v)); }
+static void set_dtt0(u32 v) { __asm__ volatile("movec %0,%%dtt0" :: "d"(v)); }
+static void set_dtt1(u32 v) { __asm__ volatile("movec %0,%%dtt1" :: "d"(v)); }
+
+static u32 get_tc(void)
+{
+    u32 v;
+
+    __asm__ volatile("movec %%tc,%0" : "=d"(v));
+    return v;
+}
+
+/*
+ * Throw the translation cache away.
+ *
+ * REQUIRED AFTER EVERY ONE OF THE ABOVE, and after changing any
+ * descriptor. Writing a root pointer does not invalidate the
+ * translations made through the old one -- not on a real 68040, and not
+ * under QEMU either, whose movec helper does no flushing at all. A
+ * missing flush here does not fail immediately; it fails later, on some
+ * unrelated access that happened to be cached, which is close to
+ * undebuggable. So every path that touches a table or a register ends
+ * here.
+ */
+static void pflusha(void)
+{
+    __asm__ volatile("pflusha" ::: "memory");
+}
+
+/* --- word access to a table ---------------------------------------- */
+
+static u32 *table(u32 pa)
+{
+    /*
+     * Physical addresses are kernel addresses: the kernel's map is
+     * identity for all of RAM. This function is the one place that
+     * assumption is spelled out, so that the day the kernel stops
+     * mapping all of memory there is one thing to change.
+     */
+    return (u32 *)pa;
+}
+
+/* --- building a mapping -------------------------------------------- */
+
+static u32 page_bits(int flags)
+{
+    u32 d = PDT_RESIDENT;
+
+    if (!(flags & VM_USER)) {
+        d |= DESC_SUPER;
+    }
+    if (!(flags & VM_WRITE)) {
+        d |= DESC_WP;
+    }
+    d |= (flags & VM_NOCACHE) ? DESC_CM_NC : DESC_CM_CB;
+    return d;
+}
+
+/*
+ * Tables for the kernel's own map.
+ *
+ * A bump allocator over whole pages, because the kernel's map is built
+ * once and never taken down -- there is nothing to free, so there is no
+ * reason to carry the machinery for freeing it. Every chunk is 512-byte
+ * aligned whatever its size, which satisfies both the 512-byte alignment
+ * a pointer table needs and the 256-byte alignment a page table needs,
+ * and costs 256 bytes per page table. That is the cheapest correct thing
+ * rather than the smallest.
+ */
+static u32 ktbl_page;
+static u32 ktbl_off;
+
+static u32 ktable_alloc(void)
+{
+    u32 t;
+
+    if (ktbl_page == 0 || ktbl_off + 512 > PAGE_SIZE) {
+        ktbl_page = pmm_alloc();
+        if (!ktbl_page) {
+            return 0;
+        }
+        ktbl_off = 0;
+    }
+    t = ktbl_page + ktbl_off;
+    ktbl_off += 512;
+    return t;
+}
+
+static int kmap_page(u32 va, u32 pa, int flags)
+{
+    u32 *root = table(kernel_root);
+    u32 rd = root[ROOT_INDEX(va)];
+    u32 ptr_pa, *ptr, pd, page_pa, *pt;
+
+    if ((rd & UDT_RESIDENT) == 0) {
+        ptr_pa = ktable_alloc();
+        if (!ptr_pa) {
+            return -1;
+        }
+        root[ROOT_INDEX(va)] = ptr_pa | UDT_RESIDENT;
+        rd = root[ROOT_INDEX(va)];
+    }
+    ptr_pa = rd & PTR_TABLE_MASK;
+    ptr = table(ptr_pa);
+
+    pd = ptr[PTR_INDEX(va)];
+    if ((pd & UDT_RESIDENT) == 0) {
+        page_pa = ktable_alloc();
+        if (!page_pa) {
+            return -1;
+        }
+        ptr[PTR_INDEX(va)] = page_pa | UDT_RESIDENT;
+        pd = ptr[PTR_INDEX(va)];
+    }
+    pt = table(pd & PAGE_TABLE_MASK);
+
+    pt[PAGE_INDEX(va)] = (pa & PAGE_ADDR_MASK) | page_bits(flags);
+    return 0;
+}
+
+/* --- starting up ---------------------------------------------------- */
+
+void vm_init(u32 ram_bytes)
+{
+    u32 va;
+
+    kernel_root = ktable_alloc();
+    if (!kernel_root) {
+        kputln("vm: no memory for the root table");
+        halt();
+    }
+
+    /*
+     * All of RAM, identity, supervisor only, writable.
+     *
+     * Identity because the kernel has to be able to reach any physical
+     * page by its address -- every page table it builds and every
+     * program image it loads is somewhere in here. Supervisor only
+     * because that is the entire point: after this, a user program
+     * reaching for kernel memory takes an access fault rather than
+     * reading it.
+     *
+     * Writable, including the text. Write-protecting kernel text would
+     * be worth having, but the vector table sits at address 0 in the
+     * same page as the start of text and trap_init() writes to it at
+     * runtime -- so it would have to be split first, and a half-measure
+     * that protected some of the kernel would read as though it
+     * protected all of it.
+     */
+    for (va = 0; va < ram_bytes; va += PAGE_SIZE) {
+        if (kmap_page(va, va, VM_WRITE) < 0) {
+            kputln("vm: ran out of memory building the kernel map");
+            halt();
+        }
+    }
+
+    /*
+     * Devices and video, out of the tables entirely. Supervisor only, so
+     * a user access does not match and falls through to a page table
+     * that has nothing there.
+     */
+    set_itt0(ITT0_KERNEL);
+    set_itt1(0);
+    set_dtt0(DTT0_IO);
+    set_dtt1(DTT1_VRAM);
+
+    /*
+     * Supervisor accesses walk SRP and user accesses walk URP, chosen by
+     * the function code and not by anything software says at the time.
+     * URP starts pointing at the kernel's map as well, because nothing
+     * runs in user mode yet and a root pointer aimed at nothing is a
+     * double fault waiting for the first program.
+     */
+    set_srp(kernel_root);
+    set_urp(kernel_root);
+    pflusha();
+
+    /*
+     * The cliff.
+     *
+     * The instruction after this one has to be mapped or the machine is
+     * gone with nothing to say why. Three things make that safe: the map
+     * above is identity, so every address keeps its meaning; ITT0 covers
+     * supervisor instruction fetch regardless of the tables; and the
+     * supervisor stack is inside the region just mapped, which matters
+     * more than it looks -- a fault taken while pushing a fault frame is
+     * not an exception, it is the emulator aborting with DOUBLE MMU
+     * FAULT and no output at all.
+     */
+    set_tc(TC_ENABLE);
+    pflusha();
+
+    enabled = (get_tc() & TC_ENABLE) != 0;
+    if (!enabled) {
+        kputln("vm: the MMU did not come on");
+        halt();
+    }
+}
+
+int vm_enabled(void)
+{
+    return enabled;
+}
+
+/* --- user address spaces -------------------------------------------- */
+
+/*
+ * One page holds everything an address space needs:
+ *
+ *   0x000  root table     512 bytes, 512-byte aligned
+ *   0x200  pointer table  512 bytes
+ *   0x400  page tables    8 x 256 bytes, covering 8 x 256 KB = 2 MB
+ *
+ * which comes to 3 KB of the 4 KB page. Packing it this way means
+ * creating an address space is one allocation and destroying it is one
+ * free, with no table bookkeeping at all -- and it is only possible
+ * because the user area is 2 MB. That number and this layout are the
+ * same decision.
+ */
+#define AS_ROOT_OFF     0x000
+#define AS_PTR_OFF      0x200
+#define AS_PT_OFF       0x400
+
+#define MAX_SPACES      8
+
+static struct addrspace spaces[MAX_SPACES];
+
+static u32 as_pagetable(struct addrspace *as, u32 va)
+{
+    u32 i = (va - USER_VA_BASE) / (256UL * 1024);
+
+    if (va < USER_VA_BASE || va >= USER_VA_END) {
+        return 0;
+    }
+    return as->page + AS_PT_OFF + i * PAGE_BYTES;
+}
+
+struct addrspace *vm_create(void)
+{
+    struct addrspace *as = 0;
+    u32 pg, *root, *ptr;
+    int i;
+
+    for (i = 0; i < MAX_SPACES; i++) {
+        if (!spaces[i].used) {
+            as = &spaces[i];
+            break;
+        }
+    }
+    if (!as) {
+        return 0;
+    }
+
+    pg = pmm_alloc();
+    if (!pg) {
+        return 0;
+    }
+
+    as->page = pg;
+    as->root = pg + AS_ROOT_OFF;
+    as->used = 1;
+
+    root = table(as->root);
+    ptr = table(pg + AS_PTR_OFF);
+
+    /*
+     * Exactly one root entry is valid, and it is the one covering the
+     * user area. Every other address in the 4 GB space -- the kernel,
+     * the devices, the framebuffer, the holes -- is an invalid root
+     * descriptor, which is what makes a stray user pointer a fault
+     * instead of somebody else's data.
+     */
+    root[ROOT_INDEX(USER_VA_BASE)] = (pg + AS_PTR_OFF) | UDT_RESIDENT;
+
+    for (i = 0; i < USER_PTABLES; i++) {
+        ptr[PTR_INDEX(USER_VA_BASE) + i] =
+            (pg + AS_PT_OFF + (u32)i * PAGE_BYTES) | UDT_RESIDENT;
+    }
+
+    return as;
+}
+
+u32 vm_map(struct addrspace *as, u32 va, u32 pa, int flags)
+{
+    u32 pt_pa = as_pagetable(as, va);
+    u32 *pt;
+
+    if (!pt_pa) {
+        return 0;
+    }
+    if (!pa) {
+        pa = pmm_alloc();
+        if (!pa) {
+            return 0;
+        }
+    }
+
+    pt = table(pt_pa);
+    pt[PAGE_INDEX(va)] = (pa & PAGE_ADDR_MASK) | page_bits(flags | VM_USER);
+
+    /*
+     * The address space being changed may be the one currently loaded,
+     * and a stale translation for this page may be sitting in the cache
+     * from the program that had the address space before this one.
+     */
+    pflusha();
+    return pa;
+}
+
+u32 vm_translate(struct addrspace *as, u32 va, int write)
+{
+    u32 pt_pa = as_pagetable(as, va);
+    u32 d;
+
+    if (!pt_pa) {
+        return 0;
+    }
+    d = table(pt_pa)[PAGE_INDEX(va)];
+
+    if ((d & PDT_RESIDENT) == 0) {
+        return 0;
+    }
+    if (write && (d & DESC_WP)) {
+        return 0;
+    }
+    if (d & DESC_SUPER) {
+        /* Not reachable today -- vm_map forces VM_USER -- but a
+         * supervisor page is not a program's to read whatever asked. */
+        return 0;
+    }
+    return (d & PAGE_ADDR_MASK) | (va & PAGE_MASK);
+}
+
+u32 vm_mapped_pages(struct addrspace *as)
+{
+    u32 n = 0, va;
+
+    for (va = USER_VA_BASE; va < USER_VA_END; va += PAGE_SIZE) {
+        u32 pt_pa = as_pagetable(as, va);
+
+        if (pt_pa && (table(pt_pa)[PAGE_INDEX(va)] & PDT_RESIDENT)) {
+            n++;
+        }
+    }
+    return n;
+}
+
+void vm_destroy(struct addrspace *as)
+{
+    u32 va;
+
+    if (!as || !as->used) {
+        return;
+    }
+
+    /* Every page it was given, then the page holding its tables. */
+    for (va = USER_VA_BASE; va < USER_VA_END; va += PAGE_SIZE) {
+        u32 pt_pa = as_pagetable(as, va);
+        u32 d;
+
+        if (!pt_pa) {
+            continue;
+        }
+        d = table(pt_pa)[PAGE_INDEX(va)];
+        if (d & PDT_RESIDENT) {
+            pmm_free(d & PAGE_ADDR_MASK);
+            table(pt_pa)[PAGE_INDEX(va)] = 0;
+        }
+    }
+
+    pmm_free(as->page);
+    as->used = 0;
+    as->page = 0;
+    as->root = 0;
+
+    /* Whatever was cached for those addresses now refers to pages that
+     * belong to nobody. */
+    pflusha();
+}
+
+void vm_kernel_present(u32 va, int present)
+{
+    u32 *root = table(kernel_root);
+    u32 rd = root[ROOT_INDEX(va)];
+    u32 *ptr, pd, *pt;
+
+    if ((rd & UDT_RESIDENT) == 0) {
+        return;
+    }
+    ptr = table(rd & PTR_TABLE_MASK);
+    pd = ptr[PTR_INDEX(va)];
+    if ((pd & UDT_RESIDENT) == 0) {
+        return;
+    }
+    pt = table(pd & PAGE_TABLE_MASK);
+
+    if (present) {
+        pt[PAGE_INDEX(va)] = (va & PAGE_ADDR_MASK) | page_bits(VM_WRITE);
+    } else {
+        pt[PAGE_INDEX(va)] = 0;
+    }
+    pflusha();
+}
+
+void vm_switch(struct addrspace *as)
+{
+    set_urp(as ? as->root : kernel_root);
+
+    /*
+     * The 68040 has no address space identifier, so there is nothing to
+     * tell one program's translations from another's: the whole cache
+     * goes. That is the cost of a context switch here and it is worth
+     * knowing before anybody wonders why switching is not free.
+     */
+    pflusha();
+}

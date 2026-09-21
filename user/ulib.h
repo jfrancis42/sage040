@@ -53,6 +53,7 @@ void   eputs(const char *s);         /* to stderr */
 int    key_waiting(void);
 
 u32    strlen(const char *s);
+int    strcmp(const char *a, const char *b);
 void  *memset(void *dst, int c, u32 n);
 void  *memcpy(void *dst, const void *src, u32 n);
 

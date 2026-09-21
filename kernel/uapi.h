@@ -265,6 +265,7 @@ struct statfs {
 #define __NR_statfs     99
 #define __NR_stat      106
 #define __NR_fsync     118
+#define __NR_sysinfo   116
 #define __NR_uname     122
 #define __NR_getdents  141
 #define __NR_sync      166      /* Linux has 36; 166 keeps it clear of
@@ -359,6 +360,25 @@ struct timespec {
     u32 tv_nsec;
 };
 
+/*
+ * What sysinfo() fills in.
+ *
+ * Linux's call, with Linux's number and a cut-down version of its
+ * structure: the fields that mean something on a machine with no swap
+ * and no load average are there and the rest are not. `mem_unit` is
+ * Linux's way of reporting sizes in something other than bytes, and it
+ * is the page size here -- which is the unit the allocator actually
+ * works in, so reporting anything else would be arithmetic performed in
+ * order to be undone.
+ */
+struct sysinfo {
+    u32 uptime;                 /* seconds since boot            */
+    u32 totalram;               /* in mem_unit                   */
+    u32 freeram;
+    u32 procs;                  /* jobs that exist               */
+    u32 mem_unit;               /* bytes per unit: the page size */
+};
+
 /* What uname() fills in. */
 struct utsname {
     char sysname[16];
@@ -380,6 +400,9 @@ struct utsname {
  * convention every Unix shell reports and the one `echo $?` would show.
  */
 #define SIGINT          2
+#define SIGILL          4
+#define SIGFPE          8
+#define SIGSEGV        11
 #define SIGKILL         9
 #define SIGTERM         15
 #define SIGCONT         18

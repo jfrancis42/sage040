@@ -32,9 +32,13 @@ user/cube
 user/hello
 user/fbtest
 user/shutdown
+user/faulter
+user/spin
 
 # Scratch disk and log from kernel/fstest.sh
 kernel/hd-test.img
 kernel/fstest.log
 kernel/hd-edit.img
 kernel/edittest.log
+kernel/hd-vm.img
+kernel/vmtest.log

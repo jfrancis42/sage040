@@ -28,6 +28,9 @@
 #include "vfs.h"
 #include "job.h"
 #include "tty.h"
+#include "vm.h"
+#include "pmm.h"
+#include "uaccess.h"
 #include "syscall.h"
 #include "console.h"
 #include "errno.h"
@@ -74,11 +77,15 @@ static u32 be32(const u8 *p)
 
 /* --- the one running program --------------------------------------- */
 
-extern int exec_call(u32 entry, u32 stack_top, int argc, char **argv);
+extern int exec_enter(u32 entry, u32 usp, u32 kstack_top);
 extern void exec_longjmp(int status) __attribute__((noreturn));
 extern void exec_abort(int status) __attribute__((noreturn));
 
 static int running;
+
+/* The address space of the program that is running, so that killing it
+ * from an interrupt has something to take apart afterwards. */
+static struct addrspace *running_as;
 
 int exec_running(void)
 {
@@ -111,7 +118,20 @@ int exec_exit(int status)
 void exec_kill(int status)
 {
     running = 0;
+    /*
+     * The address space is NOT torn down here. This can be called from
+     * the timer interrupt, and vm_destroy walks page tables and frees
+     * pages -- work that has no business happening inside an interrupt
+     * handler, on a stack that is about to be discarded. exec_spawn
+     * cleans up when it gets control back, a few instructions later,
+     * standing on its own stack.
+     */
     exec_abort(status);
+}
+
+struct addrspace *exec_addrspace(void)
+{
+    return running_as;
 }
 
 /* --- loading -------------------------------------------------------- */
@@ -162,8 +182,76 @@ static int check_ident(const u8 *e)
     return 0;
 }
 
-/* Load every PT_LOAD segment and return the entry point in *entry. */
-static int load_image(int fd, u32 *entry)
+/*
+ * Make sure every page of [va, va+len) exists in the address space.
+ *
+ * Checked before mapping because two segments can share a page -- the
+ * end of the text and the start of the data commonly do -- and mapping
+ * the same virtual page twice would hand it a second physical page,
+ * orphaning the first along with everything already read into it.
+ */
+static int reserve(struct addrspace *as, u32 va, u32 len)
+{
+    u32 first = PAGE_ALIGN_DOWN(va);
+    u32 last = PAGE_ALIGN_UP(va + len);
+    u32 p;
+
+    for (p = first; p < last; p += PAGE_SIZE) {
+        if (vm_translate(as, p, 0)) {
+            continue;
+        }
+        if (!vm_map(as, p, 0, VM_USER | VM_WRITE)) {
+            return -ENOMEM;
+        }
+    }
+    return 0;
+}
+
+/*
+ * Read from the file straight into the program's pages.
+ *
+ * A page at a time, because the program's memory is contiguous only in
+ * its own address space: consecutive virtual pages come from wherever
+ * the allocator had one, so a single read across a page boundary would
+ * land the second half in the wrong place.
+ *
+ * The write goes to the PHYSICAL address, which the kernel can use
+ * directly because its own map is identity. This is the loader reaching
+ * into a program's memory before the program exists, which is the one
+ * place doing so is not a bug.
+ */
+static int read_into(struct addrspace *as, int fd, u32 off, u32 va, u32 len)
+{
+    while (len > 0) {
+        u32 pa = vm_translate(as, va, 1);
+        u32 n = (u32)PAGE_SIZE - (va & PAGE_MASK);
+        s32 got;
+
+        if (!pa) {
+            return -EFAULT;
+        }
+        if (n > len) {
+            n = len;
+        }
+        if (fd_lseek(fd, (s32)off, SEEK_SET) < 0) {
+            return -EIO;
+        }
+        got = fd_read(fd, (void *)pa, n);
+        if (got < 0) {
+            return (int)got;
+        }
+        if ((u32)got != n) {
+            return -ENOEXEC;
+        }
+        va += n;
+        off += n;
+        len -= n;
+    }
+    return 0;
+}
+
+/* Load every PT_LOAD segment into `as` and return the entry point. */
+static int load_image(struct addrspace *as, int fd, u32 *entry)
 {
     u8 ehdr[EHDR_SIZE];
     u8 phdr[PHDR_SIZE];
@@ -188,13 +276,12 @@ static int load_image(int fd, u32 *entry)
     if (phoff == 0 || phnum <= 0 || phentsize < PHDR_SIZE) {
         return -ENOEXEC;
     }
-    if (*entry < USER_BASE || *entry >= USER_LIMIT) {
+    if (*entry < USER_VA_BASE || *entry >= USER_VA_END) {
         return -ENOEXEC;
     }
 
     for (i = 0; i < phnum; i++) {
         u32 type, off, vaddr, filesz, memsz;
-        s32 n;
 
         err = read_at(fd, phoff + (u32)i * (u32)phentsize,
                       phdr, PHDR_SIZE);
@@ -217,36 +304,102 @@ static int load_image(int fd, u32 *entry)
         }
         /*
          * The program says where it wants to live and the kernel decides
-         * whether to believe it. Without an MMU this bounds check is the
-         * only thing standing between a mislinked program and the
-         * kernel's own memory, so it is done before a single byte is
-         * read rather than after.
+         * whether to believe it. The MMU would now catch a segment that
+         * overlapped the kernel -- there is no kernel in this address
+         * space to overlap -- but a segment outside the user area simply
+         * has no page tables behind it, so refusing here gives a clear
+         * answer instead of a fault during loading.
          */
-        if (vaddr < USER_BASE || vaddr + memsz > USER_LIMIT ||
+        if (vaddr < USER_VA_BASE || vaddr + memsz > USER_VA_END ||
             vaddr + memsz < vaddr) {
             return -ENOEXEC;
         }
+        /* Leave room for the stack at the top. */
+        if (vaddr + memsz > USER_VA_STACK_TOP -
+                            (u32)USER_STACK_PAGES * PAGE_SIZE) {
+            return -ENOMEM;
+        }
 
+        err = reserve(as, vaddr, memsz);
+        if (err < 0) {
+            return err;
+        }
         if (filesz > 0) {
-            if (fd_lseek(fd, (s32)off, SEEK_SET) < 0) {
-                return -EIO;
-            }
-            n = fd_read(fd, (void *)vaddr, filesz);
-            if (n < 0) {
-                return (int)n;
-            }
-            if ((u32)n != filesz) {
-                return -ENOEXEC;
+            err = read_into(as, fd, off, vaddr, filesz);
+            if (err < 0) {
+                return err;
             }
         }
-        /* Anything the file does not supply is .bss and must be zero. */
-        if (memsz > filesz) {
-            memset((void *)(vaddr + filesz), 0, memsz - filesz);
-        }
+        /*
+         * Anything the file does not supply is .bss, and is already
+         * zero: every page came from pmm_alloc, which zeroes. Doing it
+         * again here would be writing zeroes over zeroes -- but it is
+         * worth saying out loud, because the guarantee lives in the
+         * allocator and this is where it is relied upon.
+         */
         loaded++;
     }
 
     return loaded > 0 ? 0 : -ENOEXEC;
+}
+
+/*
+ * Put argc and argv where the program will look for them.
+ *
+ * The strings themselves have to be copied INTO the address space --
+ * they are the shell's, in the kernel, and the program cannot see
+ * kernel memory any more. So the strings go at the top of the user
+ * stack, then an array of pointers to them, then the three words crt0.s
+ * reads.
+ *
+ * That last bit deserves a word. crt0 expects argc at 4(sp) and argv at
+ * 8(sp), because it used to be entered with `jsr` and a return address
+ * sat below them. There is no jsr any more -- a program is entered by
+ * returning from a fabricated exception frame -- so a return address is
+ * written by hand to keep the layout identical. It points at zero, which
+ * is unmapped in every address space, so a program that manages to
+ * return from _start faults instead of wandering.
+ */
+static int setup_stack(int argc, char **argv, u32 *out_sp)
+{
+    u32 uargv[EXEC_MAX_ARGS + 1];
+    u32 sp = USER_VA_STACK_TOP & ~3UL;
+    int i, err;
+
+    for (i = argc - 1; i >= 0; i--) {
+        u32 len = (u32)strlen(argv[i]) + 1;
+
+        sp -= len;
+        err = copy_to_user(sp, argv[i], len);
+        if (err < 0) {
+            return err;
+        }
+        uargv[i] = sp;
+    }
+    uargv[argc] = 0;                    /* argv is NULL terminated */
+
+    sp &= ~3UL;
+    sp -= (u32)(argc + 1) * 4;
+    err = copy_to_user(sp, uargv, (u32)(argc + 1) * 4);
+    if (err < 0) {
+        return err;
+    }
+
+    {
+        u32 frame[3];
+
+        frame[0] = 0;                   /* the return address crt0 ignores */
+        frame[1] = (u32)argc;
+        frame[2] = sp;                  /* argv */
+        sp -= 12;
+        err = copy_to_user(sp, frame, sizeof(frame));
+        if (err < 0) {
+            return err;
+        }
+    }
+
+    *out_sp = sp;
+    return 0;
 }
 
 /* The command line, for the job table to show and for `fg` to name. */
@@ -269,13 +422,19 @@ static void describe(char *out, u32 max, int argc, char **argv)
 }
 
 /*
- * Is a stopped job holding the program area?
+ * Is a stopped job holding something a new program would need?
  *
- * There is one image area and one program stack, so a second program
- * would load straight over a stopped one -- and `fg` would then resume
- * into whatever had replaced it, which is not a failure that announces
- * itself. Refusing is the enforceable version of a restriction that
- * otherwise only exists in a comment, and it goes away with an MMU.
+ * It used to be the program area: one image at a fixed address, so a
+ * second program loaded straight over a stopped one. That is gone --
+ * every program has its own address space now and two of them cannot
+ * collide. What is left is narrower: execasm.s holds ONE saved kernel
+ * context, so one program can be part-way through at a time, and
+ * starting a second while one is stopped would leave the first with no
+ * way home.
+ *
+ * The restriction survives, in other words, but for a different reason,
+ * and the reason it survives for now is the scheduler rather than the
+ * MMU.
  */
 static int area_held(void)
 {
@@ -290,12 +449,90 @@ static int area_held(void)
     return 0;
 }
 
+/*
+ * A supervisor stack for one program, with a hole underneath it.
+ *
+ * Three pages: a guard page and then two of stack. The guard is taken
+ * out of the KERNEL's map, not the program's -- it is the kernel that
+ * would overflow, running the program's system calls -- so an overflow
+ * is an access fault at the instruction that did it, rather than a
+ * quiet corruption of whatever page happened to be next. A kernel stack
+ * that overruns and keeps going is close to the worst failure a system
+ * can have, because the damage surfaces somewhere else entirely.
+ */
+#define KSTACK_PAGES    2
+#define KSTACK_TOTAL    (KSTACK_PAGES + 1)
+
+static u32 kstack_alloc(u32 *top)
+{
+    u32 base = pmm_alloc_pages(KSTACK_TOTAL);
+
+    if (!base) {
+        return 0;
+    }
+    vm_kernel_present(base, 0);         /* the guard */
+    *top = base + KSTACK_TOTAL * (u32)PAGE_SIZE;
+    return base;
+}
+
+static void kstack_free(u32 base)
+{
+    if (!base) {
+        return;
+    }
+    /* Put the guard page back before the block goes into the pool, or
+     * the next thing to be handed that page finds it unmapped. */
+    vm_kernel_present(base, 1);
+    pmm_free_pages(base, KSTACK_TOTAL);
+}
+
+/*
+ * Build the address space a program will run in: its image, its stack,
+ * and its arguments. Everything it will be able to reach.
+ */
+static int build(struct addrspace *as, const char *path,
+                 int argc, char **argv, u32 *entry, u32 *sp)
+{
+    u32 va;
+    int fd, err;
+
+    fd = fd_open(path, O_RDONLY);
+    if (fd < 0) {
+        return fd;
+    }
+    err = load_image(as, fd, entry);
+    fd_close(fd);
+    if (err < 0) {
+        return err;
+    }
+
+    /*
+     * The stack, at the top of the user area, and nothing below it.
+     *
+     * The gap between the image and the stack is not merely unused, it
+     * is UNMAPPED -- so a runaway stack runs off the bottom of its last
+     * page and takes an access fault, instead of quietly eating the
+     * program's own data the way it would have done when everything
+     * shared one flat space. That is the first thing here that the MMU
+     * buys which a comment could not.
+     */
+    for (va = USER_VA_END - (u32)USER_STACK_PAGES * PAGE_SIZE;
+         va < USER_VA_END; va += PAGE_SIZE) {
+        if (!vm_map(as, va, 0, VM_USER | VM_WRITE)) {
+            return -ENOMEM;
+        }
+    }
+
+    return setup_stack(argc, argv, sp);
+}
+
 int exec_spawn(const char *path, int argc, char **argv)
 {
     char cmd[JOB_CMD_MAX];
+    struct addrspace *as;
     struct job *j;
-    u32 entry = 0;
-    int fd, err, status, id, prev_fg;
+    u32 entry = 0, sp = 0, kstack, ktop = 0;
+    int err, status, id, prev_fg, prev_depth;
 
     if (running) {
         /* One at a time: execasm.s has room for one saved context, and a
@@ -309,39 +546,65 @@ int exec_spawn(const char *path, int argc, char **argv)
         return -E2BIG;
     }
 
-    fd = fd_open(path, O_RDONLY);
-    if (fd < 0) {
-        return fd;
+    as = vm_create();
+    if (!as) {
+        return -ENOMEM;
     }
-    err = load_image(fd, &entry);
-    fd_close(fd);
+
+    /*
+     * Pointed at the new address space before it is filled, because
+     * filling it means copying the arguments in -- and copy_to_user is
+     * how anything gets into a program's memory, including the arguments
+     * it was started with.
+     */
+    uaccess_set(as);
+    err = build(as, path, argc, argv, &entry, &sp);
+    uaccess_set(0);
+
     if (err < 0) {
+        vm_destroy(as);
         return err;
     }
 
     describe(cmd, sizeof(cmd), argc, argv);
+    kstack = kstack_alloc(&ktop);
+    if (!kstack) {
+        vm_destroy(as);
+        return -ENOMEM;
+    }
+
     id = job_create(cmd, 0);
     if (id < 0) {
+        kstack_free(kstack);
+        vm_destroy(as);
         return id;
     }
     j = job_get(id);
     j->state = JOB_RUNNING;
+    j->as = as;
+    j->kstack = kstack;
 
     /* From here the terminal's ctrl-C and ctrl-Z mean this program. */
     prev_fg = job_foreground();
     job_set_foreground(id);
 
     running = 1;
-    status = exec_call(entry, USER_STACK_TOP, argc, argv);
+    running_as = as;
+    uaccess_set(as);
+    vm_switch(as);
+
+    /* The program's own count starts at zero, whatever depth the caller
+     * was at when it asked for this. */
+    prev_depth = syscall_depth_swap(0);
+
+    status = exec_enter(entry, sp, ktop);
+
+    syscall_depth_swap(prev_depth);
+    vm_switch(0);
+    uaccess_set(0);
+    running_as = 0;
     running = 0;
     job_set_foreground(prev_fg);
-
-    /*
-     * The system call depth is counted, and a program that was killed or
-     * exited left the count wherever it was when it jumped out. Nothing
-     * unwound it, because nothing returned.
-     */
-    syscall_depth_reset();
 
     /*
      * Put the terminal back. A program that set raw mode and was then
@@ -359,9 +622,9 @@ int exec_spawn(const char *path, int argc, char **argv)
     vfs_sync();
 
     if (j->state == JOB_STOPPED) {
-        /* Still alive, still holding the program area, listed by `jobs`
-         * and resumable with `fg`. Nothing went wrong, so this is not an
-         * errno. */
+        /* Still alive, its address space intact and still holding its
+         * pages, listed by `jobs` and resumable with `fg`. Nothing went
+         * wrong, so this is not an errno. */
         return SPAWN_STOPPED;
     }
 
@@ -371,6 +634,14 @@ int exec_spawn(const char *path, int argc, char **argv)
         j->state = JOB_DONE;
         j->status = status;
     }
+
+    /* Every page it was given goes back, including the ones holding its
+     * tables and the stack its system calls ran on. This is the whole of
+     * "the program is gone". */
+    vm_destroy(as);
+    kstack_free(j->kstack);
+    j->as = 0;
+    j->kstack = 0;
     return status;
 }
 
@@ -381,7 +652,7 @@ int exec_spawn(const char *path, int argc, char **argv)
 int exec_continue(int id)
 {
     struct job *j = job_get(id);
-    int status, prev_fg;
+    int status, prev_fg, prev_depth;
 
     if (!j) {
         return -ENOENT;
@@ -399,11 +670,22 @@ int exec_continue(int id)
     j->signalled = 0;
 
     running = 1;
+    running_as = j->as;
+    uaccess_set(j->as);
+    vm_switch(j->as);
+
+    /* Back to the depth it stopped at, in the middle of a system call. */
+    prev_depth = syscall_depth_swap(j->depth);
+
     status = exec_resume(j->saved_sp);
+
+    syscall_depth_swap(prev_depth);
+    vm_switch(0);
+    uaccess_set(0);
+    running_as = 0;
     running = 0;
     job_set_foreground(prev_fg);
 
-    syscall_depth_reset();
     tty_reset();
     vfs_sync();
 
@@ -416,5 +698,9 @@ int exec_continue(int id)
         j->state = JOB_DONE;
         j->status = status;
     }
+    vm_destroy(j->as);
+    kstack_free(j->kstack);
+    j->as = 0;
+    j->kstack = 0;
     return status;
 }

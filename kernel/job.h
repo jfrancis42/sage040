@@ -38,6 +38,8 @@
 #include "kernel.h"
 #include "uapi.h"
 
+struct addrspace;
+
 #define JOB_MAX      4
 #define JOB_CMD_MAX  128
 
@@ -57,6 +59,20 @@ struct job {
     int  signalled;             /* the signal that ended it, or 0     */
     volatile int pending;       /* raised, not yet delivered          */
     u32  saved_sp;              /* its context while JOB_STOPPED      */
+    /*
+     * Its address space. A stopped job still owns one, with every page
+     * it had -- which is what makes `fg` able to resume into a program
+     * that still has its memory, and what a scheduler will swap between.
+     */
+    struct addrspace *as;
+
+    /*
+     * Its supervisor stack: where its traps and interrupts land. A job
+     * has one of its own so that a stopped program's saved frames are
+     * not overwritten by whoever carries on running.
+     */
+    u32  kstack;                /* base of the block, guard page first */
+    int  depth;                 /* how deep in the kernel it stopped   */
     char cmd[JOB_CMD_MAX];      /* the command line, for fg and jobs  */
 };
 
@@ -86,6 +102,14 @@ void job_set_foreground(int id);
  * where it is.
  */
 void job_signal_fg(int sig);
+
+/*
+ * Record that the foreground job died of this, with no chance to be
+ * delivered anything. Used by the fault handler, which is not raising a
+ * signal for the program to receive -- the program is already over -- but
+ * saying what ended it, so `jobs` and the shell can report it.
+ */
+void job_kill_fg(int sig);
 
 /* Is one waiting? Cheap enough to ask on every system call. */
 int  job_signal_pending(void);

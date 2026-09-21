@@ -127,7 +127,7 @@ recognise.
 ```
 exit(1) read(3) write(4) open(5) close(6) unlink(10) time(13) lseek(19)
 stime(25) rename(38) times(43) ioctl(54) reboot(88) statfs(99) stat(106)
-fsync(118) uname(122) getdents(141) nanosleep(162) sync(166)
+fsync(118) sysinfo(116) uname(122) getdents(141) nanosleep(162) sync(166)
 spawn(400) jobctl(401)
 ```
 
@@ -216,6 +216,83 @@ name, in `execasm.s`. One program at a time, because that file has room
 for one saved context.
 
 See [`../user/`](../user/) for the programs themselves.
+
+## Memory
+
+The MMU is on. Programs run in user mode, in an address space of their
+own, and cannot reach the kernel, the devices, or each other.
+
+```
+   supervisor (SRP)                    user (URP)
+   0x00000000  vectors                 0x10000000  program image
+   0x00000400  kernel                  ...         unmapped gap
+   ...         all of RAM, identity    0x101f0000  stack, 64 KB
+   0x003ffff0  supervisor stack        0x10200000  end
+                                       everything else: unmapped
+   0xf0000000  SM501 VRAM  ] transparent translation registers,
+   0xff000000  I/O         ] supervisor only, uncached
+```
+
+The 68040 picks its root pointer from the function code of the access,
+not from anything software chooses: supervisor accesses walk **SRP**,
+user accesses walk **URP**. That single fact is the design. The kernel's
+map is identity over all of RAM, supervisor only, and is built once and
+never changed. A program's map is swapped in on every spawn and every
+resume, and that swap is the whole of "its own address space".
+
+Because the kernel's map is identity, it can reach any physical page by
+its address -- which is how it loads an image, builds a program's page
+tables and copies a system call's arguments, all without mapping
+anything specially.
+
+### A program's pointers are not the kernel's
+
+`0x10001234` is a valid pointer to a program and **an unmapped address
+to the kernel**. The user area is deliberately not mapped into the
+supervisor space, and the reason is what happens when somebody forgets:
+the raw dereference faults immediately, in the first test that touches
+that system call. Had the user area been visible, the same omission
+would work perfectly until a program passed a bad pointer, and then it
+would take the machine down.
+
+So every system call that takes a pointer goes through `uaccess.c`,
+which walks the program's page tables in software and returns `-EFAULT`
+rather than faulting. A program is allowed to pass rubbish; it gets an
+error, and the kernel stays up. `kernel/vmtest.sh` checks that with
+four deliberately bad pointers.
+
+The shell is a transitional exception. It runs inside the kernel and
+reaches the system through the same gate, so its pointers *are* kernel
+pointers; `uaccess_current()` is non-null only while a user program is
+running, which distinguishes the two exactly. When the shell moves out
+of the kernel, that branch collapses.
+
+### What the MMU actually bought
+
+| | |
+|--|--|
+| A program cannot read kernel memory | the S bit on every kernel page |
+| A program cannot touch the UART or the framebuffer | the transparent translation registers are supervisor-only, so a user access does not match them and falls through to a page table with nothing in it |
+| A runaway stack stops | the gap below it is unmapped, not merely unused |
+| A bad pointer to a system call is an error | `uaccess.c`, not a fault |
+| A kernel stack overflow is caught | an unmapped guard page below each one |
+| A program's fault kills the program | and the shell prints why |
+
+### Pages
+
+`pmm.c` hands out 4 KB pages from the end of the kernel to just below
+its stack -- a bitmap rather than a free list, so that a use-after-free
+corrupts data instead of the allocator. Everything comes from there: a
+program's image, its stack, its page tables, and the kernel stack its
+system calls run on. `free` in the shell reports it.
+
+Each program also gets **its own supervisor stack**, and that is not a
+detail. Every trap it takes pushes a frame on whatever the supervisor
+stack is at the time; if that were the shell's, then the moment the
+program stopped and the shell carried on, the shell would grow down over
+the very frames the program has to return through. It would look like it
+worked -- and for a while it did, with `fg` resuming a program into a
+context that had been overwritten.
 
 ## Devices that are not there
 
@@ -660,6 +737,7 @@ uname [-a]           system name, or name and version
 uptime               how long the machine has been up
 console [NAME on|off] show or change where console output goes
 sync                 flush pending writes
+free                 physical memory, in pages
 jobs                 list stopped and queued jobs
 fg [%N]              run a stopped or queued job
 bg [%N]              run one in the background — see Jobs, above
@@ -702,6 +780,9 @@ command. Errors go to descriptor 2 even when output is redirected.
 | `font8x16.c` | the IBM PC font, and where it came from |
 | `execasm.s` | the stack switch into a program, the unwind out, and the context switch between |
 | `probe.c` | CPU, FPU and memory — the parts with no driver |
+| `pmm.c` | the physical page allocator |
+| `vm.c` | page tables, address spaces, and turning the MMU on |
+| `uaccess.c` | reaching into a program's memory, safely |
 | `memprobe.s` | reads that survive a bus error, for memory and for absent chips |
 | `layercheck.sh` | the layering rule, enforced before every link |
 | `shell.c` | a program, reaching the kernel through `trap #0` (bar one command) |
@@ -711,4 +792,5 @@ command. Errors go to descriptor 2 even when output is redirected.
 | `fs/fat16.c` | FAT16, read and write |
 | `fstest.sh` | scripted session, verified with host tools |
 | `edittest.sh` | the editor, history, ctrl-C, ctrl-Z, jobs and shutdown |
+| `vmtest.sh` | memory protection: what a program cannot touch, and that a bad pointer is an error |
 | `kernel.ld` | vectors at 0, text at 0x400, stack at the top of RAM |

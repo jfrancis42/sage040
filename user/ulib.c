@@ -155,6 +155,15 @@ u32 strlen(const char *s)
     return (u32)(p - s);
 }
 
+int strcmp(const char *a, const char *b)
+{
+    while (*a && *a == *b) {
+        a++;
+        b++;
+    }
+    return (int)(unsigned char)*a - (int)(unsigned char)*b;
+}
+
 void *memset(void *dst, int c, u32 n)
 {
     u8 *d = dst;

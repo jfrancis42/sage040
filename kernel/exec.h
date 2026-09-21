@@ -18,27 +18,21 @@
 #define EXEC_H
 
 #include "kernel.h"
+#include "vm.h"
 
 /*
- * Where a program lives.
+ * Where a program lives: in an address space of its own.
  *
- * The kernel occupies low memory and keeps its stack at the top of RAM.
- * A program is given the megabyte at 1 MB for its image and a stack
- * growing down from 3 MB, which leaves a megabyte of unmapped gap
- * between the two stacks. With no MMU there is nothing enforcing any of
- * this -- the gap is there so that a runaway program stack runs into
- * empty space rather than straight into the kernel's.
+ * The layout is in vm.h, because it is a property of the memory system
+ * rather than of the loader. What matters here is that the numbers are
+ * VIRTUAL and every program has the same ones -- two programs both
+ * begin at USER_VA_BASE, on different physical pages, and neither can
+ * see the other or the kernel.
  *
- *   0x00000000  kernel: vectors, text, data, bss
- *   0x00100000  program image          <- USER_BASE
- *   0x002ffff0  program stack, growing down
- *   0x00300000  unused gap
- *   0x003ffff0  kernel supervisor stack
+ * Until recently these were physical addresses in the kernel's own
+ * space, and the gap below the stack was a convention rather than a
+ * rule. It is now a hole in a page table.
  */
-#define USER_BASE       0x00100000UL
-#define USER_LIMIT      0x002f0000UL    /* image must end below here   */
-#define USER_STACK_TOP  0x002ffff0UL
-
 #define EXEC_MAX_ARGS   8
 
 /*
@@ -84,5 +78,8 @@ void exec_stop(u32 *saved_sp);
 int  exec_resume(u32 saved_sp);
 
 int exec_running(void);
+
+/* The address space of the running program, or null. */
+struct addrspace *exec_addrspace(void);
 
 #endif /* EXEC_H */

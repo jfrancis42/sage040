@@ -284,6 +284,7 @@ static void cmd_help(void)
         "rm FILE...           remove files\n"
         "stat FILE            size, mode and modification time\n"
         "df                   space used and available\n"
+        "free                 physical memory, in pages\n"
         "echo TEXT            print a line\n"
         "date                 show the date and time\n"
         "date -s DATE [TIME]  set them: YYYY-MM-DD and HH:MM[:SS]\n"
@@ -1044,7 +1045,13 @@ static void report_status(const char *what, int status)
     }
     err_puts(what);
     if (status > 128 && status < 128 + 32) {
-        err_puts(status == 128 + SIGTSTP ? ": stopped\n" : ": killed\n");
+        switch (status - 128) {
+        case SIGSEGV: err_puts(": segmentation fault\n"); break;
+        case SIGILL:  err_puts(": illegal instruction\n"); break;
+        case SIGFPE:  err_puts(": arithmetic exception\n"); break;
+        case SIGTSTP: err_puts(": stopped\n"); break;
+        default:      err_puts(": killed\n"); break;
+        }
         return;
     }
     err_puts(": exited ");
@@ -1164,6 +1171,35 @@ static void run_command(char *cmdline)
 
         } else if (strcmp(argv[0], "console") == 0) {
             cmd_console(argc, argv);
+
+        } else if (strcmp(argv[0], "free") == 0) {
+            struct sysinfo si;
+
+            err = sys_sysinfo(&si);
+            if (err < 0) {
+                err_report("free", err);
+            } else {
+                u32 kb = si.mem_unit / 1024;
+
+                out_puts("           pages       KB\n");
+                out_puts("total  ");
+                out_putdec_pad(si.totalram, 10);
+                out_putdec_pad(si.totalram * kb, 9);
+                out_putc('\n');
+                out_puts("used   ");
+                out_putdec_pad(si.totalram - si.freeram, 10);
+                out_putdec_pad((si.totalram - si.freeram) * kb, 9);
+                out_putc('\n');
+                out_puts("free   ");
+                out_putdec_pad(si.freeram, 10);
+                out_putdec_pad(si.freeram * kb, 9);
+                out_putc('\n');
+                out_puts("\npage size ");
+                out_putdec(si.mem_unit);
+                out_puts(" bytes, ");
+                out_putdec(si.procs);
+                out_puts(" job(s)\n");
+            }
 
         } else if (strcmp(argv[0], "uptime") == 0) {
             u32 t = sys_times();

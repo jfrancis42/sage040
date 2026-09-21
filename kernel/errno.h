@@ -29,6 +29,7 @@
 #define EAGAIN          11      /* try again                          */
 #define ENOMEM          12      /* out of memory                      */
 #define EACCES          13      /* permission denied                  */
+#define EFAULT          14      /* bad address                        */
 #define EBUSY           16      /* device or resource busy            */
 #define EEXIST          17      /* file exists                        */
 #define EXDEV           18      /* cross-device link                  */

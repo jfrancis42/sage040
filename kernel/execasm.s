@@ -1,58 +1,97 @@
 | SPDX-License-Identifier: GPL-3.0-or-later
 | Copyright (C) 2026 Jeff Francis
 |
-| execasm.s - switch to a program's stack, call it, and come back.
+| execasm.s - entering a program, leaving one, and swapping between.
 |
-|   int exec_call(u32 entry, u32 stack_top, int argc, char **argv);
+| A program runs in USER MODE, in its own address space, on its own
+| stack. None of those are things the kernel can simply call into, so
+| everything here is about crossing that boundary and getting back.
 |
-| Returns whatever the program's entry point returned, or whatever it
-| passed to exit().
+| THE SAVED CONTEXT, used identically by all four routines below:
 |
-| Two things are going on here.
+|       0(sp)   d2-d7/a2-a6     44 bytes, the callee-saved registers
+|      44(sp)   USP             the user stack pointer
+|      48(sp)   return address
 |
-| The first is an ordinary stack switch: the program gets its own stack
-| rather than growing down through the kernel's, so a program that
-| recurses too far runs into empty space instead of into the kernel.
+| USP is in there because the 68040 keeps the user and supervisor stack
+| pointers in separate registers, and there is exactly one of each. A
+| program stopped by ctrl-Z has its stack pointer sitting in USP, and the
+| next program to run overwrites it. Saving it alongside the registers is
+| what makes `fg` land back where the program actually was.
 |
-| The second is the unwind. A program that calls exit() is several frames
-| deep inside itself and inside a trap handler, and none of that can be
-| returned through normally. exec_unwind() throws all of it away: it
-| restores the stack pointer saved on the way in and returns from
-| exec_call as though the program had simply returned. That is a longjmp
-| in everything but name.
-|
-| Note where the trap frame lands. The program runs in supervisor mode --
-| there is no user mode yet -- so its stack IS the supervisor stack, and a
-| `trap #0` from the program pushes its exception frame there. Abandoning
-| that frame is safe precisely because the whole stack is being discarded.
-|
-| One program at a time. exec.c refuses a nested spawn, because there is
-| one saved context here and a second would overwrite it.
+| Only the callee-saved registers are kept, and that is a real
+| limitation: it works because every switch happens at a C call boundary
+| inside the kernel, where the caller has already spilled anything else
+| it cared about. Stopping a program at an arbitrary instruction would
+| mean saving every register and the PC out of the exception frame --
+| which is a different and larger thing, and is what a scheduler will
+| have to do.
 
         .text
 
-        .globl  exec_call
-        .type   exec_call,@function
-exec_call:
-        movem.l %d2-%d7/%a2-%a6,-(%sp)  | 11 registers, 44 bytes
+| ------------------------------------------------------------------
+| int exec_enter(u32 entry, u32 usp, u32 kstack_top)
+|
+| Go to user mode. Returns only through exec_unwind, when the program
+| exits or is killed.
+|
+| THE PROGRAM GETS ITS OWN SUPERVISOR STACK, and that is not a detail.
+| Every trap and every interrupt the program takes pushes its frame on
+| whatever the supervisor stack is at the time; if that were the shell's
+| stack, then the moment the program stopped and the shell carried on,
+| the shell would grow down over the very frames the program has to
+| return through. It would look like it worked -- fg would resume into a
+| context that had been overwritten by whatever the shell did next.
+| Switching stacks here is what makes a stopped program actually
+| resumable, and it is the same reason every task in a real system has a
+| kernel stack of its own.
+|
+| The 68040 has no instruction for "drop privilege". The way down is to
+| build an exception frame that claims to have come from user mode and
+| then return from it -- so this pushes a format 0 frame whose saved SR
+| has the supervisor bit clear, and RTEs into it. The CPU restores that
+| SR, notices S is now clear, and switches A7 from the supervisor stack
+| to USP on the way out.
+|
+| SR is 0x0000: user mode, all interrupts enabled, trace off. A program
+| cannot mask an interrupt, because the register that would let it do so
+| is not writable from where it is standing.
+| ------------------------------------------------------------------
+        .globl  exec_enter
+        .type   exec_enter,@function
+exec_enter:
+        move.l  %usp,%a0                | whatever was there before
+        move.l  %a0,-(%sp)
+        movem.l %d2-%d7/%a2-%a6,-(%sp)
         move.l  %sp,exec_ksp            | the point to come back to
 
-        move.l  44+4(%sp),%a0           | entry
-        move.l  44+8(%sp),%a1           | stack_top
-        move.l  44+12(%sp),%d1          | argc
-        move.l  44+16(%sp),%d2          | argv
+        move.l  52(%sp),%d0             | entry
+        move.l  56(%sp),%a0             | usp
+        move.l  60(%sp),%a1             | top of its supervisor stack
+        move.l  %a0,%usp
+        movea.l %a1,%sp                 | from here, traps land on its stack
 
-        movea.l %a1,%sp                 | the program's stack from here on
-        move.l  %d2,-(%sp)              | argv
-        move.l  %d1,-(%sp)              | argc
-        jsr     (%a0)                   | into the program
-        | d0 holds its return value; fall through.
+        clr.w   -(%sp)                  | format 0, vector 0
+        move.l  %d0,-(%sp)              | PC  = the program's entry point
+        clr.w   -(%sp)                  | SR  = user mode, IPL 0
+        rte                             | ... and away
 
+| ------------------------------------------------------------------
+| The way back.
+|
+| exec_unwind throws away whatever the program was doing -- its user
+| stack, the trap frame it was in the middle of, all of it -- and returns
+| from exec_enter as though it had simply returned. That is safe
+| precisely because everything being discarded belongs to the program,
+| and the program is over.
+| ------------------------------------------------------------------
         .globl  exec_unwind
         .type   exec_unwind,@function
 exec_unwind:
         movea.l exec_ksp,%sp
         movem.l (%sp)+,%d2-%d7/%a2-%a6
+        move.l  (%sp)+,%a0
+        move.l  %a0,%usp
         rts
 
 |
@@ -70,17 +109,17 @@ exec_longjmp:
 |
 | ctrl-C on a program that is making no system calls is noticed by the
 | timer interrupt, so the unwind starts inside a handler running at IPL 6
-| with an exception frame on the program's stack. Neither is a problem:
-| the frame is on the stack being discarded, and nothing is returning
-| through it.
+| with an exception frame on the supervisor stack. Neither is a problem:
+| nothing is returning through that frame, and the stack it sits on is
+| about to be reset to exec_ksp anyway.
 |
 | The interrupt mask is. Leaving through the side door means no RTE ever
 | restores it, and the shell would come back with every interrupt masked
 | -- a machine that runs, prints its prompt, and then never ticks again.
 |
-| The stack is switched BEFORE the mask is lowered. The other order leaves
-| a window in which an interrupt could arrive, be handled on the stack
-| being abandoned, and re-enter this code.
+| The stack is switched BEFORE the mask is lowered. The other order
+| leaves a window in which an interrupt could arrive, be handled on the
+| stack being abandoned, and re-enter this code.
 |
         .globl  exec_abort
         .type   exec_abort,@function
@@ -89,44 +128,47 @@ exec_abort:
         movea.l exec_ksp,%sp
         move.w  #0x2000,%sr             | supervisor, IPL 0
         movem.l (%sp)+,%d2-%d7/%a2-%a6
+        move.l  (%sp)+,%a0
+        move.l  %a0,%usp
         rts
 
-|
-| void exec_stop(u32 *saved_sp) - ctrl-Z. Returns when fg resumes it.
-| int  exec_resume(u32 saved_sp)  - fg. Returns the program's exit status.
+| ------------------------------------------------------------------
+| void exec_stop(u32 *saved_sp)  - ctrl-Z. Returns when fg resumes it.
+| int  exec_resume(u32 saved_sp) - fg. Returns the program's exit status.
 |
 | These two are one operation written twice, and between them they are a
 | context switch -- the primitive the scheduler will be built out of.
-| Each saves where it is, in the frame layout exec_call already uses, and
-| goes to where the other left off.
-|
-| What makes it this small is that only the callee-saved registers need
-| keeping. A stop only ever happens at a system call boundary, which is a
-| C call boundary, where the caller has already spilled anything else it
-| cared about. Stopping at an arbitrary instruction would mean saving
-| every register and the program counter from the exception frame, which
-| is a different and larger thing.
-|
+| Each saves where it is in the layout described at the top of this file
+| and goes to where the other left off.
+| ------------------------------------------------------------------
         .globl  exec_stop
         .type   exec_stop,@function
 exec_stop:
+        move.l  %usp,%a0
+        move.l  %a0,-(%sp)
         movem.l %d2-%d7/%a2-%a6,-(%sp)
-        move.l  48(%sp),%a0             | saved_sp, past the 44 just pushed
+        move.l  52(%sp),%a0             | saved_sp, past the 48 just pushed
         move.l  %sp,(%a0)               | where to come back to
-        movea.l exec_ksp,%sp            | and away to the shell
+        movea.l exec_ksp,%sp            | and away to whoever was waiting
         movem.l (%sp)+,%d2-%d7/%a2-%a6
+        move.l  (%sp)+,%a0
+        move.l  %a0,%usp
         rts
 
         .globl  exec_resume
         .type   exec_resume,@function
 exec_resume:
+        move.l  %usp,%a0
+        move.l  %a0,-(%sp)
         movem.l %d2-%d7/%a2-%a6,-(%sp)
-        move.l  %sp,exec_ksp            | the shell's way home, replaced
-        movea.l 48(%sp),%sp             | into the stopped program
+        move.l  %sp,exec_ksp            | the resumer's way home, replaced
+        movea.l 52(%sp),%sp             | into the stopped program
         movem.l (%sp)+,%d2-%d7/%a2-%a6
+        move.l  (%sp)+,%a0
+        move.l  %a0,%usp
         rts
 
-| Where exec_call, exec_stop and exec_resume all come back to: the
+| Where exec_enter, exec_stop and exec_resume all come back to: the
 | context of whoever is waiting for the program. exec_resume replaces it,
 | which is what makes a program that was resumed exit to its resumer.
         .bss
