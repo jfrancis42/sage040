@@ -55,6 +55,10 @@ measurement; a 32-bit build was not available to weigh.
 
 ## Blocker 1 — the address space
 
+> **Resolved 2026-09-21** (`progress.md` task 1): the address space is
+> 256 MB with a 1 MB stack. Growing what is *mapped* in it is tasks 2
+> and 3. The text below is the analysis as it was written.
+
 A program on this machine gets **2 MB**, mapped at exec and fixed:
 
 ```

@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: task 0 done, 1 next. 1 of 23 complete.** 130 checks pass.
+**Status: 2 of 23 complete.**
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -30,7 +30,7 @@ drive almost all of it:
 | # | Task | Why here | State |
 |---|------|----------|-------|
 | 0 | Groundwork: bigger RAM and disk, per-task cwd, `fstat`/`access`/`dup` | small things everything else trips over | **done** |
-| 1 | Grow the user address space | nothing else fits until this | todo |
+| 1 | Grow the user address space | nothing else fits until this | **done** |
 | 2 | `brk`/`sbrk` | the smaller half of memory; enough for `malloc` | todo |
 | 3 | `mmap`/`munmap`/`mprotect` | what a runtime and a libc expect | todo |
 | 4 | `malloc` in `lib/` | so tasks 5–12 have something to test against | todo |
@@ -47,7 +47,7 @@ drive almost all of it:
 | 15 | `fsck`, and a clean-unmount flag | the machine cannot check its own disk | todo |
 | 16 | Build and run uEmacs | the cheapest real editor | todo |
 | 17 | Build and run vi | the other one | todo |
-| 18 | A resolver | independent; do it when convenient | todo |
+| 18 | A resolver (DNS), then **NTP** | independent of the editor work; both are UDP clients and NTP wants a name | todo |
 | 19 | TCP: window scaling, timestamps, SACK, keepalives, real `TIME_WAIT` | was "deliberately not doing"; now on the list | todo |
 | 20 | Shared libraries | downstream of `mmap` and the libc | todo |
 | 21 | Paging and swapping | downstream of `mmap` | todo |
@@ -207,8 +207,195 @@ It grows one group per task, and a group is only added once its calls
 work — so a failure there is always a regression, never a thing not
 written yet.
 
-**130 checks across six suites now:** 12 device programs, 41 fs, 20
-api, 29 edit, 15 vm, 13 net.
+**133 checks across six suites now:** 12 device programs, 41 fs, 20
+api, 29 edit, 18 vm, 13 net.
+
+### 1. Grow the user address space — done
+
+**2 MB → 256 MB.** `USER_VA_BASE` stays at `0x10000000`; `USER_VA_END`
+is now `0x20000000`. The stack moved to the top of the new space and
+grew from 64 KB to **1 MB**, leaving ~255 MB of unmapped gap between a
+program's image and its stack for `brk` and `mmap` to fill.
+
+**What made 2 MB the limit was not the number, it was the bookkeeping.**
+An address space's root table, pointer table and eight page tables were
+packed into ONE physical page — root at `0x000`, pointer at `0x200`,
+eight 256-byte page tables from `0x400`. Creating a space was one
+allocation and destroying it one free, with no table management at all.
+That was a good trade when a program was a small thing at a fixed
+address, and eight page tables is exactly what fits in a page.
+
+256 MB needs up to 1024 page tables, and allocating them eagerly would
+cost 1 MB of tables per task on a machine that had 4 MB until this
+morning. So **tables are allocated on demand**:
+
+- a table page is taken from the page allocator when one is needed
+- its first 512-byte slot holds a link to the previous such page, so
+  they form a list the address space can free later
+- the remaining seven slots are handed out to tables
+
+`as_pagetable()` gained a `create` flag, and **the flag is the whole
+difference between mapping and translating**: a map must be able to
+bring tables into existence, and a translate must never do so —
+otherwise dereferencing a wild pointer would quietly allocate the
+tables to describe it, and a program could exhaust memory with rubbish.
+
+`vm_mapped_pages()` and `vm_destroy()` now step a page table at a time
+when a table is absent rather than a page at a time. Over 256 MB that
+is 1024 iterations instead of 65536, and `free` calls it at every
+prompt.
+
+Measured: a 256 MB address space boots, a program costs 262 pages --
+its 1 MB stack, eagerly mapped, plus image and tables -- and `ps` and
+`free` agree. All 130 existing checks pass unchanged.
+
+*Decision:* the stack is 1 MB and **eagerly mapped**, not lazily grown.
+There is no demand paging (task 21), so a stack can only be as big as
+what is mapped at exec. 1 MB per task against 64 MB of RAM and eight
+task slots is 8 MB worst case, which is the "do not economise" choice
+and removes stack overflow as a thing ported software can trip over.
+
+#### A leak found on the way
+
+**Killing a background job did not give its memory back.** `task_reap()`
+frees the address space, the kernel stack and the task slot, and it is
+only called from `waitpid` — which the shell only ran from `jobs` and
+after `fg`. So a background job that ended, or was killed, held all
+three until somebody happened to ask for a listing.
+
+That was survivable when an address space was 2 MB of tables in one
+page. With a 256 MB space it is a megabyte a time, and with `TASK_MAX`
+of 8 it is a machine that stops being able to start anything after a
+few. The shell reaps at **every prompt** now, which is where a real
+shell would do it on `SIGCHLD` — and signal handlers are task 5, so
+this gets revisited then.
+
+`vmtest.sh` checks it now: `free`, `spin &`, `free`, read the real pid
+from `ps`, `kill -9` it, return to the prompt, `free`. Measured used
+pages 37 → 299 → 37. **With the reap line commented out the check
+fails** (299 afterwards), so it tests the fix rather than passing
+regardless. 133 checks.
+
+#### The session that stopped, and why
+
+Partway through this task every shell command began returning 1 with
+no output, and a restarted session did the same. It looked like
+`exec` failing. It was not: **`/tmp` is a tmpfs with a per-user quota,
+and ~5.6 GB of 512 MB disk images in old scratch directories under
+a directory in `/tmp` had filled it.** The command runner writes each
+command's output to a file there, so every command ran and its output
+had nowhere to go. `df` showed 1.6 GB free, because a quota is not a
+full filesystem. Deleting the images fixed it. `/tmp/sage040-cleanup.sh`
+does that if it happens again. **Keep 512 MB disk copies in `scratch/`,
+which is on `/home`, never under `/tmp`.**
+
+---
+
+## Design notes for the tasks not yet started
+
+Written while the shell was down, because thinking does not need one.
+These are decisions, not code — the point is that the next session
+starts by typing rather than by deciding.
+
+### 2. `brk`/`sbrk`
+
+`__NR_brk` is Linux's **45**. One argument, and the Linux convention
+that makes every `malloc` work:
+
+- `brk(0)` returns the current break without moving it
+- `brk(addr)` sets it and returns the **new** break
+- a request that cannot be satisfied returns the **old** break
+  unchanged — it does not return an error, and `malloc` detects failure
+  by comparing what came back against what it asked for
+
+Where it starts: immediately above the program's last `PT_LOAD`
+segment, rounded up to a page. `exec.c` knows that address; it needs to
+be recorded in the address space or the task at load time. Put it in
+`struct addrspace` beside the table bookkeeping, as `brk_start` and
+`brk_cur`, because it is a property of the address space rather than of
+the task.
+
+Where it stops: the guard region below the stack. With a 1 MB stack at
+the top of 256 MB, the break may grow to roughly `USER_VA_END - 1 MB -
+one guard page`. Refuse beyond that by returning the old break.
+
+Growing maps zeroed pages (the page allocator already zeroes, which is
+required — handing a program another program's old data would be a
+disclosure bug). Shrinking unmaps and frees them, and must `pflusha`.
+
+### 3. `mmap`/`munmap`/`mprotect`
+
+Numbers: **90**, **91**, **125**. Note that Linux's i386 `mmap` at 90
+takes a *pointer to an argument block* rather than six registers —
+`old_mmap`. Do not copy that: this ABI has `d1`–`d5` and six arguments
+do not fit, so pass a pointer to a small struct and **say so in
+`uapi.h`**, since it is a deliberate divergence from a number that is
+otherwise Linux's.
+
+Anonymous memory first — that is what an allocator and a runtime
+actually use. `MAP_FIXED` honoured; without it, place the mapping in
+the gap between the break and the stack, searching upward from a
+per-address-space hint.
+
+File-backed mappings **read-only and eager**: read the file's pages at
+`mmap` time rather than faulting them in, because there is no demand
+paging (task 21). `MAP_SHARED` on a file should be **refused with
+`-ENODEV`**, not quietly treated as `MAP_PRIVATE` — a shared mapping
+that does not share is the kind of lie that costs somebody a day.
+
+A per-address-space table of mappings is needed so `munmap` can find
+one and so `vm_destroy` can free them. 32 entries is plenty. `munmap`
+of part of a mapping has to split it.
+
+**`mprotect` must `pflusha`.** A missing flush does not fail at the
+`mprotect` — it fails several accesses later on a page whose old
+descriptor is still cached, which is the hardest failure in this tree
+to diagnose and is already written up in the working notes.
+
+### 4. `malloc` in `lib/`
+
+First fit over `sbrk`, coalescing on free, free list threaded through
+the blocks. `malloc`, `free`, `realloc`, `calloc`. Perhaps 250 lines.
+
+*Decision made in advance:* **write it, even though task 13 brings a
+libc that has one.** Tasks 5–12 all want an allocator to test against,
+and waiting for the picolibc port would block every one of them behind
+the largest single piece of work on the list. It is meant to be thrown
+away.
+
+`realloc` should grow in place when the next block is free. That
+matters more than it sounds: an editor's gap buffer grows by
+reallocating, and copying a few hundred KB on every insertion is
+visible on a 25 MHz machine.
+
+Test it with a randomised allocate/free workload that checks free-list
+integrity, not just with a few calls.
+
+### 5. Signals: `sigaction`, handlers, `sigreturn`
+
+The largest kernel item on the list, and the one that changes the most.
+
+Numbers: `sigaction` **67**, `sigreturn` **119**, and prefer
+`rt_sigaction` **174** if the mask needs to be wider than 32 bits — it
+does not here, so 67 is enough and simpler.
+
+Delivery: build a frame on the **user** stack holding the saved
+registers and the old mask, point the return address at a small
+trampoline, and `rte` to the handler in user mode. The trampoline calls
+`sigreturn`, which restores everything from that frame. The handler
+runs on the user stack, in user mode, and can itself be interrupted.
+
+*Decision:* **the trampoline belongs in `lib/crt0.s`**, with its
+address passed to the kernel by `sigaction` — not written onto the
+user's stack by the kernel. Writing instructions to the stack would
+require the stack to be executable, and this MMU can mark it not;
+giving that up to save eight bytes of `crt0.s` is a bad trade.
+
+`SA_RESTART` matters more than it looks: without it every ported
+program needs `EINTR` handling on every call, and most do not have it.
+
+This also lets the shell stop reaping at the prompt and reap on
+`SIGCHLD` instead, which is where task 1's leak fix really belongs.
 
 ## Decisions worth knowing about
 

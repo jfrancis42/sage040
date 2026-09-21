@@ -154,9 +154,10 @@ address space is:
 
 ```
 0x10000000   program text and data
-     ...     2 MB total
-0x101F0000   stack, 64 KB, growing down
-0x101FFFF0   top of stack
+     ...     unmapped, ~255 MB, for brk and mmap
+0x1FF00000   stack, 1 MB, growing down
+0x1FFFFFF0   top of stack
+0x20000000   end: 256 MB total
 ```
 
 Supervisor-only on every kernel page, so a program cannot read the kernel.
@@ -638,9 +639,10 @@ an address space for the child to discard immediately.
 **No signal handlers.** Default actions only. No `signal`, no `sigaction`,
 no `sigprocmask` from user mode.
 
-**No `mmap`, `brk` or `sbrk`.** A program's 2 MB is mapped at exec and does
-not change. This is the hard limit on what can be ported, and `emacs.md`
-is an entire document about that one line.
+**No `mmap`, `brk` or `sbrk` yet.** The address space is 256 MB, but
+what is mapped in it is decided at exec and does not change. This is
+the hard limit on what can be ported, and `emacs.md` is an entire
+document about it. `progress.md` tasks 2 and 3 remove it.
 
 **No pipes, no `dup2`, no `fcntl`, no `select` or `poll`.** So no shell
 pipelines, and no input redirection.

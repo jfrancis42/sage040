@@ -720,7 +720,7 @@ machine being small. The machine is not small now — 64 MB of RAM and a
 
 | | |
 |---|---|
-| Near-term | interrupt-driven input, a per-task cwd, a resolver, the NVRAM, static limits |
+| Near-term | interrupt-driven input, DNS, NTP, the NVRAM, static limits |
 | **Memory** | `mmap`, `brk`, `sbrk`, `malloc`, and a bigger address space |
 | **A C library** | picolibc or newlib over a dozen syscall stubs |
 | Pipelines | `pipe`, `dup2`, `SIGPIPE`, and `\|` `>` `>>` `<` in the shell |
@@ -744,22 +744,49 @@ program, and everything it needs that is not here.
    sleeps on a wait queue with a timeout rather than spinning — so it is
    now a tidiness item rather than a correctness one.
 
-2. **The working directory is global, not per task.** `fs/fat16.c` keeps
-   a single `static struct dir cwd` and one `cwd_path`, so a `chdir` in
-   any task moves every other task's idea of where it is — including the
-   shell's. It belongs in `struct task` beside the descriptors, and it
-   should be inherited by `task_create()` and `exec` the same way they
-   are. This has not bitten yet only because the shell is the one thing
-   that calls `chdir`; the first program that does will find it.
+2. **A resolver, and NTP.** Two UDP clients that want doing together,
+   because the second wants the first.
 
-3. **A resolver.** Addresses are numeric everywhere. DNS over UDP is a
-   few hundred lines and the UDP layer beneath it is done.
+   **DNS** first: addresses are numeric everywhere, which is the single
+   most visible way this machine is not finished. A stub resolver over
+   UDP is a few hundred lines on a UDP layer that already works —
+   build the query, send it to the server DHCP already handed us, parse
+   the answer section, follow a CNAME, cache what comes back with the
+   TTL it came with. `gethostbyname` and then `getaddrinfo` above it,
+   in `lib/`, because that is where a ported program looks.
 
-4. **Use the NVRAM.** The M48T59 brings 8 KiB of it and nothing writes a
+   **NTP** after it. The clock is an M48T59 that reads the host's clock
+   under emulation and a dead battery's idea of the time on hardware,
+   so the machine's notion of *now* is either borrowed or wrong — and
+   every file it writes is stamped with it. SNTP (RFC 4330) is the
+   right amount of protocol: one UDP packet out, one back, four
+   timestamps, and the offset is
+   `((T2 - T1) + (T3 - T4)) / 2`. That is perhaps 200 lines.
+
+   Decisions to make when doing it:
+   - **Step or slew.** Step at boot, because the clock may be years
+     out and there is nothing running that a jump would upset. Slew
+     afterwards if it is ever run as a daemon, because a backward step
+     makes file timestamps go backwards and `make` disbelieve its own
+     output.
+   - **NTP's epoch is 1900, Unix's is 1970.** The difference is
+     2,208,988,800 seconds and getting it wrong puts the machine
+     seventy years out, which is at least obvious.
+   - **The era problem.** NTP's 32-bit seconds field wraps in 2036.
+     Worth a comment at minimum, because this machine's own `time_t`
+     choices should not quietly inherit somebody else's deadline.
+   - **Where it lives.** A program in `system/`, called `ntpdate`, run
+     from `/etc/rc` after the interface is up — not a kernel service.
+     Setting the clock is `stime()`, which already exists.
+   - It should also **write the result to the NVRAM**, which is the
+     other open item just below and which is what makes the answer
+     survive a reboot.
+
+3. **Use the NVRAM.** The M48T59 brings 8 KiB of it and nothing writes a
    byte. It is the natural home for the network configuration that
-   `/etc/rc` currently carries.
+   `/etc/rc` currently carries, and for the time NTP last established.
 
-5. **Static limits that will bite.** Eight tasks, eight descriptors per
+4. **Static limits that will bite.** Eight tasks, eight descriptors per
    task, one filesystem, one partition, one interface. All are constants,
    none is a redesign, and the descriptor limit is the one most likely to
    be hit first.
@@ -773,12 +800,10 @@ program that wants memory declares an array.
 
 Four things, in dependency order:
 
-1. **A larger user address space.** `USER_VA_SIZE` is 2 MB and
-   `USER_PTABLES` is 8, both because a program used to be a small thing
-   loaded at a fixed address. Nothing architectural requires it — the MMU
-   is a full three-level 68040 unit with a 32-bit virtual address space,
-   and physical memory is not the constraint either, since the machine
-   model accepts up to 2 GB. Raising it is a constant and a loop.
+1. **A larger user address space. Done:** 256 MB, with page tables
+   allocated on demand rather than packed into one page, and a 1 MB
+   stack at the top. It was 2 MB because the packing was eight page
+   tables to a page; the constant was never the hard part.
 
 2. **`brk`/`sbrk`.** The classic interface, and the smaller job: a
    per-address-space break pointer, and mapping or unmapping pages as it

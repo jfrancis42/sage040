@@ -921,7 +921,7 @@ one ever needs to, the include path is what has to change — which makes
 it a decision rather than a slip.
 
 `lib/user.ld` links at **`0x10000000`**, not 1 MB, and the program area
-is 2 MB with 64 KB of stack at the top. It has no vector table — a
+is 256 MB with a 1 MB stack at the top. It has no vector table — a
 program is entered at its ELF entry point, not found at a fixed address
 by a ROM.
 
@@ -947,7 +947,7 @@ file named `CUBE.EXE` is still refused.
 ### The memory a program gets
 
 **A program runs unprivileged, in an address space of its own.** It
-begins at `0x10000000` and has two megabytes of virtual space. Every
+begins at `0x10000000` and has 256 megabytes of virtual space. Every
 program has the same addresses, because no two of them can see each
 other: the numbers are virtual and the physical pages behind them come
 from wherever the allocator had some.
@@ -955,9 +955,9 @@ from wherever the allocator had some.
 ```
 0x10000000  your image: text, rodata, data, bss
 ...         UNMAPPED -- a runaway stack faults here
-0x101f0000  your stack, 64 KB, growing down
-0x101ffff0  the top of it, where argc and argv were put
-0x10200000  the end of everything you can reach
+0x1ff00000  your stack, 1 MB, growing down
+0x1ffffff0  the top of it, where argc and argv were put
+0x20000000  the end of everything you can reach
 ```
 
 Outside that, nothing. Not the kernel, not the UART, not the
@@ -1292,8 +1292,8 @@ older copy should know which way round it is now.
   actions only; ctrl-C and ctrl-Z are things done *to* a program, not
   events it can handle.
 - **Grow its memory.** There is no `mmap`, no `brk` and no `malloc`:
-  what a program gets is its image and 64 KB of stack, decided when it
-  was loaded, inside a 2 MB address space. **This is the constraint that
+  what a program gets is its image and 1 MB of stack, decided when it
+  was loaded, inside a 256 MB address space. **This is the constraint that
   decides what can be ported** — see `emacs.md`.
 - **Use a C library.** `ulib` is a syscall wrapper plus a handful of
   string helpers. No `stdio`, no `printf`, no `setjmp`, no math.

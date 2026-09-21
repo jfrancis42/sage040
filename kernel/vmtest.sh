@@ -83,6 +83,7 @@ mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
 mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
 mcopy -o -i "$MIMG" ../apps/faulter ::/FAULTER
 mcopy -o -i "$MIMG" ../apps/hello ::/HELLO
+mcopy -o -i "$MIMG" ../apps/spin ::/SPIN
 
 : > "$SCRATCH/session.tmp"
 {
@@ -96,7 +97,14 @@ mcopy -o -i "$MIMG" ../apps/hello ::/HELLO
     printf 'faulter badptr\r';   sleep 1
     # The machine is still usable after all of that.
     printf 'hello after-the-faults\r'; sleep 1
-    printf 'echo SHELL-SURVIVED\r'
+    # A killed background job must give its memory back without anybody
+    # running `jobs`. The pid is read from `ps` below, not assumed.
+    printf 'echo FREE-BEFORE\r';  sleep 0.5
+    printf 'free\r';              sleep 0.5
+    printf 'spin &\r';            sleep 1
+    printf 'echo FREE-DURING\r';  sleep 0.5
+    printf 'free\r';              sleep 0.5
+    printf 'ps\r';                sleep 1
 } >> "$SCRATCH/session.tmp"
 
 rm -f "$SCRATCH/in.fifo"
@@ -113,6 +121,23 @@ qemu_pid=$!
 exec 3> "$SCRATCH/in.fifo"
 sleep "$BOOT_WAIT"
 cat "$SCRATCH/session.tmp" >&3
+
+# The second half needs spin's pid, which only `ps` knows.
+spin_pid=
+for _ in $(seq 1 100); do
+    spin_pid=$(tr -d '\r' < "$LOG" |
+               awk '$1 ~ /^[0-9]+$/ && $NF == "spin" { print $1; exit }')
+    [ -n "$spin_pid" ] && break
+    sleep 0.2
+done
+{
+    printf 'kill -9 %s\r' "${spin_pid:-0}"; sleep 1
+    # An empty line is a fresh prompt, which is where the reap happens.
+    printf '\r';                  sleep 0.5
+    printf 'echo FREE-AFTER\r';   sleep 0.5
+    printf 'free\r';              sleep 0.5
+    printf 'echo SHELL-SURVIVED\r'
+} >&3
 
 for _ in $(seq 1 200); do
     if grep -qF "SHELL-SURVIVED" "$LOG" 2>/dev/null; then break; fi
@@ -174,6 +199,29 @@ check "write, open, uname and read all refused an unmapped pointer" $?
 
 test "$(grep -c '= 14$' "$SCRATCH/clean.tmp")" -ge 4
 check "  and every one of them returned EFAULT" $?
+
+echo "=== checks: a killed background job gives its memory back ==="
+
+# The pages in use, from the first `free` after a marker line.
+used_after() {
+    awk -v m="$1" '$0 == m { f = 1 } f && $1 == "used" { print $2; exit }' \
+        "$SCRATCH/clean.tmp"
+}
+before=$(used_after FREE-BEFORE)
+during=$(used_after FREE-DURING)
+after=$(used_after FREE-AFTER)
+echo "  used pages: before=${before:-?} during=${during:-?} after=${after:-?}"
+
+test -n "$spin_pid"
+check "ps listed the background job" $?
+
+# 256 pages of stack alone, so anything under 200 means spin never ran.
+test -n "$before" && test -n "$during" && [ $((during - before)) -ge 200 ]
+check "a running program holds its stack (~1 MB)" $?
+
+# A few pages of slack for whatever the shell itself allocated.
+test -n "$after" && [ $((after - before)) -le 4 ] && [ $((after - before)) -ge -4 ]
+check "killing it and returning to the prompt freed all of it" $?
 
 echo "=== checks: the machine is still standing ==="
 

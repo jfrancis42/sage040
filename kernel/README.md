@@ -376,9 +376,9 @@ own, and cannot reach the kernel, the devices, or each other.
 ```
    supervisor (SRP)                    user (URP)
    0x00000000  vectors                 0x10000000  program image
-   0x00000400  kernel                  ...         unmapped gap
-   ...         all of RAM, identity    0x101f0000  stack, 64 KB
-   0x003ffff0  supervisor stack        0x10200000  end
+   0x00000400  kernel, its stack       ...         unmapped gap
+   ...         all of RAM, identity    0x1ff00000  stack, 1 MB
+                                       0x20000000  end
                                        everything else: unmapped
    0xf0000000  SM501 VRAM  ] transparent translation registers,
    0xff000000  I/O         ] supervisor only, uncached

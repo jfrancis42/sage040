@@ -43,9 +43,9 @@
  *
  *   supervisor (SRP)                 user (URP)
  *   0x00000000  vectors              0x10000000  program image
- *   0x00000400  kernel               ...
- *   ...         all of RAM, identity  0x101f0000  program stack
- *   0x003ffff0  supervisor stack      0x10200000  end
+ *   0x00000400  kernel, its stack    ...         unmapped gap
+ *   ...         all of RAM, identity  0x1ff00000  program stack, 1 MB
+ *                                     0x20000000  end
  *
  *   0xf0000000  SM501 VRAM  ] through the transparent translation
  *   0xff000000  I/O         ] registers, supervisor only, uncached
@@ -85,16 +85,29 @@
  * 0x10000000 there is nothing behind it in the supervisor map and the
  * same bug is a bus error with an address that says what happened.
  *
- * Two megabytes, which is 8 pointer-table entries and 8 page tables --
- * and that number is load-bearing: an address space's root, pointer and
- * page tables are packed into ONE physical page, and eight is what fits.
- * Growing the user area past 2 MB means that packing changes.
+ * TWO HUNDRED AND FIFTY-SIX MEGABYTES, and the number is not the
+ * interesting part -- how the tables are managed is.
+ *
+ * It was 2 MB, because an address space's root, pointer and page tables
+ * were packed into ONE physical page and eight page tables is what fits.
+ * That made creating an address space one allocation and destroying it
+ * one free, which was a good trade when a program was a small thing at
+ * a fixed address. It stopped being one the moment a program needed to
+ * ask for memory: 2 MB is smaller than a single useful program, and
+ * `brk` inside it is a rounding error.
+ *
+ * Mapping 256 MB eagerly would cost 1024 page tables -- and the tables
+ * for an address space nobody has touched are pure waste. So tables are
+ * allocated ON DEMAND, in 512-byte slots carved from pages that are
+ * threaded onto a list so they can be freed. An address space costs
+ * what it uses: a program with 100 KB of image and its 1 MB stack
+ * needs eight tables -- a root, two pointer tables (the image and the
+ * stack are under different 32 MB root entries), one page table for
+ * the image and four for the stack -- which is two pages.
  */
 #define USER_VA_BASE    0x10000000UL
-#define USER_VA_SIZE    0x00200000UL    /* 2 MB */
+#define USER_VA_SIZE    0x10000000UL    /* 256 MB */
 #define USER_VA_END     (USER_VA_BASE + USER_VA_SIZE)
-
-#define USER_PTABLES    8               /* 8 x 256 KB = USER_VA_SIZE */
 
 /*
  * The stack lives at the top, with a deliberate hole below it.
@@ -104,7 +117,7 @@
  * in a private one, and having both spelled the same during the change
  * from one to the other is how the wrong one gets used.
  */
-#define USER_STACK_PAGES  16            /* 64 KB */
+#define USER_STACK_PAGES  256           /* 1 MB */
 #define USER_VA_STACK_TOP (USER_VA_END - 16)
 
 /* What a mapping is allowed to do. */
@@ -113,8 +126,19 @@
 #define VM_NOCACHE  0x04        /* device memory, not cached       */
 
 struct addrspace {
-    u32 root;                   /* physical address of the root table */
-    u32 page;                   /* the one page holding all its tables */
+    u32 root;                   /* physical address of the root table  */
+
+    /*
+     * Every page this address space has taken for tables, threaded
+     * through the first word of each. The rest of the page is carved
+     * into 512-byte slots. Destroying an address space walks this list
+     * rather than trying to work out which pages were tables, which is
+     * not recoverable from the tables themselves.
+     */
+    u32 tables;                 /* head of that list, 0 when empty     */
+    u32 slot_page;              /* the page being carved right now     */
+    u32 slot_off;               /* next free offset within it          */
+
     int used;
 };
 

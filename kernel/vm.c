@@ -314,40 +314,107 @@ int vm_enabled(void)
 /* --- user address spaces -------------------------------------------- */
 
 /*
- * One page holds everything an address space needs:
+ * TABLES ARE ALLOCATED ON DEMAND, in 512-byte slots.
  *
- *   0x000  root table     512 bytes, 512-byte aligned
- *   0x200  pointer table  512 bytes
- *   0x400  page tables    8 x 256 bytes, covering 8 x 256 KB = 2 MB
+ * There used to be a comment here explaining that one page held
+ * everything an address space needs -- root at 0x000, pointer table at
+ * 0x200, eight page tables from 0x400 -- and that creating a space was
+ * therefore one allocation and destroying it one free. That was true,
+ * it was a good trade, and it is what limited the user area to 2 MB.
  *
- * which comes to 3 KB of the 4 KB page. Packing it this way means
- * creating an address space is one allocation and destroying it is one
- * free, with no table bookkeeping at all -- and it is only possible
- * because the user area is 2 MB. That number and this layout are the
- * same decision.
+ * 256 MB needs up to 1024 page tables, and a program that touches a
+ * megabyte needs four of them. Allocating all of them would waste more
+ * memory than the programs use. So:
+ *
+ *   - a table page is taken from the page allocator when one is needed
+ *   - its FIRST 512-byte slot holds a link to the previous such page,
+ *     so they form a list the address space can free later
+ *   - the remaining seven slots are handed out to tables
+ *
+ * A root table and a pointer table are 512 bytes; a page table is 256.
+ * Everything is given a 512-byte slot regardless, because the alignment
+ * rules differ per level and one size removes the question.
  */
-#define AS_ROOT_OFF     0x000
-#define AS_PTR_OFF      0x200
-#define AS_PT_OFF       0x400
-
+#define AS_SLOT         512
 #define MAX_SPACES      8
 
 static struct addrspace spaces[MAX_SPACES];
 
-static u32 as_pagetable(struct addrspace *as, u32 va)
+/*
+ * A 512-byte slot for a table, from this address space's own pages.
+ * Returns a physical address, or 0 if memory is gone.
+ */
+static u32 as_table_alloc(struct addrspace *as)
 {
-    u32 i = (va - USER_VA_BASE) / (256UL * 1024);
+    u32 t;
 
-    if (va < USER_VA_BASE || va >= USER_VA_END) {
+    if (!as->slot_page || as->slot_off + AS_SLOT > PAGE_SIZE) {
+        u32 pg = pmm_alloc();
+
+        if (!pg) {
+            return 0;
+        }
+        /* pmm_alloc zeroes the page, so every slot starts empty. The
+         * first one becomes the link and the rest are available. */
+        *(u32 *)pg = as->tables;
+        as->tables = pg;
+        as->slot_page = pg;
+        as->slot_off = AS_SLOT;
+    }
+    t = as->slot_page + as->slot_off;
+    as->slot_off += AS_SLOT;
+    return t;
+}
+
+/*
+ * Find the page table covering `va`, building the path to it if asked.
+ *
+ * `create` is the whole difference between mapping and translating: a
+ * map must be able to bring tables into existence, and a translate must
+ * never do so -- otherwise reading a wild pointer would quietly
+ * allocate the tables to describe it.
+ */
+static u32 as_pagetable(struct addrspace *as, u32 va, int create)
+{
+    u32 *root, *ptr, d;
+    u32 ptr_pa, pt_pa;
+
+    if (!as || va < USER_VA_BASE || va >= USER_VA_END) {
         return 0;
     }
-    return as->page + AS_PT_OFF + i * PAGE_BYTES;
+
+    root = table(as->root);
+    d = root[ROOT_INDEX(va)];
+    if (!(d & UDT_RESIDENT)) {
+        if (!create) {
+            return 0;
+        }
+        ptr_pa = as_table_alloc(as);
+        if (!ptr_pa) {
+            return 0;
+        }
+        root[ROOT_INDEX(va)] = ptr_pa | UDT_RESIDENT;
+    }
+    ptr_pa = root[ROOT_INDEX(va)] & PTR_TABLE_MASK;
+
+    ptr = table(ptr_pa);
+    d = ptr[PTR_INDEX(va)];
+    if (!(d & UDT_RESIDENT)) {
+        if (!create) {
+            return 0;
+        }
+        pt_pa = as_table_alloc(as);
+        if (!pt_pa) {
+            return 0;
+        }
+        ptr[PTR_INDEX(va)] = pt_pa | UDT_RESIDENT;
+    }
+    return ptr[PTR_INDEX(va)] & PAGE_TABLE_MASK;
 }
 
 struct addrspace *vm_create(void)
 {
     struct addrspace *as = 0;
-    u32 pg, *root, *ptr;
     int i;
 
     for (i = 0; i < MAX_SPACES; i++) {
@@ -360,38 +427,29 @@ struct addrspace *vm_create(void)
         return 0;
     }
 
-    pg = pmm_alloc();
-    if (!pg) {
+    as->tables = 0;
+    as->slot_page = 0;
+    as->slot_off = 0;
+
+    as->root = as_table_alloc(as);
+    if (!as->root) {
         return 0;
     }
-
-    as->page = pg;
-    as->root = pg + AS_ROOT_OFF;
     as->used = 1;
 
-    root = table(as->root);
-    ptr = table(pg + AS_PTR_OFF);
-
     /*
-     * Exactly one root entry is valid, and it is the one covering the
-     * user area. Every other address in the 4 GB space -- the kernel,
-     * the devices, the framebuffer, the holes -- is an invalid root
-     * descriptor, which is what makes a stray user pointer a fault
-     * instead of somebody else's data.
+     * Nothing else is filled in. Every root entry is invalid until
+     * something maps an address under it, which is what makes a stray
+     * user pointer a fault rather than somebody else's data -- and, now
+     * that the space is 256 MB, what keeps an address space that has
+     * touched one page from costing a megabyte of tables.
      */
-    root[ROOT_INDEX(USER_VA_BASE)] = (pg + AS_PTR_OFF) | UDT_RESIDENT;
-
-    for (i = 0; i < USER_PTABLES; i++) {
-        ptr[PTR_INDEX(USER_VA_BASE) + i] =
-            (pg + AS_PT_OFF + (u32)i * PAGE_BYTES) | UDT_RESIDENT;
-    }
-
     return as;
 }
 
 u32 vm_map(struct addrspace *as, u32 va, u32 pa, int flags)
 {
-    u32 pt_pa = as_pagetable(as, va);
+    u32 pt_pa = as_pagetable(as, va, 1);
     u32 *pt;
 
     if (!pt_pa) {
@@ -418,7 +476,12 @@ u32 vm_map(struct addrspace *as, u32 va, u32 pa, int flags)
 
 u32 vm_translate(struct addrspace *as, u32 va, int write)
 {
-    u32 pt_pa = as_pagetable(as, va);
+    /*
+     * Never creates. A translate that built tables would mean reading a
+     * wild pointer quietly allocated the tables to describe it, and a
+     * program could exhaust memory by dereferencing rubbish.
+     */
+    u32 pt_pa = as_pagetable(as, va, 0);
     u32 d;
 
     if (!pt_pa) {
@@ -444,42 +507,76 @@ u32 vm_mapped_pages(struct addrspace *as)
 {
     u32 n = 0, va;
 
-    for (va = USER_VA_BASE; va < USER_VA_END; va += PAGE_SIZE) {
-        u32 pt_pa = as_pagetable(as, va);
+    /*
+     * Steps a page table at a time when there is no table, rather than
+     * a page. Over 256 MB the difference is 1024 iterations against
+     * 65536, and this is called by `free` on every prompt.
+     */
+    for (va = USER_VA_BASE; va < USER_VA_END; ) {
+        u32 pt_pa = as_pagetable(as, va, 0);
+        u32 i;
 
-        if (pt_pa && (table(pt_pa)[PAGE_INDEX(va)] & PDT_RESIDENT)) {
-            n++;
+        if (!pt_pa) {
+            va += PAGE_ENTRIES * PAGE_SIZE;
+            continue;
         }
+        for (i = 0; i < PAGE_ENTRIES; i++) {
+            if (table(pt_pa)[i] & PDT_RESIDENT) {
+                n++;
+            }
+        }
+        va += PAGE_ENTRIES * PAGE_SIZE;
     }
     return n;
 }
 
 void vm_destroy(struct addrspace *as)
 {
-    u32 va;
+    u32 va, pg;
 
     if (!as || !as->used) {
         return;
     }
 
-    /* Every page it was given, then the page holding its tables. */
-    for (va = USER_VA_BASE; va < USER_VA_END; va += PAGE_SIZE) {
-        u32 pt_pa = as_pagetable(as, va);
-        u32 d;
+    /* Every page it was given. Stepping by page table, so an address
+     * space that touched one megabyte does not cost 65536 iterations
+     * to tear down. */
+    for (va = USER_VA_BASE; va < USER_VA_END; ) {
+        u32 pt_pa = as_pagetable(as, va, 0);
+        u32 i;
 
         if (!pt_pa) {
+            va += PAGE_ENTRIES * PAGE_SIZE;
             continue;
         }
-        d = table(pt_pa)[PAGE_INDEX(va)];
-        if (d & PDT_RESIDENT) {
-            pmm_free(d & PAGE_ADDR_MASK);
-            table(pt_pa)[PAGE_INDEX(va)] = 0;
+        for (i = 0; i < PAGE_ENTRIES; i++) {
+            u32 d = table(pt_pa)[i];
+
+            if (d & PDT_RESIDENT) {
+                pmm_free(d & PAGE_ADDR_MASK);
+                table(pt_pa)[i] = 0;
+            }
         }
+        va += PAGE_ENTRIES * PAGE_SIZE;
     }
 
-    pmm_free(as->page);
+    /*
+     * Then the pages the tables themselves lived in, off the list.
+     * Which pages were tables is not recoverable from the tables, which
+     * is exactly why the list exists.
+     */
+    pg = as->tables;
+    while (pg) {
+        u32 next = *(u32 *)pg;
+
+        pmm_free(pg);
+        pg = next;
+    }
+
     as->used = 0;
-    as->page = 0;
+    as->tables = 0;
+    as->slot_page = 0;
+    as->slot_off = 0;
     as->root = 0;
 
     /* Whatever was cached for those addresses now refers to pages that

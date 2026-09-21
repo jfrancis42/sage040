@@ -2140,6 +2140,20 @@ void shell(void)
         int n;
 
         /*
+         * Reap anything that finished while we were away.
+         *
+         * A real shell does this on SIGCHLD; there are no handlers here
+         * yet, so the prompt is the place. It was only done by `jobs`
+         * and by `fg`, which meant a background job that ended -- or
+         * was killed -- held its address space, its kernel stack and
+         * one of the eight task slots until somebody happened to ask
+         * for a listing. With a 256 MB address space that is a
+         * megabyte a time, and with eight slots it is a machine that
+         * stops being able to start anything after a few.
+         */
+        sys_jobctl(JOBCTL_REAP, 0, 0);
+
+        /*
          * The prompt carries the directory, because with more than one
          * of them a bare "sage$" stops saying enough.
          */
