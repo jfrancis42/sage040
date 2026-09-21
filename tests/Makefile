@@ -26,7 +26,7 @@ MACHINE   := -M sage040 -cpu m68040 -m 4
 
 CPUFLAGS  := -mcpu=68040
 CFLAGS    := $(CPUFLAGS) -ffreestanding -nostdlib -nostdinc -O2 \
-             -Wall -Wextra -fno-builtin -fno-stack-protector -I.
+             -Wall -Wextra -fno-builtin -fno-stack-protector -I. -I..
 LDFLAGS   := $(CPUFLAGS) -ffreestanding -nostdlib -T sage040.ld \
              -Wl,--build-id=none
 

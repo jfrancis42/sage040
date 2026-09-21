@@ -2,8 +2,8 @@
 
 A small supervisor-mode kernel: Linux-shaped system calls, a device
 driver model, a VFS, a read/write FAT16 filesystem, a terminal with a
-line discipline, a clock, and a shell that reaches all of it only
-through `trap #0`.
+line discipline, a clock, a 100 Hz tick, a framebuffer, and a shell that
+reaches all of it only through `trap #0`.
 
 It is loaded from the disk by the [boot ROM](../bootrom/), which finds
 `KERNEL.ROM` in the filesystem and jumps to it.
@@ -68,7 +68,8 @@ takes. The disk image lives in the project root — see
         |                   |
    struct blockdev     struct chardev / netdev / rtcdev
         |                   |
-   drivers/ata.c       drivers/ns16550.c  m48t59.c  smc91c111.c
+   drivers/ata.c       drivers/ns16550.c  m48t59.c  mfp.c
+                       sm501.c  smc91c111.c
 ```
 
 The layering is the point, so it is worth saying what it buys:
@@ -107,9 +108,13 @@ recognise.
 
 ```
 exit(1) read(3) write(4) open(5) close(6) unlink(10) time(13) lseek(19)
-stime(25) rename(38) ioctl(54) reboot(88) statfs(99) stat(106)
-fsync(118) uname(122) getdents(141) sync(166)
+stime(25) rename(38) times(43) ioctl(54) reboot(88) statfs(99) stat(106)
+fsync(118) uname(122) getdents(141) nanosleep(162) sync(166)
+spawn(400)
 ```
+
+`spawn` is above 400 because Linux has no such call — see below. Every
+other number is Linux's.
 
 Errors are Linux's too, by name and by number: `-ENOENT` is -2 here for
 the same reason it is -2 there. There is no global `errno` — a variable
@@ -186,6 +191,8 @@ Four kinds, each with one interface (see [`dev.h`](dev.h)):
 | `struct blockdev` | addressable sectors — what a filesystem mounts |
 | `struct netdev` | packets — an ethernet interface |
 | `struct rtcdev` | seconds since 1970, and nothing else |
+| `struct timerdev` | a periodic interrupt — what makes time pass |
+| `struct fbdev` | a display: point, and optionally clear, line, rect, flip |
 
 Drivers register themselves during startup and stay registered until the
 power goes off. There is no hotplug, no reference counting and nothing
@@ -197,6 +204,72 @@ fixed mount points — `/dev` is the device registry, everything else is
 the mounted volume — which is honest about a filesystem with one
 directory, and does not change the calls above it when that stops being
 true.
+
+## The tick
+
+`drivers/mfp.c` is the board's interrupt controller and its timer. The
+MC68901 drives one IPL line and supplies its own vector, so its sixteen
+channels arrive at sixteen consecutive vectors — one stub is installed at
+all of them and works out which channel it is from the format/vector word
+the 68040 pushed.
+
+Timer D at the /200 prescaler runs at 12288 Hz, and a reload of 123
+divides that to **99.9 Hz**. `HZ` is 100, which is what Linux used for
+most of its life and makes a tick 10 ms — fine enough that a 50 fps frame
+is exactly two of them.
+
+```
+sage$ uptime
+0:00:14  (1484 ticks at 100 Hz)
+```
+
+**A tick faster than its own handler starves everything else.** The
+handler returns, the next interrupt is already pending, and no other
+instruction ever runs. This machine walked into that once with an MFP
+timer at 13 µs, so `mfp_timer_start()` refuses a reload under 8 rather
+than accepting it and hanging.
+
+`timer_sleep_ticks()` uses `STOP` rather than spinning, so a sleeping
+program costs the host nothing. It returns `-ENODEV` if no timer is
+running, because a sleep with nothing to wake it is a hang and an error
+is the honest version of that.
+
+Interrupts are enabled **last** in startup. Until then a fault is
+reported by a handler with the console to itself; an interrupt arriving
+midway through bringing a driver up would be much harder to understand.
+
+## The framebuffer
+
+`/dev/fb0`, drawn with ioctls:
+
+```c
+int fb = open("/dev/fb0", O_RDWR);
+ioctl(fb, FBIO_GETINFO, (u32)&info);
+ioctl(fb, FBIO_CLEAR, 0);
+ioctl(fb, FBIO_LINE, (u32)&line);
+ioctl(fb, FBIO_FLIP, 0);
+```
+
+Drawing through ioctl rather than through a dozen system calls of its
+own: a framebuffer is a device, the device model already carries it, and
+putting graphics calls in the system call table would tie the kernel's
+ABI to one kind of hardware. Linux controls its framebuffer the same way
+— though Linux expects a program to `mmap` the memory and draw for
+itself, which needs an MMU that is not turned on here.
+
+**Only `point()` is required of a driver.** `fb.c` builds `clear`, `line`
+and `rect` from it, so a new framebuffer works the moment it can set one
+pixel. A driver that has a blitter implements them and those are used
+instead: `sm501.c` does its clear and its filled rectangles with the 2D
+engine, because at a period-correct clock the CPU cannot clear 640×480
+and hold a frame rate — 37 fps against the engine's 50 — while a dozen
+short lines cost nothing either way.
+
+Double buffered, so a wireframe drawn a line at a time does not flicker.
+`FBIO_FLIP` is one register write, so the change lands between frames.
+
+`user/fbtest` draws one of everything and holds it, which is how a broken
+driver gets told apart from a broken program that uses one.
 
 ## The terminal
 
@@ -327,6 +400,7 @@ df                   space used and available
 echo TEXT            print a line
 date [-s DATE TIME]  show or set the clock
 uname [-a]           system name, or name and version
+uptime               how long the machine has been up
 sync                 flush pending writes
 halt                 stop the machine
 
@@ -354,12 +428,14 @@ command. Errors go to descriptor 2 even when output is redirected.
 | `trap.c` | exception reporting |
 | `string.c` | `memcpy` and friends; there is no C library |
 | `exec.c` | the ELF loader, and running a program |
+| `timer.c` | jiffies, and sleeping on them |
+| `fb.c` | /dev/fb0, and the drawing a driver did not do itself |
 | `execasm.s` | the stack switch into a program and the unwind out of it |
 | `probe.c` | CPU, FPU and memory — the parts with no driver |
 | `shell.c` | a program, reaching the kernel only through `trap #0` |
 | `version.c` | the version and build stamp, defined once |
 | `uapi.h` | what crosses the system call boundary |
-| `drivers/` | `ns16550.c` `ata.c` `m48t59.c` `smc91c111.c` |
+| `drivers/` | `ns16550.c` `ata.c` `m48t59.c` `mfp.c` `sm501.c` `smc91c111.c` |
 | `fs/fat16.c` | FAT16, read and write |
 | `fstest.sh` | scripted session, verified with host tools |
 | `kernel.ld` | vectors at 0, text at 0x400, stack at the top of RAM |

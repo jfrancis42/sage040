@@ -12,12 +12,7 @@
 #ifndef SAGE040_H
 #define SAGE040_H
 
-typedef unsigned char      u8;
-typedef unsigned short     u16;
-typedef unsigned int       u32;
-typedef signed char        s8;
-typedef signed short       s16;
-typedef signed int         s32;
+#include "types.h"
 
 #define MMIO8(a)   (*(volatile u8  *)(a))
 #define MMIO16(a)  (*(volatile u16 *)(a))
@@ -220,12 +215,21 @@ typedef signed int         s32;
 #define MFP_RSR_OE        0x40
 #define MFP_RSR_BF        0x80
 
-/* The MFP drives IPL 6 on this board. */
+/* The MFP drives IPL 6 on this board, and its XTAL1 runs at the classic
+ * 2.4576 MHz -- so a timer's rate is 2457600 / prescaler / reload. */
 #define MFP_IPL           6
+#define MFP_XTAL1         2457600UL
 
 /* ---------------------------------------------------------------- */
 /* MFP interrupt plumbing (mfp.c)                                    */
+/*                                                                    */
+/* Part of the test support library, not of the hardware.  The kernel */
+/* has its own driver and defines SAGE040_NO_TESTLIB to keep these    */
+/* out of its way: they collide by name with what a driver naturally  */
+/* calls its own helpers, and a collision here is a compile error in  */
+/* a file that did nothing wrong.                                     */
 /* ---------------------------------------------------------------- */
+#ifndef SAGE040_NO_TESTLIB
 extern volatile int mfp_irq_count;      /* interrupts taken          */
 extern volatile int mfp_last_vector;    /* vector of the last one    */
 extern volatile int mfp_last_channel;   /* channel of the last one   */
@@ -243,6 +247,7 @@ int  mfp_in_service(int ch);
 void mfp_eoi(int ch);
 void mfp_set_ipl(int level);
 u16  mfp_get_sr(void);
+#endif /* SAGE040_NO_TESTLIB */
 
 /* ---------------------------------------------------------------- */
 /* Silicon Motion SM501 video                                        */
@@ -370,8 +375,9 @@ static inline u32 sm501_bswap32(u32 v)
 #define MFP_PIN_RTC     2
 
 /* ---------------------------------------------------------------- */
-/* Console helpers (uart.c)                                          */
+/* Console helpers (uart.c) -- test support library, see above       */
 /* ---------------------------------------------------------------- */
+#ifndef SAGE040_NO_TESTLIB
 void uart_init(void);
 void uart_putc(char c);
 void uart_puts(const char *s);
@@ -391,5 +397,6 @@ int  test_failures(void);
 
 /* Halt the machine (STOP with interrupts masked). */
 void halt(void) __attribute__((noreturn));
+#endif /* SAGE040_NO_TESTLIB */
 
 #endif /* SAGE040_H */

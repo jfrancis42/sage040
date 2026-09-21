@@ -15,10 +15,16 @@
 #ifndef DRIVERS_H
 #define DRIVERS_H
 
+int mfp_init(void);         /* interrupt controller + the system timer     */
+void mfp_interrupts_on(void);
+int mfp_request_irq(int channel, void (*handler)(void *), void *arg);
+u32 mfp_spurious(void);
+
 int ns16550_init(void);     /* console terminal  -> /dev/console, /dev/tty */
 int ns16550_present(void);
 int ata_init(void);         /* disk              -> block device "hda"     */
 int m48t59_init(void);      /* clock and NVRAM   -> the system clock       */
+int sm501_init(void);       /* video             -> framebuffer "fb0"      */
 void smc91c111_init(void);  /* ethernet          -> net device "eth0"      */
 
 int fat16_init(void);       /* not a driver: registers the filesystem type */

@@ -27,6 +27,7 @@
 #include "syscall.h"
 #include "errno.h"
 #include "time.h"
+#include "timer.h"
 #include "string.h"
 
 #define LINE_MAX    128
@@ -265,6 +266,7 @@ static void cmd_help(void)
         "date                 show the date and time\n"
         "date -s DATE [TIME]  set them: YYYY-MM-DD and HH:MM[:SS]\n"
         "uname [-a]           system name, or name and version\n"
+        "uptime               how long the machine has been up\n"
         "sync                 flush pending writes to the disk\n"
         "halt                 stop the machine\n"
         "\n"
@@ -815,6 +817,21 @@ void shell(void)
 
         } else if (strcmp(argv[0], "uname") == 0) {
             cmd_uname(argc, argv);
+
+        } else if (strcmp(argv[0], "uptime") == 0) {
+            u32 t = sys_times();
+            u32 secs = t / HZ;
+
+            out_putdec(secs / 3600);
+            out_putc(':');
+            out_put2((secs / 60) % 60);
+            out_putc(':');
+            out_put2(secs % 60);
+            out_puts("  (");
+            out_putdec(t);
+            out_puts(" ticks at ");
+            out_putdec(HZ);
+            out_puts(" Hz)\n");
 
         } else if (strcmp(argv[0], "sync") == 0) {
             err = sys_sync();

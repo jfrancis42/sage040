@@ -28,6 +28,7 @@ kernel/kernel.map
 # be named here one by one rather than matched by a suffix.
 user/cube
 user/hello
+user/fbtest
 
 # Scratch disk and log from kernel/fstest.sh
 kernel/hd-test.img

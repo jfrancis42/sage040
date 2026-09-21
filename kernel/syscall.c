@@ -19,6 +19,7 @@
 #include "syscall.h"
 #include "vfs.h"
 #include "exec.h"
+#include "timer.h"
 #include "dev.h"
 #include "errno.h"
 #include "string.h"
@@ -194,6 +195,36 @@ s32 syscall_dispatch(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
     case __NR_spawn:
         return exec_spawn((const char *)a1, (int)a2, (char **)a3);
 
+    case __NR_times:
+        return (s32)timer_jiffies();
+
+    case __NR_nanosleep: {
+        const struct timespec *req = (const struct timespec *)a1;
+        u32 ms;
+
+        if (!req) {
+            return -EINVAL;
+        }
+        if (req->tv_nsec >= 1000000000UL) {
+            return -EINVAL;
+        }
+        /* Milliseconds is as fine as a 10 ms tick can express, and
+         * rounding to it before the tick calculation keeps the
+         * arithmetic clear of overflow. */
+        ms = req->tv_sec * 1000 + req->tv_nsec / 1000000;
+        if (a2) {
+            struct timespec *rem = (struct timespec *)a2;
+
+            /* Nothing interrupts a sleep yet -- no signals, one program
+             * -- so there is never any remaining. Zeroed rather than
+             * left alone, because a caller checking it deserves a
+             * defined answer. */
+            rem->tv_sec = 0;
+            rem->tv_nsec = 0;
+        }
+        return timer_sleep_ms(ms);
+    }
+
     case __NR_exit:
         /* Returns only if nothing was spawned -- a program's exit()
          * unwinds all the way back into exec_spawn() and never comes
@@ -282,6 +313,16 @@ int sys_ioctl(int fd, u32 request, u32 arg)
 int sys_spawn(const char *path, int argc, char **argv)
 {
     return (int)syscall3(__NR_spawn, (u32)path, (u32)argc, (u32)argv);
+}
+
+u32 sys_times(void)
+{
+    return (u32)syscall0(__NR_times);
+}
+
+int sys_nanosleep(const struct timespec *req, struct timespec *rem)
+{
+    return (int)syscall2(__NR_nanosleep, (u32)req, (u32)rem);
 }
 
 void sys_exit(int status)

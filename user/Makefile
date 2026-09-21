@@ -30,15 +30,18 @@ include $(TOPDIR)/disk.mk
 .DEFAULT_GOAL := all
 
 # uapi.h is the system call ABI and the only kernel header a program
-# gets. sage040.h is hardware, and only cube.c has any business with it.
+# gets. Note what is NOT on the include path: ../tests, where the
+# machine's hardware header lives. A program cannot reach a chip by
+# accident, and if one ever needs to the include path is the place that
+# has to change -- which makes it a decision rather than a slip.
 CPUFLAGS := -mcpu=68040
 CFLAGS   := $(CPUFLAGS) -ffreestanding -nostdlib -nostdinc -O2 \
             -Wall -Wextra -Werror -fno-builtin -fno-stack-protector \
-            -I. -I../kernel -I../tests
+            -I. -I.. -I../kernel
 LDFLAGS  := $(CPUFLAGS) -ffreestanding -nostdlib -T user.ld \
             -Wl,--build-id=none -Wl,--no-warn-rwx-segments
 
-PROGS := cube hello
+PROGS := cube hello fbtest
 COMMON := crt0.s ulib.c ulib.h user.ld
 
 .PHONY: all install list disasm clean

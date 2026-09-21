@@ -31,6 +31,9 @@ int    getdents(int index, struct dirent *d);
 int    uname(struct utsname *u);
 time_t time(time_t *t);
 int    fsync(int fd);
+u32    times(void);                  /* ticks since boot */
+int    nanosleep(const struct timespec *req, struct timespec *rem);
+void   msleep(u32 ms);
 void   exit(int status) __attribute__((noreturn));
 
 /* Output helpers, all of them eventually write(). */

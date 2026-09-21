@@ -3,17 +3,17 @@
 Things that run on the Sage040 rather than being part of it.
 
 ```
+sage$ cube
+cube: 640x480x8 on fb0, Q12 fixed point, 50 fps
+press any key to stop
+cube: 251 frames in 5 seconds (50 fps)
+
 sage$ hello
 hello from a program
   running on Sage040 0.2 (m68040)
   argc = 1
   argv[0] = hello
 
-sage$ cube
-cube: rotating wireframe, 640x480, Q12 fixed point
-measuring how fast this machine is... 50 fps wanted, 839140 spins per frame
-press any key to stop
-cube: 538 frames
 ```
 
 ## The naming question
@@ -113,28 +113,50 @@ the inside of the kernel.
 same four lines of assembly the kernel uses on its own behalf, because
 there is one way in and everything takes it.
 
-### The exception, stated plainly
+**No program includes the machine's hardware header, and the include path
+is what enforces it.** `../tests` is deliberately not on it. An earlier
+version of the cube wrote to the SM501 directly, because it could — with
+no MMU nothing stops a program touching a chip. Now it opens `/dev/fb0`
+like anything else, and making an exception would mean editing the
+Makefile, which makes it a decision rather than a slip.
 
-`cube.c` includes the machine's hardware header and writes to the SM501
-directly. There is no framebuffer device yet: a display is neither a byte
-stream nor a block device, so it does not fit any class in `dev.h`, and
-giving it one is an open item rather than an oversight.
+## Drawing
 
-Its text still goes through `write()`, it asks the terminal whether a key
-is waiting through `ioctl(FIONREAD)`, and it leaves through `exit()`. Only
-the pixels go around the kernel, and the file says so at the top rather
-than quietly doing it.
+The screen is a device:
+
+```c
+int fb = open("/dev/fb0", O_RDWR);
+struct fb_info info;
+struct fb_line l;
+
+ioctl(fb, FBIO_GETINFO, (u32)&info);   /* width, height, bpp, pitch */
+ioctl(fb, FBIO_CLEAR, 0);
+l.x0 = 0; l.y0 = 0; l.x1 = 639; l.y1 = 479; l.colour = 1;
+ioctl(fb, FBIO_LINE, (u32)&l);
+ioctl(fb, FBIO_FLIP, 0);               /* show it */
+```
+
+`FBIO_POINT`, `FBIO_LINE`, `FBIO_RECT` (filled or outline), `FBIO_CLEAR`,
+`FBIO_FLIP`, `FBIO_SYNC`, `FBIO_PALETTE`, `FBIO_GETINFO`, `FBIO_SETMODE`.
+
+It is double buffered: drawing goes to the buffer that is not on screen
+and `FBIO_FLIP` swaps them, so a wireframe drawn a line at a time does
+not flicker. Colours are palette indices — 0 black, 1 green, 2 white,
+3 red, 4 blue, 5 yellow, 6 cyan, 7 magenta — and `FBIO_PALETTE` changes
+any of them.
+
+`fbtest` draws one of everything and holds it, which is how you tell a
+broken driver apart from a broken program that uses one.
 
 ## Pacing
 
-The cube measures the machine instead of guessing at it. There is no
-timer to sleep against — the kernel has no tick yet — so a counted spin
-is what is left, and the count that gives 50 fps differs by more than an
-order of magnitude between hosts.
+`msleep()` on the kernel's 100 Hz tick. A 50 fps frame is exactly two
+ticks, the rate is the same wherever it runs, and a sleeping program
+costs the host nothing because the kernel uses `STOP` rather than
+spinning.
 
-So it waits for the clock to turn over a second, counts spins until the
-next one, and divides. Costs a second at start-up and is right anywhere.
-`cube 25` asks for a different rate.
+An earlier version measured the machine with a calibrated delay loop,
+because there was no tick to sleep against. There is one now.
 
 ## Building
 
@@ -155,3 +177,14 @@ holds: `cube` becomes `CUBE`. The shell is case-insensitive about it.
 | `ulib.c` | system call stubs and a very small library |
 | `cube.c` | the rotating wireframe cube |
 | `hello.c` | the smallest program that proves the facility is general |
+| `fbtest.c` | one of every drawing operation, held on screen |
+
+## One thing to know before editing cube.c
+
+`rotate()` works in Q12 and shifts its products down by 12 bits, so a
+vector component of 1 becomes **0**. The face normals are `±1` and must
+be scaled by `ONE` before rotating. Get that wrong and every face tests
+as facing away, no edge is ever drawn, and the screen stays black while
+the frame counter climbs happily — no error anywhere. It has been
+introduced twice, both times by retyping the maths rather than copying
+it.

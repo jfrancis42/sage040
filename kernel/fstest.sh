@@ -49,7 +49,7 @@ contains() {        # contains <file> <text>
 echo "=== building ==="
 make -s kernel.rom || exit 1
 make -s -C ../bootrom bootrom.elf || exit 1
-make -s -C ../user hello || exit 1
+make -s -C ../user hello fbtest || exit 1
 
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
@@ -76,6 +76,7 @@ mcopy -o -i "$MIMG" big.tmp ::/BIG.TXT
 # status comes back. No extension: the kernel decides what is executable
 # from the file's first four bytes, not from its name.
 mcopy -o -i "$MIMG" ../user/hello ::/HELLO
+mcopy -o -i "$MIMG" ../user/fbtest ::/FBTEST
 
 echo "=== running the kernel ==="
 printf '%s\n' \
@@ -104,6 +105,8 @@ printf '%s\n' \
   'hello -x' \
   'nosuchprogram' \
   'BIG.TXT' \
+  'uptime' \
+  'fbtest 1' \
   'date -s 2001-02-03 04:05:06' \
   'date' \
   'sync' \
@@ -186,6 +189,22 @@ check "a missing program is reported as not found" $?
 
 contains "$LOG" "BIG.TXT: not an executable"
 check "a data file is refused as a program, by its contents" $?
+
+grep -qE "ticks at 100 Hz" "$LOG" && \
+  ! grep -qE "^0 ticks" "$LOG"
+check "the timer tick is running" $?
+
+contains "$LOG" "mfp-timer-d at"
+check "the MC68901 registered as the system timer" $?
+
+contains "$LOG" "SM501 as /dev/fb0"
+check "the framebuffer registered as a device" $?
+
+contains "$LOG" "fbtest: drawn, holding"
+check "a program drew through /dev/fb0 without error" $?
+
+grep -q "fbtest:.*failed" "$LOG"
+check "no framebuffer ioctl reported a failure" $((1 - $?))
 
 contains "$LOG" "exception"
 check "no exception was taken" $((1 - $?))

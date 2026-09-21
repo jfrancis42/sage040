@@ -22,6 +22,8 @@ static struct chardev  *chars;
 static struct blockdev *blocks;
 static struct netdev   *nets;
 static struct rtcdev   *the_rtc;
+static struct timerdev *the_timer;
+static struct fbdev    *fbs;
 
 /* ---------------------------------------------------------------- */
 /* Character devices                                                 */
@@ -148,4 +150,65 @@ int dev_register_rtc(struct rtcdev *r)
 struct rtcdev *dev_rtc(void)
 {
     return the_rtc;
+}
+
+/* ---------------------------------------------------------------- */
+/* The timer                                                         */
+/* ---------------------------------------------------------------- */
+
+/*
+ * One, for the same reason there is one clock: two would raise the
+ * question of which one time is measured by.
+ */
+int dev_register_timer(struct timerdev *t)
+{
+    if (!t || !t->name || !t->start) {
+        return -EINVAL;
+    }
+    if (the_timer) {
+        return -EEXIST;
+    }
+    the_timer = t;
+    return 0;
+}
+
+struct timerdev *dev_timer(void)
+{
+    return the_timer;
+}
+
+/* ---------------------------------------------------------------- */
+/* Framebuffers                                                      */
+/* ---------------------------------------------------------------- */
+
+int dev_register_fb(struct fbdev *f)
+{
+    if (!f || !f->name || !f->point) {
+        /* point() is the one operation everything else can be built
+         * from, so a framebuffer without it is not one. */
+        return -EINVAL;
+    }
+    if (dev_find_fb(f->name)) {
+        return -EEXIST;
+    }
+    f->next = fbs;
+    fbs = f;
+    return 0;
+}
+
+struct fbdev *dev_find_fb(const char *name)
+{
+    struct fbdev *f;
+
+    for (f = fbs; f; f = f->next) {
+        if (strcmp(f->name, name) == 0) {
+            return f;
+        }
+    }
+    return 0;
+}
+
+struct fbdev *dev_first_fb(void)
+{
+    return fbs;
 }

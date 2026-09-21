@@ -43,7 +43,7 @@ endif
 SUP       := ../tests
 CPUFLAGS  := -mcpu=68040
 CFLAGS    := $(CPUFLAGS) -ffreestanding -nostdlib -nostdinc -O2 \
-             -Wall -Wextra -fno-builtin -fno-stack-protector -I$(SUP)
+             -Wall -Wextra -fno-builtin -fno-stack-protector -I.. -I$(SUP)
 LDFLAGS   := $(CPUFLAGS) -ffreestanding -nostdlib -T $(SUP)/sage040.ld \
              -Wl,--build-id=none -Wl,--no-warn-rwx-segments
 

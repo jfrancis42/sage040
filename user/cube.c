@@ -3,50 +3,25 @@
 /*
  * cube.c - a rotating wireframe cube, as a program.
  *
- *     sage$ cube
+ *     sage$ cube [frames-per-second]
  *
- * Loaded from the disk by name, run, and it comes back to the shell when
- * you press a key. That is the whole point of it: it is the first thing
- * on this machine that is a program rather than a kernel.
+ * Loaded from the disk by name, run, and back to the shell when you
+ * press a key.
  *
- * It is a smaller relative of ../cube/, which is a bare-metal demo that
- * also benchmarks the SM501's 2D engine against the CPU and drives the
- * MFP's timers to pace itself. That one is a hardware test and belongs
- * on bare metal. This one is an application: its text goes through
- * write(), it asks the terminal whether a key is waiting through
- * ioctl(), and it leaves through exit().
+ * It touches no hardware. The screen is /dev/fb0, opened and drawn
+ * through ioctls; the frame rate comes from nanosleep() against the
+ * kernel's tick; the keyboard is asked through ioctl(FIONREAD). There is
+ * no #include of the machine's hardware header anywhere in this file,
+ * which is the thing worth checking if it is ever edited -- an earlier
+ * version of this program wrote to the SM501 directly, and could,
+ * because with no MMU nothing stops it.
  *
- * ONE THING IT DOES THAT A PROGRAM SHOULD NOT.
- *
- * It writes to the SM501's registers and video memory directly, which
- * means including the machine's hardware header. There is no framebuffer
- * device yet -- a display is neither a byte stream nor a block device,
- * so it does not fit any of the classes in dev.h, and giving it one is
- * an open item rather than an oversight. Until then this is honest about
- * reaching around the kernel instead of pretending not to.
- *
- * Nothing stops it: with no MMU turned on, a program can write anywhere.
- * The kernel bounds-checks where it *loads* a program, which is a
- * different thing from confining one once it runs.
+ * It is a smaller relative of ../cube/, which stays on bare metal
+ * because its job is to benchmark the 2D engine against the CPU and to
+ * drive the MFP's timers directly. That one is a hardware test. This one
+ * is an application.
  */
 #include "ulib.h"
-#include "sage040.h"
-
-/* ---------------------------------------------------------------- */
-/* Screen                                                            */
-/* ---------------------------------------------------------------- */
-
-#define SCR_W       640
-#define SCR_H       480
-#define SCR_BYTES   (SCR_W * SCR_H)
-
-/* Two buffers, a megabyte apart, so a frame is drawn while the other
- * one is on screen. */
-#define FB0_OFFSET  0x000000UL
-#define FB1_OFFSET  0x100000UL
-
-#define COL_BG      0
-#define COL_EDGE    1
 
 /* ---------------------------------------------------------------- */
 /* Geometry                                                          */
@@ -55,15 +30,18 @@
 #define HALF        64          /* cube half-edge, object units      */
 #define SCALE       1800        /* projection scale                  */
 #define DIST        1000        /* camera distance, object units     */
-#define CX          (SCR_W / 2)
-#define CY          (SCR_H / 2)
-
 #define FRAC        12          /* sine table fixed point: 4096 = 1  */
+#define ONE         (1 << FRAC)
+
+#define COL_BG      0
+#define COL_EDGE    1           /* green, in the default palette     */
 
 /*
  * Quarter-turn of sine in Q12: sin(i * 2pi / 256) for i = 0..64. The
  * rest of the circle comes from symmetry. Checked in rather than
- * computed, so the program needs no floating point and no start-up work.
+ * computed, so the program needs no floating point at all -- the FPU is
+ * there, but a cube does not need it and integers are what a machine of
+ * this size would have used.
  */
 static const short sin_q[65] = {
        0,  100,  201,  301,  401,  501,  601,  700,
@@ -105,7 +83,8 @@ static const signed char face_n[6][3] = {
 };
 
 /* Twelve edges: two vertices, then the two faces the edge joins. An
- * edge is drawn when either of its faces is turned toward the viewer. */
+ * edge is drawn when either of its faces is turned toward the viewer,
+ * which is what hides the three at the back. */
 static const unsigned char edge[12][4] = {
     { 0, 1, 3, 5 }, { 2, 3, 2, 5 }, { 4, 5, 3, 4 }, { 6, 7, 2, 4 },
     { 0, 2, 1, 5 }, { 1, 3, 0, 5 }, { 4, 6, 1, 4 }, { 5, 7, 0, 4 },
@@ -138,12 +117,20 @@ static void rotate(int x, int y, int z, int ax, int ay, int az,
     *ox = x; *oy = y; *oz = z;
 }
 
+/* ---------------------------------------------------------------- */
+/* The screen                                                        */
+/* ---------------------------------------------------------------- */
+
+static int fb = -1;
+static struct fb_info info;
+static int cx, cy;
+
 /*
- * +Z points AT the viewer, which is the same convention the backface
- * test uses. So a vertex with larger z is NEARER, and its distance from
- * the camera is DIST - z. Getting that backwards does not look broken,
- * it looks like a badly distorted cube -- far corners drawing larger
- * than near ones.
+ * +Z points AT the viewer, the same convention the backface test uses.
+ * So a vertex with larger z is NEARER, and its distance from the camera
+ * is DIST - z. Getting that backwards does not look broken, it looks
+ * like a badly distorted cube -- far corners drawing larger than near
+ * ones.
  */
 static void project(int x, int y, int z, int *px, int *py)
 {
@@ -152,159 +139,57 @@ static void project(int x, int y, int z, int *px, int *py)
     if (d < 1) {
         d = 1;
     }
-    *px = CX + (x * SCALE) / d;
-    *py = CY - (y * SCALE) / d;
+    *px = cx + (x * SCALE) / d;
+    *py = cy - (y * SCALE) / d;
 }
 
-/* ---------------------------------------------------------------- */
-/* Drawing                                                           */
-/* ---------------------------------------------------------------- */
-
-static u32 back;                /* offset of the buffer being drawn */
-
-/*
- * Clear with the 2D engine rather than the CPU. At a period-correct
- * clock the CPU cannot clear 640x480 and still hold a frame rate; the
- * blitter can. Same rules as every other SM501 register: 32 bits at a
- * time, little-endian, so through SM501_WR.
- */
-static void clear_back(void)
+static void draw_line(int x0, int y0, int x1, int y1, u32 colour)
 {
-    SM501_WR(SM501_2D_DST_BASE, back);
-    SM501_WR(SM501_2D_DEST, 0);
-    SM501_WR(SM501_2D_DIMENSION, ((u32)SCR_W << 16) | SCR_H);
-    SM501_WR(SM501_2D_PITCH, ((u32)SCR_W << 16) | SCR_W);
-    SM501_WR(SM501_2D_FOREGROUND, COL_BG);
-    SM501_WR(SM501_2D_STRETCH, SM501_2D_FMT_8BPP);
-    SM501_WR(SM501_2D_CONTROL, SM501_2D_START | SM501_2D_CMD_RECTFILL);
+    struct fb_line l;
 
-    /* Wait for it: the next thing this program does is write pixels into
-     * the buffer the engine is still filling. */
-    while (SM501_RD(SM501_2D_STATUS) & 1) {
+    l.x0 = x0; l.y0 = y0;
+    l.x1 = x1; l.y1 = y1;
+    l.colour = colour;
+    ioctl(fb, FBIO_LINE, (u32)&l);
+}
+
+static void render(int ax, int ay, int az)
+{
+    int i, rx, ry, rz;
+
+    ioctl(fb, FBIO_CLEAR, COL_BG);
+
+    /*
+     * Which faces point at the viewer? A face is visible when its
+     * rotated normal has positive Z.
+     *
+     * The normals are scaled to ONE before rotating, and that is not
+     * optional. rotate() works in Q12 and shifts its products back down
+     * by 12 bits, so a component of 1 becomes 0 the moment it is
+     * multiplied by anything less than 4096 -- every face then tests as
+     * facing away, no edge is ever drawn, and the screen stays black
+     * while the frame counter climbs. Cost me an afternoon.
+     */
+    for (i = 0; i < 6; i++) {
+        rotate(face_n[i][0] * ONE, face_n[i][1] * ONE, face_n[i][2] * ONE,
+               ax, ay, az, &rx, &ry, &rz);
+        visible[i] = (rz > 0);
     }
-}
 
-static void plot(int x, int y, u8 c)
-{
-    if (x >= 0 && x < SCR_W && y >= 0 && y < SCR_H) {
-        MMIO8(SM501_VRAM + back + (u32)y * SCR_W + (u32)x) = c;
+    for (i = 0; i < 8; i++) {
+        rotate(vtx[i][0] * HALF, vtx[i][1] * HALF, vtx[i][2] * HALF,
+               ax, ay, az, &rx, &ry, &rz);
+        project(rx, ry, rz, &sx[i], &sy[i]);
     }
-}
 
-static void line(int x0, int y0, int x1, int y1, u8 c)
-{
-    int dx = x1 - x0, dy = y1 - y0;
-    int sxp = dx < 0 ? -1 : 1;
-    int syp = dy < 0 ? -1 : 1;
-    int err, e2;
-
-    if (dx < 0) dx = -dx;
-    if (dy < 0) dy = -dy;
-    err = dx - dy;
-
-    for (;;) {
-        plot(x0, y0, c);
-        if (x0 == x1 && y0 == y1) {
-            return;
-        }
-        e2 = err * 2;
-        if (e2 > -dy) {
-            err -= dy;
-            x0 += sxp;
-        }
-        if (e2 < dx) {
-            err += dx;
-            y0 += syp;
+    for (i = 0; i < 12; i++) {
+        if (visible[edge[i][2]] || visible[edge[i][3]]) {
+            draw_line(sx[edge[i][0]], sy[edge[i][0]],
+                      sx[edge[i][1]], sy[edge[i][1]], COL_EDGE);
         }
     }
-}
 
-/* ---------------------------------------------------------------- */
-/* The display                                                       */
-/* ---------------------------------------------------------------- */
-
-static void video_init(void)
-{
-    SM501_WR(SM501_PANEL_PALETTE + 0 * 4, 0x00000000UL);    /* black */
-    SM501_WR(SM501_PANEL_PALETTE + 1 * 4, 0x0040FF40UL);    /* green */
-
-    SM501_WR(SM501_PANEL_FB_ADDR, FB0_OFFSET);
-    SM501_WR(SM501_PANEL_FB_OFFSET, SCR_W);
-    SM501_WR(SM501_PANEL_FB_WIDTH, ((u32)SCR_W << 16) | SCR_W);
-    SM501_WR(SM501_PANEL_FB_HEIGHT, ((u32)SCR_H << 16) | SCR_H);
-    SM501_WR(SM501_PANEL_TL_LOC, 0);
-    SM501_WR(SM501_PANEL_BR_LOC, ((u32)(SCR_W - 1) << 16) | (SCR_H - 1));
-    SM501_WR(SM501_PANEL_H_TOTAL, SCR_W - 1);
-    SM501_WR(SM501_PANEL_V_TOTAL, SCR_H - 1);
-    SM501_WR(SM501_PANEL_CONTROL,
-             SM501_PC_ENABLE | SM501_PC_8BPP |
-             SM501_PC_FPEN | SM501_PC_VDD | SM501_PC_DATA);
-}
-
-/* Leave a blank screen rather than the last frame frozen on it, so the
- * display does not look like a machine that has hung. */
-static void video_blank(void)
-{
-    back = FB0_OFFSET;
-    clear_back();
-    SM501_WR(SM501_PANEL_FB_ADDR, FB0_OFFSET);
-}
-
-/*
- * Frame pacing.
- *
- * There is no timer to wait on: the kernel has no tick yet, so there is
- * nothing to sleep against. A counted spin is what is left, and the
- * count that gives a given frame rate depends entirely on how fast the
- * machine underneath happens to be -- which, under an emulator, varies
- * by more than an order of magnitude between hosts.
- *
- * So it is measured rather than guessed. The clock only resolves to a
- * second, which is plenty: wait for a second to turn over, count spins
- * until the next one, and divide. Costs a second at start-up and is
- * right on any host.
- */
-static void delay(u32 n)
-{
-    volatile u32 i;
-
-    for (i = 0; i < n; i++) {
-    }
-}
-
-#define CAL_CHUNK  1000
-
-static u32 calibrate(u32 fps)
-{
-    time_t t0, t1;
-    u32 chunks = 0;
-
-    if (fps == 0) {
-        return 0;
-    }
-
-    t0 = time(0);
-    if (t0 == 0) {
-        /* No clock. Fall back to a number that is wrong everywhere
-         * rather than pretending to have measured something. */
-        return 200000 / fps;
-    }
-
-    /* Start on a second boundary, so the count covers a whole second and
-     * not the tail end of one. */
-    while ((t1 = time(0)) == t0) {
-    }
-    t0 = t1;
-
-    while (time(0) == t0) {
-        delay(CAL_CHUNK);
-        chunks++;
-    }
-
-    /* chunks * CAL_CHUNK spins take a second; a frame gets 1/fps of it.
-     * The drawing itself also takes time, so the real rate comes out
-     * somewhat under the target -- which is the right way to be wrong. */
-    return (chunks * CAL_CHUNK) / fps;
+    ioctl(fb, FBIO_FLIP, 0);
 }
 
 static u32 parse_u32(const char *s, u32 fallback)
@@ -325,65 +210,61 @@ int main(int argc, char **argv)
     int ax = 0, ay = 0, az = 0;
     u32 frames = 0;
     u32 fps = 50;
-    u32 pace;
+    u32 period;
+    u32 started;
 
     if (argc > 1) {
-        fps = parse_u32(argv[1], fps);
-        if (fps == 0 || fps > 1000) {
+        fps = parse_u32(argv[1], 0);
+        if (fps == 0 || fps > 200) {
             eputs("usage: cube [frames-per-second]\n");
             return 2;
         }
     }
 
-    puts("cube: rotating wireframe, 640x480, Q12 fixed point\n");
-    puts("measuring how fast this machine is");
-    pace = calibrate(fps);
-    puts("... ");
+    fb = open("/dev/fb0", O_RDWR);
+    if (fb < 0) {
+        eputs("cube: no /dev/fb0\n");
+        return 1;
+    }
+    if (ioctl(fb, FBIO_GETINFO, (u32)&info) < 0) {
+        eputs("cube: /dev/fb0 will not say how big it is\n");
+        close(fb);
+        return 1;
+    }
+    cx = (int)info.width / 2;
+    cy = (int)info.height / 2;
+
+    puts("cube: ");
+    putdec(info.width);
+    putch('x');
+    putdec(info.height);
+    putch('x');
+    putdec(info.bpp);
+    puts(" on ");
+    puts(info.name);
+    puts(", Q12 fixed point, ");
     putdec(fps);
-    puts(" fps wanted, ");
-    putdec(pace);
-    puts(" spins per frame\n");
+    puts(" fps\n");
     puts("press any key to stop\n");
 
-    video_init();
-    back = FB1_OFFSET;
+    /*
+     * Sleep the frame period rather than spinning it out. The kernel has
+     * a tick now, so a program can wait without burning the machine --
+     * and the rate is the same wherever this runs, which a counted delay
+     * loop never was.
+     */
+    period = 1000 / fps;
+    started = times();
 
     while (!key_waiting()) {
-        int i, rx, ry, rz;
-
-        clear_back();
-
-        /* Which faces point at the viewer? A face is visible when its
-         * rotated normal has positive Z. */
-        for (i = 0; i < 6; i++) {
-            rotate(face_n[i][0], face_n[i][1], face_n[i][2],
-                   ax, ay, az, &rx, &ry, &rz);
-            visible[i] = (rz > 0);
-        }
-
-        for (i = 0; i < 8; i++) {
-            rotate(vtx[i][0] * HALF, vtx[i][1] * HALF, vtx[i][2] * HALF,
-                   ax, ay, az, &rx, &ry, &rz);
-            project(rx, ry, rz, &sx[i], &sy[i]);
-        }
-
-        for (i = 0; i < 12; i++) {
-            if (visible[edge[i][2]] || visible[edge[i][3]]) {
-                line(sx[edge[i][0]], sy[edge[i][0]],
-                     sx[edge[i][1]], sy[edge[i][1]], COL_EDGE);
-            }
-        }
-
-        /* Show what was just drawn and start on the other buffer. */
-        SM501_WR(SM501_PANEL_FB_ADDR, back);
-        back = (back == FB0_OFFSET) ? FB1_OFFSET : FB0_OFFSET;
+        render(ax, ay, az);
 
         ax = (ax + 1) & 255;
         ay = (ay + 2) & 255;
         az = (az + 1) & 255;
         frames++;
 
-        delay(pace);
+        msleep(period);
     }
 
     /* Take the keystroke that stopped it, so it does not turn up at the
@@ -394,10 +275,26 @@ int main(int argc, char **argv)
         read(STDIN_FILENO, &c, 1);
     }
 
-    video_blank();
+    /* Leave a blank screen rather than the last frame frozen on it, so
+     * the display does not look like a machine that has hung. */
+    ioctl(fb, FBIO_CLEAR, COL_BG);
+    ioctl(fb, FBIO_FLIP, 0);
+    close(fb);
 
-    puts("cube: ");
-    putdec(frames);
-    puts(" frames\n");
+    {
+        u32 elapsed = times() - started;
+
+        puts("cube: ");
+        putdec(frames);
+        puts(" frames in ");
+        putdec(elapsed / 100);
+        puts(" seconds");
+        if (elapsed > 0) {
+            puts(" (");
+            putdec(frames * 100 / elapsed);
+            puts(" fps)");
+        }
+        putch('\n');
+    }
     return 0;
 }

@@ -143,7 +143,8 @@ Every device has a bare-metal test that exercises the real hardware path.
 `make run` in `tests/`: **11 programs, all passing.** The kernel adds a
 twelfth, `kernel/fstest.sh`, which drives a console session and then checks
 the result with the host's own `mdir`, `mtype` and `fsck.fat` — 21 checks,
-including loading and running a program from the disk.
+including loading and running a program from the disk, the tick running,
+and a program drawing through `/dev/fb0`.
 
 | Test | Checks | What it proves |
 |---|---|---|
@@ -174,6 +175,8 @@ including loading and running a program from the disk.
 | System calls — Linux/m68k convention, Linux numbers and errnos | ✅ done, no user programs to use them yet |
 | Clock — M48T59, `time()`/`stime()`, file timestamps | ✅ done |
 | Programs (§10) — ELF loader, `spawn`, argv, exit status | ✅ done — `user/` |
+| System tick — MC68901 timer D, HZ=100, `nanosleep`, `times` | ✅ done |
+| Framebuffer — `/dev/fb0`, point/line/rect/clear/flip, double buffered | ✅ done |
 | Ethernet driver — `struct netdev`, registered as `eth0` | ✅ written, only the probe is exercised |
 | Timer + preemption, processes, virtual memory | unblocked — ordinary OS work now |
 | TCP/IP (§8), framebuffer console | not started |
@@ -403,10 +406,58 @@ address space, and the function that will have to validate and copy them
 when that stops being true. The MMU is off, so there is no address space to
 separate yet.
 
+### The tick
+
+`drivers/mfp.c` is both the interrupt controller and the system timer. The
+MC68901 drives one IPL line and supplies its own vector, so its sixteen
+channels arrive at sixteen consecutive vectors and one stub serves all of
+them — it recovers the channel from the format/vector word the 68040
+pushed. A driver asks for a channel with `mfp_request_irq()`; nothing
+above that knows the chip exists.
+
+Timer D at /200 runs at 12288 Hz and a reload of 123 gives **99.9 Hz**.
+`HZ` is 100 — what Linux used for most of its life, and a 10 ms tick that
+makes a 50 fps frame exactly two of them.
+
+The reload is computed rather than written down, and clamped: a value
+under 8 is refused outright. A tick shorter than its own handler starves
+the foreground completely, and this machine already walked into that once
+with a timer at 13 µs. Sleeping uses `STOP`, so an idle program costs the
+host nothing, and `timer_sleep_ticks()` returns `-ENODEV` rather than
+waiting forever when no timer is running.
+
+Interrupts are enabled **last** in startup, after every driver is up: a
+fault before that point is reported by a handler with the console to
+itself, and an interrupt arriving mid-initialisation would be a much
+harder thing to understand.
+
+### The framebuffer
+
+`/dev/fb0`, drawn with ioctls — `FBIO_POINT`, `FBIO_LINE`, `FBIO_RECT`,
+`FBIO_CLEAR`, `FBIO_FLIP`, `FBIO_PALETTE`, `FBIO_GETINFO`.
+
+Through ioctl rather than through system calls of its own, because a
+framebuffer is a device and the device model already carries it. A dozen
+graphics calls in the system call table would tie the kernel's ABI to one
+kind of hardware. Linux controls its framebuffer the same way, though
+Linux then expects a program to `mmap` the memory and draw for itself,
+which needs an MMU that is off here.
+
+**Only `point()` is required of a driver.** `fb.c` builds clear, line and
+rect from it, so a new display works as soon as it can set one pixel, and
+gets faster as its driver learns to do more. `sm501.c` implements clear
+and filled rect with the 2D engine — at a period-correct clock the CPU
+cannot clear 640×480 and hold a frame rate, 37 fps against the engine's
+50, while a dozen short lines cost nothing either way.
+
+Double buffered. `FBIO_FLIP` is one register write, so the change lands
+between frames rather than halfway down one.
+
 ### Devices
 
-Four classes, each with one interface: `chardev` (a byte stream),
-`blockdev` (sectors), `netdev` (packets), `rtcdev` (seconds since 1970).
+Six classes, each with one interface: `chardev` (a byte stream),
+`blockdev` (sectors), `netdev` (packets), `rtcdev` (seconds since 1970),
+`timerdev` (a periodic interrupt), `fbdev` (a display).
 Drivers register during startup and stay registered until the power goes
 off — no hotplug, no refcounting, nothing to unregister, because with a
 handful of soldered parts that would be machinery in search of a problem.
@@ -460,18 +511,17 @@ memory probe walking off the end of RAM, faulting address in `a0`.
 
 ## 11. Open items
 
-1. **A framebuffer device.** The most visible gap now that programs exist:
-   `user/cube.c` includes the machine's hardware header and writes to the
-   SM501 directly, because a display fits none of the classes in `dev.h`. It
-   needs one — and then the cube stops reaching around the kernel, which is
-   the last thing in `user/` that does.
-2. **Lift the remaining test code into drivers.** `t3` became
-   `kernel/drivers/ata.c` and `t4` became `drivers/smc91c111.c`. `t7`–`t11`
-   are still proven working code living in tests; the MFP wants turning into
-   a driver with a real interface.
-3. **Pick a scheduler tick.** Timer C or D at /200 with a reload near 123 gives
-   ~10 ms. Note the livelock bound documented in the programmer's guide: a tick
-   faster than the handler starves the foreground.
+1. **Lift the remaining test code into drivers.** `t3` became
+   `kernel/drivers/ata.c`, `t4` became `drivers/smc91c111.c`, `t7`/`t8`
+   became `drivers/mfp.c` and `t10` became `drivers/sm501.c`. What is left
+   in tests and not in a driver is the MFP's USART (`t9`) and the MMU
+   (`t5`) — the second of which is not a driver at all but the thing
+   processes will need.
+2. **A text console on the framebuffer.** Glyphs, then scrolling, then a
+   second `chardev` that could stand in for the serial console. The
+   drawing primitives are there; what is missing is a font.
+3. **A scheduler.** The tick exists and drives `nanosleep`; what it does not
+   yet do is preempt anything, because there is only one thing to run.
 4. **An interrupt-driven console.** The UART's IRQ already reaches MFP channel
    7 and `t6` proves the whole path. `kgetc()` takes from a ring buffer instead
    of the line status register and nothing above it moves.
@@ -500,8 +550,8 @@ memory probe walking off the end of RAM, faulting address in `a0`.
    `kernel/console.c` into a buffered interrupt-driven one is the natural first
    use of the interrupt path.
 3. **Then processes.** Most of the way there already: programs load at their
-   own address, run on their own stack, take arguments and return an exit
-   status. What is left is entering **user mode** with an `RTE` instead of a
-   `jsr`, validating the pointers that then arrive across the gate, and a
-   scheduler to have more than one at a time. The MMU is available when
-   isolation is wanted rather than merely privilege.
+   own address, run on their own stack, take arguments, return an exit
+   status, and there is now a tick to preempt them with. What is left is
+   entering **user mode** with an `RTE` instead of a `jsr`, validating the
+   pointers that then arrive across the gate, and a run queue. The MMU is
+   available when isolation is wanted rather than merely privilege.

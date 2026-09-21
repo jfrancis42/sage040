@@ -30,6 +30,8 @@
 #include "syscall.h"
 #include "errno.h"
 #include "time.h"
+#include "timer.h"
+#include "fb.h"
 #include "drivers/drivers.h"
 
 static void banner(void)
@@ -134,6 +136,50 @@ static void start_drivers(void)
         kputs(" UTC\n");
     }
 
+    status("timer");
+    err = mfp_init();
+    if (err < 0) {
+        kputs("no MC68901: ");
+        kputs(strerror(err));
+        kputs(" -- nothing will be able to sleep\n");
+    } else if (timer_start() < 0) {
+        kputs("MC68901 found but the tick would not start\n");
+    } else {
+        kputs(dev_timer()->name);
+        kputs(" at ");
+        kputdec(dev_timer()->hz);
+        kputs(" Hz, HZ=");
+        kputdec(HZ);
+        kputc('\n');
+    }
+
+    status("video");
+    err = sm501_init();
+    if (err < 0) {
+        kputs("no SM501: ");
+        kputs(strerror(err));
+        kputc('\n');
+    } else {
+        struct fbdev *f = dev_first_fb();
+
+        err = fb_init();
+        if (err < 0) {
+            kputs("found, but /dev/fb0 would not register: ");
+            kputs(strerror(err));
+            kputc('\n');
+        } else {
+            kputs("SM501 as /dev/");
+            kputs(f->name);
+            kputs(", ");
+            kputdec(f->width);
+            kputc('x');
+            kputdec(f->height);
+            kputc('x');
+            kputdec(f->bpp);
+            kputs(", double buffered\n");
+        }
+    }
+
     status("network");
     smc91c111_init();
     if (dev_first_net()) {
@@ -219,6 +265,15 @@ void kmain(void)
     probe_all();
     start_drivers();
     mount_root();
+
+    /*
+     * Interrupts last. Up to this point a fault is reported by a handler
+     * with the console to itself; an interrupt arriving in the middle of
+     * bringing a driver up would be a much harder thing to understand.
+     */
+    if (dev_timer()) {
+        mfp_interrupts_on();
+    }
 
     kputs("\nkernel ready.  'help' lists commands.\n\n");
     shell();

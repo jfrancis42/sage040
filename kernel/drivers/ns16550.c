@@ -50,14 +50,14 @@ static void uart_putc_raw(char c)
     MMIO8(UART_THR) = (u8)c;
 }
 
-static int rx_ready(void)
+static int uart_rx_ready(void)
 {
     return (MMIO8(UART_LSR) & LSR_DR) != 0;
 }
 
 static u8 uart_getc_raw(void)
 {
-    while (!rx_ready()) {
+    while (!uart_rx_ready()) {
         /* spin until a character arrives */
     }
     return MMIO8(UART_RBR);
@@ -167,7 +167,7 @@ static int tty_ioctl(struct file *f, u32 request, u32 arg)
          * whole reason the cube can be stopped.
          */
         if (arg) {
-            *(u32 *)arg = rx_ready() ? 1 : 0;
+            *(u32 *)arg = uart_rx_ready() ? 1 : 0;
         }
         return 0;
 

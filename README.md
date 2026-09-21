@@ -416,11 +416,18 @@ sage$ hello one two
 hello from a program
   running on Sage040 0.2 (m68040)
   argc = 3
+sage$ uptime
+0:00:14  (1484 ticks at 100 Hz)
 sage$ cube
-cube: rotating wireframe, 640x480, Q12 fixed point
-measuring how fast this machine is... 50 fps wanted, 839140 spins per frame
+cube: 640x480x8 on fb0, Q12 fixed point, 50 fps
 press any key to stop
+cube: 251 frames in 5 seconds (50 fps)
 ```
+
+The cube is a program now, not a bare-metal demo: it opens `/dev/fb0`,
+draws with ioctls, and paces itself with `nanosleep()` against a 100 Hz
+tick from the MC68901. It includes no hardware header at all — the
+include path does not offer one.
 
 Programs are ordinary ELF32 executables — the toolchain's own output, no
 flattening step — and they carry **no extension**. That follows from how
@@ -459,10 +466,9 @@ still works and is still the point: the test suite and the cube run with no
 kernel underneath them at all.
 
 What is not there yet: preemption, more than one program at a time, user
-mode, and a TCP/IP stack. The ethernet driver exists and registers `eth0`,
-but nothing above it sends a packet yet, and the cube still writes to the
-SM501 directly because a display fits none of the device classes so far.
-`design.md` tracks what is decided and what is not.
+mode, a text console on the framebuffer, and a TCP/IP stack. The ethernet
+driver exists and registers `eth0`, but nothing above it sends a packet
+yet. `design.md` tracks what is decided and what is not.
 
 ---
 

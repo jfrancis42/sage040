@@ -11,10 +11,8 @@
 #ifndef KERNEL_H
 #define KERNEL_H
 
+#include "types.h"
 #include "sage040.h"
-
-/* Seconds since 1970-01-01 UTC, as everything Unix counts time. */
-typedef u32 time_t;
 
 /*
  * Version. Bump the minor number for anything a program could notice,

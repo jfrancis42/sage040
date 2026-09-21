@@ -106,6 +106,25 @@ int fsync(int fd)
     return (int)sc1(__NR_fsync, (u32)fd);
 }
 
+u32 times(void)
+{
+    return (u32)sc1(__NR_times, 0);
+}
+
+int nanosleep(const struct timespec *req, struct timespec *rem)
+{
+    return (int)sc2(__NR_nanosleep, (u32)req, (u32)rem);
+}
+
+void msleep(u32 ms)
+{
+    struct timespec req;
+
+    req.tv_sec = ms / 1000;
+    req.tv_nsec = (ms % 1000) * 1000000UL;
+    nanosleep(&req, 0);
+}
+
 void exit(int status)
 {
     sc1(__NR_exit, (u32)status);

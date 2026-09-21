@@ -15,7 +15,12 @@
 #ifndef UAPI_H
 #define UAPI_H
 
-#include "kernel.h"
+/*
+ * The types, and nothing else. A program that includes this gets the
+ * system call ABI without the kernel's internals or the machine's
+ * register map coming with it.
+ */
+#include "types.h"
 
 #define NAME_MAX      12        /* "12345678.123" without the NUL     */
 #define PATH_MAX      64
@@ -40,6 +45,65 @@
  * blocking on a read that may never return.
  */
 #define FIONREAD      0x541B
+
+/*
+ * Framebuffer ioctls, on /dev/fb0.
+ *
+ * Drawing through ioctl rather than through system calls of its own: a
+ * framebuffer is a device, the device model already carries it, and
+ * putting a dozen graphics calls in the system call table would tie the
+ * kernel's ABI to one kind of hardware. Linux does its framebuffer
+ * control this way for the same reason.
+ *
+ * Numbers are in Linux's framebuffer range but are not Linux's calls --
+ * Linux has no "draw a line" ioctl, because it expects a program to map
+ * the memory and draw for itself. Mapping needs an MMU, which is off.
+ */
+#define FBIO_GETINFO  0x4600    /* struct fb_info out                 */
+#define FBIO_SETMODE  0x4601    /* struct fb_mode in                  */
+#define FBIO_POINT    0x4602    /* struct fb_point in                 */
+#define FBIO_LINE     0x4603    /* struct fb_line in                  */
+#define FBIO_RECT     0x4604    /* struct fb_rect in                  */
+#define FBIO_CLEAR    0x4605    /* colour, by value                   */
+#define FBIO_FLIP     0x4606    /* show the drawn buffer              */
+#define FBIO_SYNC     0x4607    /* wait for the blitter               */
+#define FBIO_PALETTE  0x4608    /* struct fb_palette in               */
+
+struct fb_info {
+    u32 width;
+    u32 height;
+    u32 bpp;
+    u32 pitch;
+    char name[16];
+};
+
+struct fb_mode {
+    u32 width;
+    u32 height;
+    u32 bpp;
+};
+
+struct fb_point {
+    s32 x, y;
+    u32 colour;
+};
+
+struct fb_line {
+    s32 x0, y0, x1, y1;
+    u32 colour;
+};
+
+struct fb_rect {
+    s32 x, y;
+    s32 w, h;
+    u32 colour;
+    u32 filled;
+};
+
+struct fb_palette {
+    u32 index;
+    u32 rgb;                    /* 0x00RRGGBB */
+};
 
 /* lseek() origins */
 #define SEEK_SET      0
@@ -120,10 +184,28 @@ struct statfs {
  */
 #define __NR_spawn     400
 
+/*
+ * times() here returns ticks since boot and takes no struct tms: there
+ * are no processes to account time to. The number is Linux's; the
+ * meaning is the subset of it that makes sense.
+ */
+#define __NR_times      43
+#define __NR_nanosleep 162
+
 /* Standard descriptors, bound to the console at startup. */
 #define STDIN_FILENO   0
 #define STDOUT_FILENO  1
 #define STDERR_FILENO  2
+
+/*
+ * nanosleep()'s argument. The kernel's tick is 10 ms, so anything finer
+ * than that rounds up to one tick -- a sleep that returns early is a
+ * bug waiting to happen and one tick late is nothing.
+ */
+struct timespec {
+    u32 tv_sec;
+    u32 tv_nsec;
+};
 
 /* What uname() fills in. */
 struct utsname {
@@ -138,6 +220,16 @@ struct utsname {
 #define STDIN_FILENO   0
 #define STDOUT_FILENO  1
 #define STDERR_FILENO  2
+
+/*
+ * nanosleep()'s argument. The kernel's tick is 10 ms, so anything finer
+ * than that rounds up to one tick -- a sleep that returns early is a
+ * bug waiting to happen and one tick late is nothing.
+ */
+struct timespec {
+    u32 tv_sec;
+    u32 tv_nsec;
+};
 
 /* What uname() fills in. */
 struct utsname {

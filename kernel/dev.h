@@ -104,6 +104,63 @@ int  dev_register_rtc(struct rtcdev *r);
 struct rtcdev *dev_rtc(void);
 
 /* ---------------------------------------------------------------- */
+/* Periodic timers                                                   */
+/*                                                                    */
+/* One at a time: the thing that makes time pass. A driver starts its */
+/* hardware at the requested rate and calls timer_tick() from its     */
+/* interrupt handler; nothing above it knows which chip, which        */
+/* channel or which prescaler.                                        */
+/* ---------------------------------------------------------------- */
+
+struct timerdev {
+    const char *name;
+    u32  hz;                    /* what it is actually running at     */
+    int  (*start)(struct timerdev *t, u32 hz);
+    int  (*stop)(struct timerdev *t);
+    void *priv;
+};
+
+int  dev_register_timer(struct timerdev *t);
+struct timerdev *dev_timer(void);
+
+/* ---------------------------------------------------------------- */
+/* Framebuffers                                                      */
+/*                                                                    */
+/* A display is none of the other classes: not a byte stream, not     */
+/* addressable sectors, not packets. It gets its own.                 */
+/*                                                                    */
+/* Only point() is required. A chip with a blitter implements clear,  */
+/* line and rect as well and they are used; one without leaves them   */
+/* null and the generic code in fb.c does the same work with point(), */
+/* slower but correct. That is the whole reason for the split.        */
+/* ---------------------------------------------------------------- */
+
+struct fbdev {
+    const char *name;           /* "fb0"                              */
+    u32  width;
+    u32  height;
+    u32  bpp;
+    u32  pitch;                 /* bytes per row                      */
+
+    int  (*setmode)(struct fbdev *f, u32 w, u32 h, u32 bpp);
+    int  (*point)(struct fbdev *f, int x, int y, u32 colour);
+    int  (*clear)(struct fbdev *f, u32 colour);
+    int  (*line)(struct fbdev *f, int x0, int y0, int x1, int y1,
+                 u32 colour);
+    int  (*rect)(struct fbdev *f, int x, int y, int w, int h,
+                 u32 colour, int filled);
+    int  (*flip)(struct fbdev *f);      /* show what was just drawn   */
+    int  (*sync)(struct fbdev *f);      /* wait for the blitter       */
+    int  (*palette)(struct fbdev *f, u32 index, u32 rgb);
+    void *priv;
+    struct fbdev *next;
+};
+
+int  dev_register_fb(struct fbdev *f);
+struct fbdev *dev_find_fb(const char *name);
+struct fbdev *dev_first_fb(void);
+
+/* ---------------------------------------------------------------- */
 /* Network devices                                                   */
 /* ---------------------------------------------------------------- */
 

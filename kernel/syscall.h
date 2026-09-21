@@ -55,6 +55,8 @@ int  sys_sync(void);
 int  sys_uname(struct utsname *u);
 int  sys_ioctl(int fd, u32 request, u32 arg);
 int  sys_spawn(const char *path, int argc, char **argv);
+u32  sys_times(void);
+int  sys_nanosleep(const struct timespec *req, struct timespec *rem);
 void sys_exit(int status);
 time_t sys_time(time_t *t);
 int  sys_stime(const time_t *t);
