@@ -99,14 +99,6 @@ static struct termios tio = {
  */
 static int pushback = -1;
 
-/* What to do while nothing is being typed. See tty.h. */
-static void (*idle_fn)(void);
-
-void tty_set_idle(void (*fn)(void))
-{
-    idle_fn = fn;
-}
-
 /*
  * Who ctrl-C and ctrl-Z are aimed at.
  *

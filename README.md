@@ -440,29 +440,32 @@ touches a register, or a kernel address, or a null pointer takes a bus
 error and is killed — the shell prints what happened and prompts again.
 
 ```
-Sage040 kernel 0.3  (built Sep 21 2026 11:39:17)
+Sage040 kernel 0.3  (built Sep 21 2026 15:18:55)
 Copyright (C) 2026 Jeff Francis.  GPL-3.0-or-later.
 
   traps   : 256 vectors at 0x00000000, TRAP #0 is the system call gate
   syscall : TRAP #0, Linux/m68k convention, verified
   cpu     : MC68040, supervisor mode, sr=0x2700 vbr=0x00000000
   fpu     : on-chip, 1/3 = 0.333333
-  memory  : 4096 KB, kernel 0x00000000-0x00014e88, stack top 0x003ffff0
+  memory  : 4096 KB, kernel 0x00000000-0x0003c148, stack top 0x003ffff0
+  pages   : 946 of 4 KB free from 0x0003d000 to 0x003ef000
+  mmu     : on, 4 KB pages, kernel identity-mapped supervisor-only, 3 pages of tables
   disk    : hda 'QEMU HARDDISK', 204800 sectors (100 MiB)
-  clock   : m48t59, 2026-09-21 21:04:37 UTC
+  clock   : m48t59, 2026-09-21 21:27:16 UTC
   timer   : mfp-timer-d at 99 Hz, HZ=100
   video   : SM501 as /dev/fb0, 640x480x8, double buffered
   fbcon   : /dev/fbcon, 80x30 of IBM PC 8x16, green on black
   keyboard: 8042 as /dev/kbd0, scancode set 1, US layout
   network : eth0, 52:54:00:12:34:56
   console : output to ttyS0 fbcon, input from ttyS0 kbd0
-  root    : fat16 on /dev/hda 'SAGE040', 101158 KB, 100914 KB free, 2048 byte clusters
+  net     : eth0 up, ethernet + ARP, no address yet (try `ifconfig`)
+  root    : fat16 on /dev/hda 'SAGE040', 101158 KB, 100884 KB free, 2048 byte clusters
 
 kernel ready.  'help' lists commands.
 
 booted from /etc/rc
 /$ ls -l
--rw     KERNEL.ROM    108924  2026-09-21 15:05
+-rw     KERNEL.ROM    109192  2026-09-21 15:19
 -rw      NOTES.TXT        42  2026-09-21 14:27
 -rw           CUBE     13836  2026-09-21 14:53
 -rw          HELLO     11748  2026-09-21 14:53
@@ -473,12 +476,15 @@ drw            BIN         0  2026-09-21 14:53
 -rw          HTTPD     12820  2026-09-21 14:53
 -rw           SPIN     11596  2026-09-21 14:53
 -rw        FAULTER     12668  2026-09-21 14:53
-11 files, 196974 bytes
+11 files, 197242 bytes
 /$ cd /bin
 /bin$ ls
 .             ..            IFCONFIG      PING          NETSTAT
 SHUTDOWN      ENV
 ```
+
+`booted from /etc/rc` is the startup script, and the prompt is the
+working directory.
 
 Each device announces itself as its driver registers, so every line is
 something the machine actually answered.

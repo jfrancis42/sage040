@@ -1,9 +1,16 @@
 # The Sage040 kernel
 
-A small supervisor-mode kernel: Linux-shaped system calls, a device
-driver model, a VFS, a read/write FAT16 filesystem, a terminal with a
-line discipline, a clock, a 100 Hz tick, a framebuffer, a text console
-on it, and a shell that reaches all of it only through `trap #0`.
+A small kernel: Linux-shaped system calls, a device driver model, a VFS,
+a read/write FAT16 filesystem with subdirectories, an MMU giving every
+program an address space of its own, a preemptive round-robin scheduler,
+signals and job control, a TCP/IP stack, a terminal with a line
+discipline, a clock, a 100 Hz tick, a framebuffer, a text console on it,
+and a shell that reaches all of it only through `trap #0`.
+
+This file is about the kernel's internals. [`../os.md`](../os.md)
+describes the operating system as a whole, and [`../emacs.md`](../emacs.md)
+measures how far short of a real Unix it falls by trying to put GNU Emacs
+on it.
 
 It is loaded from the disk by the [boot ROM](../bootrom/), which finds
 `KERNEL.ROM` in the filesystem and jumps to it.
@@ -12,37 +19,54 @@ It is loaded from the disk by the [boot ROM](../bootrom/), which finds
 $ make boot
 Sage040 boot ROM
 partition 1 at LBA 2048, type 0x06
-KERNEL.ROM  43672 bytes, first cluster 2
+KERNEL.ROM  108924 bytes, first cluster 2
 image SSP = 0x003FFFF0  PC = 0x00000400
 starting
 
-Sage040 kernel 0.3  (built Sep 21 2026 10:03:12)
+Sage040 kernel 0.3  (built Sep 21 2026 15:04:17)
 Copyright (C) 2026 Jeff Francis.  GPL-3.0-or-later.
 
   traps   : 256 vectors at 0x00000000, TRAP #0 is the system call gate
   syscall : TRAP #0, Linux/m68k convention, verified
   cpu     : MC68040, supervisor mode, sr=0x2700 vbr=0x00000000
   fpu     : on-chip, 1/3 = 0.333333
-  memory  : 4096 KB, kernel 0x00000000-0x0000b524, stack top 0x003ffff0
+  memory  : 4096 KB, kernel 0x00000000-0x0003c03c, stack top 0x003ffff0
+  pages   : 946 of 4 KB free from 0x0003d000 to 0x003ef000
+  mmu     : on, 4 KB pages, kernel identity-mapped supervisor-only, 3 pages of tables
   disk    : hda 'QEMU HARDDISK', 204800 sectors (100 MiB)
-  clock   : m48t59, 2026-09-21 16:03:14 UTC
+  clock   : m48t59, 2026-09-21 21:18:04 UTC
   timer   : mfp-timer-d at 99 Hz, HZ=100
   video   : SM501 as /dev/fb0, 640x480x8, double buffered
+  fbcon   : /dev/fbcon, 80x30 of IBM PC 8x16, green on black
+  keyboard: 8042 as /dev/kbd0, scancode set 1, US layout
   network : eth0, 52:54:00:12:34:56
-  root    : fat16 on /dev/hda 'SAGE040', 101158 KB, 101074 KB free
+  console : output to ttyS0 fbcon, input from ttyS0 kbd0
+  net     : eth0 up, ethernet + ARP, no address yet (try `ifconfig`)
+  root    : fat16 on /dev/hda 'SAGE040', 101158 KB, 100884 KB free, 2048 byte clusters
 
 kernel ready.  'help' lists commands.
 
-sage$ ls -l
--rw     KERNEL.ROM     43672  2026-09-21 10:03
--rw           CUBE     12472  2026-09-21 10:03
--rw          HELLO     10492  2026-09-21 10:03
--rw         FBTEST     11372  2026-09-21 10:03
-4 files, 78008 bytes
-sage$ df
+booted from /etc/rc
+/$ ls -l
+-rw     KERNEL.ROM    108924  2026-09-21 15:05
+-rw      NOTES.TXT        42  2026-09-21 14:27
+-rw           CUBE     13836  2026-09-21 14:53
+-rw          HELLO     11748  2026-09-21 14:53
+-rw         FBTEST     12644  2026-09-21 14:53
+drw            ETC         0  2026-09-21 15:05
+drw            BIN         0  2026-09-21 14:53
+-rw          FETCH     12696  2026-09-21 14:53
+-rw          HTTPD     12820  2026-09-21 14:53
+-rw           SPIN     11596  2026-09-21 14:53
+-rw        FAULTER     12668  2026-09-21 14:53
+11 files, 196974 bytes
+/$ df
 volume          type   1K-blocks       used      avail  use%
-SAGE040         fat16      101158         84     101074    0%
+SAGE040         fat16      101158        274     100884    0%
 ```
+
+`booted from /etc/rc` is the startup script running, and the prompt is
+the working directory: `/$` at the root, `/bin$` inside `/BIN`.
 
 Each device announces itself as its driver registers, so every line is
 something the machine actually answered. A startup message assembled at
@@ -57,6 +81,9 @@ make install      # write kernel.rom onto the disk as KERNEL.ROM
 make boot         # install it, then boot through the boot ROM
 make syms         # symbol table, address order
 ./fstest.sh       # scripted session, checked with the host's own tools
+./edittest.sh     # the editor, history, ctrl-C, ctrl-Z, jobs, shutdown
+./vmtest.sh       # memory protection, and that a bad pointer is an error
+./nettest.sh      # ARP, DHCP, ICMP and a TCP transfer
 ```
 
 `make run` skips the boot ROM by loading the ELF with QEMU's `-kernel`.
@@ -67,10 +94,12 @@ takes. The disk image lives in the project root — see
 ## The shape of it
 
 ```
-            shell.c  edit.c        programs that happen to be linked in
+   apps/ system/ lib/            programs, unprivileged, on the disk
+            shell.c  edit.c        and two that happen to be linked in
    ------------------------------  trap #0
                 syscall.c          open read write lseek stat getdents ...
-              vfs.c    job.c       descriptors; jobs and signals
+          uaccess.c    vm.c        a program's pointers, and its address space
+       vfs.c  task.c  signal.c     descriptors; tasks, jobs and signals
         +-----------+-----------+
      fs/fat16.c           dev.c    filesystem types, device registries
         |                   |
@@ -80,13 +109,19 @@ takes. The disk image lives in the project root — see
                        sm501.c  smc91c111.c
 ```
 
+`net/` sits beside all of that rather than in it: `socket.c` hands the
+descriptor table a `struct file_ops` like any other, and everything
+below it talks to a `struct netdev`.
+
 The layering is the point, so it is worth saying what it buys:
 
 - **The shell reaches the filesystem, the disk and the terminal only
   through `trap #0`.** Every command in it — `ls`, `cat`, `date`, `fg`,
-  `console` — is system calls and nothing else, which is how a claim
-  like "programs will run unprivileged later" stays true instead of
-  becoming a plan. **`layercheck.sh` enforces it before every link**:
+  `console` — is system calls and nothing else. That was written when
+  "programs will run unprivileged later" was still a promise, and the
+  promise is what it bought: when the MMU came on and programs really
+  did move to the other side of the gate, nothing above the gate had to
+  change. **`layercheck.sh` enforces it before every link**:
   `shell.c` and `edit.c` may include `syscall.h` and a short list of
   pure headers (`string.h`, `time.h`, `errno.h`) and nothing more. The
   rule was asserted in three documents for months while it was false,
@@ -94,8 +129,9 @@ The layering is the point, so it is worth saying what it buys:
 - **The line editor is above the boundary too.** `edit.c` does what
   readline does: turn off `ICANON` and `ECHO` with `TCSETS`, read
   characters, and do the editing, the history and the searching itself.
-  It includes `syscall.h` and nothing else, and it would compile
-  unchanged as an ordinary program. A kernel that remembered the last
+  It includes `syscall.h`, `errno.h` and `string.h` and nothing else,
+  and it would compile unchanged as an ordinary program — which is what
+  `layercheck.sh` is there to keep true. A kernel that remembered the last
   sixteen things you typed would be a kernel doing a shell's job.
 - **The filesystem talks to a `struct blockdev`.** It asks for sector
   2048; it has no idea an ATA taskfile answers. A SCSI controller or a
@@ -124,17 +160,22 @@ architecture and there is nothing to improve on. The numbers are Linux's
 i386 numbers — `__NR_write` is 4 — because that is the set most people
 recognise.
 
+Forty of them:
+
 ```
-exit(1) read(3) write(4) open(5) close(6) unlink(10) time(13) lseek(19)
-stime(25) rename(38) times(43) ioctl(54) reboot(88) statfs(99) stat(106)
-fsync(118) sysinfo(116) uname(122) getdents(141) nanosleep(162) sync(166)
-spawn(400) jobctl(401)
+exit(1) read(3) write(4) open(5) close(6) waitpid(7) unlink(10) chdir(12)
+time(13) lseek(19) getpid(20) stime(25) kill(37) rename(38) mkdir(39)
+rmdir(40) times(43) ioctl(54) reboot(88) statfs(99) stat(106) sysinfo(116)
+fsync(118) uname(122) getdents(141) sched_yield(158) nanosleep(162)
+sync(166) getcwd(183) socket(359) bind(361) connect(362) listen(363)
+accept(364) sendto(369) recvfrom(371) shutdown(373)
+spawn(400) jobctl(401) netctl(402)
 ```
 
-Three are not Linux's. `spawn` and `jobctl` are above 400 because Linux
-has no such calls — see below. `sync` is 166 rather than Linux's 36,
-which would have collided with this table's own use of 36–38. Everything
-else is Linux's number exactly.
+Four are not Linux's. `spawn`, `jobctl` and `netctl` are above 400
+because Linux has no such calls — see below. `sync` is 166 rather than
+Linux's 36, which would have collided with this table's own use of
+36–40. Everything else is Linux's number exactly.
 
 `ioctl` carries the terminal settings as well as the framebuffer's:
 `TCGETS` and `TCSETS` with Linux's `struct termios`, which is what the
@@ -162,13 +203,19 @@ it.
 
 ### What is still on the wrong side of the line
 
-`syscall_dispatch()` takes its pointer arguments at face value. That is
-correct while every caller shares the kernel's address space, and it is
-the function that will have to validate and copy them when that stops
-being true. The MMU is not turned on, so there is no address space to
-separate yet.
+This section used to say that `syscall_dispatch()` took its pointer
+arguments at face value, which was correct while every caller shared the
+kernel's address space. It does not any more: the MMU is on, a program's
+pointers are not the kernel's, and every one of them goes through
+[`uaccess.c`](uaccess.c) — see **Memory** below.
 
-Nothing else, now. `cmd_console` used to call `tty_sink()` directly —
+What is left is the shell, which is still a kernel task and so still
+passes kernel pointers through the same gate. `uaccess_current()` is
+null for it and non-null for a program, which is exactly the
+distinction, and it is the one branch that collapses when the shell
+moves out of the kernel.
+
+`cmd_console` used to call `tty_sink()` directly —
 listing where console output goes was not something a program could ask
 for — and three documents asserted the rule while that was quietly
 false. It is `TIOCGCONS` and `TIOCSCONS` on the terminal instead, and
@@ -180,18 +227,32 @@ rather than the documentation.
 Anything the shell does not recognise is looked up on the disk and run:
 
 ```
-sage$ hello one two
+/$ hello one two
 hello from a program
   running on Sage040 0.3 (m68040)
   argc = 3
-sage$ BIG.TXT
-BIG.TXT: not an executable
+  argv[0] = hello
+  argv[1] = one
+  argv[2] = two
+/$ NOTES.TXT
+NOTES.TXT: not an executable
 ```
 
-Programs are **ELF32, big-endian, EM_68K**, statically linked at 1 MB --
-the toolchain's own output, so there is no flattening step and no private
-format. `exec.c` reads the program headers, loads each `PT_LOAD` segment
-at its `p_vaddr` and zeroes the part the file did not supply.
+`PATH` is `/bin:.`, so the system's own tools are found by name and the
+current directory is searched after them rather than before.
+
+Programs are **ELF32, big-endian, EM_68K**, statically linked at
+`0x10000000` -- the toolchain's own output, so there is no flattening
+step and no private format. `exec.c` reads the program headers, loads
+each `PT_LOAD` segment at its `p_vaddr` and zeroes the part the file did
+not supply.
+
+They used to be linked at 1 MB, and moving them up is not cosmetic. The
+kernel identity-maps RAM, so a program at 1 MB sat at an address the
+kernel could dereference, and a system call that forgot to go through
+`uaccess.c` would quietly read the right bytes instead of failing. At
+`0x10000000` there is nothing behind that address in the kernel's map
+and the same mistake faults in the first test that touches it.
 
 **They carry no extension**, and that follows from how executability is
 decided. Linux uses a permission bit; a FAT16 volume has none to consult,
@@ -199,23 +260,32 @@ so the only thing left is the file itself. The first four bytes say
 whether it is a program, which is what Unix has always done. An extension
 would be decoration that could lie.
 
-The kernel bounds-checks every segment against the program's window
-before reading a byte. With no MMU that check is the only thing between a
-mislinked program and the kernel's own memory.
+The kernel bounds-checks every segment against the user area before
+reading a byte. This used to say that with no MMU the check was the only
+thing between a mislinked program and the kernel's own memory; that is
+history. The MMU protects the kernel at run time now, and what the check
+still buys is a clear answer at load time: a segment outside the user
+area has no page tables behind it, so refusing it here gives `-ENOEXEC`
+instead of a fault partway through loading.
 
-`spawn()` is **not** `execve()`. `execve` replaces the calling process,
-and there are no processes to replace: this loads, runs, and returns the
-exit status. When there are processes it becomes fork + execve + waitpid
-and this call goes away. Naming it `execve` now would cost nothing today
-and mislead later.
+`spawn()` is **not** `execve()`. `execve` replaces the calling process;
+this one starts a new task and returns its pid. **It does not wait.**
+Whether to wait is the caller's decision, and that decision is the whole
+of what `&` means: a foreground job is one the shell waits for with
+`waitpid()`, a background job is one it does not. What is left to do is
+the split — `spawn` is still fork and execve in one call, and separating
+them is what would let a program arrange its own descriptors between the
+two.
 
-A program leaves through `exit()`, which unwinds out of however many
-frames deep it was, out of the trap it called from, and back into
-`exec_spawn` as though it had returned — a longjmp in everything but
-name, in `execasm.s`. One program at a time, because that file has room
-for one saved context.
+A program leaves through `exit()`, which is `task_exit()`: its
+descriptors are closed, its address space and kernel stack are freed by
+whoever reaps it, and `waitpid()` in its parent gets the status. There is
+no unwinding, because there is nothing to unwind back into — the task
+simply stops being scheduled.
 
-See [`../user/`](../user/) for the programs themselves.
+See [`../apps/`](../apps/) and [`../system/`](../system/) for the
+programs, and [`../lib/`](../lib/) for what they link against: `crt0.s`,
+`ulib.c` and `user.ld`.
 
 ## Tasks
 
@@ -318,8 +388,11 @@ The 68040 picks its root pointer from the function code of the access,
 not from anything software chooses: supervisor accesses walk **SRP**,
 user accesses walk **URP**. That single fact is the design. The kernel's
 map is identity over all of RAM, supervisor only, and is built once and
-never changed. A program's map is swapped in on every spawn and every
-resume, and that swap is the whole of "its own address space".
+never changed. A program's map goes with its task and is swapped in by
+`schedule()` on every switch to it, and that swap is the whole of "its
+own address space". A kernel task has none and runs with whatever was
+loaded, which costs nothing: its accesses are supervisor accesses and
+walk SRP regardless.
 
 Because the kernel's map is identity, it can reach any physical page by
 its address -- which is how it loads an image, builds a program's page
@@ -367,13 +440,15 @@ corrupts data instead of the allocator. Everything comes from there: a
 program's image, its stack, its page tables, and the kernel stack its
 system calls run on. `free` in the shell reports it.
 
-Each program also gets **its own supervisor stack**, and that is not a
-detail. Every trap it takes pushes a frame on whatever the supervisor
-stack is at the time; if that were the shell's, then the moment the
-program stopped and the shell carried on, the shell would grow down over
-the very frames the program has to return through. It would look like it
-worked -- and for a while it did, with `fg` resuming a program into a
-context that had been overwritten.
+Every task also gets **its own supervisor stack**, three pages: a guard
+page and then two of stack. That is not a detail. Every trap a task
+takes pushes a frame on whatever the supervisor stack is at the time; if
+that were shared, then the moment one task stopped and another carried
+on, the second would grow down over the very frames the first has to
+return through. It would look like it worked -- and for a while it did,
+with `fg` resuming a program into a context that had been overwritten.
+The guard comes out of the kernel's map rather than the task's, because
+it is the kernel that would overflow, running that task's system calls.
 
 ## The network
 
@@ -425,8 +500,15 @@ returning ENOMEM.
 Transmit raises the interrupt mask for its duration, because receive and
 transmit share the chip's bank select and pointer register.
 
-The terminal's idle spin calls `net_poll()` too. A machine that answers
-a ping only while waiting for something of its own is not on a network.
+`net_poll()` is called by anything that waits on the network --
+`net_wait()` and every blocking path in `socket.c` -- so the protocol
+runs while a task is waiting for it rather than only when a reply is
+expected. That is not the same as running all the time, and a machine
+that answers a ping only while waiting for something of its own is not
+on a network; the terminal used to call `net_poll()` from its idle spin
+for exactly that reason, and the spin went away with the scheduler.
+`net.c` still registers `tty_set_idle(net_poll_idle)` and nothing calls
+it, which is the loose end here.
 
 ### A socket is a file descriptor
 
@@ -436,10 +518,14 @@ be pointed at one instead of a file. That is also what keeps the TCP
 replaceable: a program calls `socket()` and `connect()`, and which
 implementation answers is not its business.
 
-Blocking is a spin, through `net_wait()`, which drives the protocol
-while it waits -- so the data being waited for can actually arrive. The
-same bargain the console has always made, and it becomes a sleep on a
-wait queue the day there is a scheduler.
+Blocking used to be a spin, through `net_wait()`, because there was
+nothing else for the processor to do. Now it is a sleep on a wait queue,
+bounded at 20 ms so that a missed wakeup costs a small delay instead of
+a hang and so that TCP's own timers get looked at whether or not
+anything is arriving. `net_wait()` still drives the protocol itself
+before each sleep -- the data being waited for has to be able to arrive
+-- and it returns early if a signal is pending, which is how ctrl-C
+reaches a program waiting on a socket.
 
 ### What TCP does and does not do
 
@@ -447,14 +533,23 @@ The state machine of RFC 793, both opens, retransmission with an
 exponentially backed-off timer, and an orderly close. Enough to fetch a
 page from a real server and enough to be one.
 
-Not done, each on purpose: **no congestion control** (a machine talking
-to its own LAN is not where the internet's congestion is decided);
-**no out-of-order reassembly** (a segment arriving ahead of a gap is
-dropped and retransmitted, which is legal and costs throughput rather
-than correctness); **no window scaling, SACK or timestamps**; and **the
-initial sequence number comes from the tick**, which is a real exposure
-on a machine facing the open internet and is the sentence to come back
-to.
+Since then, and each because the one-LAN excuse stopped holding:
+**congestion control** (RFC 5681 slow start and congestion avoidance,
+halving on loss); **out-of-order reassembly** into a small pool of
+shared slots, rather than dropping a segment that arrives ahead of a
+gap; **RTT and RTO estimation** with Karn's algorithm, so the
+retransmit timer is measured rather than guessed; and **delayed
+acknowledgements**.
+
+Not done, still on purpose: **no window scaling, SACK or timestamps** --
+without window scaling there is no point going past 32 KB, which is
+where `cwnd` is clamped.
+
+The **initial sequence number** used to come from the tick, which was a
+real exposure on a machine facing the open internet: an off-path
+attacker who can guess an ISN can inject data into a connection. It now
+comes from `random.c` plus the tick. `random.c` is not cryptographic and
+does not claim to be.
 
 ## Devices that are not there
 
@@ -496,9 +591,12 @@ be machinery in search of a problem.
 
 `/dev/console` and `/dev/tty` are the terminal. Path resolution is two
 fixed mount points — `/dev` is the device registry, everything else is
-the mounted volume — which is honest about a filesystem with one
-directory, and does not change the calls above it when that stops being
-true.
+the mounted volume, which now walks a tree of its own. That was written
+when the volume had one directory and the claim made for it was that it
+would not change the calls above it when that stopped being true.
+Subdirectories arrived and it did not: `vfs.c` hands the whole path
+below `/dev` to the filesystem and never looked at it in the first
+place.
 
 ## The tick
 
@@ -514,8 +612,8 @@ most of its life and makes a tick 10 ms — fine enough that a 50 fps frame
 is exactly two of them.
 
 ```
-sage$ uptime
-0:00:14  (1484 ticks at 100 Hz)
+/$ uptime
+0:00:04  (482 ticks at 100 Hz)
 ```
 
 **A tick faster than its own handler starves everything else.** The
@@ -528,6 +626,13 @@ than accepting it and hanging.
 program costs the host nothing. It returns `-ENODEV` if no timer is
 running, because a sleep with nothing to wake it is a hang and an error
 is the honest version of that.
+
+It is also the one thing in here that has not caught up with the
+scheduler. `STOP` halts the processor, not the task, and the loop runs
+in supervisor mode — so the return-to-user check never fires and nothing
+else gets a turn for the length of the sleep. `nanosleep()` is the only
+caller. What it wants is `sleep_on_timeout()`, which is what everything
+in `net/` already uses.
 
 Interrupts are enabled **last** in startup. Until then a fault is
 reported by a handler with the console to itself; an interrupt arriving
@@ -550,7 +655,10 @@ own: a framebuffer is a device, the device model already carries it, and
 putting graphics calls in the system call table would tie the kernel's
 ABI to one kind of hardware. Linux controls its framebuffer the same way
 — though Linux expects a program to `mmap` the memory and draw for
-itself, which needs an MMU that is not turned on here.
+itself. That used to be out of reach because the MMU was off; it is on
+now, and what is missing is `mmap` itself. A program cannot ask for a
+mapping of anything, which is the same gap [`../emacs.md`](../emacs.md)
+runs into from the other direction.
 
 **Only `point()` is required of a driver.** `fb.c` builds `clear`, `line`
 and `rect` from it, so a new framebuffer works the moment it can set one
@@ -563,7 +671,7 @@ short lines cost nothing either way.
 Double buffered, so a wireframe drawn a line at a time does not flicker.
 `FBIO_FLIP` is one register write, so the change lands between frames.
 
-`user/fbtest` draws one of everything and holds it, which is how a broken
+`apps/fbtest` draws one of everything and holds it, which is how a broken
 driver gets told apart from a broken program that uses one.
 
 ## The text console
@@ -580,6 +688,12 @@ single operation. A framebuffer without a blitter leaves `copy` null, and
 the console redraws from its own character buffer instead: correct, much
 slower, and the reason `copy` is worth implementing in a driver.
 
+**Just enough ANSI to be clearable**: `ESC [ H`, `ESC [ 2J` and
+`ESC [ K`, and nothing else. This understood none of them at first, so
+anything that wanted to clear the screen had to know which sink it was
+talking to — which is the opposite of the point of having sinks.
+Cursor addressing is left out on purpose; see **Editing a line** below.
+
 The font is the real VGA ROM font rather than a redraw — the
 single-storey `g`, the unslashed `0`. See `font8x16.c` for where it came
 from and how to reproduce it.
@@ -591,12 +705,15 @@ line discipline plus a set of places characters come from and go to; a
 UART is one of those places, and so is a screen.
 
 ```
-sage$ console
+/$ console
 output to:
   ttyS0   on
   fbcon   on
 input from:
   ttyS0
+  kbd0
+
+turn one off with `console NAME off`
 ```
 
 **Output goes to every enabled sink at once; input is taken from every
@@ -616,6 +733,13 @@ and ctrl-U doing what a person expects and ctrl-D returning 0 for end of
 input — canonical mode, in the terminal rather than in a driver, so that
 every program that reads a line does not implement it again slightly
 differently.
+
+**A read with nothing to read sleeps on a wait queue**, and the tick's
+poll is what wakes it. It used to spin, which was fine when there was
+nothing else for the processor to do and is not now. This is also what
+keeps the machine alive: the shell is a kernel task and kernel tasks are
+never preempted, so it has to block or yield, and waiting at the prompt
+is where it blocks.
 
 Two translations, named after the termios flags that do the same job:
 
@@ -678,6 +802,7 @@ ctrl-R  ctrl-S     search the history               ctrl-G abandons it
 ctrl-U  ctrl-K     delete to the start, to the end
 ctrl-W             delete the word before the cursor
 ctrl-D             delete forwards; end input on an empty line
+ctrl-L             clear the screen, line kept and redrawn at the top
 ```
 
 Raw mode is Linux's termios, with Linux's numbers: `TCGETS` and `TCSETS`
@@ -689,12 +814,16 @@ thing a terminal must never stop doing.
 
 Two constraints shaped the rest of it.
 
-**There are no cursor escapes.** The framebuffer console understands
-carriage return, backspace, tab and newline and drops everything else,
-so an editor written with `ESC [ nD` would work perfectly over the
-serial line and do nothing at all on the screen. Every movement here is
-built from `\r` and `\b`. That turns out to cost nothing: an editor that
-never leaves one line does not need more.
+**There is no cursor addressing.** The framebuffer console understands
+carriage return, backspace, tab and newline, plus exactly three escape
+sequences — `ESC [ H`, `ESC [ 2J` and `ESC [ K` — so that `clear` and
+ctrl-L can write one thing and have both sinks do the right thing.
+Cursor addressing is deliberately not among them: it would invite the
+editor to use it, and the editor is carefully built out of `\r` and
+`\b` so that it works on the screen at all. An editor written with
+`ESC [ nD` would work perfectly over the serial line and do nothing on
+the screen. That turns out to cost nothing: an editor that never leaves
+one line does not need more.
 
 **Redrawing is expensive on one of the two sinks.** A character on the
 serial line is a byte; on the framebuffer it is 128 pixels drawn
@@ -719,54 +848,77 @@ A job is one command the shell started. They exist because ctrl-C has to
 be aimed somewhere, and because `fg %2` has to mean something.
 
 The terminal recognises the interrupt and suspend characters — `c_cc`,
-`VINTR` and `VSUSP` — and raises a signal on the foreground job. That is
-all it does: `job_signal_fg()` records a number, because it is called
-from interrupt context as often as not. What actually happens to the
-program happens in `job_deliver()`, and **where it is called from
-decides what it is allowed to do**:
+`VINTR` and `VSUSP` — and sends `SIGINT` or `SIGTSTP` to the foreground
+task. `signal_char()` in `tty.c` is the whole of it, and it is gated on
+`ISIG`, which is why a program that clears `ICANON` and `ECHO` to do its
+own line editing still gets its ctrl-C.
 
-| Site | ctrl-C | ctrl-Z |
-|------|--------|--------|
-| `JOB_AT_SYSCALL` — the boundary of a system call | yes | yes |
-| `JOB_AT_TICK` — the timer interrupt, program in its own code | yes | deferred |
+**There is one foreground task**, `tty_set_foreground()`, and that is
+the entire difference between a job started with `&` and one without: a
+background task is not connected to this keyboard in the sense that
+matters, so it gets neither character. The terminal is handed over
+inside `exec_spawn()` rather than by the shell afterwards, because
+loading an image takes long enough to read a disk and a ctrl-C arriving
+in that window went to a task that did not exist yet and was simply
+lost — which looked exactly like ctrl-C not working.
 
-Killing a program means discarding its whole stack. That is safe at a
-system call boundary, where the kernel has finished, and safe from the
-tick, where the kernel was never involved — but **not** from inside a
-system call, where the filesystem might be halfway through a directory
-entry. So `syscall.c` counts how deep in the kernel it is and the tick
-checks the count before doing anything.
+**Delivery is at one site: `task_ret_to_user()`, on the way back to user
+mode.** `signal_send()` only sets a bit and wakes the task if it was
+asleep, because the target may be halfway through a system call and
+ending it there would leave the filesystem halfway through a directory
+entry. A sleeping task's call returns `-EINTR`, the way a real one does,
+and the signal is acted on at the boundary it returns through.
 
-The tick is what makes ctrl-C work at all on a program like `cube`,
-which reads no input: nobody is looking at the keyboard while it spins,
-so a hundred times a second the tick looks instead. Anything it finds
-that is not a signal is pushed back and handed to the next reader in
-order.
+The tick is still what makes ctrl-C work at all on a program like
+`cube`, which reads no input: nobody is looking at the keyboard while it
+spins, so a hundred times a second `tty_poll_signals()` looks instead.
+Anything it finds that is not a signal goes in the pushback slot and is
+handed to the next reader in order. What has changed is that it only
+*raises* the signal — it no longer decides anything about what happens
+next.
 
-Stopping is different, because stopping means coming back. `exec_stop()`
-and `exec_resume()` in `execasm.s` are a context switch — each saves the
-callee-saved registers and the stack pointer in the frame layout
-`exec_call` already uses, and jumps to where the other left off. That
-works from a system call boundary, which is a C call boundary; it does
-not work from an arbitrary instruction, which would need every register
-and the program counter saved out of the exception frame. So a program
-that makes no system calls can be killed but not stopped, and the signal
-simply stays pending until it makes one.
+This section used to describe two delivery sites with different rules —
+one at the system call boundary and one in the timer interrupt, with a
+depth counter in `syscall.c` deciding what the tick was allowed to do —
+because there was no scheduler and no per-task kernel stack to leave a
+program sitting on. All of that is gone. There is one site, and it
+cannot run while the kernel is in the middle of anything, because it
+only runs when the kernel has finished.
 
-### What does not work yet, and why
+What that bought is visible: a bare `spin`, which makes **no system
+calls at all**, can now be stopped as well as killed. It used to be that
+stopping meant coming back, coming back meant a saved context, and the
+only context worth saving was at a C call boundary — so a program that
+never called anything could be killed and not stopped. Every task has a
+kernel stack of its own now, so ctrl-Z is a state change on it and
+SIGCONT resumes it where it stood.
 
-`&` and `bg` are parsed, tracked, and refused with a reason. Running a
-job in the background means running it while the shell also runs, and
-there is nothing to schedule two things. The job goes in the table and
-`fg` runs it. Quietly running it in the foreground instead would look
-like `&` working, and the person would find out only when their prompt
-never came back.
+### `&`, `bg` and `fg`
 
-A stopped job holds the program area, so nothing else can start while
-one exists — there is one image area at 1 MB and one program stack, and
-a second program would load straight over a stopped one. `exec.c`
-refuses the spawn rather than leaving that in a comment. It goes away
-with an MMU.
+They really run things. This section used to be headed "what does not
+work yet": `&` and `bg` were parsed, tracked, and refused with a reason,
+because running a job in the background means running it while the shell
+also runs and there was nothing to schedule two things. There is now, so
+`&` starts the task and the shell does not `waitpid()` on it.
+
+```
+/$ spin calls &
+[3]  spin calls &
+/$ SPINNING-WITH-CALLS
+ps
+  PID  PPID  STATE  COMMAND
+    1     0  run    idle
+    2     1  run    sh
+    3     2  run    spin calls
+/$ jobs
+[3]  running  spin calls
+```
+
+A stopped job used to hold the one program area at 1 MB, so `exec.c`
+refused a second spawn while one existed. That went away with the MMU,
+exactly as this document said it would: every task has an address space
+of its own, a stopped job keeps its pages, and a new program gets
+different ones.
 
 ## Stopping the machine
 
@@ -812,6 +964,12 @@ FAT spells "the root".
 **8.3 names still apply.** `rc.local` is not a valid name here -- five
 characters of extension -- which is why the startup script is `/etc/rc`.
 
+**There is one working directory, not one per task.** `cwd` is a static
+in `fs/fat16.c`, which was right when the shell was the only thing that
+could run. It is the obvious next thing to move into `struct task`: as
+it stands, a `chdir()` from any task is a `chdir()` for all of them,
+including the shell whose prompt shows it.
+
 ## The filesystem
 
 FAT16, read and write, registered as the type `fat16` and mounted on
@@ -819,10 +977,14 @@ FAT16, read and write, registered as the type `fat16` and mounted on
 file on it with `mcopy` and the kernel reads it, and anything the kernel
 writes comes back off the image without the kernel running.
 
-Limits, none of which change a single call: the root directory only, 8.3
-names, FAT16 alone. Long-name entries the host wrote are skipped on a
+Limits, none of which change a single call: 8.3 names, FAT16 alone.
+"The root directory only" was one of them and is not any more — see
+**Directories** above. Long-name entries the host wrote are skipped on a
 scan rather than misread, so a file created with one is still visible by
-its short name and is not damaged. FAT12 and FAT32 are refused at mount
+its short name and is not damaged; writing one is not implemented, so
+every name this kernel creates goes through `name_to_83()` and a name
+that will not fit is refused with `-EINVAL` rather than silently
+truncated into a different file. FAT12 and FAT32 are refused at mount
 rather than misread as FAT16.
 
 Two things to know before editing `fs/fat16.c`:
@@ -867,19 +1029,57 @@ uses it yet; boot settings are the obvious tenant.
 
 ## Testing it
 
-`./fstest.sh` boots the kernel on a scratch image, drives a console
-session, and then checks the result with `mdir`, `mtype` and `fsck.fat`.
-The second half is the part that matters: a filesystem only the kernel
-can read would prove nothing. 30 checks.
+Four scripts, 94 checks between them, and each one boots a real kernel
+on a scratch image and drives a console session over the serial line:
 
-The device tests in [`../tests/`](../tests/) exercise the same hardware
-from bare metal, with no kernel underneath — including `t11-rtc` for the
-clock and NVRAM.
+| | | |
+|---|--:|--|
+| `./fstest.sh` | 39 | files, directories, programs, the console |
+| `./edittest.sh` | 27 | the editor, history, ctrl-C, ctrl-Z, jobs, shutdown |
+| `./vmtest.sh` | 15 | what a program cannot touch, and that a bad pointer is an error |
+| `./nettest.sh` | 13 | ARP, DHCP, ICMP and a TCP transfer bigger than the receive buffer |
+
+`fstest.sh` then checks the result with `mdir`, `mtype` and `fsck.fat`,
+and that second half is the part that matters: a filesystem only the
+kernel can read would prove nothing.
+
+The twelve device tests in [`../tests/`](../tests/) exercise the same
+hardware from bare metal, with no kernel underneath — including
+`t11-rtc` for the clock and NVRAM. 106 checks in the tree altogether.
+
+Everything any of them writes goes in `scratch/` at the top of the
+tree, which `make clean` removes.
 
 ## Faults
 
 Every vector except reset lands on one handler, which identifies itself
-from the format word the 68040 pushes and reports what it can:
+from the format word the 68040 pushes. **What it does next depends on
+where the fault came from**, and the saved SR's supervisor bit is the
+whole test.
+
+From **user mode**, it kills the program and nothing else. That is the
+first thing the MMU actually bought, and it only works because the
+kernel is intact: the exception came from a program, so the kernel's
+stack is its own, and the only thing that has to go is the address space
+of whatever ran off the end of itself.
+
+```
+/$ faulter device
+reading the UART at 0xff000000
+bus error at 0xff000000, pc=0x100006bc
+faulter: segmentation fault
+/$ hello after-the-faults
+hello from a program
+```
+
+The exit status is 139 — 128 plus `SIGSEGV` — which is what a shell
+reports for this anywhere else. Note what is *not* done: returning. The
+68040 pushes the address of the faulting instruction, so an `rte`
+re-runs it and faults again forever. There is no demand paging and no
+swap, so ending the program is the only honest answer.
+
+From **supervisor mode** it still panics, because there is nothing else
+it could safely do:
 
 ```
 *** exception 2: bus error
@@ -891,10 +1091,9 @@ from the format word the 68040 pushes and reports what it can:
 *** halted.
 ```
 
-Nothing is recoverable yet, so it stops — a silent hang is the one
-outcome worth ruling out. That report is what found the first real bug
-here: the memory probe walking off the end of RAM, faulting address in
-`a0`.
+A silent hang is the one outcome worth ruling out. That report is what
+found the first real bug here: the memory probe walking off the end of
+RAM, faulting address in `a0`.
 
 The one place a fault *is* handled is `memprobe.s`, which sizes RAM by
 writing to each megabyte boundary until one does not answer. The first
@@ -910,6 +1109,10 @@ handler.
 
 ```
 ls [-l]              list the directory
+cd [DIR]             change directory
+pwd                  where you are
+mkdir DIR...         make directories
+rmdir DIR...         remove empty ones
 cat [FILE...]        print files, or the terminal until ctrl-D
 hd FILE              hex dump, first 256 bytes
 cp SRC DST           copy a file
@@ -917,30 +1120,47 @@ mv SRC DST           rename a file
 rm FILE...           remove files
 stat FILE            size, mode and modification time
 df                   space used and available
+free                 physical memory, in pages
 echo TEXT            print a line
+clear                clear the screen — ctrl-L does it too
+test / [ ... ]       ask a question; the exit status answers
+source FILE / . FILE run a file of commands
+set                  the environment
+export NAME=VALUE    put something in it
+unset NAME...        take it out
 date [-s DATE [TIME]] show or set the clock
 uname [-a]           system name, or name and version
 uptime               how long the machine has been up
 console [NAME on|off] show or change where console output goes
 sync                 flush pending writes
-free                 physical memory, in pages
-ifconfig [A M [G]]   show or set the interface address
-dhcp                 ask the network for an address
-ping ADDR [N]        ICMP echo
-arp / arping ADDR    the address cache
-jobs                 list stopped and queued jobs
-fg [%N]              run a stopped or queued job
-bg [%N]              run one in the background — see Jobs, above
+ps                   every task on the machine
+kill [-SIG] PID      send a signal
+jobs                 this shell's jobs
+fg [%N]              run a stopped or queued job in the foreground
+bg [%N]              run one in the background
 history              the lines remembered so far
 halt                 stop the processor
 
 > FILE and >> FILE redirect output
-CMD &                queue a job
+CMD &                run a job in the background
+$NAME                expands to what `export` put there
 
-Anything else is looked up as a program on the disk and run —
-including `shutdown`, which stops the machine rather than the
-processor.
+Anything else is looked up on $PATH — which is /bin:. — and run.
+The network tools are PROGRAMS, not builtins: `ifconfig`, `ping` and
+`netstat` live in /BIN and run unprivileged like anything else, and
+`ifconfig dhcp` is what asks the network for an address. So does
+`shutdown`, which stops the machine rather than the processor.
 ```
+
+`ifconfig`, `ping`, `arp` and `dhcp` used to be builtins, which was
+honest while the shell was the only thing that could run. They moved out
+to [`../system/`](../system/) when programs became able to do the work
+themselves, and the move is the point: a network tool that needs nothing
+but system calls is a program, and leaving it in the shell would have
+made the shell special.
+
+`/etc/rc` runs at startup if it is there — an ordinary script, read by
+the same `source` the user can call.
 
 `cat > notes.txt` is how you write a file, because that is how a Unix
 user would already do it — which is why there is no "write a file"
@@ -960,15 +1180,14 @@ command. Errors go to descriptor 2 even when output is redirected.
 | `trap.c` | exception reporting |
 | `string.c` | `memcpy` and friends; there is no C library |
 | `errno.c` | error numbers as words, for every message the system prints |
-| `exec.c` | the ELF loader, running a program, stopping and resuming one |
-| `job.c` | the job table, and where ctrl-C and ctrl-Z land |
+| `exec.c` | the ELF loader, and starting a program as a task |
 | `edit.c` | the line editor and its history — a program, not a kernel facility |
 | `timer.c` | jiffies, and sleeping on them |
 | `fb.c` | /dev/fb0, and the drawing a driver did not do itself |
 | `tty.c` | the line discipline, and the fan-out to sinks |
 | `fbcon.c` | /dev/fbcon, the text console |
 | `font8x16.c` | the IBM PC font, and where it came from |
-| `execasm.s` | the stack switch into a program, the unwind out, and the context switch between |
+| `execasm.s` | the drop to user mode and the unwind back — **superseded** by `taskasm.s`; nothing calls it any more |
 | `probe.c` | CPU, FPU and memory — the parts with no driver |
 | `pmm.c` | the physical page allocator |
 | `vm.c` | page tables, address spaces, and turning the MMU on |
@@ -977,6 +1196,7 @@ command. Errors go to descriptor 2 even when output is redirected.
 | `taskasm.s` | the context switch, and the way into a new task |
 | `wait.c` | wait queues, semaphores, mutexes |
 | `signal.c` | raising, and acting on |
+| `random.c` | not cryptographic, and says so; TCP's initial sequence numbers |
 | `net/net.c` | frames in and out, and the receive ring |
 | `net/arp.c` | hardware addresses, and a cache |
 | `net/ip.c` | IPv4, and the internet checksum |
@@ -987,9 +1207,10 @@ command. Errors go to descriptor 2 even when output is redirected.
 | `net/socket.c` | a connection a program can hold |
 | `memprobe.s` | reads that survive a bus error, for memory and for absent chips |
 | `layercheck.sh` | the layering rule, enforced before every link |
-| `shell.c` | a program, reaching the kernel through `trap #0` (bar one command) |
+| `shell.c` | a program, reaching the kernel through `trap #0` and nothing else |
 | `version.c` | the version and build stamp, defined once |
 | `uapi.h` | what crosses the system call boundary |
+| `kernel.ld` | vectors at 0, text at 0x400, stack at the top of RAM |
 | `drivers/` | `ns16550.c` `i8042.c` `ata.c` `m48t59.c` `mfp.c` `sm501.c` `smc91c111.c` |
 | `fs/fat16.c` | FAT16, read and write |
 | `fstest.sh` | scripted session, verified with host tools |
@@ -997,6 +1218,6 @@ command. Errors go to descriptor 2 even when output is redirected.
 | `vmtest.sh` | memory protection: what a program cannot touch, and that a bad pointer is an error |
 | `nettest.sh` | ARP, DHCP, ICMP and a TCP transfer bigger than the receive buffer |
 
-Every one of them writes to `scratch/` at the top of the tree, which
-`make clean` removes.
-| `kernel.ld` | vectors at 0, text at 0x400, stack at the top of RAM |
+The programs are not here. [`../lib/`](../lib/) is what they link
+against, [`../system/`](../system/) is what goes in `/BIN`, and
+[`../apps/`](../apps/) is everything else.

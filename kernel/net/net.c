@@ -62,11 +62,6 @@ static struct waitq net_waitq;
  * it.
  */
 
-static void net_poll_idle(void)
-{
-    net_poll();
-}
-
 struct netif *net_if(void)
 {
     return &iface;
@@ -95,11 +90,13 @@ int net_init(void)
     ring_head = ring_tail = 0;
 
     /*
-     * Answer while nobody is asking. Without this the machine responds
-     * to a ping only when it happens to be waiting for something of its
-     * own, which is not what being on a network means.
+     * Nothing to register here any more. The terminal used to be given
+     * an idle hook that called net_poll(), because otherwise the machine
+     * answered a ping only while it happened to be waiting for something
+     * of its own. The terminal has no idle spin now -- it sleeps on a
+     * wait queue -- and the tick drains the card unconditionally, so the
+     * hook had stopped being called and was doing nothing.
      */
-    tty_set_idle(net_poll_idle);
     return 0;
 }
 
