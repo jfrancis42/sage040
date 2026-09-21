@@ -8,17 +8,23 @@
 #include "string.h"
 
 /*
- * Enough bitmap for 64 MB of RAM at 4 KB a page.
+ * The bitmap lives at the FRONT OF THE POOL IT DESCRIBES, and the pages
+ * it occupies are marked used before anything else can be handed out.
  *
- * Static rather than carved out of the memory it describes, which is the
- * usual bootstrap knot: the allocator would have to allocate its own
- * bookkeeping before it could allocate anything. Two kilobytes of .bss
- * unties it, and a 68040 machine with more than 64 MB is not the machine
- * this is.
+ * That is the usual bootstrap knot -- the allocator has to allocate its
+ * own bookkeeping before it can allocate anything -- and it is untied
+ * here by not allocating: the size is known from the range, so the
+ * bitmap is simply placed at the bottom of that range and the
+ * corresponding bits are set by hand.
+ *
+ * It was a static array in .bss sized for 64 MB, with the reasoning
+ * that a 68040 machine with more than that is not the machine this is.
+ * That was true of the machine and false of the emulator, which accepts
+ * up to 2 GB -- and the failure was silent, because pmm_init() clamped
+ * to MAX_PAGES and reported the clamped figure as though it were the
+ * memory found. Scaling it costs one page per 128 MB.
  */
-#define MAX_PAGES   (64UL * 1024 * 1024 / PAGE_SIZE)
-
-static u8  bitmap[MAX_PAGES / 8];
+static u8 *bitmap;
 static u32 base;                /* physical address of page 0 of the pool */
 static u32 total;
 static u32 used;
@@ -40,9 +46,8 @@ static void clear_bit(u32 i)
 
 void pmm_init(u32 first, u32 last)
 {
-    u32 pages;
+    u32 pages, map_bytes, map_pages, i;
 
-    memset(bitmap, 0, sizeof(bitmap));
     used = 0;
 
     base = PAGE_ALIGN_UP(first);
@@ -50,14 +55,36 @@ void pmm_init(u32 first, u32 last)
 
     if (last <= base) {
         total = 0;
+        bitmap = 0;
         return;
     }
 
     pages = (last - base) / PAGE_SIZE;
-    if (pages > MAX_PAGES) {
-        pages = MAX_PAGES;
+
+    /*
+     * One bit per page, rounded to whole pages, taken off the front.
+     * Written through the identity map: the MMU is not on yet, so the
+     * address is physical either way.
+     */
+    map_bytes = (pages + 7) / 8;
+    map_pages = (map_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    if (map_pages >= pages) {
+        total = 0;
+        bitmap = 0;
+        return;
     }
+
+    bitmap = (u8 *)base;
+    memset(bitmap, 0, map_pages * PAGE_SIZE);
+
     total = pages;
+
+    /* The bitmap's own pages are not available. */
+    for (i = 0; i < map_pages; i++) {
+        set_bit(i);
+        used++;
+    }
 }
 
 u32 pmm_alloc(void)

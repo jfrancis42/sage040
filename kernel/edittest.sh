@@ -25,6 +25,9 @@ set -u
 
 cd "$(dirname "$0")"
 
+# How big the machine is. One place, shared with the Makefiles.
+. "$(dirname "$0")/../machine.conf"
+
 M68K_PREFIX=${M68K_PREFIX:-$HOME/m68k/install}
 SAGE_QEMU=${SAGE_QEMU:-$HOME/m68k/sage040-qemu}
 QEMU=${QEMU:-$SAGE_QEMU/bin/qemu-system-m68k}
@@ -245,7 +248,7 @@ mkfifo "$SCRATCH/in.fifo"
 # No -no-reboot here would make `shutdown` restart the machine instead of
 # ending it, which is the whole thing being tested.
 #
-"$QEMU" -M sage040 -cpu m68040 -m 4 \
+"$QEMU" -M sage040 -cpu m68040 -m "$RAM_MB" \
     -kernel ../bootrom/bootrom.elf \
     -drive file="$DISK",format=raw,if=ide \
     -display none -no-reboot \

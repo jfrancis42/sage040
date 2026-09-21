@@ -1300,8 +1300,11 @@ older copy should know which way round it is now.
 - **Map the framebuffer.** No `mmap`, so drawing goes through the
   `FBIO_*` ioctls rather than through the memory itself.
 - **Wait on more than one thing.** There is no `select` or `poll`.
-- **Use a pipe, or redirect.** No `pipe`, `dup`, `dup2` or `fcntl`, and
-  so no shell pipelines either.
+- **Use a pipe.** No `pipe`, `dup2` or `fcntl`, so no shell pipelines
+  and no input redirection. Output redirection with `>` works for the
+  shell's own builtins and **silently does nothing for a program** --
+  the shell swaps its own output descriptor and a spawned program never
+  sees it.
 - **Start a child and talk to it.** `spawn` creates a task, but without
   pipes there is no way to communicate with one.
 - **Use long file names.** 8.3 only.

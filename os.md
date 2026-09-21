@@ -642,8 +642,14 @@ no `sigprocmask` from user mode.
 not change. This is the hard limit on what can be ported, and `emacs.md`
 is an entire document about that one line.
 
-**No pipes, no `dup`, no `fcntl`, no `select` or `poll`.** So no shell
-pipelines and no redirection.
+**No pipes, no `dup2`, no `fcntl`, no `select` or `poll`.** So no shell
+pipelines, and no input redirection.
+
+Output redirection with `>` and `>>` is real but **only for builtins**:
+the shell swaps its own output descriptor, which a spawned program
+never sees. `hello > file` prints to the terminal and leaves an empty
+file, which is worse than not having it. Redirecting a program's output
+needs `dup2` on the child's descriptor table before it runs.
 
 **No users, no permissions, no `chmod` or `chown`.** FAT16 has nowhere to
 put them.

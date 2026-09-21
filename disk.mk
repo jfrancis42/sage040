@@ -22,8 +22,9 @@
 
 TOPDIR ?= .
 
+include $(TOPDIR)/machine.conf
+
 DISK       ?= $(TOPDIR)/hd.img
-DISK_MB    ?= 100
 PART_LBA   ?= 2048
 KERNEL_LBA ?= 64
 VOLUME     ?= SAGE040

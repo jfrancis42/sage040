@@ -712,17 +712,24 @@ memory, and there is no C library** — and the order below reflects that.
 Nothing after *A C library* is blocked on anything except the items
 above it.
 
+Everything here is intended to be done. There is no "deliberately not
+doing this" section any more: paging, shared libraries and the
+remaining TCP options used to sit in one, and each was justified by the
+machine being small. The machine is not small now — 64 MB of RAM and a
+512 MB disk — so the justification went with it.
+
 | | |
 |---|---|
 | Near-term | interrupt-driven input, a per-task cwd, a resolver, the NVRAM, static limits |
 | **Memory** | `mmap`, `brk`, `sbrk`, `malloc`, and a bigger address space |
 | **A C library** | picolibc or newlib over a dozen syscall stubs |
 | Pipelines | `pipe`, `dup2`, `SIGPIPE`, and `\|` `>` `>>` `<` in the shell |
-| The console | VT100 emulation, `TIOCGWINSZ`, termcap, curses |
+| The console | VT102 emulation, `TIOCGWINSZ`, termcap, curses |
 | POSIX surface | signal handlers, `select`, timers, subprocesses, and a dozen small calls |
 | Sockets | the rest of the Linux socket API, and fixing the signatures |
 | Long file names | VFAT, and why not a different filesystem |
 | `fsck` | and a clean-unmount flag to say when it is needed |
+| TCP | window scaling, timestamps, SACK, keepalives, a real `TIME_WAIT` |
 | Shared libraries | downstream of `mmap` and a libc |
 | Paging | downstream of `mmap`, and what makes a big address space affordable |
 
@@ -861,7 +868,7 @@ the VFS or a distinct object that descriptors can point at. The
 refcounted open-file layer already in `vfs.c` makes the second
 straightforward.
 
-### The console: VT100 emulation, curses, and termcap
+### The console: VT102 emulation, curses, and termcap
 
 Today `fbcon.c` understands carriage return, backspace, tab and newline,
 plus exactly enough of `ESC[2J`, `ESC[H` and `ESC[K` for `clear` and
@@ -874,7 +881,18 @@ That rule has held well for a line editor and will not survive a
 full-screen program. Anything with a cursor that moves in two dimensions —
 an editor, a pager, `top`, a form — needs real addressing. In layers:
 
-1. **A fuller ANSI/VT100 emulation in `fbcon.c`.** At minimum
+1. **A VT102 emulation in `fbcon.c`.** VT102 rather than bare VT100,
+   and the reason is practical rather than nostalgic: VT102 adds insert
+   and delete of lines and characters (`ESC[L`, `ESC[M`, `ESC[P`,
+   `ESC[@`) to VT100's cursor addressing, and those four are exactly
+   what an editor uses to avoid repainting a screen when a line is
+   inserted or a character typed mid-line. On a console where every
+   glyph is 128 pixels drawn one at a time, that is the difference
+   between usable and not. `vt102` is also a terminal type every
+   termcap and terminfo database already knows, so nothing has to be
+   invented or shipped to describe it.
+
+   At minimum
    `ESC[<row>;<col>H` for absolute positioning, `ESC[A`/`B`/`C`/`D` for
    relative, `ESC[J` and `ESC[K` with all three parameter values,
    `ESC[m` for attributes, and `ESC[s`/`ESC[u` for save and restore. A
@@ -1136,63 +1154,75 @@ Being able to run the *host's* `fsck.fat` over the same image afterwards
 is the thing that makes this testable, and it is the same argument that
 chose FAT16 in the first place.
 
+### TCP's remaining options
+
+Previously listed as deliberate omissions and now on the list to do,
+because "a peer works fine without them" is an argument about
+correctness and these are about throughput and safety:
+
+- **Window scaling** (RFC 7323). The receive buffer is 4 KB and `cwnd`
+  is clamped at 32 KB, so this is only worth having once those grow --
+  but they should grow, now that the machine has 64 MB rather than 4.
+  Raising the buffers is the first half of this item and the cheaper
+  half.
+- **Timestamps**, and **PAWS** on top of them. Timestamps also give a
+  better RTT sample per round trip than Karn's algorithm can.
+- **SACK** (RFC 2018). The reassembly queue already holds out-of-order
+  segments, so the receiver half of SACK is mostly a matter of
+  reporting what it is already tracking.
+- **Keepalives.**
+- **A real `TIME_WAIT`.** It is 10 seconds; the specification says 2
+  MSL, which is minutes. This is the genuine shortcut in the list: a
+  quickly reused port can accept a stale segment from a previous
+  connection. It interacts with `SO_REUSEADDR`, so do both together.
+
 ### Shared libraries
 
-Everything is statically linked today, and each of the seven programs in
-`/bin` and the root carries its own copy of `ulib`. At ~12 KB per program
-that is not yet a real cost, and it will become one as soon as there is a
-libc worth the name.
+Moved up from "deliberately not doing this". Everything is statically
+linked and each program carries its own copy of `ulib` at ~12 KB, which
+is not yet a real cost and becomes one the moment there is a libc worth
+the name -- a picolibc-linked editor is not 12 KB.
 
-What it would take, and the decisions inside it:
+What it needs, and the order:
 
-- **Position-independent code, or load-time relocation.** The 68040 has
-  PC-relative addressing with a 16-bit displacement, and `-fPIC` on m68k
-  uses a GOT reached through `a5`. That is the conventional route and GCC
-  supports it.
-- **A dynamic linker**, which is a program that runs before the program —
-  it needs `mmap` to place segments, and `mmap` does not exist.
-- **`.dynamic`, `.got`, `.plt` and symbol versioning** in the ELF loader,
-  which currently reads program headers and nothing more.
-- **Sharing the physical pages** between address spaces, which the page
-  allocator and `vm.c` can already express but nothing asks them to.
-
-The honest assessment is that this is downstream of `mmap` and of a real
-libc, and that it buys little until there is a libc big enough to be worth
-not copying. It is on the list because the answer to "why is every program
-12 KB" should be a decision rather than an omission.
+1. **Position-independent code.** The 68040 has PC-relative addressing
+   with a 16-bit displacement, and `-fPIC` on m68k reaches the GOT
+   through `a5`. Conventional, and GCC supports it.
+2. **`mmap`**, to place segments. Downstream of *Memory* above.
+3. **`.dynamic`, `.got`, `.plt`** in the ELF loader, which currently
+   reads program headers and nothing else.
+4. **A dynamic linker** -- a program that runs before the program.
+5. **Sharing the physical pages** between address spaces, which `vm.c`
+   can express and nothing currently asks it to.
 
 ### Paging and swapping
 
-There is no demand paging and nothing is ever written to backing store. A
-program's pages are all mapped at exec and stay resident until it exits;
-an access fault kills the program rather than filling a page.
+Also moved up. There is no demand paging and nothing is ever written to
+backing store: a program's pages are all mapped at exec and stay
+resident until it exits, and an access fault kills the program rather
+than filling a page.
 
-The machine has what this needs: a full 68040 MMU, a disk, and an access
-fault handler that already distinguishes user from kernel. What it does
-not have is any of the bookkeeping:
+The machine has what this needs -- a full 68040 MMU, a disk, and a fault
+handler that already distinguishes user from kernel. What it does not
+have is the bookkeeping:
 
-- a page-fault path that can **resolve** a fault rather than only report
-  it — and note the 68040 pushes the address of the *faulting
-  instruction*, so returning with `rte` correctly re-runs it, which is
-  exactly what demand paging wants and exactly what the current handler
-  cannot allow
-- a swap area, either a partition or a file
-- page-replacement state: the MMU's used and modified bits are there for
-  this, and `vm.c` already knows not to touch indirect descriptors
+- a fault path that can **resolve** a fault rather than only report it.
+  Note that the 68040 pushes the address of the *faulting instruction*,
+  so returning with `rte` re-runs it -- which is exactly what demand
+  paging wants and exactly what the current handler cannot allow.
+- a swap area, a partition or a file
+- page-replacement state. The MMU's used and modified bits are there for
+  this, and `vm.c` already knows not to touch indirect descriptors.
 - a reverse mapping, or a scan, to find what to evict
-- pinning, so that a page a driver is reading into cannot be taken
+- pinning, so a page a driver is reading into cannot be taken
 
-Worth doing mainly because it is the natural companion to a larger
-address space: 256 MB of virtual address space on a 4 MB machine is only
-useful if the unused parts need not be resident. Sequenced after `mmap`,
-which shares most of the same machinery.
+The argument for doing it is that it is the natural companion to a large
+address space: 256 MB of virtual space is only useful if the unused
+parts need not be resident. Sequenced after `mmap`, which shares most of
+the machinery.
 
 ### Loose ends
 
-- **TCP's remaining options:** window scaling, SACK, timestamps and PAWS,
-  and keepalives. All are negotiated and a peer works fine without them.
-  **`TIME_WAIT` is 10 seconds rather than 2 MSL**, which is a real
-  shortcut and the one most likely to matter.
 - **Consider upstreaming** the `sm501.c` build fix and the IACK callback.
   Both are plausibly of general use, which is why `qemu-patch/` is
   GPL-2.0-or-later.
@@ -1208,7 +1238,7 @@ which shares most of the same machinery.
 3. **Pipes, `dup2` and redirection.** The shell can already run several
    programs; this is what makes running them *together* possible, and it
    is the largest visible gain for the least new machinery.
-4. **A fuller VT100 emulation in `fbcon.c`**, which is what a full-screen
+4. **A VT102 emulation in `fbcon.c`**, which is what a full-screen
    program needs and what the line editor's `\r`-and-`\b` rule cannot
    stretch to cover.
 5. **Long file names**, so the filesystem stops being the thing that

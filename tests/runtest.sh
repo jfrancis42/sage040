@@ -14,6 +14,10 @@
 set -u
 cd "$(dirname "$0")"
 t="$1"
+
+# How big the machine is. One place, shared with the Makefiles.
+. "$(dirname "$0")/../machine.conf"
+
 SAGE_QEMU="$HOME/m68k/sage040-qemu/bin/qemu-system-m68k"
 [ -x "$SAGE_QEMU" ] || SAGE_QEMU=qemu-system-m68k
 QEMU="${QEMU:-$SAGE_QEMU}"
@@ -61,7 +65,7 @@ fi
 mon="$SCRATCH/$t.mon"
 rm -f "$mon"
 
-"$QEMU" -M sage040 -cpu m68040 -m 4 \
+"$QEMU" -M sage040 -cpu m68040 -m "$RAM_MB" \
     -kernel "$t.elf" \
     -monitor "unix:$mon,server,nowait" \
     -serial "file:$out" \

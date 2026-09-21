@@ -22,7 +22,10 @@ OBJDUMP   := $(TOOLCHAIN)-objdump
 OBJCOPY   := $(TOOLCHAIN)-objcopy
 SIZE      := $(TOOLCHAIN)-size
 
-MACHINE   := -M sage040 -cpu m68040 -m 4
+TOPDIR := ..
+include $(TOPDIR)/machine.conf
+
+MACHINE   := -M sage040 -cpu m68040 -m $(RAM_MB)
 
 CPUFLAGS  := -mcpu=68040
 CFLAGS    := $(CPUFLAGS) -ffreestanding -nostdlib -nostdinc -O2 \

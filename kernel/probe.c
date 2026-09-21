@@ -66,7 +66,17 @@ u32 probe_memory(void)
 
     memory_sentinel = 0x5a5aa5a5;
 
-    for (mb = 1; mb < 64; mb++) {
+    /*
+     * The machine model accepts up to 2 GB, so look that far. This used
+     * to stop at 64 and therefore reported 64 MB for anything larger --
+     * silently, because the probe's job is to find where memory ENDS
+     * and a limit reached looks exactly like an end found.
+     *
+     * A megabyte per step is 2048 probes at worst, each a write, a read
+     * and a compare. That is nothing next to the disk spin-up already
+     * in the boot path.
+     */
+    for (mb = 1; mb < 2048; mb++) {
         if (!mem_probe((volatile void *)(mb * 0x100000UL),
                        0xc0de0000UL | mb)) {
             break;                      /* nothing answers here */

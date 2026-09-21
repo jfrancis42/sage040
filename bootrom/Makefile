@@ -25,7 +25,10 @@ OBJCOPY := $(TOOLCHAIN)-objcopy
 OBJDUMP := $(TOOLCHAIN)-objdump
 SIZE    := $(TOOLCHAIN)-size
 
-MACHINE := -M sage040 -cpu m68040 -m 4
+TOPDIR := ..
+include $(TOPDIR)/machine.conf
+
+MACHINE := -M sage040 -cpu m68040 -m $(RAM_MB)
 
 SUP     := ../tests
 CPUFLAGS := -mcpu=68040
@@ -40,7 +43,6 @@ BOOT_SECTORS ?= 256
 
 # The disk the machine boots from: a real MS-DOS disk in the project root,
 # shared with the kernel and with the host. See ../disk.mk.
-TOPDIR := ..
 include $(TOPDIR)/disk.mk
 
 # disk.mk defines a target before this file does, so say which is the

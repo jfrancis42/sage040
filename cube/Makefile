@@ -20,7 +20,10 @@ CC        := $(TOOLCHAIN)-gcc
 OBJDUMP   := $(TOOLCHAIN)-objdump
 SIZE      := $(TOOLCHAIN)-size
 
-MACHINE   := -M sage040 -cpu m68040 -m 4
+TOPDIR := ..
+include $(TOPDIR)/machine.conf
+
+MACHINE   := -M sage040 -cpu m68040 -m $(RAM_MB)
 
 # CPU speed model.  QEMU's -icount charges every guest instruction
 # 2^SPEED nanoseconds, so the machine runs at 10^9 / 2^SPEED instructions

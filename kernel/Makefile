@@ -33,7 +33,7 @@ include $(TOPDIR)/disk.mk
 # default rather than letting include order decide it.
 .DEFAULT_GOAL := all
 
-MACHINE := -M sage040 -cpu m68040 -m 4
+MACHINE := -M sage040 -cpu m68040 -m $(RAM_MB)
 
 # Hardware register definitions are shared with the device tests.
 SUP := ../tests
