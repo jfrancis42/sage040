@@ -142,7 +142,7 @@ MC146818 — see §1.
 Every device has a bare-metal test that exercises the real hardware path.
 `make run` in `tests/`: **11 programs, all passing.** The kernel adds a
 twelfth, `kernel/fstest.sh`, which drives a console session and then checks
-the result with the host's own `mdir`, `mtype` and `fsck.fat` — 26 checks,
+the result with the host's own `mdir`, `mtype` and `fsck.fat` — 29 checks,
 including loading and running a program from the disk, the tick running,
 and a program drawing through `/dev/fb0`.
 
@@ -177,10 +177,11 @@ and a program drawing through `/dev/fb0`.
 | Programs (§10) — ELF loader, `spawn`, argv, exit status | ✅ done — `user/` |
 | System tick — MC68901 timer D, HZ=100, `nanosleep`, `times` | ✅ done |
 | Framebuffer — `/dev/fb0`, point/line/rect/clear/flip, double buffered | ✅ done |
+| Text console (§10) — `/dev/fbcon`, 80×30, IBM PC 8×16 font | ✅ done |
 | Ethernet driver — `struct netdev`, registered as `eth0` | ✅ written, only the probe is exercised |
 | Shell — Linux-named commands, redirection, runs programs | ✅ done |
 | Preemption, more than one program, user mode, virtual memory | unblocked — ordinary OS work now |
-| TCP/IP (§8), a text console on the framebuffer | not started |
+| TCP/IP (§8) | not started |
 
 **Every hardware dependency is satisfied.** What remains is operating system,
 not emulator.
@@ -455,6 +456,27 @@ cannot clear 640×480 and hold a frame rate, 37 fps against the engine's
 Double buffered. `FBIO_FLIP` is one register write, so the change lands
 between frames rather than halfway down one.
 
+### The text console
+
+`/dev/fbcon`: 80 columns by 30 rows of the IBM PC 8×16 font, green on
+black — 640×480 over the character cell, which is the geometry a VGA text
+mode had for the same reason. `console fb|both|serial` moves the kernel's
+messages and the standard descriptors between it and the serial line.
+
+It writes and does not read. Nothing on this machine types except the
+serial port, so a read of `/dev/fbcon` goes to the serial terminal. That
+is the machine, not a gap in the console — but it did force one thing to
+move: **echo belongs to the console rather than to the UART.** The line
+discipline had been echoing through its own write, which meant that with
+the console on the screen you typed blind.
+
+Scrolling is a single `copy()` — the blitter moves 29 rows in one
+operation. Without one, `copy` is left null and the console redraws from
+its own character buffer, which is why `fbdev` has the operation at all.
+
+The font is the actual VGA ROM font, extracted rather than redrawn; see
+`kernel/font8x16.c` for its provenance and licence.
+
 ### Devices
 
 Six classes, each with one interface: `chardev` (a byte stream),
@@ -519,9 +541,10 @@ memory probe walking off the end of RAM, faulting address in `a0`.
    in tests and not in a driver is the MFP's USART (`t9`) and the MMU
    (`t5`) — the second of which is not a driver at all but the thing
    processes will need.
-2. **A text console on the framebuffer.** Glyphs, then scrolling, then a
-   second `chardev` that could stand in for the serial console. The
-   drawing primitives are there; what is missing is a font.
+2. **A keyboard.** The text console can only write: there is nothing on
+   this machine that types except the serial line, so `/dev/fbcon` hands
+   its reads to the serial terminal. A PS/2 controller (8042) would fit
+   the design rule and is the obvious next device.
 3. **A scheduler.** The tick exists and drives `nanosleep`; what it does not
    yet do is preempt anything, because there is only one thing to run.
 4. **An interrupt-driven console.** The UART's IRQ already reaches MFP channel

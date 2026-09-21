@@ -28,10 +28,13 @@
 #include "errno.h"
 #include "time.h"
 #include "timer.h"
+#include "console.h"
+#include "fbcon.h"
+#include "dev.h"
 #include "string.h"
 
 #define LINE_MAX    128
-#define MAX_ARGS    8
+#define MAX_ARGS    16
 #define IOBUF_SIZE  512
 #define OUTBUF_SIZE 256
 
@@ -165,6 +168,12 @@ static void err_usage(const char *usage)
  * Split the line in place, pulling out a trailing > or >> redirection.
  * Returns the argument count, or -1 if the redirection has no target.
  */
+/*
+ * Returns -1 for a malformed redirection and -2 for more arguments than
+ * fit. Truncating instead would silently drop the tail of a command --
+ * `echo` with too many words printed some of them and looked like it had
+ * worked, which is a worse failure than refusing.
+ */
 static int split(char *s, const char **redir, int *append)
 {
     int argc = 0;
@@ -172,7 +181,7 @@ static int split(char *s, const char **redir, int *append)
     *redir = 0;
     *append = 0;
 
-    while (*s && argc < MAX_ARGS) {
+    while (*s) {
         char *tok;
 
         while (*s == ' ' || *s == '\t') {
@@ -218,6 +227,9 @@ static int split(char *s, const char **redir, int *append)
             continue;
         }
 
+        if (argc == MAX_ARGS) {
+            return -2;
+        }
         argv[argc++] = tok;
     }
     return argc;
@@ -267,6 +279,7 @@ static void cmd_help(void)
         "date -s DATE [TIME]  set them: YYYY-MM-DD and HH:MM[:SS]\n"
         "uname [-a]           system name, or name and version\n"
         "uptime               how long the machine has been up\n"
+        "console [WHERE]      serial, fb, or both\n"
         "sync                 flush pending writes to the disk\n"
         "halt                 stop the machine\n"
         "\n"
@@ -682,6 +695,64 @@ static void cmd_date(int argc, char **args)
 }
 
 /* ---------------------------------------------------------------- */
+/* Where the console is                                              */
+/* ---------------------------------------------------------------- */
+
+/*
+ * Move the console between the serial line and the screen.
+ *
+ * "both" is the framebuffer with the serial console mirrored, not two
+ * consoles: input still comes from the serial line whichever is chosen,
+ * because that is the only thing on this machine that can type.
+ */
+static void cmd_console(int argc, char **args)
+{
+    struct chardev *serial = dev_find_char("console");
+    struct chardev *screen = fbcon_device();
+
+    if (argc == 1) {
+        struct chardev *now = console_get();
+
+        out_puts("console is ");
+        out_puts(now ? now->name : "nowhere");
+        out_puts("\n  serial   the NS16550A, in and out\n");
+        if (screen) {
+            out_puts("  fb       the framebuffer, with input still from "
+                     "the serial line\n");
+            out_puts("  both     the framebuffer, mirrored to the serial "
+                     "line\n");
+        } else {
+            out_puts("  (no framebuffer console on this machine)\n");
+        }
+        return;
+    }
+
+    if (strcmp(args[1], "serial") == 0) {
+        if (!serial) {
+            err_puts("console: no serial console\n");
+            return;
+        }
+        fbcon_mirror(0);
+        out_flush();
+        console_use(serial);
+        return;
+    }
+
+    if (strcmp(args[1], "fb") == 0 || strcmp(args[1], "both") == 0) {
+        if (!screen) {
+            err_puts("console: no framebuffer console\n");
+            return;
+        }
+        fbcon_mirror(strcmp(args[1], "both") == 0);
+        out_flush();
+        console_use(screen);
+        return;
+    }
+
+    err_usage("console [serial|fb|both]");
+}
+
+/* ---------------------------------------------------------------- */
 
 static int need(int argc, int want, const char *usage)
 {
@@ -746,8 +817,12 @@ void shell(void)
         line[n] = '\0';
 
         argc = split(line, &redir, &append);
-        if (argc < 0) {
+        if (argc == -1) {
             err_puts("syntax error: > needs a file name\n");
+            continue;
+        }
+        if (argc == -2) {
+            err_puts("too many arguments\n");
             continue;
         }
         if (argc == 0) {
@@ -817,6 +892,9 @@ void shell(void)
 
         } else if (strcmp(argv[0], "uname") == 0) {
             cmd_uname(argc, argv);
+
+        } else if (strcmp(argv[0], "console") == 0) {
+            cmd_console(argc, argv);
 
         } else if (strcmp(argv[0], "uptime") == 0) {
             u32 t = sys_times();

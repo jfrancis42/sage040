@@ -106,6 +106,10 @@ printf '%s\n' \
   'nosuchprogram' \
   'BIG.TXT' \
   'uptime' \
+  'console fb' \
+  'echo drawn on the framebuffer' \
+  'console serial' \
+  'echo back on the serial line' \
   'fbtest 1' \
   'date -s 2001-02-03 04:05:06' \
   'date' \
@@ -199,6 +203,18 @@ check "the MC68901 registered as the system timer" $?
 
 contains "$LOG" "SM501 as /dev/fb0"
 check "the framebuffer registered as a device" $?
+
+contains "$LOG" "/dev/fbcon, 80x30 of IBM PC 8x16"
+check "the text console came up at 80x30" $?
+
+# With the console moved to the screen, output stops appearing on the
+# serial line -- which is the whole point, and is checkable: the echo in
+# between must be missing and the one after it must be back.
+grep -q "drawn on the framebuffer" "$LOG"
+check "output went to the screen, not the serial line" $((1 - $?))
+
+contains "$LOG" "back on the serial line"
+check "the console came back to the serial line" $?
 
 contains "$LOG" "fbtest: drawn, holding"
 check "a program drew through /dev/fb0 without error" $?

@@ -231,6 +231,18 @@ int main(int argc, char **argv)
         close(fb);
         return 1;
     }
+    /*
+     * Ask for double buffering. It is not the default state of the
+     * framebuffer -- the text console turns it off, because a console
+     * draws a character at a time and each one has to appear -- and
+     * whatever ran last leaves it however it left it.
+     */
+    if (ioctl(fb, FBIO_DOUBLE, 1) < 0) {
+        eputs("cube: /dev/fb0 cannot double buffer\n");
+        close(fb);
+        return 1;
+    }
+
     cx = (int)info.width / 2;
     cy = (int)info.height / 2;
 

@@ -68,6 +68,8 @@
 #define FBIO_FLIP     0x4606    /* show the drawn buffer              */
 #define FBIO_SYNC     0x4607    /* wait for the blitter               */
 #define FBIO_PALETTE  0x4608    /* struct fb_palette in               */
+#define FBIO_COPY     0x4609    /* struct fb_copy in                  */
+#define FBIO_DOUBLE   0x460A    /* double buffering on/off, by value  */
 
 struct fb_info {
     u32 width;
@@ -98,6 +100,12 @@ struct fb_rect {
     s32 w, h;
     u32 colour;
     u32 filled;
+};
+
+struct fb_copy {
+    s32 sx, sy;                 /* where from                         */
+    s32 dx, dy;                 /* where to                           */
+    s32 w, h;
 };
 
 struct fb_palette {

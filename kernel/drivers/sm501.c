@@ -53,6 +53,7 @@
 
 static u32 back = FB1_OFFSET;   /* the buffer being drawn into */
 static u32 front = FB0_OFFSET;
+static int double_buffered = 1;
 
 static int sm501_sync(struct fbdev *f)
 {
@@ -179,14 +180,83 @@ static int sm501_rect(struct fbdev *f, int x, int y, int w, int h,
  *
  * One register write, then the two buffers change roles. The display
  * controller latches the address, so nothing is torn.
+ *
+ * Single buffered, there is nothing to show -- drawing already went
+ * straight to the visible buffer -- so this does nothing rather than
+ * failing, and a program that flips either way works under both.
  */
 static int sm501_flip(struct fbdev *f)
 {
     (void)f;
+    if (!double_buffered) {
+        return 0;
+    }
     SM501_WR(SM501_PANEL_FB_ADDR, back);
     front = back;
     back = (back == FB0_OFFSET) ? FB1_OFFSET : FB0_OFFSET;
     return 0;
+}
+
+/*
+ * Draw straight to what is on screen, or to the hidden buffer.
+ *
+ * A text console wants the first: it draws one character at a time and
+ * each has to appear as it goes, with no frame boundary to flip at.
+ * Anything animated wants the second. Switching to single buffering
+ * points drawing at whatever is currently visible, so the text console
+ * does not have to know which of the two that is.
+ */
+static int sm501_setdouble(struct fbdev *f, int on)
+{
+    (void)f;
+    double_buffered = on ? 1 : 0;
+    if (!double_buffered) {
+        back = front;
+    } else if (back == front) {
+        back = (front == FB0_OFFSET) ? FB1_OFFSET : FB0_OFFSET;
+    }
+    return 0;
+}
+
+/*
+ * Move a rectangle, with the blitter.
+ *
+ * Scrolling a console is one of these, and doing it with the CPU would
+ * be 300 KB of reads and writes per line. ROP 0xcc is a plain source
+ * copy; bit 15 of the control word clear selects the three-operand ROP
+ * set, which is the one 0xcc belongs to.
+ *
+ * Only ever called to move a region UP the screen, which is a forward
+ * copy and safe when source and destination overlap. The chip has a
+ * right-to-left bit for the other direction; nothing needs it yet, so
+ * moving down is refused rather than done wrongly.
+ */
+static int sm501_copy(struct fbdev *f, int sx, int sy, int dx, int dy,
+                      int w, int h)
+{
+    if (w <= 0 || h <= 0) {
+        return -EINVAL;
+    }
+    if (sx < 0 || sy < 0 || dx < 0 || dy < 0 ||
+        (u32)(sx + w) > f->width || (u32)(sy + h) > f->height ||
+        (u32)(dx + w) > f->width || (u32)(dy + h) > f->height) {
+        return -EINVAL;
+    }
+    if (dy > sy || (dy == sy && dx > sx)) {
+        return -ENOSYS;         /* would need the right-to-left bit */
+    }
+
+    SM501_WR(SM501_2D_SRC_BASE, back);
+    SM501_WR(SM501_2D_DST_BASE, back);
+    SM501_WR(SM501_2D_SOURCE, ((u32)sx << 16) | (u32)sy);
+    SM501_WR(SM501_2D_DEST, ((u32)dx << 16) | (u32)dy);
+    SM501_WR(SM501_2D_DIMENSION, ((u32)w << 16) | (u32)h);
+    SM501_WR(SM501_2D_PITCH, (f->width << 16) | f->width);
+    SM501_WR(SM501_2D_STRETCH, SM501_2D_FMT_8BPP);
+    SM501_WR(SM501_2D_CONTROL,
+             SM501_2D_START | SM501_2D_CMD_BITBLT | 0xccUL);
+
+    return sm501_sync(f);
 }
 
 /* 0x00RRGGBB in, and the chip takes it in that order. */
@@ -252,6 +322,8 @@ static struct fbdev sm501_fb = {
     sm501_line,
     sm501_rect,
     sm501_flip,
+    sm501_copy,
+    sm501_setdouble,
     sm501_sync,
     sm501_palette,
     0,

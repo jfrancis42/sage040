@@ -34,6 +34,7 @@
 #include "time.h"
 #include "timer.h"
 #include "fb.h"
+#include "fbcon.h"
 #include "drivers/drivers.h"
 
 static void banner(void)
@@ -179,6 +180,20 @@ static void start_drivers(void)
             kputc('x');
             kputdec(f->bpp);
             kputs(", double buffered\n");
+
+            err = fbcon_init();
+            if (err < 0) {
+                kputs("            no text console: ");
+                kputs(strerror(err));
+                kputc('\n');
+            } else {
+                status("fbcon");
+                kputs("/dev/fbcon, ");
+                kputdec((u32)fbcon_cols());
+                kputc('x');
+                kputdec((u32)fbcon_rows());
+                kputs(" of IBM PC 8x16, green on black\n");
+            }
         }
     }
 

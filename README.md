@@ -446,8 +446,11 @@ no idea an NS16550A is on the other end. Swapping either is a new file in
 `kernel/drivers/` and one more line in `main.c` — which is the only file in
 the kernel that names a part at all.
 
-**There is a 100 Hz tick and a framebuffer.** The MC68901's timer D drives
-`nanosleep()`; the SM501 is `/dev/fb0` and draws through ioctls.
+**There is a 100 Hz tick, a framebuffer, and a text console on it.** The
+MC68901's timer D drives `nanosleep()`; the SM501 is `/dev/fb0` and draws
+through ioctls; `/dev/fbcon` puts 80×30 of the IBM PC 8×16 font on it, in
+green, and `console fb` moves the shell there. Input still arrives on the
+serial line, because nothing else on this machine can type.
 
 **The shell is a program that happens to be linked in.** It includes
 `syscall.h` and nothing else from the kernel: not the VFS, not the device
@@ -513,7 +516,7 @@ still works and is still the point: the test suite and the cube run with no
 kernel underneath them at all.
 
 What is not there yet: preemption, more than one program at a time, user
-mode, a text console on the framebuffer, and a TCP/IP stack. The ethernet
+mode, a keyboard, and a TCP/IP stack. The ethernet
 driver exists and registers `eth0`, but nothing above it sends a packet
 yet. `design.md` tracks what is decided and what is not.
 

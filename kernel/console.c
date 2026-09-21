@@ -13,6 +13,8 @@
  * this reason.
  */
 #include "console.h"
+#include "vfs.h"
+#include "errno.h"
 
 static struct chardev *con;
 static struct file confile;
@@ -29,6 +31,37 @@ void console_set(struct chardev *d)
 struct chardev *console_get(void)
 {
     return con;
+}
+
+/*
+ * Move the console. Kernel messages and the standard descriptors go
+ * together, because a program's output and the kernel's belong on the
+ * same screen.
+ *
+ * Descriptor 0 moves too, even though on this machine every device that
+ * can be a console reads from the same serial line: the framebuffer
+ * console forwards reads to it. Binding all three keeps the rule simple
+ * -- your console is one device -- rather than making 0 a special case
+ * that is right until something else can type.
+ */
+int console_use(struct chardev *d)
+{
+    if (!d || !d->ops) {
+        return -EINVAL;
+    }
+    console_set(d);
+    fd_bind(0, d->ops, d->priv, O_RDONLY);
+    fd_bind(1, d->ops, d->priv, O_WRONLY);
+    fd_bind(2, d->ops, d->priv, O_WRONLY);
+    return 0;
+}
+
+void console_write(const void *buf, u32 len)
+{
+    if (!con || !con->ops->write) {
+        return;
+    }
+    con->ops->write(&confile, buf, len);
 }
 
 void kputc(char c)

@@ -49,14 +49,16 @@ LDFLAGS  := $(CPUFLAGS) -ffreestanding -nostdlib -T kernel.ld \
 # the first group names a chip; everything in the second does, and only
 # there.
 SRCS := main.c version.c console.c trap.c syscall.c vfs.c dev.c \
-        time.c timer.c errno.c string.c exec.c fb.c probe.c shell.c \
+        time.c timer.c errno.c string.c exec.c fb.c fbcon.c font8x16.c \
+        probe.c shell.c \
         drivers/ns16550.c drivers/ata.c drivers/m48t59.c \
         drivers/mfp.c drivers/sm501.c \
         drivers/smc91c111.c \
         fs/fat16.c
 
 HDRS := kernel.h uapi.h dev.h vfs.h syscall.h console.h errno.h exec.h \
-        time.h timer.h fb.h string.h drivers/drivers.h drivers/rtc.h \
+        time.h timer.h fb.h fbcon.h font.h string.h \
+        drivers/drivers.h drivers/rtc.h \
         $(SUP)/sage040.h
 
 .PHONY: all run install boot disasm syms clean distclean

@@ -43,6 +43,10 @@ int main(int argc, char **argv)
     putdec(info.pitch);
     putch('\n');
 
+    /* Single buffered: this draws once and holds it, so there is no
+     * frame to flip and every operation should appear as it is made. */
+    ioctl(fb, FBIO_DOUBLE, 0);
+
     if (ioctl(fb, FBIO_CLEAR, 0) < 0) {
         eputs("fbtest: FBIO_CLEAR failed\n");
     }

@@ -227,6 +227,31 @@ static int fb_ioctl(struct file *f, u32 request, u32 arg)
         }
         return fb->sync(fb);
 
+    case FBIO_COPY: {
+        const struct fb_copy *c = (const struct fb_copy *)arg;
+
+        if (!c) {
+            return -EINVAL;
+        }
+        if (!fb->copy) {
+            /*
+             * No generic version: there is no way to read a pixel back
+             * through this interface, so there is nothing to copy from.
+             * A caller that needs to move pixels on hardware without a
+             * blitter has to redraw them from whatever it drew them out
+             * of, which is what the text console does.
+             */
+            return -ENOSYS;
+        }
+        return fb->copy(fb, c->sx, c->sy, c->dx, c->dy, c->w, c->h);
+    }
+
+    case FBIO_DOUBLE:
+        if (!fb->setdouble) {
+            return -ENOSYS;
+        }
+        return fb->setdouble(fb, (int)arg);
+
     case FBIO_PALETTE: {
         const struct fb_palette *p = (const struct fb_palette *)arg;
 

@@ -21,6 +21,25 @@
 void console_set(struct chardev *d);
 struct chardev *console_get(void);
 
+/*
+ * Point both the kernel's messages and descriptors 0, 1 and 2 at a
+ * device. Used to move the console between the serial terminal and the
+ * framebuffer, which is the only reason descriptors and kernel output
+ * have to move together: a shell whose output went one way and whose
+ * kernel messages went the other would be unusable.
+ */
+int  console_use(struct chardev *d);
+
+/*
+ * Write straight to whichever device is the console.
+ *
+ * The terminal's line discipline echoes through this rather than through
+ * its own write, because echo belongs to the console and not to the UART:
+ * with the console on the framebuffer, what you type has to appear on the
+ * screen you are looking at, not on the wire it arrived over.
+ */
+void console_write(const void *buf, u32 len);
+
 void kputc(char c);
 void kputs(const char *s);
 void kputln(const char *s);

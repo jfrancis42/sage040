@@ -1006,6 +1006,8 @@ ioctl(fb, FBIO_FLIP, 0);                  /* show what you drew */
 | `FBIO_FLIP` | none |
 | `FBIO_SYNC` | none — wait for the blitter |
 | `FBIO_PALETTE` | `struct fb_palette *`, `rgb` as `0x00RRGGBB` |
+| `FBIO_COPY` | `struct fb_copy *` — move a rectangle, upward only |
+| `FBIO_DOUBLE` | 1 or 0 **by value** — double buffering on or off |
 
 Drawing through ioctl rather than through graphics system calls because
 a framebuffer is a device and the device model already carries it.
@@ -1022,6 +1024,31 @@ Colours are palette indices. The driver sets up eight: 0 black, 1 green,
 
 Off-screen coordinates are clipped, not rejected — a shape that runs off
 the edge is not an error.
+
+### The text console
+
+The screen can be a terminal instead of a canvas. `/dev/fbcon` is 80x30
+of the IBM PC 8x16 font in green, and writing to it puts characters on
+the screen — newline, carriage return, backspace and tab all do what you
+would expect, and it scrolls.
+
+```c
+int con = open("/dev/fbcon", O_WRONLY);
+write(con, "hello\n", 6);
+```
+
+Or move the whole console there, which is what the shell's `console fb`
+does: after that, `write(1, ...)` goes to the screen.
+
+**It cannot be read from as a keyboard.** There is no keyboard on this
+machine — every character ever typed at it arrived on the serial line —
+so a read of `/dev/fbcon` is handed to the serial terminal. A program
+does not have to care: descriptor 0 works either way.
+
+Note that writing to it turns double buffering **off**, because a console
+draws a character at a time and each one has to appear. A program that
+wants to animate afterwards must ask for it back with
+`ioctl(fb, FBIO_DOUBLE, 1)`, which is why `user/cube.c` does.
 
 ### Time
 
@@ -1074,7 +1101,7 @@ MFP tick     timer D, /200, reload 123 -> 99.9 Hz (the kernel's HZ=100)
 
 syscalls     d0 = number, d1-d5 = args, trap #0, d0 = result or -errno
              Linux/m68k convention, Linux i386 numbers, Linux errnos
-devices      /dev/console  /dev/tty  /dev/fb0
+devices      /dev/console  /dev/tty  /dev/fb0  /dev/fbcon
 ```
 
 Worked, tested code for every device is in [`tests/`](tests/) — `t6` for the

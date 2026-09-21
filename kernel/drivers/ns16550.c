@@ -25,6 +25,11 @@
  *          arrives as a newline, because that is what C code expects to
  *          find at the end of a line.
  *
+ * Echo goes to whichever device is the console, not to this one. With
+ * the console moved to the framebuffer, characters still arrive here --
+ * the serial line is the only thing on this machine that can type -- but
+ * they have to appear on the screen being looked at.
+ *
  * Polled in both directions. That is a starting point chosen on purpose:
  * a polled console works before interrupts are set up, works inside a
  * panic, and cannot deadlock against the code reporting the fault. The
@@ -116,7 +121,7 @@ static s32 tty_read(struct file *f, void *buf, u32 len)
         if (c == BACKSPACE || c == DEL) {
             if (n > 0) {
                 n--;
-                tty_write(f, "\b \b", 3);
+                console_write("\b \b", 3);
             }
             continue;
         }
@@ -124,14 +129,14 @@ static s32 tty_read(struct file *f, void *buf, u32 len)
         if (c == CTRL_U) {
             while (n > 0) {
                 n--;
-                tty_write(f, "\b \b", 3);
+                console_write("\b \b", 3);
             }
             continue;
         }
 
         if (c == '\n') {
             out[n++] = '\n';
-            tty_write(f, "\n", 1);
+            console_write("\n", 1);
             return (s32)n;
         }
 
@@ -141,7 +146,7 @@ static s32 tty_read(struct file *f, void *buf, u32 len)
 
         if (n < len) {
             out[n++] = (u8)c;
-            tty_write(f, &out[n - 1], 1);
+            console_write(&out[n - 1], 1);
             if (n == len) {
                 return (s32)n;          /* the caller's buffer is full */
             }

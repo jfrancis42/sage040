@@ -153,6 +153,23 @@ struct fbdev {
     int  (*rect)(struct fbdev *f, int x, int y, int w, int h,
                  u32 colour, int filled);
     int  (*flip)(struct fbdev *f);      /* show what was just drawn   */
+    /*
+     * Move a rectangle within the framebuffer. This is what scrolling a
+     * text console is, and a chip with a blitter does it in one
+     * operation. Optional: fb.c has no generic version, because there is
+     * no way to read a pixel back through this interface -- a console on
+     * a framebuffer without it redraws from its own character buffer
+     * instead, which it has anyway.
+     */
+    int  (*copy)(struct fbdev *f, int sx, int sy, int dx, int dy,
+                 int w, int h);
+    /*
+     * Double buffering on or off. A console wants it off: it draws a
+     * character at a time and each one must appear, with no frame to
+     * flip. An animation wants it on. Optional; a driver that does not
+     * implement it is always single buffered.
+     */
+    int  (*setdouble)(struct fbdev *f, int on);
     int  (*sync)(struct fbdev *f);      /* wait for the blitter       */
     int  (*palette)(struct fbdev *f, u32 index, u32 rgb);
     void *priv;

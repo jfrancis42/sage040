@@ -2,8 +2,8 @@
 
 A small supervisor-mode kernel: Linux-shaped system calls, a device
 driver model, a VFS, a read/write FAT16 filesystem, a terminal with a
-line discipline, a clock, a 100 Hz tick, a framebuffer, and a shell that
-reaches all of it only through `trap #0`.
+line discipline, a clock, a 100 Hz tick, a framebuffer, a text console
+on it, and a shell that reaches all of it only through `trap #0`.
 
 It is loaded from the disk by the [boot ROM](../bootrom/), which finds
 `KERNEL.ROM` in the filesystem and jumps to it.
@@ -286,6 +286,39 @@ Double buffered, so a wireframe drawn a line at a time does not flicker.
 `user/fbtest` draws one of everything and holds it, which is how a broken
 driver gets told apart from a broken program that uses one.
 
+## The text console
+
+`/dev/fbcon`: 80 columns by 30 rows of the **IBM PC 8x16 font**, green on
+black. 640x480 divided by the character cell, which is exactly the
+geometry a VGA text mode had and for exactly the same reason.
+
+```
+sage$ console fb          the screen
+sage$ console both        the screen, mirrored to the serial line
+sage$ console serial      back to the wire
+```
+
+**It cannot read.** This machine has no keyboard — input arrives on the
+serial line and nowhere else — so a read of `/dev/fbcon` is handed to the
+serial terminal. That is not a gap; it is what the machine is. Output on
+the screen, input from the wire, and a program cannot tell, because both
+arrive through the same descriptor.
+
+Which meant one thing had to move: **echo belongs to the console, not to
+the UART.** The line discipline used to echo through its own write, so
+with the console on the screen your keystrokes went to the wire and you
+typed blind. It now echoes through `console_write()`, whatever that
+currently is.
+
+Scrolling is one `copy()` — the SM501's blitter moves 29 rows up in a
+single operation. A framebuffer without a blitter leaves `copy` null, and
+the console redraws from its own character buffer instead: correct, much
+slower, and the reason `copy` is worth implementing in a driver.
+
+The font is the real VGA ROM font rather than a redraw — the
+single-storey `g`, the unslashed `0`. See `font8x16.c` for where it came
+from and how to reproduce it.
+
 ## The terminal
 
 `drivers/ns16550.c` is a terminal, not just a UART, and the difference
@@ -368,7 +401,7 @@ uses it yet; boot settings are the obvious tenant.
 `./fstest.sh` boots the kernel on a scratch image, drives a console
 session, and then checks the result with `mdir`, `mtype` and `fsck.fat`.
 The second half is the part that matters: a filesystem only the kernel
-can read would prove nothing. 26 checks.
+can read would prove nothing. 29 checks.
 
 The device tests in [`../tests/`](../tests/) exercise the same hardware
 from bare metal, with no kernel underneath — including `t11-rtc` for the
@@ -419,6 +452,7 @@ echo TEXT            print a line
 date [-s DATE [TIME]] show or set the clock
 uname [-a]           system name, or name and version
 uptime               how long the machine has been up
+console [WHERE]      serial, fb, or both
 sync                 flush pending writes
 halt                 stop the machine
 
@@ -449,6 +483,8 @@ command. Errors go to descriptor 2 even when output is redirected.
 | `exec.c` | the ELF loader, and running a program |
 | `timer.c` | jiffies, and sleeping on them |
 | `fb.c` | /dev/fb0, and the drawing a driver did not do itself |
+| `fbcon.c` | /dev/fbcon, the text console |
+| `font8x16.c` | the IBM PC font, and where it came from |
 | `execasm.s` | the stack switch into a program and the unwind out of it |
 | `probe.c` | CPU, FPU and memory — the parts with no driver |
 | `shell.c` | a program, reaching the kernel only through `trap #0` |

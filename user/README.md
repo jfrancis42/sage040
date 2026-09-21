@@ -154,6 +154,16 @@ any of them.
 `fbtest` draws one of everything and holds it, which is how you tell a
 broken driver apart from a broken program that uses one.
 
+Drawing to `/dev/fb0` turns double buffering **off** the moment anything
+writes to `/dev/fbcon`, because a text console has no frame to flip at.
+A program that animates asks for it back with `ioctl(fb, FBIO_DOUBLE, 1)`
+— `cube.c` does, and fails loudly if it cannot get it.
+
+There is also `/dev/fbcon`, 80x30 of the IBM PC 8x16 font in green. Write
+to it for text on the screen; it scrolls, and handles newline, carriage
+return, backspace and tab. It cannot be read as a keyboard — this machine
+has none — so a read of it goes to the serial terminal.
+
 ## Pacing
 
 `msleep()` on the kernel's 100 Hz tick. A 50 fps frame is exactly two
