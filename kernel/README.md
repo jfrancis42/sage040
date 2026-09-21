@@ -352,10 +352,36 @@ character arrived on.
 
 A source is any device whose `ioctl` answers `FIONREAD` — that is how
 the terminal asks whether a character is waiting without committing to a
-read that would block. Polled, for now: when the UART and the keyboard
-are both interrupt-driven they should feed one ring buffer and the poll
-loop becomes a drain of it, which is a change inside `tty.c` and nowhere
-else.
+read that would block. There are two: the serial port and the keyboard.
+Polled, for now; when both are interrupt-driven they should feed one
+ring buffer and the poll loop becomes a drain of it, which is a change
+inside `tty.c` and nowhere else.
+
+## The keyboard
+
+`drivers/i8042.c` — an Intel 8042 at `0xff700000`, registered as
+`/dev/kbd0` and handed to the terminal as an input source. Data at
+offset 0, status and command at offset 1: the PC's `0x60`/`0x64` pair
+with the gap taken out.
+
+**Scancode set 1, by choice.** A PS/2 keyboard powers up in set 2, where
+a release is the prefix `0xF0` then the make code. The 8042 can
+translate set 2 to set 1 as it passes — bit 6 of the command byte — and
+set 1 is what the PC's own BIOS always saw: a release is the make code
+with bit 7 set, no prefix to track.
+
+Worth knowing when reading the driver against a PC reference: **QEMU
+resets the controller with translation off**, where a PC arrives with the
+BIOS having already turned it on. Code that assumes the PC's state gets
+set 2 and decodes nonsense — nonsense that looks like a broken keymap
+rather than like the wrong scancode set, which is why `t12-kbd` checks
+for `0x1E` and against `0x1C` explicitly.
+
+Shift, caps lock and control are tracked; control produces the control
+characters, which is not decoration — without it there is no way to type
+the ctrl-U or ctrl-D the line discipline is looking for. The `0xE0`
+extended sequences are consumed rather than turned into something
+invented, except for right control, which is real.
 
 ## The filesystem
 
@@ -505,7 +531,7 @@ command. Errors go to descriptor 2 even when output is redirected.
 | `shell.c` | a program, reaching the kernel only through `trap #0` |
 | `version.c` | the version and build stamp, defined once |
 | `uapi.h` | what crosses the system call boundary |
-| `drivers/` | `ns16550.c` `ata.c` `m48t59.c` `mfp.c` `sm501.c` `smc91c111.c` |
+| `drivers/` | `ns16550.c` `i8042.c` `ata.c` `m48t59.c` `mfp.c` `sm501.c` `smc91c111.c` |
 | `fs/fat16.c` | FAT16, read and write |
 | `fstest.sh` | scripted session, verified with host tools |
 | `kernel.ld` | vectors at 0, text at 0x400, stack at the top of RAM |

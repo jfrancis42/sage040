@@ -24,6 +24,7 @@ Implemented as a custom QEMU machine, `sage040`.
 | Disk | **ATA taskfile** (WD1003 lineage) | Eight registers, polled PIO, no DMA or descriptors — ~60 lines for read and write |
 | Ethernet | SMSC **LAN91C111** | On-chip packet FIFO with **no descriptor rings in host memory**, which is what makes it far easier than a SONIC or LANCE |
 | Video | Silicon Motion **SM501** | Plain linear framebuffer in 16 MiB of its own memory |
+| Keyboard | Intel **8042** | The PC/AT controller, memory mapped; two registers and a scancode stream |
 | Clock, NVRAM | ST **M48T59** TIMEKEEPER | Directly memory-mapped byte registers, no index/data port pair, and 8 KiB of battery-backed SRAM alongside |
 
 Selection criterion throughout: **fewest registers to poke**. Deliberately
@@ -56,6 +57,7 @@ this machine that survives a power cycle without going through the disk.
 | `0xff300000` | 24 | MC68901 MFP | drives **IPL 6**, vectored |
 | `0xff400000` | 2 MiB | SM501 control registers | — |
 | `0xff600000` | 8 KiB | M48T59 NVRAM; the clock is its last 8 bytes | MFP channel 2 |
+| `0xff700000` | 4 KiB | Intel 8042: data at +0, status/command at +1 | MFP channel 1 |
 
 Boot protocol: a big-endian ELF32 (`EM_68K`) loaded with `-kernel`, entered at
 its ELF entry point with SP at the top of RAM. No ROM, no bootloader, and no
@@ -86,6 +88,7 @@ cannot coexist. There is no autovector controller on this board.
 | GPIP4 | 6 | ATA | **TAI** — timer A event input |
 | GPIP3 | 3 | LAN91C111 | **TBI** — timer B event input |
 | GPIP2 | 2 | M48T59 | alarm and watchdog |
+| GPIP1 | 1 | Intel 8042 | keyboard output buffer full |
 
 Two GPIP pins doubling as timer event inputs is a property of the real chip, and
 is used deliberately: timer A can count disk interrupts directly.
@@ -140,9 +143,9 @@ MC146818 — see §1.
 ## 6. Verification
 
 Every device has a bare-metal test that exercises the real hardware path.
-`make run` in `tests/`: **11 programs, all passing.** The kernel adds a
+`make run` in `tests/`: **12 programs, all passing.** The kernel adds a
 twelfth, `kernel/fstest.sh`, which drives a console session and then checks
-the result with the host's own `mdir`, `mtype` and `fsck.fat` — 30 checks,
+the result with the host's own `mdir`, `mtype` and `fsck.fat` — 31 checks,
 including loading and running a program from the disk, the tick running,
 and a program drawing through `/dev/fb0`.
 
@@ -158,6 +161,7 @@ and a program drawing through `/dev/fb0`.
 | `t8-mfp-timers` | 10/10 | All four timers; **prescaler ratio measured at exactly 50** for /4 vs /200; event-count mode counting **real ATA interrupts** |
 | `t9-mfp-usart` | 11/11 | Real transmit (verified against the output file) and real receive |
 | `t10-sm501` | 7/7 | Device ID `0x050100A0`, 16 MiB non-aliasing, **640×480 framebuffer filled and verified** |
+| `t12-kbd` | 9/9 | Self test, the command byte, and **which scancode set arrives** — `a` as `0x1E` and not `0x1C`, a release as `0x9E` and no `0xF0` prefix. Keys injected through QEMU's monitor |
 | `t11-rtc` | 6/6 | NVRAM is real memory and does not alias onto the clock; every time field is in BCD range; the **oscillator advances**; a written date reads back; **30 February rolls into 1 March**, which is what the part does and why the driver validates first |
 
 ---
@@ -178,6 +182,8 @@ and a program drawing through `/dev/fb0`.
 | System tick — MC68901 timer D, HZ=100, `nanosleep`, `times` | ✅ done |
 | Framebuffer — `/dev/fb0`, point/line/rect/clear/flip, double buffered | ✅ done |
 | Text console (§10) — `/dev/fbcon`, 80×30, IBM PC 8×16 font | ✅ done |
+| Terminal (§10) — `tty.c`, many sources and sinks | ✅ done |
+| Keyboard — Intel 8042, scancode set 1, `/dev/kbd0` | ✅ done |
 | Ethernet driver — `struct netdev`, registered as `eth0` | ✅ written, only the probe is exercised |
 | Shell — Linux-named commands, redirection, runs programs | ✅ done |
 | Preemption, more than one program, user mode, virtual memory | unblocked — ordinary OS work now |
@@ -552,14 +558,12 @@ memory probe walking off the end of RAM, faulting address in `a0`.
    in tests and not in a driver is the MFP's USART (`t9`) and the MMU
    (`t5`) — the second of which is not a driver at all but the thing
    processes will need.
-2. **A keyboard.** The terminal takes input from any number of sources
-   and currently has one, the serial port. An **8042** is the obvious
-   next device: QEMU's `i8042-mmio` is a sysbus device — no ISA bus —
-   though `config PCKBD` declares `depends on ISA_BUS`, which is wrong
-   for the memory-mapped variant and wants the same treatment the
-   `sm501.c` PCI guard already got. The work is not the wiring, it is
-   scancode translation: make and break codes, the 0xE0 prefix, and the
-   shift, caps and control state.
+2. **Interrupt-driven input.** Both the serial port and the keyboard are
+   polled, and both have an interrupt line already wired to the MFP —
+   channel 7 and channel 1. They should fill one ring buffer that
+   `tty.c` drains, which would remove the last polling loop in the
+   system and let a waiting `read()` use `STOP` the way `nanosleep`
+   already does.
 3. **A scheduler.** The tick exists and drives `nanosleep`; what it does not
    yet do is preempt anything, because there is only one thing to run.
 4. **An interrupt-driven console.** The UART's IRQ already reaches MFP channel

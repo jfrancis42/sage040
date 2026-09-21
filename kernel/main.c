@@ -194,28 +194,18 @@ static void start_drivers(void)
                 kputc('x');
                 kputdec((u32)fbcon_rows());
                 kputs(" of IBM PC 8x16, green on black\n");
-                status("console");
-                kputs("output to");
-                {
-                    struct chardev *d;
-                    int i, on;
-
-                    for (i = 0; (d = tty_sink(i, &on)) != 0; i++) {
-                        kputc(' ');
-                        kputs(d->name);
-                        if (!on) {
-                            kputs("(off)");
-                        }
-                    }
-                    kputs(", input from");
-                    for (i = 0; (d = tty_source(i)) != 0; i++) {
-                        kputc(' ');
-                        kputs(d->name);
-                    }
-                }
-                kputc('\n');
             }
         }
+    }
+
+    status("keyboard");
+    err = i8042_init();
+    if (err < 0) {
+        kputs("no 8042: ");
+        kputs(strerror(err));
+        kputs(" -- input from the serial line only\n");
+    } else {
+        kputs("8042 as /dev/kbd0, scancode set 1, US layout\n");
     }
 
     status("network");
@@ -236,6 +226,36 @@ static void start_drivers(void)
     } else {
         kputs("none\n");
     }
+}
+
+/*
+ * What the terminal ended up with.
+ *
+ * Printed after every driver has had its turn rather than as each one
+ * registers, because a list is only worth printing once it is complete
+ * -- reporting one source and then acquiring another is how a boot log
+ * ends up disagreeing with the machine.
+ */
+static void report_console(void)
+{
+    struct chardev *d;
+    int i, on;
+
+    status("console");
+    kputs("output to");
+    for (i = 0; (d = tty_sink(i, &on)) != 0; i++) {
+        kputc(' ');
+        kputs(d->name);
+        if (!on) {
+            kputs("(off)");
+        }
+    }
+    kputs(", input from");
+    for (i = 0; (d = tty_source(i)) != 0; i++) {
+        kputc(' ');
+        kputs(d->name);
+    }
+    kputc('\n');
 }
 
 static void mount_root(void)
@@ -309,6 +329,7 @@ void kmain(void)
     check_syscall_gate();
     probe_all();
     start_drivers();
+    report_console();
     mount_root();
 
     /*

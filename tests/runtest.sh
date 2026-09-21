@@ -36,8 +36,16 @@ if [ -f disk.img ]; then
         | dd of=disk.img bs=512 seek=2 conv=notrunc status=none 2>/dev/null || true
 fi
 
+# A monitor socket, so a test that needs keystrokes can be typed at.
+# QEMU delivers no keyboard input with -display none -- there is no
+# window to take focus -- so `sendkey` on the monitor is the only way a
+# test can exercise the 8042 at all.
+mon="$t.mon"
+rm -f "$mon"
+
 "$QEMU" -M sage040 -cpu m68040 -m 4 \
     -kernel "$t.elf" \
+    -monitor "unix:$mon,server,nowait" \
     -serial "file:$out" \
     -chardev "file,id=mfpusart,path=$t.usart,input-path=$t.usartin" \
     -serial chardev:mfpusart \
@@ -46,12 +54,28 @@ fi
     -nic user,model=smc91c111 >/dev/null 2>&1 &
 pid=$!
 
+# Keys a test asks for. It prints KEYS-PLEASE when it is listening, and
+# the file next to it says what to send; without the handshake the codes
+# would arrive before anything was reading them.
+keys=""
+[ -f "$t.keys" ] && keys=$(cat "$t.keys")
+keys_sent=0
+
 for _ in $(seq 1 400); do            # up to ~40 s
+    if [ -n "$keys" ] && [ "$keys_sent" -eq 0 ] &&
+       grep -q "KEYS-PLEASE" "$out" 2>/dev/null; then
+        for k in $keys; do
+            echo "sendkey $k" | socat - "unix:$mon" >/dev/null 2>&1
+            sleep 0.1
+        done
+        keys_sent=1
+    fi
     grep -q "RESULT:" "$out" 2>/dev/null && break
     kill -0 $pid 2>/dev/null || break
     sleep 0.1
 done
 kill $pid 2>/dev/null; wait $pid 2>/dev/null
+rm -f "$mon"
 
 cat "$out"
 grep -q "RESULT: PASS" "$out" 2>/dev/null

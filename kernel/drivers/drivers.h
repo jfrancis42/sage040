@@ -26,6 +26,9 @@ struct chardev *ns16550_device(void);
 int ata_init(void);         /* disk              -> block device "hda"     */
 int m48t59_init(void);      /* clock and NVRAM   -> the system clock       */
 int sm501_init(void);       /* video             -> framebuffer "fb0"      */
+int i8042_init(void);       /* keyboard          -> /dev/kbd0, a tty source */
+int i8042_present(void);
+struct chardev *i8042_device(void);
 void smc91c111_init(void);  /* ethernet          -> net device "eth0"      */
 
 int fat16_init(void);       /* not a driver: registers the filesystem type */

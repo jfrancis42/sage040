@@ -172,7 +172,7 @@
 
 /* Interrupt channels, 0 = lowest priority, 15 = highest. */
 #define MFPCH_GPIP0        0
-#define MFPCH_GPIP1        1
+#define MFPCH_GPIP1        1     /* 8042 keyboard on this board         */
 #define MFPCH_GPIP2        2     /* M48T59 alarm/watchdog on this board */
 #define MFPCH_GPIP3        3     /* LAN91C111 on this board; also TBI */
 #define MFPCH_TIMERD       4
@@ -328,6 +328,47 @@ static inline u32 sm501_bswap32(u32 v)
 
 #define SM501_RD(a)     sm501_bswap32(MMIO32(a))
 #define SM501_WR(a, v)  (MMIO32(a) = sm501_bswap32((u32)(v)))
+
+/* ---------------------------------------------------------------- */
+/* Intel 8042 keyboard controller at 0xff700000                      */
+/*                                                                    */
+/* Reference: Intel 8042 datasheet; IBM PC/AT Technical Reference.    */
+/*                                                                    */
+/* The PC put the data port at 0x60 and status/command at 0x64. Here  */
+/* the controller decodes one address line, so they are adjacent:     */
+/* even is data, odd is status on read and command on write. That is  */
+/* the same pair with the gap taken out.                              */
+/* ---------------------------------------------------------------- */
+#define KBD_BASE        0xff700000UL
+#define KBD_DATA        (KBD_BASE + 0)   /* R/W                       */
+#define KBD_STATUS      (KBD_BASE + 1)   /* R                         */
+#define KBD_COMMAND     (KBD_BASE + 1)   /* W                         */
+
+#define KBD_STAT_OBF        0x01   /* a byte is waiting to be read    */
+#define KBD_STAT_IBF        0x02   /* the controller is still busy    */
+#define KBD_STAT_SYS        0x04
+#define KBD_STAT_CMD        0x08
+#define KBD_STAT_AUX        0x20   /* the byte came from the mouse    */
+
+/* Commands, written to KBD_COMMAND. */
+#define KBD_CCMD_READ_MODE  0x20
+#define KBD_CCMD_WRITE_MODE 0x60
+#define KBD_CCMD_SELF_TEST  0xAA
+#define KBD_CCMD_KBD_TEST   0xAB
+#define KBD_CCMD_KBD_DISABLE 0xAD
+#define KBD_CCMD_KBD_ENABLE 0xAE
+
+/* Bits of the command byte. */
+#define KBD_MODE_KBD_INT    0x01   /* interrupt when a byte arrives   */
+#define KBD_MODE_SYS        0x04
+#define KBD_MODE_DISABLE_KBD 0x10
+#define KBD_MODE_TRANSLATE  0x40   /* set 2 in, set 1 out             */
+
+#define KBD_REPLY_ACK       0xFA
+#define KBD_SELF_TEST_OK    0x55
+
+/* The keyboard interrupt is wired to MFP GPIP1. */
+#define MFP_PIN_KBD         1
 
 /* ---------------------------------------------------------------- */
 /* ST M48T59 TIMEKEEPER: clock + 8 KiB battery-backed NVRAM          */

@@ -3,7 +3,7 @@
 Bare-metal programs that exercise each piece of hardware on the Sage040. Every
 one runs against the real emulated device — nothing is stubbed out.
 
-**11 programs, all passing.**
+**12 programs, all passing.**
 
 ## Running
 
@@ -16,6 +16,11 @@ make disasm-t5-mmu   # disassemble one
 Each test prints its checks and ends with `RESULT: PASS` or `RESULT: FAIL`,
 which is what `make run` counts.
 
+A test that needs keys typed at it prints `KEYS-PLEASE` and has a
+companion `.keys` file naming them; `runtest.sh` watches for the
+handshake and sends each one through QEMU's monitor. Without the
+handshake the scancodes would arrive before anything was reading them.
+
 These are **bare metal**: no kernel underneath, supervisor mode, every
 register their own. That is the point of them — they establish what the
 hardware does, and the drivers in [`../kernel/drivers/`](../kernel/drivers/) are
@@ -27,7 +32,7 @@ nothing uses yet).
 
 The kernel has its own test, [`../kernel/fstest.sh`](../kernel/), which
 drives a console session and then checks the result with the host's own
-`mdir`, `mtype` and `fsck.fat` — 30 checks.
+`mdir`, `mtype` and `fsck.fat` — 31 checks.
 
 Requires the cross toolchain at `~/m68k/install` (see `../toolchain.md`) and the
 patched QEMU at `~/m68k/sage040-qemu` (see `../qemu-patch/`).
@@ -46,6 +51,7 @@ patched QEMU at `~/m68k/sage040-qemu` (see `../qemu-patch/`).
 | `t8-mfp-timers.c` | MC68901 timers | All four timers, live counters, **prescaler ratio measured at exactly 50** for /4 vs /200, and **event-count mode counting real ATA interrupts** on TAI |
 | `t9-mfp-usart.c` | MC68901 USART | Transmit verified against the output file, receive verified against bytes the harness feeds in, plus both interrupt channels |
 | `t10-sm501.c` | SM501 video | Device ID, register endianness, 16 MiB with no aliasing, **640×480 framebuffer filled and read back** |
+| `t12-kbd.c` | Intel 8042 keyboard | Self test, the command byte, and **which scancode set arrives**: `a` as `0x1E` and not `0x1C`, a release as `0x9E`, no `0xF0` prefix. Keystrokes are injected through QEMU's monitor, because `-display none` delivers no keyboard input at all |
 | `t11-rtc.c` | M48T59 clock + NVRAM | NVRAM is real memory and does not alias onto the clock, every time field is in BCD range, **the oscillator advances**, a written date reads back, and **30 February rolls into 1 March** |
 
 The interesting ones are `t4` (a genuine network round trip), `t5` (a real table

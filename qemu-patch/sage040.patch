@@ -97,8 +97,8 @@
      }
      return false;
 --- a/hw/m68k/Kconfig	2026-08-27 06:23:31.000000000 -0600
-+++ b/hw/m68k/Kconfig	2026-09-21 08:01:19.119508097 -0600
-@@ -46,3 +46,14 @@
++++ b/hw/m68k/Kconfig	2026-09-21 10:50:27.796342309 -0600
+@@ -46,3 +46,15 @@
      select GOLDFISH_TTY
      select GOLDFISH_RTC
      select VIRTIO_MMIO
@@ -113,6 +113,7 @@
 +    select SMC91C111        # SMSC LAN91C111 ethernet
 +    select SM501            # bitmapped video
 +    select M48T59           # RTC + 8 KB NVRAM
++    select PCKBD            # 8042 keyboard controller, memory mapped
 --- a/hw/m68k/meson.build	2026-08-27 06:23:31.000000000 -0600
 +++ b/hw/m68k/meson.build	2026-09-19 20:27:11.884302502 -0600
 @@ -5,4 +5,6 @@
@@ -139,3 +140,45 @@
  system_ss.add(when: 'CONFIG_APPLESMC', if_true: files('applesmc.c'))
  system_ss.add(when: 'CONFIG_EDU', if_true: files('edu.c'))
  system_ss.add(when: 'CONFIG_FW_CFG_DMA', if_true: files('vmcoreinfo.c'))
+--- a/hw/input/Kconfig	2026-08-27 06:23:31.000000000 -0600
++++ b/hw/input/Kconfig	2026-09-21 10:50:27.791149209 -0600
+@@ -4,7 +4,6 @@
+ config PCKBD
+     bool
+     select PS2
+-    depends on ISA_BUS
+ 
+ config PL050
+     bool
+--- a/hw/input/pckbd.c	2026-08-27 06:23:31.000000000 -0600
++++ b/hw/input/pckbd.c	2026-09-21 10:50:27.791960111 -0600
+@@ -769,6 +769,15 @@
+     .class_init    = i8042_mmio_class_init
+ };
+ 
++/*
++ * The ISA variant.  Guarded because this file also provides i8042-mmio,
++ * which is a sysbus device and needs no ISA bus -- a board that has one
++ * but not the other would otherwise fail to link on isa_register_ioport
++ * and on the ACPI AML builder.  Same shape as the CONFIG_PCI guard in
++ * hw/display/sm501.c, and for the same reason.
++ */
++#ifdef CONFIG_ISA_BUS
++
+ void i8042_isa_mouse_fake_event(ISAKBDState *isa)
+ {
+     KBDState *s = &isa->kbd;
+@@ -964,9 +973,13 @@
+     },
+ };
+ 
++#endif /* CONFIG_ISA_BUS */
++
+ static void i8042_register_types(void)
+ {
++#ifdef CONFIG_ISA_BUS
+     type_register_static(&i8042_info);
++#endif
+     type_register_static(&i8042_mmio_info);
+ }
+ 

@@ -14,6 +14,7 @@
  *   SMSC LAN91C111   ethernet                   (SMSC LAN91C111 datasheet)
  *   Silicon Motion SM501  bitmapped video       (SM501 datasheet)
  *   ST M48T59            clock + 8 KB NVRAM      (M48T59 datasheet)
+ *   Intel 8042           PS/2 keyboard           (8042 datasheet)
  *
  * Interrupts
  * ----------
@@ -27,6 +28,7 @@
  *   GPIP4 (channel  6) <- ATA            (also TAI, timer A event input)
  *   GPIP3 (channel  3) <- LAN91C111      (also TBI, timer B event input)
  *   GPIP2 (channel  2) <- M48T59         (alarm and watchdog)
+ *   GPIP1 (channel  1) <- 8042           (keyboard output buffer full)
  *
  * Physical memory map:
  *
@@ -39,6 +41,7 @@
  *   0xff300000  MC68901 MFP, 24 byte-spaced registers
  *   0xff400000  SM501 control registers
  *   0xff600000  M48T59 NVRAM (8 KiB); the clock is the last eight bytes
+ *   0xff700000  8042 keyboard controller: data at +0, status/command at +1
  */
 
 #include "qemu/osdep.h"
@@ -58,6 +61,7 @@
 #include "hw/ide/mmio.h"
 #include "hw/net/smc91c111.h"
 #include "hw/misc/mc68901.h"
+#include "hw/input/i8042.h"
 #include "net/net.h"
 #include "elf.h"
 
@@ -69,6 +73,7 @@
 #define SAGE040_MFP_BASE      0xff300000
 #define SAGE040_SM501_MMIO    0xff400000
 #define SAGE040_RTC_BASE      0xff600000
+#define SAGE040_KBD_BASE      0xff700000
 
 #define SAGE040_SM501_VRAM_SIZE (16 * MiB)
 
@@ -84,6 +89,16 @@
 #define SAGE040_GPIP_ATA      4     /* also TAI, timer A event input */
 #define SAGE040_GPIP_NET      3     /* also TBI, timer B event input */
 #define SAGE040_GPIP_RTC      2     /* M48T59 alarm / watchdog output   */
+#define SAGE040_GPIP_KBD      1     /* 8042 output buffer full          */
+
+/*
+ * The 8042 decodes one address line: even is the data port, odd is
+ * status on read and command on write. That is the PC's 0x60/0x64 pair
+ * with the gap taken out, which is all the separation the chip ever
+ * needed.
+ */
+#define SAGE040_KBD_MASK      1
+#define SAGE040_KBD_SIZE      0x1000
 
 /*
  * The M48T59 stores a two-digit BCD year and the driver adds a century to
@@ -114,6 +129,7 @@ static void sage040_init(MachineState *machine)
     M68kCPU *cpu;
     DeviceState *mfp_dev, *ide_dev, *sm501_dev;
     DeviceState *rtc_dev;
+    DeviceState *kbd_dev;
     SysBusDevice *sysbus;
     ResetInfo *reset_info;
     uint64_t elf_entry;
@@ -213,6 +229,23 @@ static void sage040_init(MachineState *machine)
     sysbus_connect_irq(sysbus, 0, qdev_get_gpio_in(mfp_dev, SAGE040_GPIP_RTC));
     sysbus_realize_and_unref(sysbus, &error_fatal);
     sysbus_mmio_map(sysbus, 0, SAGE040_RTC_BASE);
+
+    /*
+     * Intel 8042 keyboard controller, memory mapped.
+     *
+     * QEMU provides this as a sysbus device -- i8042-mmio, the variant
+     * the MIPS Jazz machines use -- so a PC keyboard controller costs
+     * this board no ISA bus, which it does not have and will not get.
+     * Only the keyboard interrupt is wired; there is no mouse and
+     * nothing that would read one.
+     */
+    kbd_dev = qdev_new(TYPE_I8042_MMIO);
+    qdev_prop_set_uint64(kbd_dev, "mask", SAGE040_KBD_MASK);
+    qdev_prop_set_uint32(kbd_dev, "size", SAGE040_KBD_SIZE);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(kbd_dev), &error_fatal);
+    qdev_connect_gpio_out(kbd_dev, I8042_KBD_IRQ,
+                          qdev_get_gpio_in(mfp_dev, SAGE040_GPIP_KBD));
+    sysbus_mmio_map(SYS_BUS_DEVICE(kbd_dev), 0, SAGE040_KBD_BASE);
 
     /*
      * Boot protocol: load a big-endian ELF32 (EM_68K) and start at its entry

@@ -173,11 +173,11 @@ Details and rationale: **[`qemu-patch/README.md`](qemu-patch/README.md)**.
 cd tests && make run
 ```
 
-That builds eleven bare-metal test programs and runs each one, exercising every
+That builds twelve bare-metal test programs and runs each one, exercising every
 device on the machine:
 
 ```
- test programs passed: 11
+ test programs passed: 12
  test programs failed: 0
 ```
 
@@ -246,6 +246,7 @@ cache or memory-latency modelling.
 | `0xff300000` | 24 | MC68901 MFP | byte | n/a |
 | `0xff400000` | 2 MiB | SM501 control registers | **32-bit only** | **little** |
 | `0xff600000` | 8 KiB | M48T59 clock + NVRAM | byte | — |
+| `0xff700000` | 4 KiB | Intel 8042 keyboard | byte | — |
 
 Endianness is not uniform, and it is the single biggest source of bugs. The
 ATA data register and every SM501 register are little-endian; everything else
@@ -312,7 +313,7 @@ The short version of the gotchas:
 | `toolchain.md` | building the cross toolchain |
 | `design.md` | why the machine is shaped the way it is |
 | `qemu-patch/` | the emulator changes, reproducible from pristine source |
-| `tests/` | eleven bare-metal device tests, `make run` |
+| `tests/` | twelve bare-metal device tests, `make run` |
 | `cube/` | a rotating wireframe cube on bare metal — a hardware benchmark |
 | `bootrom/` | a boot ROM that finds `KERNEL.ROM` on the disk and runs it |
 | `kernel/` | the kernel: system calls, drivers, VFS, FAT16, shell |
@@ -362,6 +363,7 @@ nothing is stubbed. 11 programs, all passing.
 | `t9-mfp-usart` | Transmit verified against the output file, receive verified against fed-in bytes |
 | `t10-sm501` | Device ID, register endianness, 16 MiB with no aliasing, a 640×480 framebuffer filled and read back |
 | `t11-rtc` | NVRAM is real memory and does not alias onto the clock, the oscillator advances, a written date reads back, and 30 February rolls into 1 March |
+| `t12-kbd` | Self test, the command byte, and which scancode set arrives — `a` as `0x1E` not `0x1C`, a release as `0x9E` with no `0xF0` prefix. Keys injected through QEMU's monitor |
 
 ### Booting from disk
 
@@ -449,9 +451,11 @@ the kernel that names a part at all.
 **There is a 100 Hz tick, a framebuffer, and a text console on it.** The
 MC68901's timer D drives `nanosleep()`; the SM501 is `/dev/fb0` and draws
 through ioctls; `/dev/fbcon` puts 80×30 of the IBM PC 8×16 font on it, in
-green. Console output goes to the screen **and** the serial line at once
-— the terminal has a list of sinks, not a current one — so the serial log
-stays complete whatever the display is doing.
+green. Console output goes to the screen **and** the serial line at once, and
+input is taken from the **8042 keyboard** and the serial line both — the
+terminal has lists of sources and sinks, not a current one. So the serial
+log stays complete whatever the display is doing, which is also what lets
+the tests drive the machine headless.
 
 **The shell is a program that happens to be linked in.** It includes
 `syscall.h` and nothing else from the kernel: not the VFS, not the device
@@ -517,7 +521,8 @@ still works and is still the point: the test suite and the cube run with no
 kernel underneath them at all.
 
 What is not there yet: preemption, more than one program at a time, user
-mode, a keyboard, and a TCP/IP stack. The ethernet
+mode, and a TCP/IP stack. Input is still polled, though both the keyboard
+and the serial port have interrupt lines wired to the MFP. The ethernet
 driver exists and registers `eth0`, but nothing above it sends a packet
 yet. `design.md` tracks what is decided and what is not.
 

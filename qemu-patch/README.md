@@ -10,7 +10,7 @@ pristine source tree.
 | `new-files/hw-m68k-sage040.c` | the machine → `hw/m68k/sage040.c` |
 | `new-files/hw-misc-mc68901.c` | the MFP device model → `hw/misc/mc68901.c` |
 | `new-files/include-hw-misc-mc68901.h` | its header → `include/hw/misc/mc68901.h` |
-| `sage040.patch` | edits to eight existing files |
+| `sage040.patch` | edits to ten existing files |
 
 ## Applying to a fresh tree
 
@@ -25,7 +25,8 @@ patch -d $Q -p1 < sage040.patch
 ## What the patch changes, and why
 
 **`hw/m68k/Kconfig`, `hw/m68k/meson.build`** — add `CONFIG_SAGE040`, selecting
-`MC68901`, `SERIAL_MM`, `IDE_MMIO`, `SMC91C111`, `SM501` and `M48T59`.
+`MC68901`, `SERIAL_MM`, `IDE_MMIO`, `SMC91C111`, `SM501`, `M48T59` and
+`PCKBD`.
 
 The **M48T59** clock needed no new code: upstream already provides a sysbus
 variant, so the machine instantiates `sysbus-m48t59` with `base-year` 2000
@@ -42,6 +43,15 @@ hold.
 Upstream compiles it unconditionally, so a board that uses only the sysbus
 variant fails to link unless the whole PCI subsystem is pulled in. This board
 has no PCI bus and should not carry one.
+
+**`hw/input/pckbd.c`, `hw/input/Kconfig`** — the same problem and the same
+fix, for the keyboard controller. `pckbd.c` provides both `i8042` (an
+`ISADevice`) and `i8042-mmio` (a sysbus device, used by the MIPS Jazz
+machines), and `config PCKBD` declared `depends on ISA_BUS` — which is
+true of the first and not of the second. The ISA half is now guarded by
+`#ifdef CONFIG_ISA_BUS` and the dependency is dropped, so a board can
+have a PC keyboard controller without acquiring an ISA bus. Jazz never
+noticed because it selects `ISA_BUS` for other devices anyway.
 
 **`target/m68k/cpu.h`, `helper.c`, `op_helper.c`** — add an optional
 interrupt-acknowledge callback:
@@ -79,8 +89,15 @@ $Q/configure --target-list=m68k-softmmu \
 ninja && ninja install
 ```
 
-Needs `meson` and `ninja`. `CONFIG_PCI` must stay unset — confirm with
-`grep CONFIG_PCI build/m68k-softmmu-config-devices.mak` returning nothing.
+Needs `meson` and `ninja`. **`CONFIG_PCI` and `CONFIG_ISA_BUS` must both
+stay unset** — confirm with
+
+```bash
+grep -E 'CONFIG_(PCI|ISA_BUS)' build/m68k-softmmu-config-devices.mak
+```
+
+returning nothing. Two of the four changes above exist precisely so that
+stays true.
 
 ## Running
 
@@ -99,8 +116,10 @@ The distro QEMU in `/usr/bin` is left untouched.
 
 ## Upstreamability
 
-The `sm501.c` guard and the IACK callback are both the kind of change upstream
-would plausibly take — the first is a build fix, the second adds a facility
+The `sm501.c` guard, the `pckbd.c` guard and the IACK callback are all the
+kind of change upstream would plausibly take. The first two are build
+fixes of the same shape — a file providing both a bus-attached and a
+sysbus device, compiled unconditionally — and the third adds a facility
 whose absence upstream explicitly documents. The machine and the MFP model are
 new files and self-contained.
 

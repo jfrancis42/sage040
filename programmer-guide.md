@@ -160,6 +160,7 @@ A complete, working version is `tests/crt0.s`.
 | `0xff300000` | 24 | MC68901 MFP | **byte** | n/a |
 | `0xff400000` | 2 MiB | SM501 control registers | **32-bit only** | **little** |
 | `0xff600000` | 8 KiB | M48T59 clock + NVRAM | byte | — |
+| `0xff700000` | 4 KiB | Intel 8042 keyboard | byte | — |
 
 **Endianness is not uniform, and this is the single biggest source of bugs.**
 See §10.
@@ -179,6 +180,7 @@ its own vector — there is no autovector controller on this board.
 | GPIP4 | 6 | ATA | also **TAI**, timer A event input |
 | GPIP3 | 3 | LAN91C111 | also **TBI**, timer B event input |
 | GPIP2 | 2 | M48T59 | alarm and watchdog |
+| GPIP1 | 1 | Intel 8042 | keyboard output buffer full |
 
 ### Channel priority (15 highest → 0 lowest)
 
@@ -1095,6 +1097,7 @@ MFP          0xff300000   byte regs        drives IPL 6, vectored
 SM501 regs   0xff400000   32-bit LITTLE endian
 SM501 VRAM   0xf0000000   16 MiB, big-endian
 M48T59       0xff600000   byte regs        MFP ch 2   clock = last 8 bytes
+8042 kbd     0xff700000   byte regs        MFP ch 1   data +0, status +1
 
 MFP vector   (VR & 0xF0) | channel
 MFP clock    2.4576 MHz, prescalers 4/10/16/50/64/100/200
@@ -1110,7 +1113,8 @@ devices      /dev/console /dev/tty  the terminal (sources + sinks)
 
 Worked, tested code for every device is in [`tests/`](tests/) — `t6` for the
 interrupt chain, `t7`/`t8`/`t9` for the MFP, `t3` for ATA, `t4` for ethernet,
-`t5` for the MMU, `t10` for video, `t11` for the clock and its NVRAM.
+`t5` for the MMU, `t10` for video, `t11` for the clock and its NVRAM, `t12`
+for the keyboard.
 
 Driver versions of most of them are in [`kernel/drivers/`](kernel/drivers/), which is
 where to look for code that has to keep working rather than code that only has

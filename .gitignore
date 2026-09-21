@@ -5,6 +5,7 @@
 
 # Emulator output captured during test runs
 *.out
+*.mon
 *.usart
 *.usartin
 *.ppm

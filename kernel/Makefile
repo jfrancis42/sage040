@@ -53,7 +53,7 @@ SRCS := main.c version.c console.c trap.c syscall.c vfs.c dev.c \
         font8x16.c \
         probe.c shell.c \
         drivers/ns16550.c drivers/ata.c drivers/m48t59.c \
-        drivers/mfp.c drivers/sm501.c \
+        drivers/mfp.c drivers/sm501.c drivers/i8042.c \
         drivers/smc91c111.c \
         fs/fat16.c
 
