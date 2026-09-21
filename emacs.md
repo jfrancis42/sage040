@@ -334,7 +334,7 @@ estimated side by side:
 | | Binary | Resident | Heap | Dump step | Lisp |
 |---|---|---|---|---|---|
 | GNU Emacs 31 | 3.7 MB + 17.6 MB dump | **54.8 MB** | 32.9 MB | yes | yes |
-| Vim 9 (full) | 5.0 MB | **7.5 MB** | **0.5 MB** | no | Vimscript |
+| Vim 9.2 (full) | 5.0 MB | **7.5 MB** | **0.5 MB** | no | Vimscript |
 | Vim, `--with-features=tiny` | ~0.5 MB (est.) | ~2 MB (est.) | small | no | minimal |
 | uEmacs/PK | ~0.3 MB (est.) | ~1 MB (est.) | small | no | no |
 | `mg` | ~0.3 MB (est.) | ~1 MB (est.) | small | no | no |
@@ -371,10 +371,13 @@ Still required and still missing: `brk`, `sigaction` (Vim catches
 `fstat`, `access`, `chmod`, `fchdir`, `getuid`/`getgid`, `readlink`,
 `unlink`, and terminal size. Plus a libc.
 
-Vim also wants a termcap/terminfo database, though `--with-features=tiny`
-plus a builtin terminal entry avoids it — Vim ships builtin entries for
-`ansi`, `xterm` and others precisely so it can be built where no database
-exists.
+**Vim does want a terminal library**: the build measured here links
+`libncursesw`, so that is not hypothetical. But it is avoidable rather
+than fundamental — Vim carries builtin termcap entries for `ansi`,
+`xterm` and others precisely so that it can be built where no database
+exists, and `--with-tlib=` plus a builtin entry is a supported
+configuration. On a machine with exactly one console type, describing
+other terminals describes nothing that exists.
 
 **Vim's filenames are its own**, not a 1,640-file Lisp tree, so the FAT16
 naming problem mostly evaporates. The syntax and runtime files under
