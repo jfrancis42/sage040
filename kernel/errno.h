@@ -57,12 +57,15 @@
 #define EAFNOSUPPORT    97      /* address family not supported       */
 #define EADDRINUSE      98      /* address already in use             */
 #define EMSGSIZE        90      /* message too long                   */
+#define ENOPROTOOPT     92      /* protocol not available (option)    */
 #define EADDRNOTAVAIL   99      /* cannot assign requested address    */
 #define ENETDOWN       100      /* network is down                    */
 #define ENETUNREACH    101      /* network is unreachable             */
 #define ECONNRESET     104      /* connection reset by peer           */
 #define ETIMEDOUT      110      /* connection timed out               */
 #define ECONNREFUSED   111      /* connection refused                 */
+#define EALREADY       114      /* already in progress                */
+#define EINPROGRESS    115      /* now in progress                    */
 #define ENOBUFS        105      /* no buffer space available          */
 #define EISCONN        106      /* already connected                  */
 #define ENOTCONN       107      /* not connected                      */

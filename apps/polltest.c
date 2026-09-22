@@ -198,8 +198,9 @@ static int test_net(const char *ip, const char *portstr)
     memset(&a, 0, sizeof(a));
     a.sin_family = AF_INET;
     a.sin_port = htons((u16)port);
-    a.sin_addr = inet_aton(ip);
-    report("connected to the web server", connect(fd, &a) == 0);
+    inet_aton(ip, &a.sin_addr);
+    report("connected to the web server",
+           connect(fd, (struct sockaddr *)&a, sizeof(a)) == 0);
 
     p.fd = fd;
     p.events = POLLOUT;

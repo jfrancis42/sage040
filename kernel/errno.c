@@ -66,6 +66,9 @@ const char *strerror(int err)
     case ECONNRESET:      return "connection reset by peer";
     case ETIMEDOUT:       return "connection timed out";
     case ECONNREFUSED:    return "connection refused";
+    case EALREADY:        return "operation already in progress";
+    case EINPROGRESS:     return "operation now in progress";
+    case ENOPROTOOPT:     return "protocol not available";
     case EHOSTUNREACH:    return "no route to host";
     case ENOMEDIUM:       return "no medium found";
     default:              return "unknown error";

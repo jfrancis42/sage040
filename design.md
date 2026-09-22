@@ -727,7 +727,7 @@ machine being small. The machine is not small now — 64 MB of RAM and a
 | Pipelines | `pipe`, `dup2`, `SIGPIPE`, and `\|` `>` `>>` `<` in the shell |
 | The console | VT102 emulation, `TIOCGWINSZ`, termcap, curses |
 | POSIX surface | a dozen small calls (signals, `select`/`poll`, timers, subprocesses ✅) |
-| Sockets | the rest of the Linux socket API, and fixing the signatures |
+| Sockets | ✅ the Linux socket API, signatures and all, and loopback |
 | Long file names | VFAT, and why not a different filesystem |
 | `fsck` | and a clean-unmount flag to say when it is needed |
 | TCP | window scaling, timestamps, SACK, keepalives, a real `TIME_WAIT` |
@@ -1026,86 +1026,35 @@ numbering them the same way.
 
 ### The rest of the Linux socket API
 
-The socket numbers here were taken from Linux's i386 table, and **the
-gaps in them are the todo list** — they name themselves. Checked against
-`/usr/include/asm/unistd_32.h` rather than remembered:
+**Done** (`progress.md` task 10). Every call has Linux/i386's number and
+signature, with `struct sockaddr` plus `socklen_t`, `struct in_addr`, and
+the flags arguments:
 
 | | | |
 |---|---|---|
-| 359 | `socket` | ✅ |
-| 360 | `socketpair` | ✗ |
-| 361 | `bind` | ✅ |
-| 362 | `connect` | ✅ |
-| 363 | `listen` | ✅ |
-| 364 | `accept` / `accept4` | ✅ — but see below |
-| 365 | `getsockopt` | ✗ |
-| 366 | `setsockopt` | ✗ |
-| 367 | `getsockname` | ✗ |
-| 368 | `getpeername` | ✗ |
-| 369 | `sendto` | ✅ |
-| 370 | `sendmsg` | ✗ |
-| 371 | `recvfrom` | ✅ |
-| 372 | `recvmsg` | ✗ |
-| 373 | `shutdown` | ✅ |
+| 359 | `socket` | `SOCK_NONBLOCK`, `SOCK_CLOEXEC` in the type |
+| 360 | `socketpair` | `AF_UNIX`, stream only: a pipe each way |
+| 361–363 | `bind`, `connect`, `listen` | port 0 picks one; `listen` binds if unbound |
+| 364 | `accept4` | `accept()` is it with no flags |
+| 365–366 | `getsockopt`, `setsockopt` | `SO_REUSEADDR`, `SO_ERROR`, `SO_RCVTIMEO`, `SO_SNDTIMEO`, `SO_TYPE`, `SO_ACCEPTCONN`, `SO_KEEPALIVE` (recorded), `TCP_NODELAY` (always on) |
+| 367–368 | `getsockname`, `getpeername` | |
+| 369, 371 | `sendto`, `recvfrom` | `MSG_DONTWAIT`, `MSG_PEEK`, `MSG_WAITALL`, `MSG_NOSIGNAL`, `MSG_TRUNC` |
+| 370, 372 | `sendmsg`, `recvmsg` | scatter/gather; no ancillary data |
+| 373 | `shutdown` | a real half-close |
 
-`send` and `recv` need no numbers of their own — on Linux they are
-library wrappers over `sendto` and `recvfrom` with a null address, and
-they can be exactly that here.
+Blocking calls block until they are satisfied. The old 30-second
+`ETIMEDOUT` is gone, and timeouts are `SO_RCVTIMEO`/`SO_SNDTIMEO`. A
+non-blocking `connect` returns `EINPROGRESS` and reports through
+`SO_ERROR`. `O_NONBLOCK` and `FIONBIO` work on sockets, and so do
+`poll`/`select`. **Loopback** (`127.0.0.0/8`, and the machine's own
+address) is delivered locally, with or without a configured interface.
+A kernel task, `netd`, runs the protocol whether or not anybody is in a
+socket call, so a closed connection finishes its FIN handshake and
+`TIME_WAIT` on its own, and `close` does not block.
 
-**The signatures are a bigger divergence than the missing calls, and it
-is the part to decide first.** Every call here takes a
-`struct sockaddr_in *` and no length:
-
-```c
-int bind(int fd, const struct sockaddr_in *addr);
-int accept(int fd, struct sockaddr_in *addr);
-s32 sendto(int fd, const void *buf, u32 len, const struct sockaddr_in *to);
-```
-
-Linux takes a `struct sockaddr *` with a `socklen_t` beside it, and
-`sendto`/`recvfrom`/`accept4` all take a `flags` argument that is absent
-here. Note also that i386's 364 is `accept4`, which takes flags — so
-this `accept` is not quite the call that number names.
-
-The simplification was reasonable while the only address family was IPv4
-and the only caller was a program in this tree. It stops being reasonable
-the moment a **C library** is ported, because newlib's and picolibc's
-socket layers are written against the real signatures, and every program
-worth porting calls those. So:
-
-1. **Move to `sockaddr` + `socklen_t`**, with `sockaddr_in` as the thing
-   a caller casts from. This is the change that makes the rest possible
-   and it touches every existing call, so it should happen before there
-   are more of them rather than after.
-2. **Add `flags`** to `sendto`, `recvfrom` and `accept`, even if the only
-   value accepted at first is 0 — `MSG_DONTWAIT` and `MSG_PEEK` are the
-   two worth honouring eventually, and a flags argument that exists and
-   is validated is much easier to fill in than one that has to be added.
-3. **`getsockname` / `getpeername`.** Small, and needed by anything that
-   binds to port 0 and then wants to know what it got.
-4. **`setsockopt` / `getsockopt`.** The options that actually matter
-   here: `SO_REUSEADDR` (a server restarting inside `TIME_WAIT` — which
-   is 10 seconds here, so this bites sooner than on Linux),
-   `SO_ERROR` (how a non-blocking `connect` reports failure),
-   `SO_RCVTIMEO` / `SO_SNDTIMEO`, and `TCP_NODELAY`, which is free given
-   that Nagle is deliberately not implemented and so is always off.
-5. **`socketpair`**, which implies `AF_UNIX`. Worth noting that a Unix
-   socketpair is the same object as a bidirectional pipe, so this and
-   *Pipelines and redirection* should be designed together rather than
-   twice.
-6. **`sendmsg` / `recvmsg`** and `struct msghdr`. Scatter-gather and
-   ancillary data; the least urgent of the set, and the one a small
-   system can most defensibly decline.
-
-Alongside these, and not socket calls but part of the same job:
-**`O_NONBLOCK` and `fcntl`**, `FIONREAD` on a socket, and `select`/`poll`
-over sockets — that last is in *The POSIX surface* above, and it is what
-makes a program able to serve more than one connection at a time. Today
-`apps/httpd` handles one at a time because there is no way to wait on
-two.
-
-And above all of it, `getaddrinfo` is user-space code that needs **a
-resolver**, which is item 2 of *Near-term*.
+Still not here: named `AF_UNIX` sockets (there is no FAT file type to be
+one), `SA_SIGINFO`-style ancillary data, and `getaddrinfo`, which needs
+**a resolver** (`progress.md` task 18).
 
 ### Long file names
 

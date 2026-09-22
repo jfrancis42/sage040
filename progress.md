@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: 10 of 23 complete.**
+**Status: 11 of 23 complete.**
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -39,7 +39,7 @@ drive almost all of it:
 | 7 | Interval timers | depends on 5 | **done** |
 | 8 | Pipes, `dup2`, real redirection | `>` did nothing for a program until this | **done** |
 | 9 | Subprocesses: `fork`/`execve`/`waitpid` | `:!` and `:make` in an editor | **done** |
-| 10 | The rest of the socket API, and the signatures | before a libc is written against the old ones | todo |
+| 10 | The rest of the socket API, and the signatures | before a libc is written against the old ones | **done** |
 | 11 | **VT102** emulation in `fbcon.c` | a full-screen program needs cursor addressing | todo |
 | 12 | `TIOCGWINSZ` and `SIGWINCH` | depends on 5 and 11 | todo |
 | 13 | A C library (picolibc or newlib) | the gate everything real passes through | todo |
@@ -146,7 +146,7 @@ printing `ok`/`FAIL` per line, counted and named by the script — a new
 check is a line of C. A group is added only once its calls work, so a
 failure there is always a regression.
 
-**419 checks across six suites now:** 12 device programs, 41 fs, 302
+**474 checks across six suites now:** 12 device programs, 41 fs, 357
 api, 29 edit, 18 vm, 17 net.
 
 ### 1. Grow the user address space — done
@@ -637,6 +637,83 @@ ignores kept, `system()` through `/bin/sh` including a pipeline and
 an interactive `sh` with `exit 4` reaching `$?`, and the quoting
 cases. **Negative control:** with orphan reaping off, the orphan check
 fails.
+
+### 10. The socket API, loopback, and `netd` — done
+
+**The whole Linux/i386 socket range, 359–373, with Linux's
+signatures:** `struct sockaddr` plus `socklen_t`, `struct in_addr`, and
+the flags arguments. That means `socketpair`, `accept4` (364 is
+`accept4` on i386; `accept` is the library calling it with no flags),
+`get`/`setsockopt`, `getsockname`/`getpeername`, and
+`sendmsg`/`recvmsg` (scatter/gather, no ancillary data). `ulib` has
+`send`/`recv` as wrappers, as glibc does, and POSIX's `inet_addr`,
+`inet_aton` (two arguments) and `inet_ntoa`. Every program using
+sockets was updated.
+
+**Behaviour:** blocking calls wait until satisfied. The old **30-second
+`ETIMEDOUT`** on every read is gone, and timeouts are `SO_RCVTIMEO` /
+`SO_SNDTIMEO` → `EAGAIN`. `O_NONBLOCK`, `MSG_DONTWAIT` and `FIONBIO`
+work. A non-blocking `connect` returns `EINPROGRESS`, `poll` reports
+POLLOUT on completion, and `SO_ERROR` says how it ended. A closed
+stream raises SIGPIPE unless `MSG_NOSIGNAL`. `bind` accepts only
+`INADDR_ANY`, loopback or the machine's own address; port 0 picks a
+free one; `SO_REUSEADDR` takes a port back from `TIME_WAIT`; `listen`
+binds an unbound socket. UDP has a four-datagram queue (it was one
+slot) and `MSG_TRUNC`/`MSG_PEEK`. `AF_UNIX` exists as `socketpair`
+only, stream only: a pipe each way, in `pipe.c`.
+
+**Loopback** (the user asked for it mid-task): `127.0.0.0/8` and the
+machine's own address go onto a loopback queue in `ip_output` and are
+delivered by `net_poll`, **with or without a configured interface**.
+`ping 127.0.0.1` works with no network.
+
+**`netd`**, a kernel task, runs the protocol fifty times a second
+whether or not any program is in a socket call. Before it, an idle
+connection nobody was reading ACKed nothing and made its peer
+retransmit. Being a kernel task, and so never preempted, it keeps the
+stack lock-free. It also lets **`close` stop blocking**: the
+connection is released (`tcp_release`) as an orphan that finishes its
+FIN handshake and `TIME_WAIT` on its own. `close` used to linger for
+half a second and then free the connection whatever its state.
+
+**Bugs found, all older than this task:**
+- **TCP's FIN took a byte's sequence number.** `close` sent the FIN at
+  once, at `snd_nxt`, with data still queued behind a full window, and
+  `send_data` refused to send at all after close. So the queued data
+  was never sent, and the FIN took a sequence number the data needed.
+  Found as 100 KB over loopback arriving **one byte short**. The FIN
+  now waits (`fin_pending`) until the data is out, and a retransmission
+  resends data and then the FIN. The host-side test never caught it,
+  because there the guest was never the sender that closed.
+- **`sendto`/`recvfrom` moved at most 512 bytes** (a stack buffer), so a
+  larger datagram was sent truncated and reported as fully sent.
+- **`udp_output` refused datagrams over 1024 bytes**; the real limit is
+  1472.
+- **IP allowed a frame 14 bytes over Ethernet's maximum**: the payload
+  limit forgot the Ethernet header.
+- **UDP checksums were verified against the interface's address**, not
+  the datagram's destination: wrong for broadcasts (hence an exception
+  for DHCP) and for loopback.
+- **A retransmission timeout was reported as "connection refused".**
+  The give-up path set `reset` as well; `timed_out` now tells them
+  apart.
+- `tcp_close` frees a connection outright in some states, so
+  `shutdown` on one still connecting would have left a dangling pointer.
+
+**Limits raised:** 32 sockets (was 8), 16 TCP connections (was 8), 64
+pipe rings.
+
+**Tests:** `apps/socktest`, 53 checks, all over loopback and pairs, so it needs no
+host: pairs both ways, `MSG_PEEK`/`MSG_DONTWAIT`, half-close, `EPIPE`
+with and without SIGPIPE, parent and child over a pair; TCP bind,
+listen, non-blocking connect and accept, `SO_ERROR`, peer and socket
+names, `FIONREAD`, `SO_RCVTIMEO`, half-close, 100 KB from a child,
+refused connections both ways, port 0, `EADDRINUSE` from a real
+`TIME_WAIT` and `SO_REUSEADDR`, `EADDRNOTAVAIL`; UDP boundaries,
+sender address, `MSG_TRUNC`, the 1472 limit, connected UDP,
+`sendmsg`/`recvmsg`; the options and refusals. Plus `ping 127.0.0.1`
+from `apitest.sh`. The 100 KB check is the negative control for the
+FIN fix: it failed before, by exactly one byte.
 
 ## Decisions worth knowing about
 

@@ -57,6 +57,18 @@ int udp_bind(u16 port, udp_handler_t fn, void *arg)
     return 0;
 }
 
+int udp_port_in_use(u16 port)
+{
+    int i;
+
+    for (i = 0; i < UDP_BINDINGS; i++) {
+        if (bound[i].fn && bound[i].port == port) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 void udp_unbind(u16 port)
 {
     int i;
@@ -87,7 +99,10 @@ static u32 pseudo_sum(ip4_t src, ip4_t dst, u32 udp_len)
 
 int udp_output(ip4_t dst, u16 dport, u16 sport, const void *data, u32 len)
 {
-    u8 buf[UDP_HDR_LEN + 1024];
+    /* The largest datagram an Ethernet frame can carry: 1514 less the
+     * Ethernet, IP and UDP headers. It was 1024, so every datagram from
+     * 1025 to 1472 bytes was refused with EMSGSIZE. */
+    u8 buf[UDP_HDR_LEN + NET_MTU - ETH_HDR_LEN - 20 - UDP_HDR_LEN];
     struct udphdr *u = (struct udphdr *)buf;
     struct netif *n = net_if();
     u32 total = (u32)UDP_HDR_LEN + len;
@@ -108,7 +123,9 @@ int udp_output(ip4_t dst, u16 dport, u16 sport, const void *data, u32 len)
      * exactly what DHCP does -- goes out from 0.0.0.0, and the checksum
      * has to be computed over that same zero.
      */
-    src = n->ip;
+    /* A datagram to 127.x comes from 127.x, as ip_output addresses it;
+     * the checksum has to be computed over the same source. */
+    src = IP4_IS_LOOPBACK(dst) ? dst : n->ip;
     u->check = net_checksum(buf, total, pseudo_sum(src, dst, total));
     if (u->check == 0) {
         /*
@@ -123,7 +140,7 @@ int udp_output(ip4_t dst, u16 dport, u16 sport, const void *data, u32 len)
     return ip_output(dst, IPPROTO_UDP, buf, total);
 }
 
-void udp_input(ip4_t from, const void *data, u32 len)
+void udp_input(ip4_t from, ip4_t to, const void *data, u32 len)
 {
     const struct udphdr *u = data;
     u32 ulen;
@@ -141,22 +158,16 @@ void udp_input(ip4_t from, const void *data, u32 len)
      * A zero checksum means the sender did not compute one, which IPv4
      * permits. Anything else has to be right.
      */
-    if (u->check != 0) {
-        struct netif *n = net_if();
-
-        if (net_checksum(data, ulen,
-                         pseudo_sum(from, n->ip, ulen)) != 0) {
-            /*
-             * Only worth checking against our own address, which a
-             * broadcast is not -- so a broadcast whose checksum was
-             * computed against the broadcast address will fail here.
-             * DHCP sends those, which is why its own datagrams are
-             * accepted without this check below.
-             */
-            if (n->ip != 0) {
-                return;
-            }
-        }
+    /*
+     * Checked against the address it was actually sent TO -- this
+     * machine's, a broadcast, or 127.x for loopback. It used to be
+     * checked against the interface's address, which is wrong for the
+     * other two, and had an exception for being unconfigured to let
+     * DHCP's broadcast replies through.
+     */
+    if (u->check != 0 &&
+        net_checksum(data, ulen, pseudo_sum(from, to, ulen)) != 0) {
+        return;
     }
 
     for (i = 0; i < UDP_BINDINGS; i++) {

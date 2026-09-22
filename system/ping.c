@@ -19,8 +19,8 @@ int main(int argc, char **argv)
         eputs("usage: ping ADDR [COUNT]\n");
         return 1;
     }
-    ip = inet_aton(argv[1]);
-    if (!ip) {
+    ip = inet_addr(argv[1]);
+    if (ip == INADDR_NONE || !ip) {
         eputs("ping: not an address: ");
         eputs(argv[1]);
         eputs("\n  (there is no resolver yet -- use a number)\n");

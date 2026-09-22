@@ -79,7 +79,7 @@ enum tcp_state {
 
 #define TCP_SNDBUF      4096
 #define TCP_RCVBUF      4096
-#define TCP_MAX_CONNS   8
+#define TCP_MAX_CONNS   16
 
 /*
  * Segments held while a gap in front of them is filled.
@@ -169,8 +169,19 @@ struct tcpcb {
     u32   delack_at;
 
     int   fin_sent;
+    int   fin_pending;          /* close() asked; sent after the data */
     int   fin_rcvd;
     int   reset;                /* the peer aborted it              */
+    int   timed_out;            /* retransmission gave up           */
+
+    /*
+     * Closed by its owner and left to finish on its own: the FIN, the
+     * wait for the peer's, TIME_WAIT. netd runs the timers, and
+     * tcp_timer frees it when it gets to CLOSED -- or gives up on a peer
+     * that never finishes.
+     */
+    int   orphan;
+    u32   orphan_since;
 
     /* A listening socket parks accepted connections here. */
     struct tcpcb *listener;
@@ -197,6 +208,22 @@ s32  tcp_send(struct tcpcb *t, const void *data, u32 len);
 s32  tcp_recv(struct tcpcb *t, void *data, u32 len);
 int  tcp_close(struct tcpcb *t);
 u32  tcp_available(struct tcpcb *t);
+
+/* Like tcp_recv, but leaves the data where it is (MSG_PEEK). */
+s32  tcp_peek(struct tcpcb *t, void *data, u32 len);
+
+/* Is any connection using this local port -- TIME_WAIT included? */
+int  tcp_port_in_use(u16 port);
+
+/* A free ephemeral port, or 0. */
+u16  tcp_pick_port(void);
+
+/*
+ * The owner is done with it: close it, and let it finish on its own.
+ * A listener's unaccepted connections are closed with it. After this
+ * the caller must not touch `t` again.
+ */
+void tcp_release(struct tcpcb *t);
 
 /* POLLIN / POLLOUT / POLLERR / POLLHUP for this connection, now. */
 int  tcp_poll(struct tcpcb *t);

@@ -464,6 +464,19 @@ void kmain(void)
      */
 
 
+    /*
+     * The network's own task. Protocol work -- frames that arrived, and
+     * TCP's retransmission, delayed-ACK and TIME_WAIT timers -- used to
+     * happen only while some program sat in a socket call. A connection
+     * nobody happened to be reading then ACKed nothing and made its
+     * peer retransmit. netd does that work fifty times a second whether
+     * or not anybody is asking, and because it is a KERNEL task, which
+     * is never preempted, the stack still needs no locking.
+     */
+    if (!task_create("netd", net_task)) {
+        kputln("could not start netd");
+    }
+
     {
         struct task *sh = task_create("sh", shell);
 

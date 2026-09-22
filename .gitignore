@@ -58,5 +58,6 @@ apps/polltest
 apps/timetest
 apps/pipetest
 apps/proctest
+apps/socktest
 
 # Scratch disk and log from kernel/fstest.sh

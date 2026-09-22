@@ -162,6 +162,8 @@ void tcp_free(struct tcpcb *t)
     }
 }
 
+#define ORPHAN_LIMIT_MS 60000   /* how long a closing peer may take */
+
 static struct tcpcb *find(ip4_t raddr, u16 rport, u16 lport)
 {
     int i;
@@ -461,7 +463,13 @@ static void send_data(struct tcpcb *t)
 {
     u32 inflight, window, offset, n;
 
-    if (t->state != TCP_ESTABLISHED && t->state != TCP_CLOSE_WAIT) {
+    /*
+     * Including the states after close(): data queued before it still
+     * has to go -- and be retransmitted -- and the FIN goes after it.
+     */
+    if (t->state != TCP_ESTABLISHED && t->state != TCP_CLOSE_WAIT &&
+        t->state != TCP_FIN_WAIT_1 && t->state != TCP_CLOSING &&
+        t->state != TCP_LAST_ACK) {
         return;
     }
 
@@ -503,6 +511,30 @@ static void send_data(struct tcpcb *t)
             t->rexmit_at = timer_jiffies() + (t->rto_ms * HZ) / 1000;
         }
     }
+
+    /*
+     * THE FIN GOES LAST, once every byte queued before close() is out:
+     * it takes the sequence number after the data. It used to be sent
+     * the moment close() was called, at snd_nxt, with data still queued
+     * behind a full window -- so it took a sequence number the data
+     * needed, the peer ended the stream there, and the byte that should
+     * have had that number was lost. Found by 100 KB over loopback
+     * arriving one byte short.
+     *
+     * The same test resends it on a retransmission, which has rewound
+     * snd_nxt to snd_una: once the data is out again, so is the FIN.
+     */
+    if ((t->fin_pending || t->fin_sent) &&
+        t->snd_nxt - t->snd_una == t->sndlen) {
+        if (send_seg(t, t->snd_nxt, TCP_ACK | TCP_FIN, 0, 0) == 0) {
+            t->snd_nxt++;
+            t->fin_sent = 1;
+            t->fin_pending = 0;
+            if (!t->rexmit_at) {
+                t->rexmit_at = timer_jiffies() + (t->rto_ms * HZ) / 1000;
+            }
+        }
+    }
 }
 
 static void send_ack(struct tcpcb *t)
@@ -515,11 +547,13 @@ static void send_ack(struct tcpcb *t)
  * does not exist. It is how a machine says "nothing is listening there"
  * without an ICMP message that would also tell a scanner what is.
  */
-static void send_rst(ip4_t dst, const struct tcphdr *in, u32 seglen)
+/* `self` is the address the offending segment was sent to, which is who
+ * the reset must come from -- 127.x for loopback, not the interface. */
+static void send_rst(ip4_t dst, ip4_t self, const struct tcphdr *in,
+                     u32 seglen)
 {
     u8 buf[TCP_HDR_LEN];
     struct tcphdr *h = (struct tcphdr *)buf;
-    struct netif *n = net_if();
 
     if (in->flags & TCP_RST) {
         return;                 /* never answer a reset with a reset */
@@ -543,7 +577,7 @@ static void send_rst(ip4_t dst, const struct tcphdr *in, u32 seglen)
 
     h->check = 0;
     h->check = net_checksum(buf, sizeof(buf),
-                            pseudo_sum(n->ip, dst, sizeof(buf)));
+                            pseudo_sum(self, dst, sizeof(buf)));
     ip_output(dst, IPPROTO_TCP, buf, sizeof(buf));
 }
 
@@ -667,7 +701,6 @@ static void ack_sent_data(struct tcpcb *t, u32 ack, u32 datalen, u16 window)
 void tcp_input(ip4_t src, ip4_t dst, const void *seg, u32 len)
 {
     const struct tcphdr *h = seg;
-    struct netif *n = net_if();
     struct tcpcb *t;
     u32 hlen, datalen;
     const u8 *data;
@@ -688,7 +721,7 @@ void tcp_input(ip4_t src, ip4_t dst, const void *seg, u32 len)
 
     t = find(src, h->sport, h->dport);
     if (!t) {
-        send_rst(src, h, datalen);
+        send_rst(src, dst, h, datalen);
         return;
     }
 
@@ -697,16 +730,18 @@ void tcp_input(ip4_t src, ip4_t dst, const void *seg, u32 len)
         struct tcpcb *c;
 
         if (!(h->flags & TCP_SYN)) {
-            send_rst(src, h, datalen);
+            send_rst(src, dst, h, datalen);
             return;
         }
         c = tcp_alloc();
         if (!c) {
-            send_rst(src, h, datalen);      /* no room; refuse plainly */
+            send_rst(src, dst, h, datalen);      /* no room; refuse plainly */
             return;
         }
         c->state = TCP_SYN_RECEIVED;
-        c->local_ip = n->ip;
+        /* The address the SYN was sent TO: this machine's, or 127.x
+         * for loopback -- and the checksums must use the same one. */
+        c->local_ip = dst;
         c->local_port = t->local_port;
         c->remote_ip = src;
         c->remote_port = h->sport;
@@ -737,7 +772,7 @@ void tcp_input(ip4_t src, ip4_t dst, const void *seg, u32 len)
         }
         if (h->flags & TCP_ACK) {
             if (h->ack != t->snd_nxt) {
-                send_rst(src, h, datalen);
+                send_rst(src, dst, h, datalen);
                 return;
             }
             t->snd_una = h->ack;
@@ -916,6 +951,14 @@ void tcp_timer(void)
             continue;
         }
 
+        /* An orphan that has finished, or whose peer never will. */
+        if (t->orphan && (t->state == TCP_CLOSED ||
+                          (s32)(now - t->orphan_since) >=
+                          (s32)(ORPHAN_LIMIT_MS * HZ / 1000))) {
+            tcp_free(t);
+            continue;
+        }
+
         /*
          * TIME_WAIT should be twice the maximum segment lifetime, which
          * the standard puts at two minutes. Ten seconds is used instead
@@ -945,6 +988,7 @@ void tcp_timer(void)
         if (++t->rexmits > REXMIT_LIMIT) {
             t->state = TCP_CLOSED;
             t->reset = 1;
+            t->timed_out = 1;       /* ETIMEDOUT, not a refusal */
             t->rexmit_at = 0;
             continue;
         }
@@ -980,13 +1024,10 @@ void tcp_timer(void)
             send_seg(t, t->snd_una, TCP_SYN | TCP_ACK, 0, 0);
             break;
         default:
-            /* Everything unacknowledged, from the start again. */
+            /* Everything unacknowledged, from the start again -- the
+             * data, and then the FIN if one was sent. */
             t->snd_nxt = t->snd_una;
-            if (t->sndlen > 0) {
-                send_data(t);
-            } else if (t->fin_sent) {
-                send_seg(t, t->snd_nxt, TCP_ACK | TCP_FIN, 0, 0);
-            }
+            send_data(t);
             break;
         }
     }
@@ -994,7 +1035,7 @@ void tcp_timer(void)
 
 /* --- what the socket layer calls ------------------------------------ */
 
-static u16 pick_port(void)
+u16 tcp_pick_port(void)
 {
     int i, tries;
 
@@ -1023,13 +1064,16 @@ int tcp_connect(struct tcpcb *t, ip4_t addr, u16 port)
     if (t->state != TCP_CLOSED) {
         return -EISCONN;
     }
-    if (!n->ip) {
+    /* Loopback needs no configured interface; anything else does. */
+    if (IP4_IS_LOOPBACK(addr)) {
+        t->local_ip = addr;
+    } else if (!n->ip) {
         return -EADDRNOTAVAIL;
+    } else {
+        t->local_ip = n->ip;
     }
-
-    t->local_ip = n->ip;
     if (!t->local_port) {
-        t->local_port = pick_port();
+        t->local_port = tcp_pick_port();
         if (!t->local_port) {
             return -EADDRINUSE;
         }
@@ -1090,7 +1134,7 @@ int tcp_poll(struct tcpcb *t)
         r |= POLLIN;
     }
     if ((t->state == TCP_ESTABLISHED || t->state == TCP_CLOSE_WAIT) &&
-        !t->fin_sent && t->sndlen < TCP_SNDBUF) {
+        !t->fin_sent && !t->fin_pending && t->sndlen < TCP_SNDBUF) {
         r |= POLLOUT;
     }
     if (t->state == TCP_CLOSED || (t->fin_rcvd && t->fin_sent)) {
@@ -1123,7 +1167,7 @@ s32 tcp_send(struct tcpcb *t, const void *data, u32 len)
     if (t->state != TCP_ESTABLISHED && t->state != TCP_CLOSE_WAIT) {
         return -ENOTCONN;
     }
-    if (t->fin_sent) {
+    if (t->fin_sent || t->fin_pending) {
         return -EPIPE;
     }
 
@@ -1139,6 +1183,63 @@ s32 tcp_send(struct tcpcb *t, const void *data, u32 len)
 
     send_data(t);
     return (s32)len;
+}
+
+s32 tcp_peek(struct tcpcb *t, void *data, u32 len)
+{
+    u8 *out = data;
+    u32 n = 0, at = t->rcvtail;
+
+    while (n < len && n < rcv_used(t)) {
+        out[n++] = t->rcvbuf[at];
+        at = (at + 1) % TCP_RCVBUF;
+    }
+    if (n > 0) {
+        return (s32)n;
+    }
+    if (t->reset) {
+        return -ECONNRESET;
+    }
+    if (t->fin_rcvd) {
+        return 0;
+    }
+    return t->state == TCP_CLOSED ? -ENOTCONN : -EAGAIN;
+}
+
+int tcp_port_in_use(u16 port)
+{
+    int i;
+
+    for (i = 0; i < TCP_MAX_CONNS; i++) {
+        if (conns[i].used && conns[i].local_port == port) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void tcp_release(struct tcpcb *t)
+{
+    int i;
+
+    if (t->state == TCP_LISTEN) {
+        /* Connections that finished their handshake but were never
+         * accepted have no owner now: close them too. */
+        for (i = 0; i < TCP_MAX_CONNS; i++) {
+            struct tcpcb *c = &conns[i];
+
+            if (c->used && c->listener == t) {
+                c->listener = 0;
+                c->pending = 0;
+                tcp_release(c);
+            }
+        }
+    }
+    tcp_close(t);               /* frees it outright in some states */
+    if (t->used) {
+        t->orphan = 1;
+        t->orphan_since = timer_jiffies();
+    }
 }
 
 s32 tcp_recv(struct tcpcb *t, void *data, u32 len)
@@ -1197,9 +1298,7 @@ int tcp_close(struct tcpcb *t)
         return 0;               /* already closing */
     }
 
-    send_seg(t, t->snd_nxt, TCP_ACK | TCP_FIN, 0, 0);
-    t->snd_nxt++;
-    t->fin_sent = 1;
-    t->rexmit_at = timer_jiffies() + (t->rto_ms * HZ) / 1000;
+    t->fin_pending = 1;
+    send_data(t);               /* the rest of the data, then the FIN */
     return 0;
 }

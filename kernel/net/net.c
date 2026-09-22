@@ -212,9 +212,53 @@ void net_drain(void)
     }
 }
 
+/*
+ * Frames this machine sent to itself. Written and read only in task
+ * context -- by ip_output() and net_poll() -- so unlike the card's ring
+ * it needs no care about the interrupt.
+ */
+#define LO_RING 32
+
+static struct rxslot lo_ring[LO_RING];
+static u32 lo_head, lo_tail;
+
+int net_loopback(const void *frame, u32 len)
+{
+    u32 next = (lo_head + 1) % LO_RING;
+
+    if (next == lo_tail) {
+        return -ENOBUFS;        /* a real interface drops too */
+    }
+    if (len > NET_MTU) {
+        return -EMSGSIZE;
+    }
+    memcpy(lo_ring[lo_head].data, frame, len);
+    lo_ring[lo_head].len = len;
+    lo_head = next;
+    wake_all(&net_waitq);
+    return 0;
+}
+
 int net_poll(void)
 {
     int handled = 0;
+
+    /*
+     * Loopback first. Bounded like the card's ring, and a frame
+     * delivered here may queue another -- a SYN's reply -- which the
+     * next poll takes.
+     */
+    {
+        u32 end = lo_head;
+
+        while (lo_tail != end) {
+            u32 t = lo_tail;
+
+            lo_tail = (lo_tail + 1) % LO_RING;
+            net_input(lo_ring[t].data, lo_ring[t].len);
+            handled++;
+        }
+    }
 
     /*
      * Bounded. An interface being flooded must not be able to hold the
@@ -228,6 +272,15 @@ int net_poll(void)
         handled++;
     }
     return handled;
+}
+
+void net_task(void)
+{
+    for (;;) {
+        net_poll();
+        tcp_timer();
+        sleep_on_timeout(&net_waitq, 20);
+    }
 }
 
 void net_sleep(u32 ms)

@@ -48,6 +48,7 @@
  * blocking on a read that may never return.
  */
 #define FIONREAD      0x541B
+#define FIONBIO       0x5421    /* set or clear O_NONBLOCK, from an int  */
 
 /*
  * Where console output goes, and where its input comes from.
@@ -545,41 +546,121 @@ struct mmap_arg_struct {
 #define __NR_getpid     20
 #define __NR_sched_yield 158
 
-#define __NR_socket    359
-#define __NR_bind      361
-#define __NR_connect   362
-#define __NR_listen    363
-#define __NR_accept    364
-#define __NR_sendto    369
-#define __NR_recvfrom  371
-#define __NR_shutdown  373
+#define __NR_socket      359
+#define __NR_socketpair  360
+#define __NR_bind        361
+#define __NR_connect     362
+#define __NR_listen      363
+#define __NR_accept4     364    /* i386's 364 is accept4; accept() is it
+                                 * with flags 0, in the library          */
+#define __NR_getsockopt  365
+#define __NR_setsockopt  366
+#define __NR_getsockname 367
+#define __NR_getpeername 368
+#define __NR_sendto      369
+#define __NR_sendmsg     370
+#define __NR_recvfrom    371
+#define __NR_recvmsg     372
+#define __NR_shutdown    373
 
+/*
+ * The socket interface is Linux's now, signatures and all: a struct
+ * sockaddr and a socklen_t beside it, and the flags arguments. It took
+ * a struct sockaddr_in and no length until a C library was coming,
+ * whose socket layer is written against the real thing.
+ *
+ * AF_UNIX exists as socketpair() only -- a connected pair, stream, the
+ * same object as a pipe in each direction. There are no named Unix
+ * sockets, because there is no file type on a FAT volume to be one.
+ */
+#define AF_UNSPEC       0
+#define AF_UNIX         1
+#define AF_LOCAL        AF_UNIX
 #define AF_INET         2
+#define PF_UNSPEC       AF_UNSPEC
+#define PF_UNIX         AF_UNIX
+#define PF_LOCAL        AF_UNIX
+#define PF_INET         AF_INET
 
 #define SOCK_STREAM     1
 #define SOCK_DGRAM      2
+#define SOCK_NONBLOCK   O_NONBLOCK      /* in socket()'s type, and accept4 */
+#define SOCK_CLOEXEC    O_CLOEXEC
 
 #define SHUT_RD         0
 #define SHUT_WR         1
 #define SHUT_RDWR       2
 
+#define MSG_PEEK        0x0002
+#define MSG_TRUNC       0x0020
+#define MSG_DONTWAIT    0x0040
+#define MSG_WAITALL     0x0100
+#define MSG_NOSIGNAL    0x4000
+
+/* setsockopt/getsockopt: the options that mean something here. */
+#define SOL_SOCKET      1
+#define SO_REUSEADDR    2
+#define SO_TYPE         3
+#define SO_ERROR        4
+#define SO_BROADCAST    6
+#define SO_SNDBUF       7
+#define SO_RCVBUF       8
+#define SO_KEEPALIVE    9
+#define SO_RCVTIMEO     20
+#define SO_SNDTIMEO     21
+#define SO_ACCEPTCONN   30
+#define IPPROTO_IP      0
+#define IPPROTO_TCP     6
+#define IPPROTO_UDP     17
+#define TCP_NODELAY     1       /* always on: there is no Nagle to turn off */
+
+typedef u32 socklen_t;
+
+struct sockaddr {
+    u16  sa_family;
+    char sa_data[14];
+};
+
 /*
- * The BSD address structure, unchanged.
- *
  * sin_port and sin_addr are in NETWORK byte order, which on this machine
  * is also host order -- so htons() and ntohl() are the identity here and
- * compile to nothing. A program should still call them: the day this
- * code is read on a little-endian machine the habit is what makes it
- * portable, and the cost of the habit is zero.
+ * compile to nothing. A program should still call them: the habit is
+ * what makes it portable, and it costs nothing.
  */
+struct in_addr {
+    u32 s_addr;
+};
+
 struct sockaddr_in {
     u16 sin_family;
     u16 sin_port;
-    u32 sin_addr;
+    struct in_addr sin_addr;
     u8  sin_zero[8];
 };
 
-#define INADDR_ANY      0x00000000UL
+#define INADDR_ANY       0x00000000UL
+#define INADDR_LOOPBACK  0x7f000001UL   /* 127.0.0.1 */
+#define INADDR_BROADCAST 0xffffffffUL
+#define INADDR_NONE      0xffffffffUL   /* inet_addr's "not an address" */
+
+struct iovec {
+    void *iov_base;
+    u32   iov_len;
+};
+
+/* No ancillary data: msg_control is accepted, and msg_controllen comes
+ * back 0 with MSG_CTRUNC set if any was asked for. */
+#define MSG_CTRUNC      0x0008
+
+struct msghdr {
+    void         *msg_name;
+    socklen_t     msg_namelen;
+    struct iovec *msg_iov;
+    u32           msg_iovlen;
+    void         *msg_control;
+    u32           msg_controllen;
+    int           msg_flags;
+};
 
 #define __NR_spawn     400
 #define __NR_jobctl    401

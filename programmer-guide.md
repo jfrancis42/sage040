@@ -854,8 +854,7 @@ Forty of them.
 | `mkdir` 39, `rmdir` 40, `chdir` 12, `getcwd` 183 | directories |
 | `time` 13, `stime` 25, `times` 43, `nanosleep` 162 | time |
 | `getpid` 20, `kill` 37, `waitpid` 7, `sched_yield` 158 | tasks |
-| `socket` 359, `bind` 361, `connect` 362, `listen` 363 | sockets |
-| `accept` 364, `sendto` 369, `recvfrom` 371, `shutdown` 373 | more sockets |
+| `socket` 359 … `shutdown` 373 | sockets, all of Linux/i386's range: `socketpair`, `accept4`, the socket options, names, `sendmsg`/`recvmsg` |
 | `ioctl` 54, `uname` 122, `sysinfo` 116, `reboot` 88 | the rest |
 | `spawn` 400, `jobctl` 401, `netctl` 402 | **not Linux** — see below |
 
@@ -1170,22 +1169,31 @@ descriptor. `shell.c`'s `console` command is the worked example.
 
 #### The network
 
-A socket is a file descriptor, so there is no `send()`/`recv()` pair for
-a stream — `read()` and `write()` work on one.
+The socket interface is Linux's, signatures and all, so code written
+for Linux compiles unchanged. A socket is a file descriptor, so `read()`
+and `write()` work on one as well as `send()` and `recv()`.
 
 ```c
 struct sockaddr_in sa;
 int fd = socket(AF_INET, SOCK_STREAM, 0);
 
+memset(&sa, 0, sizeof(sa));
 sa.sin_family = AF_INET;
 sa.sin_port   = htons(80);
-sa.sin_addr   = htonl(inet_aton("10.0.2.2"));
+inet_aton("10.0.2.2", &sa.sin_addr);
 
-connect(fd, &sa);
+connect(fd, (struct sockaddr *)&sa, sizeof(sa));
 write(fd, "GET / HTTP/1.0\r\n\r\n", 18);
 while ((n = read(fd, buf, sizeof(buf))) > 0) { ... }   /* 0 = closed */
 close(fd);
 ```
+
+Everything else Linux has is here too: `accept4`, `getsockname`,
+`getpeername`, `setsockopt`/`getsockopt`, `sendmsg`/`recvmsg`,
+`shutdown`, `socketpair(AF_UNIX, SOCK_STREAM)`, non-blocking sockets and
+`EINPROGRESS`, and the `MSG_*` flags. **`127.0.0.1` works**, and so does
+the machine's own address, with or without a network. `apps/socktest.c`
+exercises all of it over loopback.
 
 `bind()`, `listen()` and `accept()` work the other way round;
 `apps/httpd.c` is a worked example that serves files off the disk, and
@@ -1200,11 +1208,10 @@ UDP uses `sendto()` and `recvfrom()` with the same descriptor type.
 **There is no resolver**, so addresses are numeric. That is the next
 thing missing rather than an oversight.
 
-**Blocking is a real sleep.** A `read()` on a socket with nothing waiting
-puts the task on a wait queue and yields; something else runs until data
-arrives or the timeout expires, and the same is true of the console. This
-used to be a spin, and the note promising it would become a real sleep
-"when there is a scheduler" has been discharged.
+**Blocking is a real sleep, and it lasts until it is satisfied**, as on
+Linux. A timeout is `SO_RCVTIMEO` or `SO_SNDTIMEO`, which end a wait
+with `EAGAIN`. Closing never waits: the connection finishes its FIN
+handshake on its own.
 
 #### Stopping the machine
 
@@ -1330,9 +1337,8 @@ older copy should know which way round it is now.
   `sigpending`, `sigsuspend` and `pause`, all with Linux's numbers and
   meanings. A handler is an ordinary function of one argument. `signal()`
   sets `SA_RESTART`, as glibc's does.
-- **Open a network socket.** `socket`, `connect`, `bind`, `listen`,
-  `accept`, `sendto` and `recvfrom` all work, and a socket is a
-  descriptor, so `read()` and `write()` work on one.
+- **Use the network the Linux way.** The whole socket API with Linux's
+  signatures, loopback included; see *The network* below.
 - **Use pipes and redirection.** `pipe`, `dup`, `dup2` and `fcntl`
   (`O_NONBLOCK`, `FD_CLOEXEC`, `F_DUPFD`), with Linux's meanings: end of
   file when the last writer closes, SIGPIPE and `EPIPE` when the last

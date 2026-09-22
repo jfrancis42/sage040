@@ -60,6 +60,7 @@ typedef u32 ip4_t;
 
 #define IP4_ANY         0x00000000UL
 #define IP4_BROADCAST   0xffffffffUL
+#define IP4_IS_LOOPBACK(a)  (((a) >> 24) == 127)
 
 /* --- the interface -------------------------------------------------- */
 
@@ -100,6 +101,13 @@ int  net_init(void);
  * Returns how many frames it handled.
  */
 int  net_poll(void);
+
+/* Queue a frame for delivery to this machine, as loopback. From task
+ * context only; net_poll() delivers it. */
+int  net_loopback(const void *frame, u32 len);
+
+/* The body of netd, the kernel task that keeps the stack moving. */
+void net_task(void);
 
 /*
  * Take frames off the card and into memory, and nothing else.
@@ -182,10 +190,11 @@ typedef void (*udp_handler_t)(void *arg, ip4_t from, u16 sport,
 
 void tcp_input(ip4_t src, ip4_t dst, const void *seg, u32 len);
 
-void udp_input(ip4_t from, const void *data, u32 len);
+void udp_input(ip4_t from, ip4_t to, const void *data, u32 len);
 int  udp_output(ip4_t dst, u16 dport, u16 sport, const void *data, u32 len);
 int  udp_bind(u16 port, udp_handler_t fn, void *arg);
 void udp_unbind(u16 port);
+int  udp_port_in_use(u16 port);
 
 /* --- DHCP ------------------------------------------------------------ */
 
@@ -199,15 +208,25 @@ ip4_t dhcp_dns(void);
 
 struct sockaddr_in;
 
+/* Sockets. The system call layer copies addresses; these take kernel
+ * pointers and the open file. See socket.c. */
+struct file;
 int  sock_create(int domain, int type, int protocol);
-int  sock_bind(int fd, const struct sockaddr_in *addr);
-int  sock_connect(int fd, const struct sockaddr_in *addr);
-int  sock_listen(int fd, int backlog);
-int  sock_accept(int fd, struct sockaddr_in *addr);
-s32  sock_sendto(int fd, const void *buf, u32 len,
-                 const struct sockaddr_in *addr);
-s32  sock_recvfrom(int fd, void *buf, u32 len, struct sockaddr_in *addr);
-int  sock_shutdown(int fd, int how);
+int  sock_is(struct file *f);
+int  sock_dgram(struct file *f);   /* a UDP socket? */
+int  sock_bind(struct file *f, const struct sockaddr_in *sa);
+int  sock_connect(struct file *f, const struct sockaddr_in *sa);
+int  sock_listen(struct file *f, int backlog);
+int  sock_accept(struct file *f, struct sockaddr_in *peer, int flags);
+s32  sock_send(struct file *f, const void *buf, u32 len, int flags,
+               const struct sockaddr_in *to);
+s32  sock_recv(struct file *f, void *buf, u32 len, int flags,
+               struct sockaddr_in *from, int *truncated);
+int  sock_shutdown(struct file *f, int how);
+int  sock_name(struct file *f, struct sockaddr_in *sa, int peer);
+int  sock_setopt(struct file *f, int level, int name, const void *val,
+                 u32 len);
+int  sock_getopt(struct file *f, int level, int name, void *val, u32 *len);
 
 void arp_init(void);
 void arp_input(const void *frame, u32 len);

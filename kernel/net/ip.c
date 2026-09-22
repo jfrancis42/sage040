@@ -90,6 +90,34 @@ int ip_output(ip4_t dst, u8 proto, const void *payload, u32 len)
     u8 mac[ETH_ALEN];
     int err;
 
+    /*
+     * LOOPBACK. 127/8, and this machine's own address, never go near
+     * the wire: the frame is put straight on the loopback queue and
+     * net_poll() delivers it as if it had arrived. It works with the
+     * interface down or unconfigured, which is exactly when a program
+     * talking to itself has to be able to.
+     */
+    if (IP4_IS_LOOPBACK(dst) || (n->ip && dst == n->ip)) {
+        if (len > NET_MTU - ETH_HDR_LEN - (u32)IP_HDR_LEN) {
+            return -EMSGSIZE;
+        }
+        ip = net_eth_hdr(frame, n->mac, ETH_P_IP);
+        ip->vhl = (IP_VERSION_4 << 4) | IP_MIN_IHL;
+        ip->tos = 0;
+        ip->tot_len = (u16)(IP_HDR_LEN + len);
+        ip->id = next_id++;
+        ip->frag_off = 0;
+        ip->ttl = 64;
+        ip->protocol = proto;
+        ip->check = 0;
+        /* To 127.x, from 127.x: the reply comes back the same way. */
+        ip->saddr = IP4_IS_LOOPBACK(dst) ? dst : n->ip;
+        ip->daddr = dst;
+        ip->check = net_checksum(ip, IP_HDR_LEN, 0);
+        memcpy((u8 *)ip + IP_HDR_LEN, payload, len);
+        return net_loopback(frame, ETH_HDR_LEN + (u32)IP_HDR_LEN + len);
+    }
+
     if (!n->up) {
         return -ENETDOWN;
     }
@@ -103,8 +131,14 @@ int ip_output(ip4_t dst, u8 proto, const void *payload, u32 len)
     if (!n->ip && dst != IP4_BROADCAST) {
         return -EADDRNOTAVAIL;
     }
-    if (len > NET_MTU - (u32)IP_HDR_LEN) {
-        /* Would need fragmenting, which this does not do. */
+    /*
+     * Would need fragmenting, which this does not do. NET_MTU is the
+     * whole ETHERNET frame, 1514 bytes, so what an IP datagram may carry
+     * is that less the Ethernet and IP headers: 1480. This compared
+     * against NET_MTU less the IP header alone, which let a datagram
+     * build a frame 14 bytes longer than Ethernet allows.
+     */
+    if (len > NET_MTU - ETH_HDR_LEN - (u32)IP_HDR_LEN) {
         return -EMSGSIZE;
     }
 
@@ -183,7 +217,7 @@ void ip_input(const void *frame, u32 len)
      * A host that answered packets addressed elsewhere would be a
      * router, and an accidental one at that.
      */
-    if (ip->daddr != n->ip &&
+    if (ip->daddr != n->ip && !IP4_IS_LOOPBACK(ip->daddr) &&
         ip->daddr != IP4_BROADCAST &&
         !(n->netmask && ip->daddr == (n->ip | ~n->netmask))) {
         return;
@@ -195,7 +229,7 @@ void ip_input(const void *frame, u32 len)
         break;
 
     case IPPROTO_UDP:
-        udp_input(ip->saddr, (const u8 *)ip + hlen, tot - hlen);
+        udp_input(ip->saddr, ip->daddr, (const u8 *)ip + hlen, tot - hlen);
         break;
 
     case IPPROTO_TCP:

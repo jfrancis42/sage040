@@ -338,19 +338,31 @@ int sigismember(const sigset_t *s, int sig)
     return (*s >> (sig - 1)) & 1;
 }
 
+/*
+ * Sockets, with Linux's signatures: a struct sockaddr and its length,
+ * and the flags. send() and recv() are sendto() and recvfrom() with no
+ * address, as they are in Linux's libc; accept() is accept4() with no
+ * flags.
+ */
 int socket(int domain, int type, int protocol)
 {
     return (int)sc3(__NR_socket, (u32)domain, (u32)type, (u32)protocol);
 }
 
-int bind(int fd, const struct sockaddr_in *addr)
+int socketpair(int domain, int type, int protocol, int sv[2])
 {
-    return (int)sc2(__NR_bind, (u32)fd, (u32)addr);
+    return (int)sc4(__NR_socketpair, (u32)domain, (u32)type, (u32)protocol,
+                    (u32)sv);
 }
 
-int connect(int fd, const struct sockaddr_in *addr)
+int bind(int fd, const struct sockaddr *addr, socklen_t len)
 {
-    return (int)sc2(__NR_connect, (u32)fd, (u32)addr);
+    return (int)sc3(__NR_bind, (u32)fd, (u32)addr, len);
+}
+
+int connect(int fd, const struct sockaddr *addr, socklen_t len)
+{
+    return (int)sc3(__NR_connect, (u32)fd, (u32)addr, len);
 }
 
 int listen(int fd, int backlog)
@@ -358,19 +370,70 @@ int listen(int fd, int backlog)
     return (int)sc2(__NR_listen, (u32)fd, (u32)backlog);
 }
 
-int accept(int fd, struct sockaddr_in *addr)
+int accept4(int fd, struct sockaddr *addr, socklen_t *len, int flags)
 {
-    return (int)sc2(__NR_accept, (u32)fd, (u32)addr);
+    return (int)sc4(__NR_accept4, (u32)fd, (u32)addr, (u32)len, (u32)flags);
 }
 
-s32 sendto(int fd, const void *buf, u32 len, const struct sockaddr_in *to)
+int accept(int fd, struct sockaddr *addr, socklen_t *len)
 {
-    return sc4(__NR_sendto, (u32)fd, (u32)buf, len, (u32)to);
+    return accept4(fd, addr, len, 0);
 }
 
-s32 recvfrom(int fd, void *buf, u32 len, struct sockaddr_in *from)
+s32 sendto(int fd, const void *buf, u32 len, int flags,
+           const struct sockaddr *to, socklen_t tolen)
 {
-    return sc4(__NR_recvfrom, (u32)fd, (u32)buf, len, (u32)from);
+    return sc6(__NR_sendto, (u32)fd, (u32)buf, len, (u32)flags, (u32)to,
+               tolen);
+}
+
+s32 recvfrom(int fd, void *buf, u32 len, int flags,
+             struct sockaddr *from, socklen_t *fromlen)
+{
+    return sc6(__NR_recvfrom, (u32)fd, (u32)buf, len, (u32)flags,
+               (u32)from, (u32)fromlen);
+}
+
+s32 send(int fd, const void *buf, u32 len, int flags)
+{
+    return sendto(fd, buf, len, flags, 0, 0);
+}
+
+s32 recv(int fd, void *buf, u32 len, int flags)
+{
+    return recvfrom(fd, buf, len, flags, 0, 0);
+}
+
+s32 sendmsg(int fd, const struct msghdr *msg, int flags)
+{
+    return sc3(__NR_sendmsg, (u32)fd, (u32)msg, (u32)flags);
+}
+
+s32 recvmsg(int fd, struct msghdr *msg, int flags)
+{
+    return sc3(__NR_recvmsg, (u32)fd, (u32)msg, (u32)flags);
+}
+
+int getsockname(int fd, struct sockaddr *addr, socklen_t *len)
+{
+    return (int)sc3(__NR_getsockname, (u32)fd, (u32)addr, (u32)len);
+}
+
+int getpeername(int fd, struct sockaddr *addr, socklen_t *len)
+{
+    return (int)sc3(__NR_getpeername, (u32)fd, (u32)addr, (u32)len);
+}
+
+int setsockopt(int fd, int level, int name, const void *val, socklen_t len)
+{
+    return (int)sc6(__NR_setsockopt, (u32)fd, (u32)level, (u32)name,
+                    (u32)val, len, 0);
+}
+
+int getsockopt(int fd, int level, int name, void *val, socklen_t *len)
+{
+    return (int)sc6(__NR_getsockopt, (u32)fd, (u32)level, (u32)name,
+                    (u32)val, (u32)len, 0);
 }
 
 int shutdown(int fd, int how)
@@ -567,7 +630,8 @@ const char *getenv(const char *name)
     return 0;
 }
 
-u32 inet_aton(const char *s)
+/* "10.1.0.1" -> an address in network order, or INADDR_NONE (POSIX). */
+u32 inet_addr(const char *s)
 {
     u32 a = 0;
     int i;
@@ -580,17 +644,57 @@ u32 inet_aton(const char *s)
             digits++;
         }
         if (!digits || n > 255) {
-            return 0;
+            return INADDR_NONE;
         }
         a = (a << 8) | (u32)n;
         if (i < 3) {
             if (*s != '.') {
-                return 0;
+                return INADDR_NONE;
             }
             s++;
         }
     }
-    return *s == '\0' ? a : 0;
+    return *s == '\0' ? a : INADDR_NONE;
+}
+
+/* POSIX's: 1 and the address, or 0. Unlike inet_addr, it can say
+ * 255.255.255.255. */
+int inet_aton(const char *s, struct in_addr *out)
+{
+    u32 a = inet_addr(s);
+
+    if (a == INADDR_NONE && strcmp(s, "255.255.255.255") != 0) {
+        return 0;
+    }
+    if (out) {
+        out->s_addr = a;
+    }
+    return 1;
+}
+
+/* The dotted form, in a buffer of its own that the next call reuses. */
+char *inet_ntoa(struct in_addr in)
+{
+    static char buf[16];
+    char *p = buf;
+    int i;
+
+    for (i = 3; i >= 0; i--) {
+        u32 v = (in.s_addr >> (i * 8)) & 0xff;
+
+        if (v >= 100) {
+            *p++ = (char)('0' + v / 100);
+        }
+        if (v >= 10) {
+            *p++ = (char)('0' + (v / 10) % 10);
+        }
+        *p++ = (char)('0' + v % 10);
+        if (i) {
+            *p++ = '.';
+        }
+    }
+    *p = '\0';
+    return buf;
 }
 
 int strcmp(const char *a, const char *b)

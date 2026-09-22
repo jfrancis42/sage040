@@ -75,9 +75,19 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    a.ip = inet_aton(argv[1]);
-    a.netmask = inet_aton(argv[2]);
-    a.gateway = argc > 3 ? inet_aton(argv[3]) : 0;
+    {
+        struct in_addr ip, mask, gw;
+
+        gw.s_addr = 0;
+        if (!inet_aton(argv[1], &ip) || !inet_aton(argv[2], &mask) ||
+            (argc > 3 && !inet_aton(argv[3], &gw))) {
+            eputs("ifconfig: not an address\n");
+            return 1;
+        }
+        a.ip = ip.s_addr;
+        a.netmask = mask.s_addr;
+        a.gateway = gw.s_addr;
+    }
     if (!a.ip || !a.netmask) {
         eputs("ifconfig: not an address\n");
         return 1;

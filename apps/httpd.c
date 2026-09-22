@@ -93,12 +93,18 @@ int main(int argc, char **argv)
 
     sa.sin_family = AF_INET;
     sa.sin_port = htons((u16)port);
-    sa.sin_addr = INADDR_ANY;
+    sa.sin_addr.s_addr = htonl(INADDR_ANY);
     for (i = 0; i < 8; i++) {
         sa.sin_zero[i] = 0;
     }
 
-    if (bind(lfd, &sa) < 0 || listen(lfd, 4) < 0) {
+    /* So a restarted server can take its port back from the last one's
+     * connections still in TIME_WAIT. */
+    i = 1;
+    setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &i, sizeof(i));
+
+    if (bind(lfd, (struct sockaddr *)&sa, sizeof(sa)) < 0 ||
+        listen(lfd, 4) < 0) {
         eputs("httpd: cannot listen\n");
         close(lfd);
         return 1;
@@ -112,17 +118,16 @@ int main(int argc, char **argv)
         s32 n;
         int ffd;
 
-        cfd = accept(lfd, &peer);
+        socklen_t plen = sizeof(peer);
+
+        cfd = accept(lfd, (struct sockaddr *)&peer, &plen);
         if (cfd < 0) {
             eputs("httpd: accept failed\n");
             break;
         }
 
         puts("connection from ");
-        putdec((peer.sin_addr >> 24) & 0xff); putch('.');
-        putdec((peer.sin_addr >> 16) & 0xff); putch('.');
-        putdec((peer.sin_addr >> 8) & 0xff);  putch('.');
-        putdec(peer.sin_addr & 0xff);
+        puts(inet_ntoa(peer.sin_addr));
         puts("\n");
 
         n = read(cfd, req, sizeof(req) - 1);

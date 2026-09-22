@@ -70,11 +70,10 @@ int main(int argc, char **argv)
 
     sa.sin_family = AF_INET;
     sa.sin_port = htons((u16)port);
-    sa.sin_addr = htonl(inet_aton(argv[1]));
     for (i = 0; i < 8; i++) {
         sa.sin_zero[i] = 0;
     }
-    if (!sa.sin_addr) {
+    if (!inet_aton(argv[1], &sa.sin_addr)) {
         eputs("fetch: not an address: ");
         eputs(argv[1]);
         eputs("\n  (there is no resolver yet -- use a number)\n");
@@ -91,7 +90,7 @@ int main(int argc, char **argv)
     puts(argv[1]);
     puts("...\n");
 
-    if ((i = connect(fd, &sa)) < 0) {
+    if ((i = connect(fd, (struct sockaddr *)&sa, sizeof(sa))) < 0) {
         put_err("connect", i);
         close(fd);
         return 1;

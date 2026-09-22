@@ -338,6 +338,7 @@ static const struct {
     u8  dir;
 } ioctl_args[] = {
     { FIONREAD,     sizeof(u32),                  IO_OUT },
+    { FIONBIO,      sizeof(int),                  IO_IN  },
     { TCGETS,       sizeof(struct termios),       IO_OUT },
     { TCSETS,       sizeof(struct termios),       IO_IN  },
     { TCSETSW,      sizeof(struct termios),       IO_IN  },
@@ -642,6 +643,511 @@ int do_select(u32 nfds, u32 uin, u32 uout, u32 uex, u32 utv)
         }
     }
     return r;
+}
+
+/* --- sockets ---------------------------------------------------------- */
+
+#define SK_INET 1
+#define SK_UNIX 2
+
+/* What kind of socket a descriptor is, or -EBADF / -ENOTSOCK. */
+static int sock_kind(int fd, struct file **fp)
+{
+    struct file *f = fd_get(fd);
+
+    if (!f) {
+        return -EBADF;
+    }
+    *fp = f;
+    if (sock_is(f)) {
+        return SK_INET;
+    }
+    if (usock_is(f)) {
+        return SK_UNIX;
+    }
+    return -ENOTSOCK;
+}
+
+/* An AF_INET address from the caller, `len` bytes of it. */
+static int fetch_sin(struct sockaddr_in *sa, u32 uaddr, u32 len)
+{
+    if (!uaddr) {
+        return -EFAULT;
+    }
+    if (len < sizeof(*sa)) {
+        return -EINVAL;
+    }
+    return fetch(sa, uaddr, sizeof(*sa));
+}
+
+/*
+ * An address back to the caller, Linux's way: *ulen says how much room
+ * there is, as much as fits is copied, and *ulen is set to the address's
+ * real size -- which is how a caller finds out it gave too little.
+ */
+static int store_addr(u32 uaddr, u32 ulen, const void *sa, u32 salen)
+{
+    u32 room;
+    int err;
+
+    if (!uaddr || !ulen) {
+        return 0;
+    }
+    err = fetch(&room, ulen, sizeof(room));
+    if (err < 0) {
+        return err;
+    }
+    if ((s32)room < 0) {
+        return -EINVAL;
+    }
+    if (room) {
+        err = store(uaddr, sa, room < salen ? room : salen);
+        if (err < 0) {
+            return err;
+        }
+    }
+    return store(ulen, &salen, sizeof(salen));
+}
+
+static __attribute__((noinline))
+int do_socketpair(int domain, int type, int protocol, u32 usv)
+{
+    int sv[2], err;
+
+    if (domain != AF_UNIX) {
+        return domain == AF_INET ? -EOPNOTSUPP : -EAFNOSUPPORT;
+    }
+    if (protocol) {
+        return -EPROTONOSUPPORT;
+    }
+    err = usock_pair(type, sv);
+    if (err < 0) {
+        return err;
+    }
+    err = store(usv, sv, sizeof(sv));
+    if (err < 0) {
+        fd_close(sv[0]);
+        fd_close(sv[1]);
+    }
+    return err;
+}
+
+static __attribute__((noinline))
+int do_bindconnect(u32 nr, int fd, u32 uaddr, u32 len)
+{
+    struct sockaddr_in sa;
+    struct file *f;
+    int k = sock_kind(fd, &f), err;
+
+    if (k < 0) {
+        return k;
+    }
+    if (k == SK_UNIX) {
+        return nr == __NR_connect ? -EISCONN : -EINVAL;
+    }
+    err = fetch_sin(&sa, uaddr, len);
+    if (err < 0) {
+        return err;
+    }
+    return nr == __NR_bind ? sock_bind(f, &sa) : sock_connect(f, &sa);
+}
+
+static __attribute__((noinline))
+int do_listen(int fd, int backlog)
+{
+    struct file *f;
+    int k = sock_kind(fd, &f);
+
+    if (k < 0) {
+        return k;
+    }
+    return k == SK_UNIX ? -EOPNOTSUPP : sock_listen(f, backlog);
+}
+
+static __attribute__((noinline))
+int do_accept4(int fd, u32 uaddr, u32 ulen, int flags)
+{
+    struct sockaddr_in sa;
+    struct file *f;
+    int k = sock_kind(fd, &f), nfd, err;
+
+    if (k < 0) {
+        return k;
+    }
+    if (k == SK_UNIX) {
+        return -EOPNOTSUPP;
+    }
+    nfd = sock_accept(f, &sa, flags);
+    if (nfd < 0) {
+        return nfd;
+    }
+    err = store_addr(uaddr, ulen, &sa, sizeof(sa));
+    if (err < 0) {
+        fd_close(nfd);
+        return err;
+    }
+    return nfd;
+}
+
+static __attribute__((noinline))
+int do_sockname(int fd, u32 uaddr, u32 ulen, int peer)
+{
+    struct sockaddr_in sa;
+    struct file *f;
+    int k = sock_kind(fd, &f), err;
+
+    if (k < 0) {
+        return k;
+    }
+    if (k == SK_UNIX) {
+        /* An unnamed Unix socket: the family, and nothing else. */
+        struct sockaddr un;
+
+        memset(&un, 0, sizeof(un));
+        un.sa_family = AF_UNIX;
+        return store_addr(uaddr, ulen, &un, sizeof(un.sa_family));
+    }
+    err = sock_name(f, &sa, peer);
+    if (err < 0) {
+        return err;
+    }
+    return store_addr(uaddr, ulen, &sa, sizeof(sa));
+}
+
+static __attribute__((noinline))
+int do_setsockopt(int fd, int level, int name, u32 uval, u32 len)
+{
+    u8 val[16];
+    struct file *f;
+    int k = sock_kind(fd, &f), err;
+
+    if (k < 0) {
+        return k;
+    }
+    if (len > sizeof(val)) {
+        len = sizeof(val);
+    }
+    err = fetch(val, uval, len);
+    if (err < 0) {
+        return err;
+    }
+    if (k == SK_UNIX) {
+        return level == SOL_SOCKET && (name == SO_SNDBUF || name == SO_RCVBUF)
+               ? 0 : -ENOPROTOOPT;
+    }
+    return sock_setopt(f, level, name, val, len);
+}
+
+static __attribute__((noinline))
+int do_getsockopt(int fd, int level, int name, u32 uval, u32 ulen)
+{
+    u8 val[16];
+    u32 len;
+    struct file *f;
+    int k = sock_kind(fd, &f), err;
+
+    if (k < 0) {
+        return k;
+    }
+    err = fetch(&len, ulen, sizeof(len));
+    if (err < 0) {
+        return err;
+    }
+    if ((s32)len < 0) {
+        return -EINVAL;
+    }
+    if (len > sizeof(val)) {
+        len = sizeof(val);
+    }
+    if (k == SK_UNIX) {
+        int v;
+
+        if (level != SOL_SOCKET) {
+            return -ENOPROTOOPT;
+        }
+        if (name == SO_TYPE) {
+            v = SOCK_STREAM;
+        } else if (name == SO_ERROR) {
+            v = 0;
+        } else {
+            return -ENOPROTOOPT;
+        }
+        if (len < sizeof(int)) {
+            return -EINVAL;
+        }
+        memcpy(val, &v, sizeof(v));
+        len = sizeof(v);
+    } else {
+        err = sock_getopt(f, level, name, val, &len);
+        if (err < 0) {
+            return err;
+        }
+    }
+    err = store(uval, val, len);
+    if (err < 0) {
+        return err;
+    }
+    return store(ulen, &len, sizeof(len));
+}
+
+/*
+ * Stream data between the caller's memory and a socket, a page at a
+ * time. A send carries on until it is all gone or the socket says stop;
+ * a receive stops once it has data and nothing more is waiting, unless
+ * MSG_WAITALL asks it to fill the buffer. A peek looks at one page.
+ */
+static s32 sock_xfer(struct file *f, int k, u32 ubuf, u32 len, int flags,
+                     int sending)
+{
+    s32 total = 0;
+
+    if (!from_program()) {
+        void *p = (void *)ubuf;
+
+        if (sending) {
+            return k == SK_INET ? sock_send(f, p, len, flags, 0)
+                                : usock_send(f, p, len, flags);
+        }
+        return k == SK_INET ? sock_recv(f, p, len, flags, 0, 0)
+                            : usock_recv(f, p, len, flags);
+    }
+    while (len > 0) {
+        u32 n = len;
+        void *kp = uaccess_chunk(ubuf, &n, !sending);
+        s32 got;
+
+        if (!kp) {
+            return total > 0 ? total : -EFAULT;
+        }
+        if (sending) {
+            got = k == SK_INET ? sock_send(f, kp, n, flags, 0)
+                               : usock_send(f, kp, n, flags);
+        } else {
+            got = k == SK_INET ? sock_recv(f, kp, n, flags, 0, 0)
+                               : usock_recv(f, kp, n, flags);
+        }
+        if (got < 0) {
+            return total > 0 ? total : got;
+        }
+        total += got;
+        if ((u32)got < n) {
+            break;
+        }
+        ubuf += n;
+        len -= n;
+        if (!sending && ((flags & MSG_PEEK) ||
+                         (!(flags & MSG_WAITALL) &&
+                          !(f->ops->poll(f) & POLLIN)))) {
+            break;
+        }
+    }
+    return total;
+}
+
+static __attribute__((noinline))
+s32 do_sendto(int fd, u32 ubuf, u32 len, int flags, u32 uaddr, u32 alen)
+{
+    struct sockaddr_in sa;
+    struct file *f;
+    int k = sock_kind(fd, &f), err;
+
+    if (k < 0) {
+        return k;
+    }
+    if (uaddr && k == SK_INET) {
+        err = fetch_sin(&sa, uaddr, alen);
+        if (err < 0) {
+            return err;
+        }
+    }
+    /* A datagram goes whole: gathered here, then sent once. */
+    if (k == SK_INET && sock_dgram(f)) {
+        static u8 dbuf[1500];   /* one sender at a time: kernel code is
+                                 * not preempted and this does not sleep
+                                 * between the copy and the send */
+        if (len > sizeof(dbuf)) {
+            return -EMSGSIZE;
+        }
+        err = fetch(dbuf, ubuf, len);
+        if (err < 0) {
+            return err;
+        }
+        return sock_send(f, dbuf, len, flags, uaddr ? &sa : 0);
+    }
+    if (uaddr && k == SK_INET) {
+        return sock_send(f, 0, 0, flags, &sa);   /* EISCONN, properly */
+    }
+    return sock_xfer(f, k, ubuf, len, flags, 1);
+}
+
+static __attribute__((noinline))
+s32 do_recvfrom(int fd, u32 ubuf, u32 len, int flags, u32 uaddr, u32 ualen)
+{
+    struct sockaddr_in sa;
+    struct file *f;
+    int k = sock_kind(fd, &f), err, trunc;
+    s32 got;
+
+    if (k < 0) {
+        return k;
+    }
+    if (k == SK_INET && sock_dgram(f)) {
+        static u8 dbuf[1500];
+        u32 n = len < sizeof(dbuf) ? len : sizeof(dbuf);
+
+        got = sock_recv(f, dbuf, n, flags, &sa, &trunc);
+        if (got < 0) {
+            return got;
+        }
+        err = store(ubuf, dbuf, (u32)got < n ? (u32)got : n);
+        if (err < 0) {
+            return err;
+        }
+        err = store_addr(uaddr, ualen, &sa, sizeof(sa));
+        return err < 0 ? err : got;
+    }
+    got = sock_xfer(f, k, ubuf, len, flags, 0);
+    if (got >= 0 && uaddr) {
+        if (k == SK_INET) {
+            sock_name(f, &sa, 1);
+            err = store_addr(uaddr, ualen, &sa, sizeof(sa));
+        } else {
+            u32 zero = 0;
+
+            err = store(ualen, &zero, sizeof(zero));
+        }
+        if (err < 0) {
+            return err;
+        }
+    }
+    return got;
+}
+
+/*
+ * sendmsg and recvmsg: gather and scatter over an iovec, with an
+ * optional address. No ancillary data -- msg_controllen comes back 0,
+ * with MSG_CTRUNC if the caller offered room for some.
+ */
+#define IOV_MAX_HERE    16
+
+static __attribute__((noinline))
+s32 do_msg(int fd, u32 umsg, int flags, int sending)
+{
+    struct msghdr m;
+    struct iovec iov[IOV_MAX_HERE];
+    struct file *f;
+    int k = sock_kind(fd, &f), err;
+    u32 i, total = 0;
+    s32 r = 0;
+
+    if (k < 0) {
+        return k;
+    }
+    err = fetch(&m, umsg, sizeof(m));
+    if (err < 0) {
+        return err;
+    }
+    if (m.msg_iovlen > IOV_MAX_HERE) {
+        return -EMSGSIZE;
+    }
+    err = fetch(iov, (u32)m.msg_iov, m.msg_iovlen * sizeof(struct iovec));
+    if (err < 0) {
+        return err;
+    }
+
+    if (k == SK_INET && sock_dgram(f)) {
+        static u8 dbuf[1500];
+        struct sockaddr_in sa;
+        int trunc = 0;
+        u32 at = 0;
+
+        if (sending) {
+            for (i = 0; i < m.msg_iovlen; i++) {
+                if (at + iov[i].iov_len > sizeof(dbuf)) {
+                    return -EMSGSIZE;
+                }
+                err = fetch(dbuf + at, (u32)iov[i].iov_base, iov[i].iov_len);
+                if (err < 0) {
+                    return err;
+                }
+                at += iov[i].iov_len;
+            }
+            if (m.msg_name) {
+                err = fetch_sin(&sa, (u32)m.msg_name, m.msg_namelen);
+                if (err < 0) {
+                    return err;
+                }
+            }
+            return sock_send(f, dbuf, at, flags, m.msg_name ? &sa : 0);
+        }
+        r = sock_recv(f, dbuf, sizeof(dbuf), flags & ~MSG_TRUNC, &sa, &trunc);
+        if (r < 0) {
+            return r;
+        }
+        for (i = 0; i < m.msg_iovlen && at < (u32)r; i++) {
+            u32 n = (u32)r - at < iov[i].iov_len ? (u32)r - at
+                                                 : iov[i].iov_len;
+
+            err = store((u32)iov[i].iov_base, dbuf + at, n);
+            if (err < 0) {
+                return err;
+            }
+            at += n;
+        }
+        m.msg_flags = (at < (u32)r || trunc) ? MSG_TRUNC : 0;
+        if (m.msg_name) {
+            u32 room = m.msg_namelen < sizeof(sa) ? m.msg_namelen : sizeof(sa);
+
+            err = store((u32)m.msg_name, &sa, room);
+            if (err < 0) {
+                return err;
+            }
+            m.msg_namelen = sizeof(sa);
+        }
+        r = (flags & MSG_TRUNC) ? r : (s32)at;
+    } else {
+        for (i = 0; i < m.msg_iovlen; i++) {
+            s32 n = sock_xfer(f, k, (u32)iov[i].iov_base, iov[i].iov_len,
+                              flags, sending);
+
+            if (n < 0) {
+                if (total == 0) {
+                    return n;
+                }
+                break;
+            }
+            total += (u32)n;
+            if ((u32)n < iov[i].iov_len) {
+                break;
+            }
+        }
+        r = (s32)total;
+        m.msg_flags = 0;
+        m.msg_namelen = 0;
+    }
+    if (!sending) {
+        if (m.msg_controllen) {
+            m.msg_flags |= MSG_CTRUNC;
+        }
+        m.msg_controllen = 0;
+        err = store(umsg, &m, sizeof(m));
+        if (err < 0) {
+            return err;
+        }
+    }
+    return r;
+}
+
+static __attribute__((noinline))
+int do_shutdown(int fd, int how)
+{
+    struct file *f;
+    int k = sock_kind(fd, &f);
+
+    if (k < 0) {
+        return k;
+    }
+    return k == SK_UNIX ? usock_shutdown(f, how) : sock_shutdown(f, how);
 }
 
 /* --- the network --------------------------------------------------- */
@@ -1183,89 +1689,32 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
 
     case __NR_socket:
         return sock_create((int)a1, (int)a2, (int)a3);
-
+    case __NR_socketpair:
+        return do_socketpair((int)a1, (int)a2, (int)a3, a4);
     case __NR_bind:
-    case __NR_connect: {
-        struct sockaddr_in sa;
-        int err = fetch(&sa, a2, sizeof(sa));
-
-        if (err < 0) {
-            return err;
-        }
-        return nr == __NR_bind ? sock_bind((int)a1, &sa)
-                               : sock_connect((int)a1, &sa);
-    }
-
+    case __NR_connect:
+        return do_bindconnect(nr, (int)a1, a2, a3);
     case __NR_listen:
-        return sock_listen((int)a1, (int)a2);
-
-    case __NR_accept: {
-        struct sockaddr_in sa;
-        int fd = sock_accept((int)a1, &sa);
-
-        if (fd < 0) {
-            return fd;
-        }
-        if (a2) {
-            int err = store(a2, &sa, sizeof(sa));
-
-            if (err < 0) {
-                fd_close(fd);
-                return err;
-            }
-        }
-        return fd;
-    }
-
-    case __NR_sendto: {
-        struct sockaddr_in sa;
-        u8 buf[512];
-        u32 n = a3;
-        int err;
-
-        if (n > sizeof(buf)) {
-            n = sizeof(buf);
-        }
-        err = fetch(buf, a2, n);
-        if (err < 0) {
-            return err;
-        }
-        err = fetch(&sa, a4, sizeof(sa));
-        if (err < 0) {
-            return err;
-        }
-        return sock_sendto((int)a1, buf, n, &sa);
-    }
-
-    case __NR_recvfrom: {
-        struct sockaddr_in sa;
-        u8 buf[512];
-        u32 n = a3;
-        s32 got;
-        int err;
-
-        if (n > sizeof(buf)) {
-            n = sizeof(buf);
-        }
-        got = sock_recvfrom((int)a1, buf, n, &sa);
-        if (got < 0) {
-            return got;
-        }
-        err = store(a2, buf, (u32)got);
-        if (err < 0) {
-            return err;
-        }
-        if (a4) {
-            err = store(a4, &sa, sizeof(sa));
-            if (err < 0) {
-                return err;
-            }
-        }
-        return got;
-    }
-
+        return do_listen((int)a1, (int)a2);
+    case __NR_accept4:
+        return do_accept4((int)a1, a2, a3, (int)a4);
+    case __NR_getsockname:
+    case __NR_getpeername:
+        return do_sockname((int)a1, a2, a3, nr == __NR_getpeername);
+    case __NR_setsockopt:
+        return do_setsockopt((int)a1, (int)a2, (int)a3, a4, a5);
+    case __NR_getsockopt:
+        return do_getsockopt((int)a1, (int)a2, (int)a3, a4, a5);
+    case __NR_sendto:
+        return do_sendto((int)a1, a2, a3, (int)a4, a5, a6);
+    case __NR_recvfrom:
+        return do_recvfrom((int)a1, a2, a3, (int)a4, a5, a6);
+    case __NR_sendmsg:
+        return do_msg((int)a1, a2, (int)a3, 1);
+    case __NR_recvmsg:
+        return do_msg((int)a1, a2, (int)a3, 0);
     case __NR_shutdown:
-        return sock_shutdown((int)a1, (int)a2);
+        return do_shutdown((int)a1, (int)a2);
 
     case __NR_times: {
         struct tms tms;

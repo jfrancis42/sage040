@@ -151,12 +151,24 @@ void   reboot(int cmd);
  * habit is what makes the code portable and it costs nothing here.
  */
 int    socket(int domain, int type, int protocol);
-int    bind(int fd, const struct sockaddr_in *addr);
-int    connect(int fd, const struct sockaddr_in *addr);
+int    socketpair(int domain, int type, int protocol, int sv[2]);
+int    bind(int fd, const struct sockaddr *addr, socklen_t len);
+int    connect(int fd, const struct sockaddr *addr, socklen_t len);
 int    listen(int fd, int backlog);
-int    accept(int fd, struct sockaddr_in *addr);
-s32    sendto(int fd, const void *buf, u32 len, const struct sockaddr_in *to);
-s32    recvfrom(int fd, void *buf, u32 len, struct sockaddr_in *from);
+int    accept(int fd, struct sockaddr *addr, socklen_t *len);
+int    accept4(int fd, struct sockaddr *addr, socklen_t *len, int flags);
+s32    send(int fd, const void *buf, u32 len, int flags);
+s32    recv(int fd, void *buf, u32 len, int flags);
+s32    sendto(int fd, const void *buf, u32 len, int flags,
+              const struct sockaddr *to, socklen_t tolen);
+s32    recvfrom(int fd, void *buf, u32 len, int flags,
+                struct sockaddr *from, socklen_t *fromlen);
+s32    sendmsg(int fd, const struct msghdr *msg, int flags);
+s32    recvmsg(int fd, struct msghdr *msg, int flags);
+int    getsockname(int fd, struct sockaddr *addr, socklen_t *len);
+int    getpeername(int fd, struct sockaddr *addr, socklen_t *len);
+int    setsockopt(int fd, int level, int name, const void *val, socklen_t len);
+int    getsockopt(int fd, int level, int name, void *val, socklen_t *len);
 int    shutdown(int fd, int how);
 
 /*
@@ -175,8 +187,10 @@ void   put_mac(const u8 *mac);
 #define htonl(x) ((u32)(x))
 #define ntohl(x) ((u32)(x))
 
-/* "10.1.0.1" -> an address, or 0. */
-u32    inet_aton(const char *s);
+/* Dotted-quad addresses, in POSIX shape. */
+u32    inet_addr(const char *s);         /* or INADDR_NONE */
+int    inet_aton(const char *s, struct in_addr *out);
+char  *inet_ntoa(struct in_addr in);
 
 /* Output helpers, all of them eventually write(). */
 void   putch(char c);

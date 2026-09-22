@@ -79,11 +79,13 @@ mcopy -o -i "$MIMG" ../apps/polltest ::/POLLTEST
 mcopy -o -i "$MIMG" ../apps/timetest ::/TIMETEST
 mcopy -o -i "$MIMG" ../apps/pipetest ::/PIPETEST
 mcopy -o -i "$MIMG" ../apps/proctest ::/PROCTEST
+mcopy -o -i "$MIMG" ../apps/socktest ::/SOCKTEST
 mcopy -o -i "$MIMG" ../apps/spin ::/SPIN
 mmd -i "$MIMG" ::/ETC
 mmd -i "$MIMG" ::/BIN
 mcopy -o -i "$MIMG" ../system/env ::/BIN/ENV
 mcopy -o -i "$MIMG" ../system/sh ::/BIN/SH
+mcopy -o -i "$MIMG" ../system/ping ::/BIN/PING
 printf 'echo from-a-script\r\nexit 6\r\n' > "$SCRATCH/t.tmp"
 mcopy -o -i "$MIMG" "$SCRATCH/t.tmp" ::/T.SH
 printf 'echo rc-ran\r\n' > "$SCRATCH/rc.tmp"
@@ -127,6 +129,10 @@ mcopy -o -i "$MIMG" "$SCRATCH/rc.tmp" ::/ETC/RC
     printf 'pipetest out x | nosuchcmd\r';          sleep 2
     printf 'pipetest gen 100000 | pipetest out reader-gone\r'; sleep 2
     printf 'echo AFTER-PIPELINES\r';                sleep 1
+
+    # --- sockets, over loopback and socket pairs ---
+    printf 'socktest\r';                            sleep 8
+    printf 'ping 127.0.0.1 2\r';                    sleep 3
 
     # --- fork, execve, waitpid, and /bin/sh ---
     printf 'proctest\r';                            sleep 7
@@ -304,6 +310,11 @@ check "timetest ran to the end" $?
 
 grep -q "pipetest: done" "$C"
 check "pipetest ran to the end" $?
+
+grep -q "socktest: done" "$C"
+check "socktest ran to the end" $?
+grep -q "2 sent, 2 received" "$C"
+check "ping 127.0.0.1 is answered, with no network configured" $?
 
 grep -q "proctest: done" "$C"
 check "proctest ran to the end" $?
