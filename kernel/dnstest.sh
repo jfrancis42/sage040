@@ -61,6 +61,10 @@ make -s kernel.rom || exit 1
 make -s -C ../bootrom bootrom.elf || exit 1
 make -s -C ../system || exit 1
 make -s -C ../apps || exit 1
+make -s -C ../libc/test inettest || {
+    echo "dnstest.sh: could not build inettest -- is picolibc built (make libc)?" >&2
+    exit 1
+}
 
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
@@ -74,6 +78,7 @@ mmd -i "$MIMG" ::/BIN ::/ETC
 for p in ifconfig ping host ntpdate; do
     mcopy -o -i "$MIMG" ../system/$p ::/BIN/$(echo $p | tr a-z A-Z)
 done
+mcopy -o -i "$MIMG" ../libc/test/inettest ::/INETTEST
 
 if command -v ss >/dev/null 2>&1 &&
    ss -lnu 2>/dev/null | grep -qE ":($DNS_PORT|$NTP_PORT|$((NTP_PORT + 1))) "; then
@@ -127,6 +132,7 @@ run 'host 10.20.30.40' quad
 run 'host silent.sage.test' silent
 run 'host spoof.sage.test' spoof
 run 'ping gw.sage.test 2' ping
+run '/INETTEST' inet
 run "ntpdate -q -p $NTP_PORT ntp.sage.test" ntpq
 run 'date' date1
 run "ntpdate -p $NTP_PORT ntp.sage.test" ntp
@@ -185,6 +191,20 @@ test "$(between 'ping gw.sage.test' ping | grep -c 'reply from 10.0.2.2')" -eq 2
 check "ping by name" $?
 between 'host foo.sage.test' deadserver | grep -q "no answer"
 check "a name server nobody runs gives no answer, not a wrong one" $?
+
+echo "=== checks: picolibc's network layer (inettest) ==="
+while IFS= read -r line; do
+    case "$line" in
+        "  ok   "*)   check "${line#  ok   }" 0 ;;
+        "  FAIL "*)   check "${line#  FAIL }" 1 ;;
+    esac
+done < <(between '/INETTEST' inet | grep -E '^  (ok  |FAIL) ')
+between '/INETTEST' inet | grep -qx "inettest: 0 failed"
+check "inettest ran to the end" $?
+# host asks once; inettest's getaddrinfo once, and its lookup in capitals
+# and its gethostbyname come from its cache.
+test "$(grep -ci 'dns query for foo.sage.test ' "$SCRATCH/netservers.log")" -eq 2
+check "  and the server was asked for foo.sage.test twice: host, then inettest once" $?
 
 echo "=== checks: the time ==="
 between "ntpdate -q" ntpq | grep -q "ntpdate: ntp.sage.test stratum 2, offset +"

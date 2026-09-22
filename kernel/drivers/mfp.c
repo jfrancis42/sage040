@@ -49,6 +49,7 @@ struct mfp_irq {
 };
 
 static struct mfp_irq irqs[16];
+static u32 counts[16];          /* interrupts taken, per channel */
 static u32 spurious;
 
 /* Channels 0-7 live in the B registers, 8-15 in the A registers. */
@@ -104,6 +105,7 @@ void mfp_dispatch(u32 vector, struct pt_regs *regs)
      * masks its own), so one pointer is enough.
      */
     irq_regs = regs;
+    counts[ch]++;
     if (irqs[ch].handler) {
         irqs[ch].handler(irqs[ch].arg);
     } else {
@@ -161,6 +163,40 @@ int mfp_request_irq(int ch, void (*handler)(void *), void *arg)
     mfp_clear_pending(ch);
     mfp_enable_channel(ch);
     return 0;
+}
+
+/*
+ * A device on one of the MFP's general-purpose inputs. Each input is an
+ * EDGE, and every device on this board raises its line when it wants
+ * attention, so the edge wanted is the rising one (AER set). The pin is
+ * an input (DDR clear) before the channel is enabled.
+ *
+ * Edge, not level, is why every handler must leave its device quiet --
+ * drained, acknowledged -- before returning: a line still high makes no
+ * new edge, and the device is never heard from again.
+ */
+static const int pin_channel[8] = {
+    MFPCH_GPIP0, MFPCH_GPIP1, MFPCH_GPIP2, MFPCH_GPIP3,
+    MFPCH_GPIP4, MFPCH_GPIP5, MFPCH_GPIP6, MFPCH_GPIP7,
+};
+
+int mfp_request_gpip(int pin, void (*handler)(void *), void *arg)
+{
+    if (pin < 0 || pin > 7) {
+        return -EINVAL;
+    }
+    MMIO8(MFP_DDR) &= (u8)~(1 << pin);
+    MMIO8(MFP_AER) |= (u8)(1 << pin);
+    return mfp_request_irq(pin_channel[pin], handler, arg);
+}
+
+void mfp_counts(u32 out[16])
+{
+    int i;
+
+    for (i = 0; i < 16; i++) {
+        out[i] = counts[i];
+    }
 }
 
 u32 mfp_spurious(void)

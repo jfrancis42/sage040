@@ -101,6 +101,29 @@ static struct termios tio = {
 static int pushback = -1;
 
 /*
+ * INTERRUPT-DRIVEN INPUT (task 22). A source whose driver takes its
+ * chip's receive interrupt is marked here, and its interrupt handler
+ * calls tty_input_irq(), which drains the chip into this ring -- acting
+ * on ctrl-C and ctrl-Z as it goes -- and wakes whoever is waiting. Such
+ * a source is never polled: the ring is where its characters are.
+ *
+ * Sources without an interrupt (the console's own replies, fbcon) are
+ * polled as before, from the reader and from the tick.
+ */
+#define IN_RING 256
+
+static u8  in_ring[IN_RING];
+static u32 in_head, in_tail;            /* written at head, read at tail */
+static u32 in_overruns;
+static int in_stalled;                  /* left in the chip: ring full */
+static u8  source_irq[TTY_MAX_SOURCES];
+
+static int ring_empty(void)
+{
+    return in_head == in_tail;
+}
+
+/*
  * Who ctrl-C and ctrl-Z are aimed at: the foreground PROCESS GROUP.
  *
  * A group, not a task, because a pipeline is several programs and the
@@ -113,9 +136,34 @@ static int pushback = -1;
  */
 static int fg_pgrp;
 
+/*
+ * A ctrl-C or ctrl-Z typed while the foreground group has no program in
+ * it -- the shell is between reading a line and handing the terminal to
+ * the job it started. Starting a program sleeps now (the disk is
+ * interrupt-driven), so the stages of a pipeline already started run,
+ * and print, while the shell is still starting the rest; a person who
+ * sees that and types ctrl-C expects it to reach them. It used to go to
+ * the shell's own group, reach nobody, and leave the shell waiting for
+ * a pipeline nothing would end. Now it is kept, and delivered to the
+ * group the terminal is handed to next -- by then every stage exists,
+ * which is why it is not simply given to the group as it grows.
+ *
+ * The ctrl-C character itself also goes in the input ring, and whoever
+ * READS it -- the shell's line editor, when the shell was at its prompt
+ * -- clears this (signal_char): a key typed at a prompt must not kill
+ * the next command.
+ */
+static int pending_sig;
+
 void tty_set_foreground(int pgrp)
 {
+    int sig = pending_sig;
+
     fg_pgrp = pgrp;
+    pending_sig = 0;
+    if (sig && pgrp && (!current || pgrp != current->pgid)) {
+        signal_group(pgrp, sig);
+    }
 }
 
 int tty_foreground(void)
@@ -288,11 +336,11 @@ static int any_ready(void)
 {
     int i;
 
-    if (pushback >= 0) {
+    if (pushback >= 0 || !ring_empty()) {
         return 1;
     }
     for (i = 0; i < nsources; i++) {
-        if (source_ready(sources[i])) {
+        if (!source_irq[i] && source_ready(sources[i])) {
             return 1;
         }
     }
@@ -311,6 +359,8 @@ static int any_ready(void)
  * a line typed as SHELL arrives as SHLEL, once in a few thousand
  * characters, which is exactly often enough to be baffling.
  */
+void tty_input_irq(void);
+
 static int poll_char(void)
 {
     u16 sr = irq_save();
@@ -323,6 +373,18 @@ static int poll_char(void)
         irq_restore(sr);
         return c;
     }
+    if (!ring_empty()) {
+        c = in_ring[in_tail % IN_RING];
+        in_tail++;
+        /* Room again: take what was left waiting in the chip, which
+         * will not interrupt again until it has been emptied. */
+        if (in_stalled && in_head - in_tail < IN_RING / 2) {
+            in_stalled = 0;
+            tty_input_irq();
+        }
+        irq_restore(sr);
+        return c;
+    }
     /*
      * Round robin from the top each time rather than remembering where
      * it got to: with two or three sources the fairness question does
@@ -330,7 +392,7 @@ static int poll_char(void)
      * anybody.
      */
     for (i = 0; i < nsources; i++) {
-        if (source_ready(sources[i])) {
+        if (!source_irq[i] && source_ready(sources[i])) {
             c = source_get(sources[i]);
 
             if (c >= 0) {
@@ -382,18 +444,25 @@ static int next_char(void)
  * is exactly how a real terminal behaves -- readline clears ICANON and
  * ECHO and deliberately leaves ISIG alone.
  */
-static int signal_char(int c)
+/* The signal this character means, if it means one; 0 if not. */
+static int signal_of(int c)
 {
-    int sig = 0;
-
     if (!(tio.c_lflag & ISIG)) {
         return 0;
     }
     if (tio.c_cc[VINTR] && c == tio.c_cc[VINTR]) {
-        sig = SIGINT;
-    } else if (tio.c_cc[VSUSP] && c == tio.c_cc[VSUSP]) {
-        sig = SIGTSTP;
+        return SIGINT;
     }
+    if (tio.c_cc[VSUSP] && c == tio.c_cc[VSUSP]) {
+        return SIGTSTP;
+    }
+    return 0;
+}
+
+static int signal_char(int c)
+{
+    int sig = signal_of(c);
+
     if (!sig) {
         return 0;
     }
@@ -403,8 +472,12 @@ static int signal_char(int c)
      * unaffected -- it is not connected to this keyboard in the sense
      * that matters -- and that is the entire semantic difference between
      * a job started with & and one without.
+     *
+     * Called from a READER, which is what has now dealt with the key:
+     * nothing is left pending for anybody else (see pending_sig).
      */
     signal_group(fg_pgrp, sig);
+    pending_sig = 0;
     return sig;
 }
 
@@ -563,12 +636,96 @@ static s32 tty_read(struct file *f, void *buf, u32 len)
  * anything sleeping for input, because the UART and the keyboard are
  * polled and nothing else would.
  */
+/*
+ * Called from a source's receive interrupt. Takes EVERYTHING waiting
+ * from every interrupt-driven source: the chip's interrupt input is an
+ * edge on the MFP, and a character left behind would keep the line high
+ * and never make another. ctrl-C and ctrl-Z are acted on here, at once,
+ * rather than at the next tick; everything else goes in the ring.
+ */
+void tty_input_irq(void)
+{
+    int i;
+    int got = 0;
+
+    for (i = 0; i < nsources; i++) {
+        struct chardev *d = sources[i];
+        int n;
+
+        if (!source_irq[i]) {
+            continue;
+        }
+        for (n = 0; n < 4096 && source_ready(d); n++) {
+            int c;
+
+            /*
+             * FULL: stop, and leave the rest in the chip. The chip's
+             * FIFO filling is what makes the sender wait -- QEMU's
+             * serial model will not deliver into a full FIFO, and a
+             * real line has flow control for exactly this -- whereas a
+             * character taken and then dropped is gone. The line stays
+             * high, so no edge will come: poll_char() resumes the drain
+             * when a reader makes room.
+             */
+            if (in_head - in_tail >= IN_RING) {
+                in_stalled = 1;
+                break;
+            }
+            c = source_get(d);
+            if (c < 0) {
+                break;
+            }
+            /*
+             * ctrl-C and ctrl-Z act NOW when there is a program to act
+             * on. When there is not -- the foreground group is the
+             * shell's -- the character goes in the ring for whoever
+             * reads next, as it would have been read before input was
+             * interrupt-driven: the shell's line editor sees it and
+             * abandons its line. It is also kept as pending_sig, in
+             * case what reads next is not the shell but the terminal
+             * being handed to a job the shell was starting.
+             */
+            {
+                int sig = signal_of(c);
+
+                if (sig) {
+                    if (signal_group(fg_pgrp, sig) == 0) {
+                        continue;
+                    }
+                    pending_sig = sig;
+                }
+            }
+            in_ring[in_head % IN_RING] = (u8)c;
+            in_head++;
+            got = 1;
+        }
+    }
+    if (got) {
+        wake_all(&input_wait);
+        poll_wake();
+    }
+}
+
 void tty_poll_signals(void)
 {
     int c;
 
-    if (pushback < 0 && any_ready()) {
-        c = poll_char();
+    /*
+     * Only the sources with no interrupt: the ring is already a reader's
+     * business, and taking a ctrl-C out of it here would swallow one
+     * the shell's editor was meant to see.
+     */
+    if (pushback < 0) {
+        u16 sr = irq_save();
+        int i;
+
+        c = -1;
+        for (i = 0; i < nsources && c < 0; i++) {
+            if (!source_irq[i] && source_ready(sources[i])) {
+                c = source_get(sources[i]);
+            }
+        }
+        irq_restore(sr);
         if (c >= 0 && !signal_char(c)) {
             pushback = c;
         }
@@ -863,8 +1020,35 @@ int tty_add_source(struct chardev *d)
     if (nsources == TTY_MAX_SOURCES) {
         return -ENOSPC;
     }
+    source_irq[nsources] = 0;
     sources[nsources++] = d;
     return 0;
+}
+
+int tty_source_irq(struct chardev *d)
+{
+    int i;
+
+    for (i = 0; i < nsources; i++) {
+        if (sources[i] == d) {
+            source_irq[i] = 1;
+            /* Anything that arrived before the interrupt was on would
+             * hold the line high and never make an edge: take it now. */
+            {
+                u16 sr = irq_save();
+
+                tty_input_irq();
+                irq_restore(sr);
+            }
+            return 0;
+        }
+    }
+    return -ENOENT;
+}
+
+u32 tty_overruns(void)
+{
+    return in_overruns;
 }
 
 int tty_add_sink(struct chardev *d)

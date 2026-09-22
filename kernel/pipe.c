@@ -27,7 +27,7 @@
 #include "errno.h"
 #include "string.h"
 
-#define PIPE_MAX    64          /* rings: a socket pair uses two */
+#define PIPE_MAX    128         /* rings: a socket pair uses two */
 
 struct pipe {
     int  used;

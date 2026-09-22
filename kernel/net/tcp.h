@@ -85,7 +85,7 @@ enum tcp_state {
  */
 #define TCP_SNDBUF      (64 * 1024)
 #define TCP_RCVBUF      (128 * 1024)
-#define TCP_MAX_CONNS   16
+#define TCP_MAX_CONNS   32
 
 /* Our window shift: 128 KB / 4 fits the 16-bit field. RFC 7323. */
 #define TCP_WSCALE      2

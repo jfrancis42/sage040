@@ -32,6 +32,7 @@
 #include "vfs.h"
 #include "dev.h"
 #include "pmm.h"
+#include "wait.h"
 #include "errno.h"
 #include "string.h"
 
@@ -46,11 +47,39 @@ static struct {
     u32         nslots;
     u32         *lba;           /* per slot: its first sector, or BAD */
     u8          *refs;          /* per slot: holders; 0 is free       */
+    u8          *busy;          /* per slot: a write to it is under way */
     u32         table_pages;    /* what lba[] and refs[] came from    */
     u32         table_pa;
     u32         hint;           /* no free slot below this            */
     struct swapstats st;
 } sw;
+
+/*
+ * BUSY: a page being written out is off its owner's map before the
+ * write starts -- it has to be, since the write sleeps and the owner
+ * could otherwise change it half way through, or another task's reclaim
+ * choose it again -- so its descriptor already names this slot. A fault
+ * on it must wait for the write to finish before reading the slot back.
+ */
+static struct waitq busy_wait;
+
+void swap_set_busy(u32 slot, int busy)
+{
+    if (!sw.on || slot >= sw.nslots) {
+        return;
+    }
+    sw.busy[slot] = (u8)(busy != 0);
+    if (!busy) {
+        wake_all(&busy_wait);
+    }
+}
+
+void swap_wait_idle(u32 slot)
+{
+    while (sw.on && slot < sw.nslots && sw.busy[slot]) {
+        sleep_on_timeout(&busy_wait, 100);
+    }
+}
 
 int swap_holds(u32 ino)
 {
@@ -81,7 +110,7 @@ int swap_on(const char *path)
         return -EINVAL;             /* the descriptor has 20 bits for it */
     }
 
-    bytes = slots * (sizeof(u32) + sizeof(u8));
+    bytes = slots * (sizeof(u32) + 2 * sizeof(u8));
     pages = (bytes + PAGE_SIZE - 1) / PAGE_SIZE;
     pa = pmm_alloc_pages(pages);
     if (!pa) {
@@ -90,6 +119,7 @@ int swap_on(const char *path)
     }
     sw.lba = (u32 *)pa;
     sw.refs = (u8 *)(pa + slots * sizeof(u32));
+    sw.busy = sw.refs + slots;
 
     for (i = 0; i < slots; i++) {
         u32 first, lba, k;

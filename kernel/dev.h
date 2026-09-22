@@ -82,6 +82,7 @@ struct file {
     int   flags;                /* the O_* flags it was opened with */
     int   used;
     int   refs;                 /* how many descriptors point here  */
+    int   fs;                   /* the filesystem's: calls take its lock */
 };
 
 /* ---------------------------------------------------------------- */

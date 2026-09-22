@@ -36,6 +36,10 @@
  *                        given away meanwhile, and the data lands in
  *                        somebody else's memory
  *   pagetest drained     wait, up to 30 s, for nothing to be in swap
+ *   pagetest delay MS    slow every disk request by MS (a kernel test
+ *                        knob): swap I/O sleeps, and with this it sleeps
+ *                        long enough for the other process to run into
+ *                        whatever is half done
  *   pagetest stats       print the counters, for the harness
  */
 #include "ulib.h"
@@ -282,13 +286,19 @@ static void park(u32 mb, u32 secs)
 static void test_forkswap(u32 mb)
 {
     u32 *p = write_pattern(mb);
-    struct memstats m0 = stats();
+    struct memstats m0;
     int pid, st = 0;
 
     if (!p) {
         report("forkswap: mmap", 0);
         return;
     }
+    /* Read it all back first, so that at the fork memory is FULL of
+     * resident pages -- every one of which the fork then shares. The
+     * parent's rewrite can only be made room for by evicting shared
+     * pages, a mapping at a time. */
+    check_pattern(p, mb);
+    m0 = stats();
     pid = fork();
     if (pid == 0) {
         /* Late, so that the parent has rewritten everything first: its
@@ -485,6 +495,9 @@ int main(int argc, char **argv)
         oom(num(argv[2]));
     } else if (argc > 1 && strcmp(argv[1], "hog") == 0) {
         hog();
+    } else if (argc > 2 && strcmp(argv[1], "delay") == 0) {
+        syscall(__NR_kstat, KSTAT_DISK_DELAY, num(argv[2]), 0);
+        return 0;
     } else if (argc > 1 && strcmp(argv[1], "drained") == 0) {
         u32 t;
 

@@ -244,9 +244,10 @@ static void test_pipes(void)
     close(p[0]);
     close(p[1]);
 
-    report("the system allows 32 descriptors",
-           fcntl(0, F_DUPFD, 31) == 31 && fcntl(0, F_DUPFD, 32) == -EINVAL);
-    close(31);
+    report("the system allows OPEN_MAX (64) descriptors, and no more",
+           fcntl(0, F_DUPFD, OPEN_MAX - 1) == OPEN_MAX - 1 &&
+           fcntl(0, F_DUPFD, OPEN_MAX) == -EINVAL);
+    close(OPEN_MAX - 1);
 
     /* Process groups. */
     report("a program's parent is the shell", getppid() > 0);

@@ -469,6 +469,12 @@ static int kbd_poweroff(void)
     return -EIO;                /* still here, so it did not */
 }
 
+static void kbd_isr(void *arg)
+{
+    (void)arg;
+    tty_input_irq();
+}
+
 int i8042_init(void)
 {
     u8 mode = 0;
@@ -483,9 +489,9 @@ int i8042_init(void)
      * enabled, and put it back. Translation is the important one: see
      * the note at the top about set 1 against set 2.
      *
-     * The interrupt bit is deliberately left alone. Nothing handles MFP
-     * channel 1 yet, and an enabled source with no handler is how you
-     * get an interrupt storm on the first keypress.
+     * The interrupt bit is left off HERE, and turned on at the end,
+     * once there is a handler for MFP channel 1: an enabled source with
+     * no handler is how you get an interrupt storm on the first key.
      */
     if (kbd_command(KBD_CCMD_READ_MODE) < 0 ||
         kbd_read_data(&mode) < 0) {
@@ -515,7 +521,23 @@ int i8042_init(void)
     dev_register_poweroff(kbd_poweroff);
 
     /* A source only. A keyboard is not somewhere output can go. */
-    return tty_add_source(&kbd_dev);
+    err = tty_add_source(&kbd_dev);
+    if (err < 0) {
+        return err;
+    }
+
+    /*
+     * The interrupt (task 22): output-buffer-full raises IRQ1, wired to
+     * MFP GPIP1. The handler drains the controller through the terminal
+     * -- FIONREAD here decodes whatever is waiting -- which is also what
+     * lowers the line again.
+     */
+    if (mfp_request_gpip(MFP_PIN_KBD, kbd_isr, 0) == 0 &&
+        kbd_command(KBD_CCMD_WRITE_MODE) == 0 &&
+        kbd_write_data((u8)(mode | KBD_MODE_KBD_INT)) == 0) {
+        tty_source_irq(&kbd_dev);
+    }
+    return 0;
 }
 
 struct chardev *i8042_device(void)

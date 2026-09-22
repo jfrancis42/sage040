@@ -40,6 +40,15 @@ int  tty_init(void);
 /* Somewhere characters can come from, or go to. A device may be both --
  * a serial port usually is. */
 int  tty_add_source(struct chardev *d);
+
+/*
+ * The source's driver takes its receive interrupt and calls
+ * tty_input_irq() from it; the source is not polled any more. See the
+ * ring in tty.c.
+ */
+int  tty_source_irq(struct chardev *d);
+void tty_input_irq(void);
+u32  tty_overruns(void);
 int  tty_add_sink(struct chardev *d);
 
 /* Turn one sink off without removing it, which is what the shell's

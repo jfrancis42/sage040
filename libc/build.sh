@@ -135,6 +135,22 @@ rm -f "$PREFIX/lib/libtermcap.a"
 "$BIN/m68k-elf-ar" rcs "$PREFIX/lib/libtermcap.a" "$BUILD/termcap.o"
 cp "$HERE/termcap/termcap.h" "$PREFIX/include/termcap.h"
 
+# The network layer (libc/net): the socket calls, inet_*, and a resolver
+# with getaddrinfo -- picolibc has none of it. Headers first, over
+# picolibc's (its arpa/inet.h has the byte-order macros and nothing
+# else; ours has those and the rest), then into libc.a.
+cp -r "$HERE/net/include/." "$PREFIX/include/"
+NET_OBJS=
+for src in "$HERE"/net/src/*.c; do
+    obj="$BUILD/net-$(basename "$src" .c).o"
+    "$CC" -mcpu=68040 -O2 -Wall -Wextra -nostdinc -nostdlib \
+        -isystem "$PREFIX/include" -isystem "$("$CC" -print-file-name=include)" \
+        -c "$src" -o "$obj"
+    NET_OBJS="$NET_OBJS $obj"
+done
+# shellcheck disable=SC2086
+"$BIN/m68k-elf-ar" rcs "$PREFIX/lib/libc.a" $NET_OBJS
+
 # libc.so: the same sources again, position independent, in a build of
 # their own (a PIC object is slower -- a5 holds the GOT -- so the static
 # libc.a is not built this way). Nothing from this build is installed
@@ -178,6 +194,14 @@ ninja -C "$BUILD_PIC"
 # whole archive does.
 cp "$BUILD_PIC/libc.a" "$BUILD_PIC/libc-so.a"
 "$BIN/m68k-elf-ar" d "$BUILD_PIC/libc-so.a" interrupt.c.o
+# And the network layer, position independent, into the same archive.
+for src in "$HERE"/net/src/*.c; do
+    obj="$BUILD_PIC/net-$(basename "$src" .c).o"
+    "$CC" -mcpu=68040 -O2 -fPIC -Wall -Wextra -nostdinc -nostdlib \
+        -isystem "$PREFIX/include" -isystem "$("$CC" -print-file-name=include)" \
+        -c "$src" -o "$obj"
+    "$BIN/m68k-elf-ar" rcs "$BUILD_PIC/libc-so.a" "$obj"
+done
 "$BIN/m68k-elf-objcopy" --rename-section .text=.libgcc,alloc,load,contents,code \
     "$("$CC" -mcpu=68040 -print-libgcc-file-name)" "$BUILD_PIC/libgcc-rw.a"
 "$BIN/m68k-elf-ld" -shared -soname libc.so -T "$HERE/libc-so.ld" \

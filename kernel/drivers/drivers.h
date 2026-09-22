@@ -43,6 +43,12 @@ int io_probe32(volatile void *addr);
 int mfp_init(void);         /* interrupt controller + the system timer     */
 void mfp_interrupts_on(void);
 int mfp_request_irq(int channel, void (*handler)(void *), void *arg);
+int mfp_request_gpip(int pin, void (*handler)(void *), void *arg);
+int ns16550_irq_on(void);
+void ata_counts(u32 *slept, u32 *polled);
+int ata_irq_on(void);
+void ata_set_delay(u32 ms);
+void mfp_counts(u32 out[16]);
 u32 mfp_spurious(void);
 
 int ns16550_init(void);     /* serial port       -> /dev/ttyS0             */

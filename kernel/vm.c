@@ -437,7 +437,7 @@ int vm_enabled(void)
  * rules differ per level and one size removes the question.
  */
 #define AS_SLOT         512
-#define MAX_SPACES      32      /* one per task: TASK_MAX in task.h */
+#define MAX_SPACES      64      /* one per task: TASK_MAX in task.h */
 
 static struct addrspace spaces[MAX_SPACES];
 
@@ -667,12 +667,19 @@ int vm_fault(struct addrspace *as, u32 va, int write)
         }
         pa = d & PAGE_ADDR_MASK;
         if (pmm_refcount(pa) > 1) {
-            /* Reclaim never takes a page with two holders, so `pa` is
-             * still this descriptor's after the allocation. */
-            u32 copy = page_alloc_user();
+            u32 copy = page_alloc_user();       /* may sleep */
 
             if (!copy) {
                 return -ENOMEM;
+            }
+            /*
+             * While that slept the other holder may have gone, leaving
+             * this the only one -- and then reclaim may have taken it.
+             * If the descriptor is not what it was, start again.
+             */
+            if (pt[idx] != d) {
+                pmm_free(copy);
+                return 0;
             }
             memcpy((void *)copy, (void *)pa, PAGE_SIZE);
             pmm_free(pa);
@@ -690,17 +697,28 @@ int vm_fault(struct addrspace *as, u32 va, int write)
     if (write && (d & DESC_WP)) {
         return -EFAULT;
     }
-    pa = page_alloc_user();
+    if (d & DESC_SW_SWAP) {
+        swap_wait_idle(d >> PAGE_SHIFT);    /* still being written out */
+    }
+    pa = page_alloc_user();                 /* may sleep, reclaiming */
     if (!pa) {
         return -ENOMEM;
     }
-    d = pt[idx];                        /* reclaim leaves it, but look */
+    if (pt[idx] != d) {
+        /* Something else resolved it while this slept -- swapoff. */
+        pmm_free(pa);
+        return 0;
+    }
     if (d & DESC_SW_SWAP) {
         u32 slot = d >> PAGE_SHIFT;
 
-        if (swap_read(slot, (void *)pa) < 0) {
+        if (swap_read(slot, (void *)pa) < 0) {  /* sleeps */
             pmm_free(pa);
             return -EFAULT;
+        }
+        if (pt[idx] != d) {
+            pmm_free(pa);
+            return 0;
         }
         swap_free(slot);                /* this space's hold on it */
         stats.faults_swapin++;
@@ -818,10 +836,15 @@ int vm_protect(struct addrspace *as, u32 va, int flags)
      * just allocate, which is why this one check is enough.
      */
     if ((flags & VM_WRITE) && !(flags & VM_NONE) && pmm_refcount(pa) > 1) {
-        u32 copy = page_alloc_user();
+        u32 copy = page_alloc_user();           /* may sleep */
 
         if (!copy) {
             return -1;
+        }
+        if (pt[PAGE_INDEX(va)] != d) {
+            /* Reclaim took it while that slept: do it all again. */
+            pmm_free(copy);
+            return vm_protect(as, va, flags);
         }
         memcpy((void *)copy, (void *)pa, PAGE_SIZE);
         pmm_free(pa);                   /* one holder fewer */
@@ -1107,11 +1130,19 @@ void vm_destroy(struct addrspace *as)
  * swap file and freed. Two turns at most, so a machine where every page
  * is in use gives up rather than spinning.
  *
- * Only pages with ONE holder are taken. A shared page -- a library's
- * text, a page a fork left in two spaces, a page pinned by a system
- * call that is reading into it -- has more, and is skipped: evicting it
- * from one space would not free it, and a pinned one must stay where
- * the kernel was told it is.
+ * A page with ONE holder is written out and freed. A page shared
+ * copy-on-write after a fork has two, and is taken from ONE space at a
+ * time: written out, that space's descriptor pointed at the slot, and
+ * its hold given up. That frees nothing yet, but leaves the other space
+ * the only holder, and the hand frees it the next time round. Without
+ * that, a process that forked held all its memory where nothing could
+ * reach it -- the parent of a fork ran out with swap to spare.
+ *
+ * Other shared pages are left alone. A library's text belongs to the
+ * file cache and is read-only; and a page PINNED by a system call that
+ * is reading into it must stay where the kernel was told it is. The
+ * difference is the SW_COW mark: a pinned page is writable, which a
+ * copy-on-write one never is.
  *
  * Called only where a page is about to be given to a program (see
  * page_alloc_user), never from inside pmm_alloc(): the kernel takes
@@ -1120,6 +1151,21 @@ void vm_destroy(struct addrspace *as)
  */
 static u32 hand_space, hand_va = USER_VA_BASE;
 
+/*
+ * Write one page out and free it.
+ *
+ * The page leaves its owner's map FIRST, and only then is written: the
+ * write SLEEPS (the disk is interrupt-driven), and while it does the
+ * owner may run -- a page still mapped could be changed half way through
+ * being written, and the change lost when the page is freed -- and
+ * another task's reclaim may run, and must not find the page still
+ * there to take a second time. The slot is marked busy for the length of
+ * the write, so a fault on the page waits for it to finish.
+ *
+ * Nothing here touches `pt` after the write: the address space may have
+ * gone while this slept -- its owner exiting -- taking its tables with
+ * it. The page itself is this function's until it frees it.
+ */
 static int evict(u32 *pt, int idx)
 {
     u32 d = pt[idx], pa = d & PAGE_ADDR_MASK, slot;
@@ -1129,11 +1175,15 @@ static int evict(u32 *pt, int idx)
     if (slot == SWAP_NONE) {
         return -1;                      /* swap is full */
     }
-    if (swap_write(slot, (void *)pa) < 0) {
-        swap_free(slot);
-        return -1;
-    }
+    swap_set_busy(slot, 1);
     pt[idx] = (slot << PAGE_SHIFT) | DESC_SW_SWAP | (ro ? DESC_WP : 0);
+    pflusha();
+    if (swap_write(slot, (void *)pa) < 0) {
+        /* The page is lost with the disk; say so rather than hide it.
+         * Its owner will read back whatever the slot holds. */
+        kputs("\nswap: a page could not be written out\n");
+    }
+    swap_set_busy(slot, 0);
     pmm_free(pa);
     stats.evicted++;
     return 0;
@@ -1175,12 +1225,16 @@ u32 vm_reclaim(u32 want)
             int idx = (int)PAGE_INDEX(hand_va);
             u32 d = pt[idx];
 
+            u32 refs = (d & PDT_RESIDENT) ? pmm_refcount(d & PAGE_ADDR_MASK) : 0;
+
             if ((d & PDT_RESIDENT) && !(d & DESC_SUPER) &&
-                pmm_refcount(d & PAGE_ADDR_MASK) == 1) {
+                (refs == 1 || (d & DESC_SW_COW))) {
                 if (d & DESC_USED) {
                     pt[idx] = d & ~DESC_USED;
                 } else if (evict(pt, idx) == 0) {
-                    freed++;
+                    if (refs == 1) {
+                        freed++;        /* a hold given up, not a page */
+                    }
                 } else {
                     break;              /* swap full or failing */
                 }
@@ -1227,9 +1281,20 @@ int vm_swapoff(void)
                     return -ENOMEM;
                 }
                 slot = d >> PAGE_SHIFT;
-                if (swap_read(slot, (void *)pa) < 0) {
+                swap_wait_idle(slot);
+                if (swap_read(slot, (void *)pa) < 0) {  /* sleeps */
                     pmm_free(pa);
                     return -EIO;
+                }
+                /*
+                 * The read slept: the space may have gone, or its owner
+                 * faulted the page in meanwhile. Only a descriptor that
+                 * is still exactly what was read is replaced.
+                 */
+                if (!as->used || as_pagetable(as, va, 0) != pt_pa ||
+                    table(pt_pa)[k] != d) {
+                    pmm_free(pa);
+                    continue;
                 }
                 swap_free(slot);
                 if (d & DESC_SW_NONE) {

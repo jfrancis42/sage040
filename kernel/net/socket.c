@@ -38,7 +38,7 @@
 #include "errno.h"
 #include "string.h"
 
-#define SOCK_MAX        32
+#define SOCK_MAX        64
 #define CONNECT_MS      75000   /* BSD's connect timeout */
 
 /* Received datagrams, queued: two pages of them per UDP socket. */

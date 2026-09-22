@@ -79,7 +79,7 @@ static void put_le32(u8 *p, u32 v)
 /* ---------------------------------------------------------------- */
 
 #define SECTOR_SIZE    512
-#define FAT_MAX_OPEN   OPEN_MAX
+#define FAT_MAX_OPEN   128     /* the whole machine, not per task */
 #define FAT_EOC        0xfff8u     /* >= this ends a chain */
 #define FAT_BAD        0xfff7u
 #define DIRENT_SIZE    32

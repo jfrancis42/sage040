@@ -414,6 +414,19 @@ answers the same question with `sysconf(_SC_CLK_TCK)`.
 
 ## Files
 
+**The disk is interrupt-driven** (task 22): a task waiting for a sector
+sleeps, and the machine runs something else. That made a new thing
+possible -- a task asleep in the MIDDLE of a filesystem operation -- so
+every call from the VFS into the filesystem holds a lock (`vfs.c`),
+recursive, taken only for the filesystem's own files and calls, never a
+pipe's or a terminal's. The disk has its own lock beneath it; swap I/O
+takes that one alone, and the disk never takes the filesystem's, so the
+two cannot deadlock. At boot, before there is anything to switch to, the
+disk polls.
+
+**`/dev/nvram`** is the M48T59's 8176 bytes of battery-backed RAM, and
+`/bin/nvram` keeps settings there.
+
 `vfs.c` holds mounts, path resolution and open files. A descriptor is a
 small integer indexing a per-task table of eight; the table entries point
 at refcounted open-file objects, so two tasks can share one offset and a
@@ -474,11 +487,20 @@ nothing more. Everything else — history, ctrl-R, word motion — is in the
 shell, which is where bash's is. Putting ctrl-R in a kernel would be
 putting a shell's memory inside the machine.
 
-`poll_char()` masks against the timer, because the tick polls the terminal
-too. If it takes a character between a reader checking the pushback slot
-and that reader taking one from the device, the two come out in the wrong
-order: a line typed `SHELL` arrives as `SHLEL`, rarely enough to be
-baffling.
+**Input is interrupt-driven** (task 22). The serial port and the
+keyboard raise their interrupts through the MFP, and the handler drains
+the chip into a 256-byte ring, acting on ctrl-C and ctrl-Z as it goes.
+The MFP sees EDGES, so a handler must leave its chip quiet -- a line left
+high makes no new edge and the device is never heard from again. And a
+full ring does not drop: it stops draining and leaves the rest in the
+chip, whose full FIFO is what makes the sender wait. The first version
+dropped, and a burst of typed-ahead input lost its middle.
+
+`poll_char()` still masks against the timer, because the tick polls the
+sources that have no interrupt (the console's own replies). If it takes a
+character between a reader checking the pushback slot and that reader
+taking one from the device, the two come out in the wrong order: a line
+typed `SHELL` arrives as `SHLEL`, rarely enough to be baffling.
 
 **The line editor moves the cursor with `\r` and `\b` only.** That was
 forced when `fbcon.c` understood nothing else; it is a VT102 now, and the
@@ -650,8 +672,8 @@ the machine instead of ending it.
 
 ## Testing
 
-Fifteen suites, `make test`, all of which boot the machine and drive it
-over its serial line -- 938 checks as of task 21:
+Sixteen suites, `make test`, all of which boot the machine and drive it
+over its serial line -- 1003 checks as of task 22:
 
 | | | |
 |---|---|---|
@@ -666,10 +688,11 @@ over its serial line -- 938 checks as of task 21:
 | `kernel/fscktest.sh` | 23 | fsck, against damage made on the host |
 | `kernel/uemacstest.sh` | 9 | uEmacs, a real editor |
 | `kernel/vitest.sh` | 9 | neatvi, the other one |
-| `kernel/dnstest.sh` | 18 | the resolver and ntpdate, against servers on the host |
+| `kernel/dnstest.sh` | 57 | the resolvers (lib/ulib's and picolibc's) and ntpdate, against servers on the host |
 | `kernel/tcptest.sh` | 24 | TCP's options, loss, keepalives and TIME_WAIT |
 | `kernel/sotest.sh` | 117 | shared libraries, ld.so, and the sharing of their pages |
-| `kernel/pagetest.sh` | 48 | demand paging, copy-on-write, swap, and running out |
+| `kernel/pagetest.sh` | 51 | demand paging, copy-on-write, swap, and running out |
+| `kernel/devtest.sh` | 23 | interrupts, the filesystem under concurrency, the limits, the NVRAM |
 
 The picolibc suites need `make libc` first.
 
@@ -733,9 +756,9 @@ put them.
 
 **No floating-point in the kernel.** Programs may use the FPU; `cube` does.
 
-**Eight tasks, eight descriptors each, one filesystem, one partition, one
-network interface.** All static. There is no allocator pressure anywhere in
-the kernel because there is nothing dynamic to allocate.
+**One filesystem, one partition, one network interface.** The static
+limits that were constants are larger now -- 64 tasks, 64 descriptors
+each, 128 open FAT files -- but these three are structure.
 
 **Swap is a file, one at a time**, and there is no swap cache: a page
 read back in gives up its slot, so evicting it again writes it again.

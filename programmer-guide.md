@@ -982,6 +982,24 @@ is executable by reading the first four bytes of the file, not its name,
 because a FAT16 volume has no execute permission bit to consult. A text
 file named `CUBE.EXE` is still refused.
 
+### Limits, the NVRAM, and interrupts
+
+A task may have **64 descriptors** (`OPEN_MAX`, `EMFILE` past it); the
+machine runs **64 tasks** (`fork` says `EAGAIN` when the table is full,
+`ENOMEM` when memory is), holds **128 filesystem files** open at once
+across all of them, 64 sockets and 32 TCP connections.
+
+**`/dev/nvram`** is 8176 bytes that survive a reset: `open`, `read`,
+`write`, `lseek`, nothing past the end (`ENOSPC`). `/bin/nvram` keeps
+`KEY=VALUE` settings there -- `nvram net.ip=10.0.0.5`, `nvram net.ip`,
+`nvram -d KEY` -- and `ifconfig nvram` configures the interface from
+`net=dhcp` or `net.ip`, `net.mask`, `net.gw`. Use the program's format
+if other programs are to read what you store.
+
+**`/bin/irqs`** shows interrupts taken per MFP channel, and whether the
+disk's waits slept or polled -- the `kstat(KSTAT_IRQ, ...)` call (1005),
+which, like `memctl`, takes the size of the caller's structure.
+
 ### Memory is demand paged, and there can be swap
 
 A program's stack, heap and anonymous `mmap`s take no memory until they
@@ -1007,6 +1025,15 @@ A program that touches more than memory and swap can hold is killed
 `memctl(MEMCTL_STATS, sizeof m, &m)` (1004) reports the counters --
 faults, pages in and out, swap in use. Pass the size of YOUR structure:
 it has grown, and the kernel writes no more than it is told.
+
+### Networking from picolibc
+
+A picolibc program has the BSD socket API and `getaddrinfo` --
+`<sys/socket.h>`, `<netinet/in.h>`, `<netdb.h>` -- so a network program
+ported from Linux builds as it is, IPv4-only (`libc/README.md`, *The
+network layer*). Names resolve through `/etc/hosts` and DNS, with a
+per-process cache that honours TTLs. lib/ulib's `resolve_host()` is the
+same lookup for the system's own programs.
 
 ### Shared libraries
 

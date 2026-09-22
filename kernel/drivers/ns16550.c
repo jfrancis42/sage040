@@ -173,6 +173,18 @@ int ns16550_present(void)
     return ok;
 }
 
+#define IER_RDA     0x01        /* received data available */
+
+static void serial_isr(void *arg)
+{
+    (void)arg;
+    tty_input_irq();
+    /* Reading RBR until LSR says empty is what drops INT; the IIR read
+     * is for form -- it is how a real driver learns why, and the chip
+     * expects it. */
+    (void)MMIO8(UART_IIR);
+}
+
 int ns16550_init(void)
 {
     int err;
@@ -205,6 +217,29 @@ int ns16550_init(void)
     tty_add_source(&serial_dev);
     tty_add_sink(&serial_dev);
     return 0;
+}
+
+/*
+ * The receive interrupt (task 22): data-available only. The chip's INT
+ * output is wired to MFP GPIP5; the handler drains the FIFO into the
+ * terminal's ring.
+ *
+ * Separate from ns16550_init() because the serial port comes up FIRST
+ * -- it is the console, before anything else can report anything -- and
+ * the MFP a good while later, and mfp_init() clears every handler and
+ * enable it finds. So this is called after it, from start_drivers().
+ * Enabled only once the handler is in place: an interrupt with nothing
+ * to answer it storms.
+ */
+int ns16550_irq_on(void)
+{
+    int err = mfp_request_gpip(MFP_PIN_UART, serial_isr, 0);
+
+    if (err < 0) {
+        return err;             /* and the port stays polled */
+    }
+    MMIO8(UART_IER) = IER_RDA;
+    return tty_source_irq(&serial_dev);
 }
 
 struct chardev *ns16550_device(void)

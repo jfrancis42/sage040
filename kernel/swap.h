@@ -29,6 +29,10 @@ int  swap_ref(u32 slot);               /* another holder; -1 if not    */
 void swap_free(u32 slot);              /* one holder fewer             */
 u32  swap_refcount(u32 slot);
 
+/* A write to the slot is under way; a fault on it waits (swap.c). */
+void swap_set_busy(u32 slot, int busy);
+void swap_wait_idle(u32 slot);
+
 /* One page, straight to or from the disk. */
 int  swap_write(u32 slot, const void *page);
 int  swap_read(u32 slot, void *page);

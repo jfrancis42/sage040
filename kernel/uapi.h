@@ -25,7 +25,7 @@
 #define NAME_MAX      255       /* bytes of UTF-8: a VFAT long name   */
 #define PATH_MAX      256       /* Linux's is 4096; paths are copied
                                  * onto a kernel stack of 8 KB        */
-#define OPEN_MAX      32        /* file descriptors per TASK           */
+#define OPEN_MAX      64        /* file descriptors per TASK           */
 
 /*
  * open() flags. The access mode is the low two bits, the way POSIX has
@@ -783,6 +783,28 @@ struct fsck_report {
  * physical address says nothing another process could use.
  */
 #define __NR_memctl    1004
+
+/*
+ * kstat(KSTAT_IRQ, sizeof(irqstats), &irqstats): interrupts taken, per
+ * MFP channel (the channel numbers are the MC68901's: 1 is the
+ * keyboard, 4 the timer, 6 the disk, 7 the serial port), those nobody
+ * asked for, and characters the terminal's input ring had no room for.
+ * The size is the caller's, as memctl's is.
+ */
+#define __NR_kstat     1005
+#define KSTAT_IRQ      1
+#define KSTAT_DISK_DELAY 2      /* kstat(KSTAT_DISK_DELAY, ms, 0): a test
+                                 * knob -- every disk request sleeps ms
+                                 * first, to widen the windows in which
+                                 * a task is asleep inside the filesystem */
+
+struct irqstats {
+    u32 count[16];
+    u32 spurious;
+    u32 tty_overruns;
+    u32 disk_slept;             /* disk waits that slept on the interrupt */
+    u32 disk_polled;            /* ... that polled: at boot, or idle      */
+};
 #define MEMCTL_STATS   1
 #define MEMCTL_PAGE    2
 

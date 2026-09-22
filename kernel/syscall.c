@@ -31,6 +31,7 @@
 #include "pmm.h"
 #include "vm.h"
 #include "mmap.h"
+#include "drivers/drivers.h"
 #include "textcache.h"
 #include "swap.h"
 #include "poll.h"
@@ -1722,7 +1723,9 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
     case __NR_fork: {
         struct task *t = task_fork(regs);
 
-        return t ? t->pid : -ENOMEM;
+        /* Linux's two answers: EAGAIN when the task table is full,
+         * ENOMEM when memory is. */
+        return t ? t->pid : (task_count() >= TASK_MAX ? -EAGAIN : -ENOMEM);
     }
 
     case __NR_execve:
@@ -1791,6 +1794,22 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
             pi.refs = pi.pa ? pmm_refcount(pi.pa) : 0;
             pi.writable = vm_may_write(current->as, a2);
             return store(a3, &pi, sizeof(pi));
+        }
+        return -EINVAL;
+
+    case __NR_kstat:
+        if (a1 == KSTAT_IRQ) {
+            struct irqstats is;
+
+            mfp_counts(is.count);
+            is.spurious = mfp_spurious();
+            is.tty_overruns = tty_overruns();
+            ata_counts(&is.disk_slept, &is.disk_polled);
+            return store(a3, &is, a2 < sizeof(is) ? a2 : sizeof(is));
+        }
+        if (a1 == KSTAT_DISK_DELAY) {
+            ata_set_delay(a2 > 1000 ? 1000 : a2);
+            return 0;
         }
         return -EINVAL;
 

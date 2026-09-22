@@ -169,6 +169,11 @@ run 'echo SWAPON=$?' swaponrc
 run 'free' sfree1
 run '/PAGETEST fill 16' fill
 run '/PAGETEST pair 8' pair
+# Again with a slow disk: every page written out or read back sleeps
+# 5 ms more, so the other process runs while pages are half way out.
+run '/PAGETEST delay 5' delay5
+run '/PAGETEST pair 8' slowpair
+run '/PAGETEST delay 0' delay0
 run '/PAGETEST forkswap 14' forkswap
 run '/PAGETEST pinread 16' pinread
 run '/PAGETEST stats' stats1
@@ -214,6 +219,7 @@ between free sfree1 "$B" | grep -qE '^swap +6144 +24576 +0 pages in use$'
 check "  and free shows 24 MB of it, none used" $?
 grade '/PAGETEST fill' fill "$B"
 grade '/PAGETEST pair' pair "$B"
+grade '/PAGETEST pair' slowpair "$B"
 grade '/PAGETEST forkswap' forkswap "$B"
 grade '/PAGETEST pinread' pinread "$B"
 between '/PAGETEST stats' stats1 "$B" | grep -qx "pagetest: swap-used 0"

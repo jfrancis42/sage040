@@ -51,7 +51,7 @@
 struct addrspace;
 struct file;
 
-#define TASK_MAX        32
+#define TASK_MAX        64
 #define TASK_NAME_MAX   24
 
 /* How long a task runs before the tick offers the processor elsewhere.
@@ -70,6 +70,15 @@ enum task_state {
 };
 
 struct task {
+    /*
+     * The address space this task's uaccess calls reach, when it is not
+     * its own: exec, filling a new program's. PER TASK, because exec
+     * sleeps now (the disk is interrupt-driven), and while it does other
+     * tasks run -- a global override made every one of them read and
+     * write the half-built program instead of itself. See uaccess.c.
+     */
+    struct addrspace *ua_override;
+
     int   pid;
     int   state;
     u32   ksp;                  /* the context: see the note above     */
@@ -191,6 +200,13 @@ void task_timeouts(void);
 /* The one running now. Never null once task_init() has run: the idle
  * task is a task. */
 extern struct task *current;
+
+/*
+ * May the running code sleep? Not in the idle task -- it is what runs
+ * when nothing else can, so there would be nothing to switch to and
+ * nothing to come back -- and not in an interrupt handler.
+ */
+int task_can_sleep(void);
 
 void task_init(void);
 

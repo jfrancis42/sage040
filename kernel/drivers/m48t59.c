@@ -186,6 +186,90 @@ int rtc_present(void)
     return ok;
 }
 
+/*
+ * /dev/nvram: the 8176 bytes below the clock's registers, as a file of
+ * that size -- read, write and seek, and nothing past the end. Linux has
+ * a /dev/nvram too (the PC's CMOS, 114 bytes); a program that uses one
+ * uses this the same way. What goes in it is up to the programs:
+ * /bin/nvram keeps settings there (see its header for the layout).
+ *
+ * Under QEMU the chip's RAM lasts as long as the QEMU process -- the
+ * machine model gives it no backing file -- so it survives a reset of
+ * the machine, which is what `shutdown` does without -no-reboot, and not
+ * the emulator exiting. On the real part, a battery keeps it.
+ */
+static s32 nv_read(struct file *f, void *buf, u32 len)
+{
+    u8 *p = buf;
+    u32 n = 0;
+
+    while (n < len && f->pos < RTC_NVRAM_SIZE) {
+        p[n++] = nvram_read(f->pos++);
+    }
+    return (s32)n;
+}
+
+static s32 nv_write(struct file *f, const void *buf, u32 len)
+{
+    const u8 *p = buf;
+    u32 n = 0;
+
+    if (f->pos >= RTC_NVRAM_SIZE && len > 0) {
+        return -ENOSPC;
+    }
+    while (n < len && f->pos < RTC_NVRAM_SIZE) {
+        nvram_write(f->pos++, p[n++]);
+    }
+    return (s32)n;
+}
+
+static s32 nv_lseek(struct file *f, s32 off, int whence)
+{
+    s32 base = whence == SEEK_SET ? 0 :
+               whence == SEEK_CUR ? (s32)f->pos :
+               whence == SEEK_END ? (s32)RTC_NVRAM_SIZE : -1;
+
+    if (base < 0 || base + off < 0 || base + off > (s32)RTC_NVRAM_SIZE) {
+        return -EINVAL;
+    }
+    f->pos = (u32)(base + off);
+    return (s32)f->pos;
+}
+
+static int nv_close(struct file *f)
+{
+    (void)f;
+    return 0;
+}
+
+static int nv_fstat(struct file *f, struct stat *st)
+{
+    (void)f;
+    st->st_mode = S_IFCHR;
+    st->st_size = RTC_NVRAM_SIZE;
+    st->st_mtime = 0;
+    st->st_blocks = 0;
+    return 0;
+}
+
+static const struct file_ops nv_ops = {
+    nv_read,
+    nv_write,
+    nv_lseek,
+    0,                          /* no ioctl */
+    nv_close,
+    nv_fstat,
+    0,                          /* poll: the default; see dev.h */
+    0,                          /* truncate: it is the size it is */
+};
+
+static struct chardev nv_dev = {
+    "nvram",
+    &nv_ops,
+    0,
+    0
+};
+
 /* ---------------------------------------------------------------- */
 /* The device the kernel sees                                        */
 /* ---------------------------------------------------------------- */
@@ -232,5 +316,6 @@ int m48t59_init(void)
     if (!rtc_present()) {
         return -ENODEV;
     }
+    dev_register_char(&nv_dev);
     return dev_register_rtc(&m48t59_dev);
 }

@@ -212,6 +212,7 @@ catch a byte-order error, because both directions swap.
 | TCP options — window scaling, timestamps, SACK, keepalives, `TIME_WAIT` | ✅ done — task 19 |
 | Shared libraries — `/lib/ld.so`, `/lib/libc.so`, shared text pages | ✅ done — task 20 |
 | Paging and swapping — demand paging, copy-on-write, a swap file | ✅ done — task 21 |
+| Interrupt-driven input and disk, the NVRAM, the limits | ✅ done — task 22 |
 
 **Every hardware dependency is satisfied**, and has been for some time.
 What the machine now runs is described in **[`os.md`](os.md)**; what is
@@ -741,7 +742,7 @@ machine being small. The machine is not small now — 64 MB of RAM and a
 
 | | |
 |---|---|
-| Near-term | interrupt-driven input, DNS, NTP, the NVRAM, static limits |
+| Near-term | ✅ interrupt-driven input and disk, DNS, NTP, the NVRAM, the limits |
 | **Memory** | ✅ `mmap`, `brk`, `sbrk`, `malloc`, and a 256 MB address space |
 | **A C library** | picolibc or newlib over a dozen syscall stubs |
 | Pipelines | `pipe`, `dup2`, `SIGPIPE`, and `\|` `>` `>>` `<` in the shell |
@@ -759,11 +760,14 @@ program, and everything it needs that is not here.
 
 ### Near-term, and well understood
 
-1. **Interrupt-driven input.** Both the serial port and the keyboard are
-   polled, though both have interrupt lines wired to the MFP and `t6`
-   exercises the path. This is no longer a performance problem — `tty.c`
-   sleeps on a wait queue with a timeout rather than spinning — so it is
-   now a tidiness item rather than a correctness one.
+1. **Interrupt-driven input — done (task 22)**, and the disk with it.
+   The serial port, the keyboard and the ATA controller each take their
+   interrupt through the MFP's GPIP inputs, rising edge. Input drains
+   into a ring in `tty.c` that stops -- leaving the rest in the chip, so
+   the sender waits -- when it is full, rather than dropping. The disk
+   moves up to 256 sectors a command and the task waiting sleeps between
+   them; the filesystem has a lock of its own for that reason (`vfs.c`),
+   because a task can now be asleep in the middle of a FAT operation.
 
 2. **A resolver, and NTP -- done (task 18)**, mostly as planned below.
    Where it differs: the resolver is `resolve_host()` in lib/ulib, not
@@ -813,14 +817,18 @@ program, and everything it needs that is not here.
      other open item just below and which is what makes the answer
      survive a reboot.
 
-3. **Use the NVRAM.** The M48T59 brings 8 KiB of it and nothing writes a
-   byte. It is the natural home for the network configuration that
-   `/etc/rc` currently carries, and for the time NTP last established.
+3. **Use the NVRAM — done (task 22).** `/dev/nvram` is its 8176 bytes;
+   `/bin/nvram` keeps `KEY=VALUE` settings in it, and `ifconfig nvram`
+   configures the interface from them. Under QEMU it lasts as long as the
+   QEMU process -- through a machine reset, not past the emulator
+   exiting -- because the model gives it no backing file. The time is
+   not stored there: the clock is the same chip.
 
-4. **Static limits that will bite.** Eight tasks, eight descriptors per
-   task, one filesystem, one partition, one interface. All are constants,
-   none is a redesign, and the descriptor limit is the one most likely to
-   be hit first.
+4. **Static limits — raised (task 22)**: 64 tasks, 64 descriptors per
+   task, 256 open files and 128 open FAT files machine-wide, 64 sockets,
+   32 TCP connections, 128 pipes. Each is filled and then passed by
+   `apps/limits`. Still one filesystem, one partition and one interface:
+   those are structure, not constants.
 
 ### Memory: `mmap`, `brk`, `sbrk` and `malloc`
 

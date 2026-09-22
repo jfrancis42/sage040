@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: 22 of 23 complete.**
+**Status: 23 of 23 complete** -- 23 being "regression tests throughout", which is never finished.
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -51,7 +51,7 @@ drive almost all of it:
 | 19 | TCP: window scaling, timestamps, SACK, keepalives, real `TIME_WAIT` | was "deliberately not doing"; now on the list | **done** |
 | 20 | Shared libraries | downstream of `mmap` and the libc | **done** |
 | 21 | Paging and swapping | downstream of `mmap` | **done** |
-| 22 | Interrupt-driven input **and disk**, the NVRAM, the static limits | cleanup, any time | todo |
+| 22 | Interrupt-driven input **and disk**, the NVRAM, the static limits | cleanup, any time | **done** |
 | 23 | Regression tests throughout | every task ships with its tests | ongoing |
 
 Tasks 16 and 17 are the point of the exercise. Everything before them is
@@ -1329,6 +1329,122 @@ the OOM path passed, because it printed no FAIL lines.
 - vmtest and apitest checked that memory was taken at `mmap`/`brk`/exec
   time; they check it is taken when TOUCHED now.
 
+### 22. Interrupts, the NVRAM, the limits — done
+
+**Input.** The serial port and the keyboard take their interrupts
+through the MFP (GPIP5 and GPIP1, rising edge). The handler drains the
+chip into a 256-byte ring in `tty.c`, acting on ctrl-C and ctrl-Z at
+once. A full ring STOPS draining and leaves the rest in the chip --
+whose full FIFO makes the sender wait -- rather than dropping: the first
+version dropped, and fstest's typed-ahead commands lost their middles
+(`hello one two` arrived as `twraB.The.`). Sources with no interrupt,
+the console's own replies, are still polled.
+
+**The disk.** GPIP4. Up to 256 sectors a command; between sectors the
+task waiting SLEEPS, and the machine runs something else. At boot, in
+the idle task, it polls (`task_can_sleep()`). A 5 s limit on every wait.
+A mutex keeps two tasks' requests apart.
+
+**The filesystem lock.** A task can now be asleep in the MIDDLE of a
+FAT operation, which was impossible before -- so every call from the VFS
+into the filesystem holds a recursive lock, taken only for the
+filesystem's own files and calls, never a pipe's or a terminal's. Lock
+order: filesystem, then disk; swap I/O takes the disk alone.
+
+**The NVRAM**: `/dev/nvram` (8176 bytes, read/write/lseek), `/bin/nvram`
+(`KEY=VALUE` settings), `ifconfig nvram`. Under QEMU it survives a
+machine reset, not the emulator exiting.
+
+**Limits**: 64 tasks, 64 descriptors each, 256 open files and 128 open
+FAT files machine-wide (it was 32 -- the whole machine), 64 sockets, 32
+TCP connections, 128 pipes, 64 in `poll`. `fork` says `EAGAIN` when the
+task table is full, as Linux does; it said `ENOMEM`.
+
+**Also:** `kstat` (1005), and `/bin/irqs`: interrupts per MFP channel,
+spurious ones, and whether the disk's waits slept or polled.
+
+**Tests:** `kernel/devtest.sh`, a new suite, 23 checks: serial, keyboard
+(typed through the monitor's `sendkey`) and disk interrupts counted; a
+disk wait sleeping; six processes in one directory with every disk
+request slowed to 15 ms by a test knob, every byte checked and the
+volume checked with the host's `fsck.fat`; every limit filled and
+passed (`apps/limits`); NVRAM settings written, deleted, surviving a
+reset -- this QEMU runs without `-no-reboot` -- and configuring the
+interface.
+
+**Negative controls**, all caught:
+
+| Change | |
+|---|---|
+| no serial interrupt | the serial count stays 0 (input still works, polled: by design) |
+| no keyboard interrupt | 3 |
+| the disk never sleeps | 1 |
+| no filesystem lock | 2 -- files corrupted and fsck.fat errors -- but ONLY with the delay knob: at QEMU's speed the windows are too short, and without the knob this control passed |
+| the input ring drops when full | fstest, 34 |
+| fork's ENOMEM for a full table | 2 |
+| FAT open files back to 32 | 3 |
+| NVRAM writes lost | 4 |
+| (task 21's) eviction writing before unmapping, as it did | pagetest 4 -- a fork child saw its parent's later writes |
+| (task 21's) no copy-on-write eviction | pagetest 1 |
+
+**Found on the way** -- most of it by the rest of the suite, because
+the disk sleeping changes what can happen while anything waits for it:
+- `mfp_init()` runs after the serial port and the disk are brought up
+  and clears every MFP handler and enable -- the first version's serial
+  port went deaf with no error anywhere; each now has an `*_irq_on()`
+  called after it.
+- **uaccess's address-space override was a global.** exec sets it while
+  filling a new program's memory, and exec now sleeps on the disk; a
+  pipeline's first stage ran meanwhile and read and wrote the SECOND
+  stage's half-built memory. Per task now (`ua_override`).
+- **ctrl-C at the prompt was lost.** The interrupt handler acted on it by
+  signalling the foreground group -- the shell's, which has no program
+  in it, so nobody -- where the polled path had let the line editor see
+  the character. It now acts only when there is a program to act on,
+  and otherwise queues the character for the reader.
+- **ctrl-C while a pipeline was being started reached nobody.** Starting
+  a stage sleeps now, so the stages already started run and print
+  before the shell hands the terminal over; a ctrl-C then went to the
+  shell's group and the shell waited for ever. The terminal now keeps
+  it (`pending_sig`) and delivers it to the group it is handed to next,
+  once every stage exists.
+- **Eviction wrote a page out while it was still mapped** -- harmless
+  while swap I/O could not sleep, a lost write or a double eviction once
+  it could. The page leaves the map first, its slot is marked busy for
+  the write, and every path that sleeps re-checks the descriptor after.
+  pagetest runs `pair` a second time with every disk request slowed
+  (the delay knob) to keep this honest.
+- **After a fork nothing could be evicted**: every resident page had two
+  holders, and reclaim took only pages with one. A copy-on-write page is
+  now taken from one space at a time. Found by `forkswap` failing on its
+  second run in one boot; `forkswap` now reads everything back before
+  forking, so that memory is full of shared pages when it does.
+
+### Notes for later: sockets and names for picolibc — done
+
+`libc/net/`, BSD-licensed like the rest of `libc/`, built into
+`libc.a` and `libc.so`: `<sys/socket.h>`, `<netinet/in.h>`,
+`<netinet/tcp.h>`, `<arpa/inet.h>`, `<netdb.h>`, `<sys/un.h>`,
+`<sys/uio.h>`; every socket call; `inet_*`; and a resolver --
+`getaddrinfo`, `getnameinfo`, `gethostbyname`, `getservbyname` -- over
+`/etc/hosts`, `localhost` and DNS, with a per-process cache that keeps
+answers for their TTL and "no such name" for 30 seconds.
+
+**Found:** picolibc's `struct timeval` has a 64-bit `tv_sec`, the
+kernel's 32. `SO_RCVTIMEO`/`SO_SNDTIMEO` would have been read as the
+high half -- zero -- so every socket timeout would have been none; the
+wrappers convert.
+
+**Tests:** `libc/test/inettest.c`, 39 checks, run by `dnstest.sh`
+against its DNS server: the text forms, every lookup path including the
+cache (counted: the server sees `foo.sage.test` exactly twice across
+`host` and inettest), a forged reply ignored, the error codes, TCP and
+UDP over loopback through the headers a port uses, a 1.5 s receive
+timeout that times out.
+
+**Negative controls**, all caught: the timeval passed through
+unconverted (2); no cache (4); no ID check on replies (2).
+
 ## Decisions worth knowing about
 
 - **RAM 64 MB, disk 512 MB**, single-sourced in `machine.conf`. The
@@ -1341,15 +1457,6 @@ the OOM path passed, because it printed no FAIL lines.
 
 ## Notes for later
 
-- **The disk should be interrupt-driven** (task 22). `drivers/ata.c` is
-  polled PIO although the IRQ is wired to MFP channel 6 (GPIP4, per
-  `hw/m68k/sage040.c`); its "no scheduler to block" reason is gone. With
-  a non-preemptible kernel a polled wait stops *every* task for the whole
-  request — short under QEMU, milliseconds on a real drive. **Known
-  traps:** `mmio-ide` takes its IRQ by value at realize, so connect it
-  before `sysbus_realize_and_unref()`; the sleep needs a timeout so a
-  dead drive is an error, not a hang. `t3-ata` should gain an interrupt
-  check.
 - **Kernel stack use is unmeasured.** `do_syscall`'s frame was 1,840
   bytes with `do_spawn` inlined; task 6 cut it to 624, against an 8 KB
   stack. A high-water mark (paint the stack, check at exit) would say
@@ -1361,7 +1468,11 @@ the OOM path passed, because it printed no FAIL lines.
   on the editor's path.
 - **The shell has no `;`, `&&` or `||`.** Pipelines and redirection
   work; command lists do not, so `a; b` passes `; b` to `a`.
-- **Names for picolibc programs**: `getaddrinfo`/`gethostbyname`, which
-  need a socket layer in picolibc first (`<sys/socket.h>`,
-  `<netinet/in.h>`, wrappers onto the calls the kernel already has).
-  The resolver is lib/ulib's only. It also has no cache.
+- **Names for picolibc programs -- done.** `libc/net/`: the socket
+  headers and calls, `inet_*`, and a resolver with `getaddrinfo` and a
+  per-process cache that honours TTLs (see `libc/README.md`). lib/ulib's
+  resolver deliberately has NO cache: every ulib program that resolves
+  a name -- `host`, `ping`, `ntpdate`, `fetch` -- does it once and
+  exits, so a per-process cache could never be hit. A cache the whole
+  machine shares would need a daemon to hold it; that is a separate
+  thing, not a note.

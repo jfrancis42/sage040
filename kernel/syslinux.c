@@ -622,7 +622,7 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
             return -EINVAL;
         }
         t = task_fork(regs);
-        return t ? t->pid : -ENOMEM;
+        return t ? t->pid : (task_count() >= TASK_MAX ? -EAGAIN : -ENOMEM);
     }
 
     /* --- time, limits, randomness --- */

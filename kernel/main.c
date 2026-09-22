@@ -217,6 +217,16 @@ static void start_drivers(void)
         kputc('\n');
     }
 
+    /*
+     * The serial port has been the console since the start, polled. Now
+     * the MFP is up it can have its receive interrupt -- not before, as
+     * mfp_init() clears every handler and enable it finds.
+     */
+    if (dev_timer()) {
+        ns16550_irq_on();
+        ata_irq_on();
+    }
+
     status("video");
     err = sm501_init();
     if (err < 0) {

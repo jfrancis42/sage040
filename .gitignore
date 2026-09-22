@@ -80,3 +80,8 @@ apps/tcptest
 apps/pagetest
 system/swapon
 system/swapoff
+apps/limits
+system/irqs
+apps/fsstress
+system/nvram
+libc/test/inettest

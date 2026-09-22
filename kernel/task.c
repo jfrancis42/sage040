@@ -797,3 +797,8 @@ void task_init(void)
     current->pgid = current->pid;
     idle = current;
 }
+
+int task_can_sleep(void)
+{
+    return current && current != idle && !irq_regs && dev_timer() != 0;
+}

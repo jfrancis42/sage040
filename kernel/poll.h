@@ -11,7 +11,7 @@
 
 /* The most descriptors one poll() may name. More than OPEN_MAX, because
  * a program may name the same one twice, or ones it has closed. */
-#define POLL_MAX    32
+#define POLL_MAX    64
 
 /*
  * Fill in revents for `n` descriptors, waiting up to `timeout_ms` (-1:

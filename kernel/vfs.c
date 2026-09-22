@@ -34,6 +34,58 @@
 
 static struct fs_type *types;
 static struct fs_type *mounted_fs;
+
+/*
+ * THE FILESYSTEM LOCK (task 22).
+ *
+ * The filesystem was never re-entered because nothing in it ever slept:
+ * a task in fat16.c ran to the end of its call before any other could
+ * start one. With the disk interrupt-driven, a task waiting for a sector
+ * sleeps IN THE MIDDLE of a FAT operation -- half a directory entry
+ * written, a cluster claimed and not yet linked -- and another task
+ * entering then would see and change that. So every call from here into
+ * the filesystem holds this.
+ *
+ * Recursive, because the filesystem's calls reach back through here
+ * (the text cache reading a file, a truncate checking the swap file).
+ * Taken only for the filesystem's own files and calls: a pipe or a
+ * terminal can block for ever, and must not do it holding this.
+ *
+ * Order: this, then the disk's own lock (ata.c). The disk never takes
+ * this, and swap I/O takes the disk without it, so there is no cycle.
+ */
+static struct waitq fs_wait;
+static struct task *fs_owner;
+static int fs_depth;
+
+static void fs_lock(void)
+{
+    for (;;) {
+        u16 sr = irq_save();
+
+        if (!fs_owner || fs_owner == current) {
+            fs_owner = current;
+            fs_depth++;
+            irq_restore(sr);
+            return;
+        }
+        irq_restore(sr);
+        sleep_on(&fs_wait);
+    }
+}
+
+static void fs_unlock(void)
+{
+    u16 sr = irq_save();
+
+    if (--fs_depth == 0) {
+        fs_owner = 0;
+        irq_restore(sr);
+        wake_all(&fs_wait);
+        return;
+    }
+    irq_restore(sr);
+}
 static struct blockdev *mounted_dev;
 /*
  * Open files, and the descriptors that point at them.
@@ -53,7 +105,7 @@ static struct blockdev *mounted_dev;
  * Reference counted, because two tasks can hold the same open file and
  * the last one to let go is the one that closes it.
  */
-#define FILE_MAX  128           /* open files, the whole machine */
+#define FILE_MAX  256           /* open files, the whole machine */
 
 static struct file files[FILE_MAX];
 
@@ -128,12 +180,14 @@ int vfs_umount(void)
             return -EBUSY;
         }
     }
+    fs_lock();
     if (mounted_fs->sync) {
         mounted_fs->sync();
     }
     if (mounted_fs->umount) {
         mounted_fs->umount();
     }
+    fs_unlock();
     textcache_forget_all();
     mounted_fs = 0;
     mounted_dev = 0;
@@ -150,12 +204,14 @@ void vfs_shutdown(void)
     if (!mounted_fs) {
         return;
     }
+    fs_lock();
     if (mounted_fs->sync) {
         mounted_fs->sync();
     }
     if (mounted_fs->umount) {
         mounted_fs->umount();
     }
+    fs_unlock();
     mounted_fs = 0;
     mounted_dev = 0;
 }
@@ -259,7 +315,13 @@ void file_put(struct file *f)
     }
     flock_release(f);       /* a lock lives exactly as long as this */
     if (f->ops && f->ops->close) {
+        if (f->fs) {
+            fs_lock();
+        }
         f->ops->close(f);
+        if (f->fs) {
+            fs_unlock();
+        }
     }
     f->used = 0;
 }
@@ -280,7 +342,7 @@ void file_put(struct file *f)
  * Advisory means exactly that: nothing stops a program that does not
  * ask from reading or writing.
  */
-#define FLOCK_MAX 32
+#define FLOCK_MAX 64
 
 static struct {
     struct file *holder;
@@ -296,7 +358,13 @@ static u32 flock_key(struct file *f)
 
     memset(&st, 0, sizeof(st));
     if (f->ops && f->ops->fstat) {
+        if (f->fs) {
+            fs_lock();
+        }
         f->ops->fstat(f, &st);
+        if (f->fs) {
+            fs_unlock();
+        }
     }
     return st.st_ino ? st.st_ino : (u32)f->priv ^ 0x80000000UL;
 }
@@ -515,7 +583,9 @@ static int dir_open(const char *path, int flags)
     if (!mounted_fs->dir_ino || !mounted_fs->readdir_in) {
         return -ENOSYS;
     }
+    fs_lock();
     err = mounted_fs->dir_ino(path, &ino);
+    fs_unlock();
     if (err < 0) {
         return err;
     }
@@ -563,7 +633,11 @@ s32 vfs_getdents64(int fd, u8 *buf, u32 len)
             d.d_mode = S_IFDIR;
             d.d_ino = 1;
         } else {
-            int err = mounted_fs->readdir_in(ino, idx - synth, &d);
+            int err;
+
+            fs_lock();
+            err = mounted_fs->readdir_in(ino, idx - synth, &d);
+            fs_unlock();
 
             if (err == -ENOENT) {
                 break;
@@ -631,7 +705,11 @@ int fd_open(const char *path, int flags)
      */
     {
         struct stat st;
-        int exists = mounted_fs->stat && mounted_fs->stat(path, &st) == 0;
+        int exists;
+
+        fs_lock();
+        exists = mounted_fs->stat && mounted_fs->stat(path, &st) == 0;
+        fs_unlock();
 
         if (exists && S_ISDIR(st.st_mode)) {
             if ((flags & O_ACCMODE) != O_RDONLY || (flags & O_CREAT)) {
@@ -663,7 +741,10 @@ int fd_open(const char *path, int flags)
             return -ENFILE;
         }
         f->flags = flags & ~O_CLOEXEC;
+        fs_lock();
         err = mounted_fs->open(path, flags & ~O_CLOEXEC, f);
+        fs_unlock();
+        f->fs = 1;
         if (err < 0) {
             f->used = 0;
             return err;
@@ -848,7 +929,17 @@ s32 fd_read(int fd, void *buf, u32 len)
     if (!f->ops->read) {
         return -EINVAL;
     }
-    return f->ops->read(f, buf, len);
+    if (!f->fs) {
+        return f->ops->read(f, buf, len);
+    }
+    {
+        s32 r;
+
+        fs_lock();
+        r = f->ops->read(f, buf, len);
+        fs_unlock();
+        return r;
+    }
 }
 
 s32 fd_write(int fd, const void *buf, u32 len)
@@ -872,7 +963,15 @@ s32 fd_write(int fd, const void *buf, u32 len)
         return -ETXTBSY;
     }
     {
-        s32 n = f->ops->write(f, buf, len);
+        s32 n;
+
+        if (f->fs) {
+            fs_lock();
+        }
+        n = f->ops->write(f, buf, len);
+        if (f->fs) {
+            fs_unlock();
+        }
 
         /* A file that changes is not what textcache.c holds of it any
          * more. The same after a truncate, an O_TRUNC open, an unlink
@@ -895,7 +994,17 @@ s32 fd_lseek(int fd, s32 offset, int whence)
     if (!f->ops->lseek) {
         return -ESPIPE;         /* a terminal, for instance */
     }
-    return f->ops->lseek(f, offset, whence);
+    if (!f->fs) {
+        return f->ops->lseek(f, offset, whence);
+    }
+    {
+        s32 r;
+
+        fs_lock();
+        r = f->ops->lseek(f, offset, whence);
+        fs_unlock();
+        return r;
+    }
 }
 
 int fd_ioctl(int fd, u32 request, u32 arg)
@@ -908,7 +1017,17 @@ int fd_ioctl(int fd, u32 request, u32 arg)
     if (!f->ops->ioctl) {
         return -ENOTTY;
     }
-    return f->ops->ioctl(f, request, arg);
+    if (!f->fs) {
+        return f->ops->ioctl(f, request, arg);
+    }
+    {
+        int r;
+
+        fs_lock();
+        r = f->ops->ioctl(f, request, arg);
+        fs_unlock();
+        return r;
+    }
 }
 
 /* ---------------------------------------------------------------- */
@@ -920,7 +1039,14 @@ int vfs_mkdir(const char *path)
     if (!mounted_fs || !mounted_fs->mkdir) {
         return -ENOSYS;
     }
-    return mounted_fs->mkdir(path);
+    {
+        int r;
+
+        fs_lock();
+        r = mounted_fs->mkdir(path);
+        fs_unlock();
+        return r;
+    }
 }
 
 int vfs_rmdir(const char *path)
@@ -928,7 +1054,14 @@ int vfs_rmdir(const char *path)
     if (!mounted_fs || !mounted_fs->rmdir) {
         return -ENOSYS;
     }
-    return mounted_fs->rmdir(path);
+    {
+        int r;
+
+        fs_lock();
+        r = mounted_fs->rmdir(path);
+        fs_unlock();
+        return r;
+    }
 }
 
 int vfs_chdir(const char *path)
@@ -936,7 +1069,14 @@ int vfs_chdir(const char *path)
     if (!mounted_fs || !mounted_fs->chdir) {
         return -ENOSYS;
     }
-    return mounted_fs->chdir(path);
+    {
+        int r;
+
+        fs_lock();
+        r = mounted_fs->chdir(path);
+        fs_unlock();
+        return r;
+    }
 }
 
 const char *vfs_getcwd(void)
@@ -944,7 +1084,14 @@ const char *vfs_getcwd(void)
     if (!mounted_fs || !mounted_fs->getcwd) {
         return "/";
     }
-    return mounted_fs->getcwd();
+    {
+        const char *r;
+
+        fs_lock();
+        r = mounted_fs->getcwd();
+        fs_unlock();
+        return r;
+    }
 }
 
 int vfs_unlink(const char *path)
@@ -964,7 +1111,14 @@ int vfs_unlink(const char *path)
     /* Before, while the name still leads to the inode number: once the
      * entry is gone its slot can be a different file's. */
     textcache_forget_path(path);
-    return mounted_fs->unlink(path);
+    {
+        int r;
+
+        fs_lock();
+        r = mounted_fs->unlink(path);
+        fs_unlock();
+        return r;
+    }
 }
 
 int vfs_rename(const char *from, const char *to)
@@ -985,7 +1139,14 @@ int vfs_rename(const char *from, const char *to)
      * file it replaces is going. */
     textcache_forget_path(from);
     textcache_forget_path(to);
-    return mounted_fs->rename(from, to);
+    {
+        int r;
+
+        fs_lock();
+        r = mounted_fs->rename(from, to);
+        fs_unlock();
+        return r;
+    }
 }
 
 int vfs_stat(const char *path, struct stat *st)
@@ -1003,7 +1164,14 @@ int vfs_stat(const char *path, struct stat *st)
     if (!mounted_fs->stat) {
         return -ENOSYS;
     }
-    return mounted_fs->stat(path, st);
+    {
+        int r;
+
+        fs_lock();
+        r = mounted_fs->stat(path, st);
+        fs_unlock();
+        return r;
+    }
 }
 
 int vfs_ftruncate(int fd, u32 len)
@@ -1020,7 +1188,17 @@ int vfs_ftruncate(int fd, u32 len)
         return -ETXTBSY;
     }
     textcache_forget_fd(fd);
-    return f->ops->truncate(f, len);
+    if (!f->fs) {
+        return f->ops->truncate(f, len);
+    }
+    {
+        int r;
+
+        fs_lock();
+        r = f->ops->truncate(f, len);
+        fs_unlock();
+        return r;
+    }
 }
 
 /*
@@ -1054,10 +1232,17 @@ int vfs_bmap(int fd, u32 off, u32 *lba, struct blockdev **dev)
         return -EBADF;
     }
     if (!mounted_fs || !mounted_fs->bmap || !f->ops || !f->ops->fstat ||
-        f->ops->fstat(f, &st) < 0 || !S_ISREG(st.st_mode)) {
+        vfs_fstat(fd, &st) < 0 || !S_ISREG(st.st_mode)) {
         return -EINVAL;
     }
-    return mounted_fs->bmap(f, off, lba, dev);
+    {
+        int r;
+
+        fs_lock();
+        r = mounted_fs->bmap(f, off, lba, dev);
+        fs_unlock();
+        return r;
+    }
 }
 
 int vfs_check(int flags, struct fsck_report *r)
@@ -1071,7 +1256,14 @@ int vfs_check(int flags, struct fsck_report *r)
     if (flags & FSCK_REPAIR) {
         textcache_forget_all();     /* a repair can change any file */
     }
-    return mounted_fs->check(flags, r);
+    {
+        int rv;
+
+        fs_lock();
+        rv = mounted_fs->check(flags, r);
+        fs_unlock();
+        return rv;
+    }
 }
 
 int vfs_readdir(int index, struct dirent *d)
@@ -1082,7 +1274,14 @@ int vfs_readdir(int index, struct dirent *d)
     if (!mounted_fs->readdir) {
         return -ENOSYS;
     }
-    return mounted_fs->readdir(index, d);
+    {
+        int r;
+
+        fs_lock();
+        r = mounted_fs->readdir(index, d);
+        fs_unlock();
+        return r;
+    }
 }
 
 /*
@@ -1103,7 +1302,17 @@ int vfs_fstat(int fd, struct stat *st)
     memset(st, 0, sizeof(*st));
 
     if (f->ops && f->ops->fstat) {
-        return f->ops->fstat(f, st);
+        if (!f->fs) {
+            return f->ops->fstat(f, st);
+        }
+        {
+            int r;
+
+            fs_lock();
+            r = f->ops->fstat(f, st);
+            fs_unlock();
+            return r;
+        }
     }
 
     /*
@@ -1181,7 +1390,14 @@ int vfs_statfs(struct statfs *s)
     if (!mounted_fs->statfs) {
         return -ENOSYS;
     }
-    return mounted_fs->statfs(s);
+    {
+        int r;
+
+        fs_lock();
+        r = mounted_fs->statfs(s);
+        fs_unlock();
+        return r;
+    }
 }
 
 int vfs_sync(void)
@@ -1189,7 +1405,14 @@ int vfs_sync(void)
     if (!mounted_fs || !mounted_fs->sync) {
         return 0;
     }
-    return mounted_fs->sync();
+    {
+        int r;
+
+        fs_lock();
+        r = mounted_fs->sync();
+        fs_unlock();
+        return r;
+    }
 }
 
 /* --- the working directory ------------------------------------------ */

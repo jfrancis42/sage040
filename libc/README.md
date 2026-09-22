@@ -30,6 +30,34 @@ marked `SAGE040` and explained where it is; the one worth knowing about
 is that libgcc, which is not position independent, goes in the data
 segment so the text stays free of relocations.
 
+## The network layer (`net/`)
+
+picolibc has no sockets at all. `net/` is a layer of this project's
+own, BSD-licensed like the rest of this directory, built by `build.sh`
+into both `libc.a` and `libc.so`:
+
+- **Headers**: `<sys/socket.h>`, `<netinet/in.h>`, `<netinet/tcp.h>`,
+  `<arpa/inet.h>` (replacing picolibc's, which had only the byte-order
+  macros), `<netdb.h>`, `<sys/un.h>`, `<sys/uio.h>`. Linux's numbers
+  throughout -- including `SOCK_NONBLOCK`/`SOCK_CLOEXEC`, which are
+  Linux's `O_` values, not picolibc's.
+- **The calls**: every socket call, straight to the kernel -- except
+  `SO_RCVTIMEO`/`SO_SNDTIMEO`, converted, because picolibc's
+  `struct timeval` has a 64-bit `tv_sec` and the kernel's 32. `readv`
+  and `writev` are loops (the kernel has neither), not atomic.
+- **`inet_aton`, `inet_addr`, `inet_ntoa`, `inet_pton`, `inet_ntop`**,
+  IPv4.
+- **The resolver**: `getaddrinfo`, `freeaddrinfo`, `gai_strerror`,
+  `getnameinfo` (numeric: there is no reverse DNS), `gethostbyname`,
+  `getservbyname`/`getservbyport` (a small built-in table), `h_errno`.
+  Numeric names, then `/etc/hosts`, then `localhost`, then a cache, then
+  DNS to `/etc/resolv.conf`'s servers or DHCP's. Answers are cached
+  per process for their TTL; "no such name" for 30 seconds. IPv4 only:
+  `AF_INET6` is `EAI_FAMILY`.
+
+`test/inettest.c` exercises all of it; `kernel/dnstest.sh` runs it
+against a DNS server on the host.
+
 ## Why this was a small port
 
 picolibc already runs on Linux. `libos/linux` is a POSIX layer over

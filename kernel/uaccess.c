@@ -23,7 +23,10 @@
  * like a kernel pointer, and the first write() handed the terminal an
  * address in a different address space.
  */
-static struct addrspace *override;
+/* PER TASK now: current->ua_override. It was a global -- safe while
+ * nothing between uaccess_set() and its undoing could sleep, and wrong
+ * the moment exec could: a task that ran while exec waited for the disk
+ * found its system calls reaching into another program's memory. */
 
 /*
  * exec_spawn used to save uaccess_current() and restore it. When a
@@ -37,18 +40,25 @@ static struct addrspace *override;
  */
 struct addrspace *uaccess_set(struct addrspace *as)
 {
-    struct addrspace *was = override;
+    struct addrspace *was;
 
-    override = as;
+    if (!current) {
+        return 0;
+    }
+    was = current->ua_override;
+    current->ua_override = as;
     return was;
 }
 
 struct addrspace *uaccess_current(void)
 {
-    if (override) {
-        return override;
+    if (!current) {
+        return 0;
     }
-    return current ? current->as : 0;
+    if (current->ua_override) {
+        return current->ua_override;
+    }
+    return current->as;
 }
 
 /*
