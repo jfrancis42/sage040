@@ -21,7 +21,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: all boot run test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest libc cube programs clean distclean
+.PHONY: all boot run test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest pytest libc cube programs clean distclean
 
 all:
 	$(MAKE) -C bootrom
@@ -56,7 +56,7 @@ programs:
 run:
 	$(MAKE) -C kernel run
 
-test: tests cryptotest fstest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest
+test: tests cryptotest fstest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest
 
 tests:
 	$(MAKE) -C tests run
@@ -127,6 +127,31 @@ bashtest:
 # Threads: clone(2), futexes and the pthread layer over them.
 threadtest:
 	cd kernel && ./threadtest.sh
+
+# terminfo and curses (ncurses), with the database renamed away as the
+# control.
+curstest:
+	cd kernel && ./curstest.sh
+
+# The kernel's log, /dev/klog, klogd and /var/log/syslog.
+logtest:
+	cd kernel && ./logtest.sh
+
+# less: a full-screen program on this terminal, and on one that cannot
+# address its cursor.
+lesstest:
+	cd kernel && ./lesstest.sh
+
+# cron: something the machine does by itself, later. Takes three
+# minutes of real time, because a minute-resolution cron cannot be
+# hurried.
+crontest:
+	cd kernel && ./crontest.sh
+
+# CPython: the interpreter, the standard library off the disk, and every
+# answer compared with the host's Python.
+pytest:
+	cd kernel && ./pytest.sh
 
 # Every one of bash's own 83 tests, not the subset: hours, not minutes.
 bashsuite:

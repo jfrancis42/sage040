@@ -128,5 +128,8 @@ py_cv_module_grp=${py_cv_module_grp=n/a}
 # library of its own: a program that calls initscr needs -lncursesw AND
 # -ltinfow. configure only ever tries the first, decides curses is not
 # there, and builds no _curses module.
-ac_cv_search_initscr=${ac_cv_search_initscr='-lncursesw -ltinfow'}
-ac_cv_search_update_panels=${ac_cv_search_update_panels='-lpanelw -lncursesw -ltinfow'}
+# The two libraries refer to each other -- libtinfow calls back into
+# libncursesw for the screen pointer -- so ncursesw is named twice: a
+# static link scans each archive once, in order.
+ac_cv_search_initscr=${ac_cv_search_initscr='-lncursesw -ltinfow -lncursesw'}
+ac_cv_search_update_panels=${ac_cv_search_update_panels='-lpanelw -lncursesw -ltinfow -lncursesw'}

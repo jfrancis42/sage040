@@ -28,9 +28,9 @@ this list is something Python wants.
 | 30 | **The POSIX gaps**: FIFOs, `/dev/fd`, pseudo-terminals, `PATH_MAX`, `ARG_MAX` | the rest of what a port expects to find | |
 | 31 | **Python (CPython)** | the largest port yet | in progress |
 | 32 | **PATH**: that it is set, inherited, and searched | small, and everything assumes it | **done** |
-| 37 | **cron** | needs the clock, a daemon, and somewhere to log | |
+| 37 | **cron** | needs the clock, a daemon, and somewhere to log | **done** |
 | 43 | **`/var`, and `/var/log`**: the kernel's log to `/var/log/syslog` | asked for 2026-09-22 | **done** |
-| 44 | **`/bin/less`** | asked for 2026-09-22; wants terminfo (39) | |
+| 44 | **`/bin/less`** | asked for 2026-09-22; wants terminfo (39) | **done** |
 
 Left for later, and not started:
 
@@ -258,6 +258,48 @@ a file read back with the HOST's tools, and a second boot with `/etc/rc`
 renamed away -- where dmesg gets everything instead, which is both the
 proof that the ring drains and the proof that `/etc/rc` is what starts
 klogd.
+
+---
+
+### 37. cron -- done
+
+sbase's `cron`, which reads `/etc/crontab`, keeps its pid in
+`/var/run/crond.pid` and says what it is doing through `syslog(3)` --
+which now appends to `/var/log/syslog`, the same file klogd writes the
+kernel's messages to, so that a machine has ONE log rather than one per
+source.
+
+It is the first thing on this machine that happens because the CLOCK
+said so rather than because somebody typed something, which makes
+`kernel/crontest.sh` as much a test of the clock and of a long-lived
+background task as of cron. It cannot be hurried: a minute-resolution
+cron needs minutes, so the suite sets the machine's clock ten seconds
+before a boundary and waits for two of them to pass -- one firing could
+be an accident of startup, two cannot.
+
+The control is a crontab line for a minute that will not come round
+during the run. It must not fire, or the matching matches everything.
+
+8 checks.
+
+---
+
+### 44. less -- done
+
+GNU less 668 (`ports/less`), linked against **libtinfow** rather than
+libncursesw: less asks terminfo what the terminal can do and writes the
+sequences itself, and has no use for curses' windows.
+
+It is the first program here that drives the terminal the way a
+full-screen program does, so `kernel/lesstest.sh` is as much about the
+terminal as about less. 12 checks: the first screenful, space for the
+next, `G` for the end, `q` to leave -- with the escape sequences it used
+to do it -- and then two cases that are not a terminal at all. Into a
+pipe less is `cat`, and all 200 lines go through. On TERM=dumb it warns
+that the terminal is not fully functional, waits to be told to carry on,
+and then prints the file **without a single cursor-addressing
+sequence**, which is the control: it asked the database rather than
+assuming.
 
 ---
 

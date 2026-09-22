@@ -65,6 +65,19 @@ if [ ! -d "$SRC" ]; then
     done
 fi
 
+# PKG_CONFIG=/bin/false, and the curses flags given outright.
+#
+# configure asks pkg-config what libraries exist, and pkg-config answers
+# about the HOST's -- it said ncursesw was available and set the link
+# flags from the host's package, which is how a cross build ends up
+# linking against a library for the wrong machine, or, here, missing
+# the libtinfow half and failing at the last link with undefined
+# references to ncurses's own symbols. A cross build must not ask the
+# host what it has.
+#
+# The two libraries name each other, so ncursesw appears twice: a static
+# link scans each archive once, in order.
+
 # The modules to build in. Everything Python needs to start, plus what
 # makes it useful here: the maths, the hashes, sockets, select, time,
 # the terminal, and curses over the ncurses built by ports/ncurses.
@@ -135,6 +148,11 @@ if [ ! -f "$BUILD/Makefile" ]; then
         --disable-test-modules \
         CC="$CROSS_CC" \
         AR="$CROSS_BIN/m68k-elf-ar" RANLIB="$CROSS_BIN/m68k-elf-ranlib" \
+        PKG_CONFIG=/bin/false \
+        CURSES_CFLAGS="-I$NCOUT/include" \
+        CURSES_LIBS="-lncursesw -ltinfow -lncursesw" \
+        PANEL_CFLAGS="-I$NCOUT/include" \
+        PANEL_LIBS="-lpanelw -lncursesw -ltinfow -lncursesw" \
         READELF="$CROSS_BIN/m68k-elf-readelf" \
         CPPFLAGS="$CROSS_CPPFLAGS -I$NCOUT/include -I$ZOUT/include" \
         CFLAGS="$CROSS_CFLAGS $PY_CFLAGS" \

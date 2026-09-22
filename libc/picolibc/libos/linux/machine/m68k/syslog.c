@@ -37,7 +37,7 @@
  * syslog(), for a machine with no syslog daemon.
  *
  * Each message is one line -- "Mon DD HH:MM:SS host ident[pid]: text" --
- * appended to /var/log/messages when that directory exists, which is
+ * appended to /var/log/syslog when that directory exists, which is
  * where a daemon would have put it. If it cannot be written there, it
  * goes to /dev/console only when openlog() asked for LOG_CONS, as POSIX
  * has it; LOG_PERROR also copies it to stderr. %m is the text of errno.
@@ -132,7 +132,13 @@ vsyslog(int pri, const char *fmt, va_list ap)
     if (n == 0 || line[n - 1] != '\n')
         line[n++] = '\n';
 
-    fd = open("/var/log/messages", O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0644);
+    /*
+     * The same file klogd writes the kernel's messages to, so that a
+     * machine has ONE log rather than one per source. The kernel's
+     * lines say "kernel:", these say the program's name, and `cat
+     * /var/log/syslog` is the whole story in the order it happened.
+     */
+    fd = open("/var/log/syslog", O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0644);
     if (fd >= 0) {
         write(fd, line, n);
         close(fd);
