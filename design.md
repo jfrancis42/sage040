@@ -726,7 +726,7 @@ machine being small. The machine is not small now — 64 MB of RAM and a
 | **A C library** | picolibc or newlib over a dozen syscall stubs |
 | Pipelines | `pipe`, `dup2`, `SIGPIPE`, and `\|` `>` `>>` `<` in the shell |
 | The console | VT102 emulation, `TIOCGWINSZ`, termcap, curses |
-| POSIX surface | `select`, timers, subprocesses, and a dozen small calls (signal handlers ✅) |
+| POSIX surface | timers, subprocesses, and a dozen small calls (signal handlers and `select`/`poll` ✅) |
 | Sockets | the rest of the Linux socket API, and fixing the signatures |
 | Long file names | VFAT, and why not a different filesystem |
 | `fsck` | and a clean-unmount flag to say when it is needed |
@@ -984,12 +984,15 @@ on this list at perhaps 350 lines. `sigaction`, `sigprocmask` and a
 `sigaltstack` for the stack-overflow case. **Almost every interactive
 program needs at least `SIGWINCH` and `SIGCHLD`.**
 
-**(5) `select` or `poll`.** Nothing can wait on more than one thing at a
-time, which is exactly the constraint that bites a program with both a
-socket and a terminal. The wait-queue machinery in `wait.c` is the right
-foundation: a task registers on several queues and is woken by whichever
-fires first. ~250 lines, and it is the other half of what an event loop
-needs.
+**(5) `select` or `poll`. Done** (`kernel/poll.c`), with Linux/m68k's
+three calls. Not built the way this paragraph proposed, with a task
+registered on several queues at once. Instead there is one shared
+queue that the terminal wakes from the tick, and a short sleep of its
+own as a fallback (100 ms, or 20 ms when a socket is watched). That
+fallback is needed because the network stack does its protocol work
+only when somebody asks, so a socket has nothing that would wake a
+queue until a waiting task polls it anyway. Readiness comes from a new
+`file_ops->poll`, or from `FIONREAD` for a file that has none.
 
 **(6) Interval timers.** `timer_create`/`timer_settime`, or the older
 `setitimer`. The tick is already there and `sleep_on_timeout` already

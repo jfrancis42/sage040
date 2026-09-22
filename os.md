@@ -656,8 +656,8 @@ access-fault frame cannot be redirected to a handler in place.
 `malloc`/`free`/`calloc`/`realloc` in `lib/malloc.c`, a stand-in until
 there is a C library.
 
-**No pipes, no `dup2`, no `fcntl`, no `select` or `poll`.** So no shell
-pipelines, and no input redirection.
+**No pipes and no `fcntl` yet.** So no shell pipelines, and no input
+redirection. `dup2`, `select` and `poll` exist.
 
 Output redirection with `>` and `>>` is real but **only for builtins**:
 the shell swaps its own output descriptor, which a spawned program

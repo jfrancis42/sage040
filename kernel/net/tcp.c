@@ -1065,6 +1065,40 @@ int tcp_listen(struct tcpcb *t, u16 port)
     return 0;
 }
 
+int tcp_poll(struct tcpcb *t)
+{
+    int r = 0, i;
+
+    if (t->state == TCP_LISTEN) {
+        /* A listener is readable when accept() would not wait. */
+        for (i = 0; i < TCP_MAX_CONNS; i++) {
+            if (conns[i].used && conns[i].listener == t && conns[i].pending) {
+                return POLLIN;
+            }
+        }
+        return 0;
+    }
+    if (t->reset) {
+        return POLLIN | POLLERR | POLLHUP;
+    }
+    /*
+     * Readable when there is data, or when there never will be: end of
+     * stream is a read that returns 0 at once, and a program waiting in
+     * poll() has to be told so it can make it.
+     */
+    if (tcp_available(t) > 0 || t->fin_rcvd || t->state == TCP_CLOSED) {
+        r |= POLLIN;
+    }
+    if ((t->state == TCP_ESTABLISHED || t->state == TCP_CLOSE_WAIT) &&
+        !t->fin_sent && t->sndlen < TCP_SNDBUF) {
+        r |= POLLOUT;
+    }
+    if (t->state == TCP_CLOSED || (t->fin_rcvd && t->fin_sent)) {
+        r |= POLLHUP;
+    }
+    return r;
+}
+
 struct tcpcb *tcp_accept(struct tcpcb *t)
 {
     int i;

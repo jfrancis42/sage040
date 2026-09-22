@@ -294,6 +294,68 @@ struct statfs {
 #define __NR_brk        45
 
 /*
+ * Waiting on several descriptors. Linux/m68k's numbers and shapes:
+ *
+ *   poll        168  (struct pollfd *, count, timeout in ms; -1 waits)
+ *   _newselect  142  (nfds, readfds, writefds, exceptfds, timeval *)
+ *   select       82  ONE argument, a pointer to struct sel_arg_struct --
+ *                    the old interface, as number 82 is on Linux/m68k
+ *
+ * select() writes back the time left, as Linux's does. Both are
+ * interrupted by a signal: -EINTR after a handler, a restart if none
+ * ran (which starts the timeout again rather than resuming it).
+ *
+ * A terminal in canonical mode is readable when a CHARACTER is waiting,
+ * not when a whole line is: the line is assembled inside read(), so
+ * nothing outside it knows where one ends. In raw mode, which is what a
+ * program that polls a terminal uses, readable means exactly that.
+ */
+#define __NR_select     82
+#define __NR__newselect 142
+#define __NR_poll      168
+
+#define POLLIN          0x0001
+#define POLLPRI         0x0002
+#define POLLOUT         0x0004
+#define POLLERR         0x0008
+#define POLLHUP         0x0010
+#define POLLNVAL        0x0020
+#define POLLRDNORM      0x0040
+#define POLLRDBAND      0x0080
+#define POLLWRNORM      POLLOUT     /* m68k's definition */
+#define POLLWRBAND      0x0100
+
+struct pollfd {
+    int fd;
+    short events;
+    short revents;
+};
+
+struct timeval {
+    s32 tv_sec;
+    s32 tv_usec;
+};
+
+#define FD_SETSIZE      1024
+typedef struct {
+    u32 fds_bits[FD_SETSIZE / 32];
+} fd_set;
+
+#define FD_ZERO(s)      do { u32 i_; for (i_ = 0; i_ < FD_SETSIZE / 32; i_++) \
+                             (s)->fds_bits[i_] = 0; } while (0)
+#define FD_SET(fd, s)   ((s)->fds_bits[(fd) / 32] |= (1UL << ((fd) % 32)))
+#define FD_CLR(fd, s)   ((s)->fds_bits[(fd) / 32] &= ~(1UL << ((fd) % 32)))
+#define FD_ISSET(fd, s) (((s)->fds_bits[(fd) / 32] >> ((fd) % 32)) & 1)
+
+struct sel_arg_struct {
+    u32 n;
+    fd_set *inp;
+    fd_set *outp;
+    fd_set *exp;
+    struct timeval *tvp;
+};
+
+/*
  * Mapping memory. The numbers AND the shapes are Linux/m68k's:
  *
  *   mmap2    192  six arguments in d1-d5 and a0, the offset in PAGES.

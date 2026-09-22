@@ -413,6 +413,7 @@ static const struct file_ops fbcon_ops = {
     fbcon_ioctl,
     fbcon_close,
     fbcon_fstat,
+    0,                          /* poll: the default; see dev.h */
 };
 
 int fbcon_rows(void)

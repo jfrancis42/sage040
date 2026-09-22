@@ -1319,6 +1319,11 @@ older copy should know which way round it is now.
 - **Open a network socket.** `socket`, `connect`, `bind`, `listen`,
   `accept`, `sendto` and `recvfrom` all work, and a socket is a
   descriptor, so `read()` and `write()` work on one.
+- **Wait on several descriptors** with `poll()` or `select()`: the
+  terminal, sockets and files. A terminal in canonical mode is readable
+  when a character is waiting, not when a whole line is. Put it in raw
+  mode, as any program that polls a terminal does, and readable means
+  exactly that.
 - **Use subdirectories**, a working directory, and relative paths.
 - **Read its environment.** `getenv()`, inherited from the shell.
 
@@ -1332,7 +1337,6 @@ older copy should know which way round it is now.
 - **Map the framebuffer.** `mmap` exists, but `/dev/fb0` does not
   support it yet, so drawing goes through the `FBIO_*` ioctls rather
   than through the memory itself.
-- **Wait on more than one thing.** There is no `select` or `poll`.
 - **Use a pipe.** No `pipe`, `dup2` or `fcntl`, so no shell pipelines
   and no input redirection. Output redirection with `>` works for the
   shell's own builtins and **silently does nothing for a program** --

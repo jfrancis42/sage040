@@ -317,6 +317,7 @@ static const struct file_ops fb_ops = {
     fb_ioctl,
     fb_close,
     fb_fstat,
+    0,                          /* poll: the default; see dev.h */
 };
 
 int fb_init(void)

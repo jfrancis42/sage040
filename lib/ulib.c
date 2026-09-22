@@ -117,6 +117,17 @@ void *mmap(void *addr, u32 len, int prot, int flags, int fd, u32 offset)
     return r < 0 ? MAP_FAILED : (void *)r;
 }
 
+int poll(struct pollfd *fds, u32 n, int timeout_ms)
+{
+    return (int)sc3(__NR_poll, (u32)fds, n, (u32)timeout_ms);
+}
+
+int select(int nfds, fd_set *in, fd_set *out, fd_set *ex, struct timeval *tv)
+{
+    return (int)sc6(__NR__newselect, (u32)nfds, (u32)in, (u32)out, (u32)ex,
+                    (u32)tv, 0);
+}
+
 int munmap(void *addr, u32 len)
 {
     return (int)sc2(__NR_munmap, (u32)addr, len);

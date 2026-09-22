@@ -276,6 +276,25 @@ static int sock_fstat(struct file *f, struct stat *st)
     return 0;
 }
 
+static int sock_poll(struct file *f)
+{
+    struct socket *s = f->priv;
+
+    if (!s || !s->used) {
+        return POLLNVAL;
+    }
+    /* Protocol work happens in ordinary kernel context, whoever asks;
+     * a program waiting in poll() is the one asking. */
+    net_poll();
+    if (s->type == SOCK_DGRAM) {
+        return (s->dgram_ready ? POLLIN : 0) | POLLOUT;
+    }
+    if (!s->tcp) {
+        return POLLOUT;         /* unconnected: a write would fail at once */
+    }
+    return tcp_poll(s->tcp);
+}
+
 static const struct file_ops sock_ops = {
     sock_read,
     sock_write,
@@ -283,6 +302,7 @@ static const struct file_ops sock_ops = {
     sock_ioctl,
     sock_close,
     sock_fstat,
+    sock_poll,
 };
 
 /* --- the system calls ------------------------------------------------ */

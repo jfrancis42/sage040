@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: 6 of 23 complete.**
+**Status: 7 of 23 complete.**
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -35,7 +35,7 @@ drive almost all of it:
 | 3 | `mmap`/`munmap`/`mprotect` | what a runtime and a libc expect | **done** |
 | 4 | `malloc` in `lib/` | so tasks 5–12 have something to test against | **done** |
 | 5 | Signals: `sigaction`, handlers, `sigreturn` | the largest kernel item; editors need it | **done** |
-| 6 | `select`/`poll` | the other half of an event loop | todo |
+| 6 | `select`/`poll` | the other half of an event loop | **done** |
 | 7 | Interval timers | depends on 5 | todo |
 | 8 | Pipes, `dup2`, real redirection | see the note below — `>` is broken today | todo |
 | 9 | Subprocesses: `fork`/`execve`/`waitpid` | `:!` and `:make` in an editor | todo |
@@ -207,8 +207,8 @@ It grows one group per task, and a group is only added once its calls
 work — so a failure there is always a regression, never a thing not
 written yet.
 
-**296 checks across six suites now:** 12 device programs, 41 fs, 183
-api, 29 edit, 18 vm, 13 net.
+**319 checks across six suites now:** 12 device programs, 41 fs, 202
+api, 29 edit, 18 vm, 17 net.
 
 ### 1. Grow the user address space — done
 
@@ -648,13 +648,59 @@ else, while an earlier program was running. Keys that must arrive at a
 particular moment are now sent by `send_after`, which waits for the
 program to say it is ready.
 
+### 6. `select`/`poll` — done
+
+Linux/m68k's three calls: `poll` (168), `_newselect` (142) and the old
+`select` (82), which takes a `struct sel_arg_struct` pointer, as 82
+does on Linux/m68k. `fd_set` is Linux's 1024 bits. `select` writes the
+unused time back, as Linux's does. Both are interrupted by a signal
+through the task 5 machinery: `-EINTR` after a handler, a restart if
+none ran. The restart begins the timeout again rather than resuming it,
+since there is no restart block; Linux would resume.
+
+**Readiness is a new `file_ops->poll`**, and when a file has none,
+`FIONREAD`: readable when bytes are waiting, always writable. That rule
+makes the terminal, the serial port and the keyboard right with no new
+code. A file that cannot answer `FIONREAD` is a regular file, and
+reading one never waits, so it is always ready. Only sockets needed a
+`poll` of their own (`sock_poll`, over a new `tcp_poll`). A listener is
+readable when `accept` would not wait. A connection is readable at end
+of stream or on a reset, not only when data is waiting, because a
+program must be told so it can make the read that returns 0.
+
+**How it waits** differs from the design note, which had a task
+registered on several wait queues at once. There is **one shared queue
+that the terminal wakes from the tick**, and the loop also sleeps with
+a short timeout of its own: 100 ms, or 20 ms when a socket is watched.
+The network stack does its protocol work only when somebody asks, so a
+socket has nothing that could wake a queue until the poller asks
+anyway.
+
+*Limit, documented in `uapi.h`:* a terminal in **canonical** mode is
+readable when a character is waiting, not when a whole line is. The
+line is assembled inside `read()`, so nothing outside it knows where
+one ends. In raw mode it is exact, and raw mode is what a program that
+polls a terminal uses.
+
+**Found on the way: every system call paid for `spawn`'s buffers.**
+`do_spawn` was inlined into `do_syscall`, so its 1.8 KB of argument
+buffers were part of `do_syscall`'s frame, and every call used that
+much kernel stack. `do_spawn`, `do_select` and `do_poll` are
+`noinline` now, and `do_syscall`'s frame went from **1,840 bytes to
+624**.
+
+**Tests:** `apps/polltest`, 12 checks: a timeout kept, a file ready at
+once and both ways, a negative descriptor ignored, a closed one
+`POLLNVAL`, the limit, `select` counting and writing back its time,
+`EBADF` for a closed descriptor, and a signal ending a wait with
+`EINTR`. `polltest tty` has 7 more: the harness types a key only once
+the program says it is waiting, for `poll` and then `select`. And
+`polltest net`, in `nettest.sh`, fetches a file from the host's web
+server, waiting with `poll` at every step, including end of stream.
+**What the tty checks cannot prove:** that the tick's wakeup is prompt.
+The 100 ms fallback alone would pass them.
+
 ---
-
-## Design notes for the tasks not yet started
-
-Written while the shell was down, because thinking does not need one.
-These are decisions, not code — the point is that the next session
-starts by typing rather than by deciding.
 
 ## Decisions worth knowing about
 

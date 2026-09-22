@@ -38,6 +38,7 @@
  * buffer and this loop becomes a drain of it, which is a change inside
  * this file and nowhere else.
  */
+#include "poll.h"
 #include "tty.h"
 #include "dev.h"
 #include "vfs.h"
@@ -548,6 +549,7 @@ void tty_poll_signals(void)
 
     if (pushback >= 0 || any_ready()) {
         wake_all(&input_wait);
+        poll_wake();            /* a program in poll() or select() too */
     }
 }
 
@@ -669,6 +671,7 @@ static const struct file_ops tty_ops = {
     tty_ioctl,
     tty_close,
     tty_fstat,
+    0,                          /* poll: the default; see dev.h */
 };
 
 /* ---------------------------------------------------------------- */

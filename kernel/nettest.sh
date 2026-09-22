@@ -81,6 +81,7 @@ mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
     $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
 mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
 mcopy -o -i "$MIMG" ../apps/fetch ::/FETCH
+mcopy -o -i "$MIMG" ../apps/polltest ::/POLLTEST
 #
 # The network tools are programs now, not shell builtins, so the test
 # has to install them the way a real disk would -- in /bin, which is
@@ -164,6 +165,7 @@ fi
     printf 'netstat -a\r';                 sleep 3
     printf "fetch 10.0.2.2 $HTTP_PORT /small.txt\r"; sleep 10
     printf "fetch 10.0.2.2 $HTTP_PORT /big.txt\r";   sleep 20
+    printf "polltest net 10.0.2.2 $HTTP_PORT\r";      sleep 8
     printf 'ifconfig\r';                   sleep 2
     printf 'echo NETTEST-DONE\r'
 } >> "$SCRATCH/session.tmp"
@@ -245,6 +247,16 @@ check "  and every byte of it arrived" $?
 
 grep -q "line 0 " "$SCRATCH/clean.tmp"
 check "  in order, from the first line" $?
+
+echo "=== checks: poll() on a TCP socket ==="
+
+for what in "a connected socket is writable" \
+            "poll woke when the reply arrived" \
+            "the end of the stream was reported readable" \
+            "the whole reply was read through poll"; do
+    grep -q "  ok   $what" "$SCRATCH/clean.tmp"
+    check "$what" $?
+done
 
 echo "=== checks: the tools are programs ==="
 

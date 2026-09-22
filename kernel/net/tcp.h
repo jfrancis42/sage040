@@ -198,6 +198,9 @@ s32  tcp_recv(struct tcpcb *t, void *data, u32 len);
 int  tcp_close(struct tcpcb *t);
 u32  tcp_available(struct tcpcb *t);
 
+/* POLLIN / POLLOUT / POLLERR / POLLHUP for this connection, now. */
+int  tcp_poll(struct tcpcb *t);
+
 /* Walk the connection table, for netstat. Returns 0 past the end. */
 struct tcpcb *tcp_nth(int index);
 const char *tcp_state_name(int state);

@@ -1791,6 +1791,7 @@ static const struct file_ops fat_file_ops = {
     0,                          /* no ioctl on a regular file */
     fat_file_close,
     fat_file_fstat,
+    0,                          /* poll: the default; see dev.h */
 };
 
 static int fat_open(const char *path, int flags, struct file *f)

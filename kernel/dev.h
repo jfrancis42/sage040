@@ -55,6 +55,17 @@ struct file_ops {
      * fills in.
      */
     int (*fstat)(struct file *f, struct stat *st);
+
+    /*
+     * Ready for what? POLLIN, POLLOUT, POLLERR, POLLHUP, now, without
+     * waiting. poll() and select() are built on this and nothing else.
+     *
+     * Null means: answer from FIONREAD if the ioctl knows it (readable
+     * when bytes are waiting, always writable), and otherwise always
+     * ready both ways -- which is the truth for a regular file, since
+     * reading one never waits.
+     */
+    int (*poll)(struct file *f);
 };
 
 struct file {

@@ -30,6 +30,7 @@
 #include "pmm.h"
 #include "vm.h"
 #include "mmap.h"
+#include "poll.h"
 #include "ptregs.h"
 #include "net.h"
 #include "tcp.h"
@@ -374,7 +375,14 @@ static int do_ioctl(int fd, u32 request, u32 arg)
  */
 #define SPAWN_ARG_MAX  64
 
-static int do_spawn(u32 upath, int argc, u32 uargv, u32 uenvp)
+/*
+ * noinline, like every system call here with big buffers: inlined into
+ * do_syscall, their buffers become part of do_syscall's frame, and then
+ * EVERY call pays for them in kernel stack -- 1,840 bytes of it, when
+ * this was measured -- not just the calls that use them.
+ */
+static __attribute__((noinline))
+int do_spawn(u32 upath, int argc, u32 uargv, u32 uenvp)
 {
     char path[PATH_MAX];
     char argstore[EXEC_MAX_ARGS][SPAWN_ARG_MAX];
@@ -435,6 +443,87 @@ static int do_spawn(u32 upath, int argc, u32 uargv, u32 uenvp)
     envp[envc] = 0;
 
     return exec_spawn(path, argc, argv, envp);
+}
+
+/* --- waiting on descriptors ------------------------------------------ */
+
+static __attribute__((noinline))
+int do_poll(u32 ufds, u32 n, s32 timeout_ms)
+{
+    struct pollfd local[POLL_MAX];
+    int r, err;
+
+    if (n > POLL_MAX) {
+        return -EINVAL;
+    }
+    if (n) {
+        err = fetch(local, ufds, n * sizeof(struct pollfd));
+        if (err < 0) {
+            return err;
+        }
+    }
+    r = poll_files(local, n, timeout_ms, 0);
+    if (r < 0) {
+        return r;
+    }
+    if (n) {
+        err = store(ufds, local, n * sizeof(struct pollfd));
+        if (err < 0) {
+            return err;
+        }
+    }
+    return r;
+}
+
+static __attribute__((noinline))
+int do_select(u32 nfds, u32 uin, u32 uout, u32 uex, u32 utv)
+{
+    u32 in[FD_SETSIZE / 32], out[FD_SETSIZE / 32], ex[FD_SETSIZE / 32];
+    u32 bytes = ((nfds + 31) / 32) * 4;
+    s32 timeout_ms = -1, left = 0;
+    struct timeval tv;
+    int r, err;
+
+    if (nfds > FD_SETSIZE) {
+        return -EINVAL;
+    }
+    if ((uin && (err = fetch(in, uin, bytes)) < 0) ||
+        (uout && (err = fetch(out, uout, bytes)) < 0) ||
+        (uex && (err = fetch(ex, uex, bytes)) < 0)) {
+        return err;
+    }
+    if (utv) {
+        err = fetch(&tv, utv, sizeof(tv));
+        if (err < 0) {
+            return err;
+        }
+        if (tv.tv_sec < 0 || tv.tv_usec < 0 || tv.tv_usec >= 1000000) {
+            return -EINVAL;
+        }
+        /* Rounded up to the millisecond, so a short wait is not none. */
+        timeout_ms = tv.tv_sec * 1000 + (tv.tv_usec + 999) / 1000;
+    }
+
+    r = poll_select(nfds, uin ? in : 0, uout ? out : 0, uex ? ex : 0,
+                    timeout_ms, &left);
+    if (r < 0) {
+        return r;
+    }
+    if ((uin && (err = store(uin, in, bytes)) < 0) ||
+        (uout && (err = store(uout, out, bytes)) < 0) ||
+        (uex && (err = store(uex, ex, bytes)) < 0)) {
+        return err;
+    }
+    if (utv) {
+        /* What was not used, as Linux writes it back. */
+        tv.tv_sec = left / 1000;
+        tv.tv_usec = (left % 1000) * 1000;
+        err = store(utv, &tv, sizeof(tv));
+        if (err < 0) {
+            return err;
+        }
+    }
+    return r;
 }
 
 /* --- the network --------------------------------------------------- */
@@ -1087,6 +1176,23 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
 
     case __NR_munmap:
         return do_munmap(a1, a2);
+
+    case __NR_poll:
+        return do_poll(a1, a2, (s32)a3);
+
+    case __NR__newselect:
+        return do_select(a1, a2, a3, a4, a5);
+
+    case __NR_select: {
+        struct sel_arg_struct sa;
+        int err = fetch(&sa, a1, sizeof(sa));
+
+        if (err < 0) {
+            return err;
+        }
+        return do_select(sa.n, (u32)sa.inp, (u32)sa.outp, (u32)sa.exp,
+                         (u32)sa.tvp);
+    }
 
     case __NR_mprotect:
         return do_mprotect(a1, a2, a3);

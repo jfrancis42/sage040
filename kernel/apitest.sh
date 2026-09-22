@@ -75,6 +75,7 @@ mcopy -o -i "$MIMG" ../apps/memtest ::/MEMTEST
 mcopy -o -i "$MIMG" ../apps/malloctest ::/MALLOCTE
 mcopy -o -i "$MIMG" ../apps/sigtest ::/SIGTEST
 mcopy -o -i "$MIMG" ../apps/fptest ::/FPTEST
+mcopy -o -i "$MIMG" ../apps/polltest ::/POLLTEST
 mcopy -o -i "$MIMG" ../apps/spin ::/SPIN
 mmd -i "$MIMG" ::/ETC
 mmd -i "$MIMG" ::/BIN
@@ -101,6 +102,7 @@ mcopy -o -i "$MIMG" "$SCRATCH/rc.tmp" ::/ETC/RC
 
     # --- the gate, and signals ---
     printf 'sigtest\r';                 sleep 6
+    printf 'polltest\r';                sleep 4
     printf 'sigtest badstack\r';        sleep 1.5
     printf 'sigtest forge\r';           sleep 1.5
     printf 'kill 2\r';                  sleep 1
@@ -166,6 +168,11 @@ sleep 1
 printf 'sigtest spincatch\r' >&3
 send_after "sigtest: computing until ctrl-C" '\003'
 sleep 1
+printf 'polltest tty\r' >&3
+send_after "polltest: press a key for poll" 'k\r'
+send_after "polltest: press a key for select" 'x\r'
+send_after "polltest: tty done" ''
+sleep 0.5
 
 spin_pid=
 for _ in $(seq 1 50); do
@@ -226,6 +233,12 @@ check "malloctest ran to the end" $?
 
 grep -q "sigtest: done" "$C"
 check "sigtest ran to the end" $?
+
+grep -q "polltest: done" "$C"
+check "polltest ran to the end" $?
+
+grep -q "polltest: tty done" "$C"
+check "polltest waited for keys with poll and select" $?
 
 test "$(grep -c '^  FAIL ' "$C")" -eq 0
 check "  and every check inside them passed" $?

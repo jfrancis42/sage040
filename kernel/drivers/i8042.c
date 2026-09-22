@@ -390,6 +390,7 @@ static const struct file_ops kbd_ops = {
     kbd_ioctl,
     kbd_close,
     kbd_fstat,
+    0,                          /* poll: the default; see dev.h */
 };
 
 static struct chardev kbd_dev = {

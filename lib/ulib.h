@@ -81,6 +81,15 @@ int    sigaddset(sigset_t *s, int sig);
 int    sigdelset(sigset_t *s, int sig);
 int    sigismember(const sigset_t *s, int sig);
 
+/*
+ * Waiting on several descriptors. Linux's meanings; select() writes the
+ * unused time back into *tv. See uapi.h for what readable means on a
+ * terminal in canonical mode.
+ */
+int    poll(struct pollfd *fds, u32 n, int timeout_ms);
+int    select(int nfds, fd_set *in, fd_set *out, fd_set *ex,
+              struct timeval *tv);
+
 /* Any system call by number: the result, or a negated errno. */
 s32    syscall(u32 nr, ...);
 
