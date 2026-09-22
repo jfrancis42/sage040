@@ -1412,6 +1412,13 @@ Everything else Linux has is here too: `accept4`, `getsockname`,
 the machine's own address, with or without a network. `apps/socktest.c`
 exercises all of it over loopback.
 
+Both travel on **`lo`**, an interface of its own -- 127.0.0.1/8, with
+its own counters -- which `ifconfig` lists after `eth0`, and which
+`ifconfig lo down` takes down (127/8 is then `ENETUNREACH`, as on
+Linux). A frame arriving from the wire addressed to 127/8, or claiming
+to come from it, is dropped, so a service bound to 127.0.0.1 really is
+reachable only from this machine.
+
 `bind()`, `listen()` and `accept()` work the other way round;
 `apps/httpd.c` is a worked example that serves files off the disk, and
 `apps/fetch.c` is the client side.
@@ -1468,8 +1475,23 @@ ioctl(fb, FBIO_FLIP, 0);                  /* show what you drew */
 
 Drawing through ioctl rather than through graphics system calls because
 a framebuffer is a device and the device model already carries it.
-Linux controls its framebuffer the same way — it then expects you to
-`mmap` the memory and draw yourself, which needs an MMU that is off here.
+Linux controls its framebuffer the same way, and then expects you to
+`mmap` the memory and draw yourself. That works here too:
+
+```c
+u8 *vram = mmap(0, info.mem_size, PROT_READ | PROT_WRITE, MAP_SHARED, fb, 0);
+u8 *px = vram + info.draw_offset;         /* the buffer being drawn */
+
+px[y * info.pitch + x] = 3;               /* one byte a pixel, a palette index */
+```
+
+The mapping is the video memory itself, uncached, not a copy: it costs
+no RAM beyond its page tables, a child made by `fork` shares it, and the
+blitter's work is visible through it once `FBIO_SYNC` returns.
+`FBIO_GETINFO` says how large video memory is (`mem_size`) and where
+the buffer being drawn (`draw_offset`) and the one on screen
+(`show_offset`) begin in it -- they change at every `FBIO_FLIP`, so
+read them again after one. `apps/fbmap.c` is the example.
 
 **It is double buffered.** Drawing goes to the buffer that is not on
 screen; `FBIO_FLIP` swaps them with one register write, so the change
@@ -1605,11 +1627,6 @@ older copy should know which way round it is now.
   `EINVAL`. Nor can a program catch the signal from its own access
   fault: that one still ends it. (`SA_SIGINFO` handlers work, with
   Linux/m68k's `siginfo` and `ucontext`.)
-- **Map the framebuffer.** `mmap` exists, but `/dev/fb0` does not
-  support it yet, so drawing goes through the `FBIO_*` ioctls rather
-  than through the memory itself.
-- **Resolve a name through picolibc.** `lib/ulib` has `resolve_host()`
-  (`/etc/hosts`, then DNS); picolibc has no `getaddrinfo` yet.
 
 `design.md` §11 is the open-items list, and `emacs.md` costs the whole
 set out against one real program.

@@ -85,3 +85,5 @@ system/irqs
 apps/fsstress
 system/nvram
 libc/test/inettest
+apps/fbmap
+apps/udpwait

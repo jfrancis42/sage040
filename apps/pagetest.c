@@ -21,9 +21,9 @@
  *                        memory and swap together could not supply
  *   pagetest oom MB      two processes each map MB -- each allowed, since
  *                        neither's untouched pages count against the
- *                        other -- and then touch all of it: more than
- *                        there is, so somebody must be killed, and the
- *                        machine must not be
+ *                        other -- touch half, meet, and then touch the
+ *                        rest: more than there is, so somebody must be
+ *                        killed, and the machine must not be
  *   pagetest park MB S   fill MB, sleep S seconds, then check it -- a
  *                        process with pages out, for swapoff to meet
  *   pagetest forkswap MB fill MB, fork, and have both check every page:
@@ -433,25 +433,46 @@ static void hog(void)
 
 static void oom(u32 mb)
 {
-    int ready[2], pid, st;
+    int ready[2], go[2], pid, st;
     u8 *p;
     u32 i;
     char c;
 
-    pipe(ready);
+    pipe(ready);                /* child -> parent */
+    pipe(go);                   /* parent -> child */
     pid = fork();
+    /* Only the ends each side uses, so that one of them being killed
+     * is end-of-file to the other rather than a wait for ever. */
+    if (pid == 0) {
+        close(ready[0]);
+        close(go[1]);
+    } else {
+        close(ready[1]);
+        close(go[0]);
+    }
     p = mmap(0, mb * MB, PROT_READ | PROT_WRITE, ANON, -1, 0);
     if (p == MAP_FAILED) {
         say("mmap refused, pid", (u32)getpid());
         exit(4);
     }
-    /* Both mapped before either touches, so both were promised it. */
+    /*
+     * Both touch half, meet, then touch the rest. Without the meeting
+     * one could touch everything and exit before the other began --
+     * it happened, one run in six -- and then nobody runs out of
+     * memory at all. Half each fits; all of both cannot, so once both
+     * are past the meeting somebody has to be killed.
+     */
+    for (i = 0; i < mb * MB / 2; i += PAGE) {
+        p[i] = 1;
+    }
     if (pid == 0) {
-        write(ready[1], "c", 1);
+        write(ready[1], "h", 1);
+        read(go[0], &c, 1);
     } else {
         read(ready[0], &c, 1);
+        write(go[1], "g", 1);
     }
-    for (i = 0; i < mb * MB; i += PAGE) {
+    for (; i < mb * MB; i += PAGE) {
         p[i] = 1;
     }
     if (pid == 0) {

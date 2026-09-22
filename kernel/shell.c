@@ -251,8 +251,19 @@ static void err_puts(const char *s)
     sys_write(STDERR_FILENO, s, strlen(s));
 }
 
+/*
+ * A builtin's exit status. A builtin that reports an error through the
+ * two functions below has failed, and its status is 1; one that sets
+ * last_status itself (test) says so in status_set. It used to be that
+ * no builtin set a status at all -- "cat /nope; echo $?" said 0 -- which
+ * nothing noticed until && and || came to depend on it.
+ */
+static int builtin_failed;
+static int status_set;
+
 static void err_report(const char *what, int code)
 {
+    builtin_failed = 1;
     err_puts(what);
     err_puts(": ");
     err_puts(strerror(code));
@@ -261,6 +272,7 @@ static void err_report(const char *what, int code)
 
 static void err_usage(const char *usage)
 {
+    builtin_failed = 1;
     err_puts("usage: ");
     err_puts(usage);
     err_puts("\n");
@@ -1872,6 +1884,7 @@ static int run_builtin(int argc)
             r = strcmp(argv[1], argv[3]) != 0 ? 0 : 1;
         }
         last_status = r;
+        status_set = 1;
         return 1;
 
     } else if (strcmp(argv[0], "exit") == 0) {
@@ -2260,6 +2273,106 @@ close_pipes:
     sys_jobctl(JOBCTL_REAP, 0, 0);
 }
 
+/*
+ * A COMMAND LIST: commands joined by ";" (one after the other), "&&"
+ * (the next only if this one succeeded), "||" (only if it failed), and
+ * a lone "&" (this one in the background, and on to the next). && and
+ * || bind equally and left to right, as in sh, so "a && b || c" runs c
+ * if either a or b failed -- which is what the status of the last
+ * command run says, with no nesting needed.
+ *
+ * Nothing inside quotes, or after a backslash, separates. A lone & is
+ * a separator only as a whole word with more after it: "2>&1" is a
+ * redirection, "a&b" is a file name here, and a trailing & belongs to
+ * its command, as it always did.
+ *
+ * Each command is expanded when it runs, not before, so "false; echo $?"
+ * sees the status of false.
+ */
+
+static int more_after(const char *p)
+{
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    return *p != '\0';
+}
+
+static void run_list(char *line)
+{
+    char seg[LINE_MAX];
+    const char *p = line, *start = line;
+    char q = 0;
+    int cond = 0;               /* 0 always, 1 after success, 2 after failure */
+
+    for (;;) {
+        char c = *p;
+        int end = 0, next = 0, amp = 0, adv = 1;
+
+        if (c == '\0') {
+            end = 1;
+            adv = 0;
+        } else if (q) {
+            if (c == q) {
+                q = 0;
+            } else if (c == '\\' && q == '"' && p[1]) {
+                p++;
+            }
+        } else if (c == '\'' || c == '"') {
+            q = c;
+        } else if (c == '\\' && p[1]) {
+            p++;
+        } else if (c == ';') {
+            end = 1;
+        } else if (c == '&' && p[1] == '&') {
+            end = 1;
+            next = 1;
+            adv = 2;
+        } else if (c == '|' && p[1] == '|') {
+            end = 1;
+            next = 2;
+            adv = 2;
+        } else if (c == '&' && (p == line || p[-1] == ' ' || p[-1] == '\t') &&
+                   (p[1] == ' ' || p[1] == '\t') && more_after(p + 1)) {
+            end = 1;
+            amp = 1;
+        }
+
+        if (end) {
+            u32 n = (u32)(p - start);
+            u32 a = 0, b;
+
+            if (n > sizeof(seg) - 3) {
+                n = sizeof(seg) - 3;
+            }
+            memcpy(seg, start, n);
+            b = n;
+            if (amp) {
+                seg[b++] = ' ';
+                seg[b++] = '&';
+            }
+            seg[b] = '\0';
+            while (seg[a] == ' ' || seg[a] == '\t') {
+                a++;
+            }
+            if (seg[a] && (cond == 0 || (cond == 1 && last_status == 0) ||
+                           (cond == 2 && last_status != 0))) {
+                strncpy(cmdline_saved, seg + a, sizeof(cmdline_saved) - 1);
+                cmdline_saved[sizeof(cmdline_saved) - 1] = '\0';
+                run_command(seg + a);
+            }
+            cond = next;
+            if (c == '\0') {
+                break;
+            }
+            p += adv;
+            start = p;
+            continue;
+        }
+        p++;
+    }
+}
+
 static void run_command(char *cmdline)
 {
     struct redirs redir;
@@ -2291,7 +2404,13 @@ static void run_command(char *cmdline)
             return;
         }
 
-        if (!run_builtin(argc)) {
+        builtin_failed = 0;
+        status_set = 0;
+        if (run_builtin(argc)) {
+            if (!status_set) {
+                last_status = builtin_failed ? 1 : 0;
+            }
+        } else {
             /*
              * Not a builtin, so look for a program of that name. This is
              * where a real shell would walk $PATH; there is one directory
@@ -2565,7 +2684,7 @@ static int run_script(const char *path)
                         }
                     }
                     last_status = 0;
-                    run_command(sub);
+                    run_list(sub);
                     cond = (last_status == 0);
                 }
                 depth++;
@@ -2586,7 +2705,7 @@ static int run_script(const char *path)
             work[sizeof(work) - 1] = '\0';
             strncpy(cmdline_saved, work, sizeof(cmdline_saved) - 1);
             cmdline_saved[sizeof(cmdline_saved) - 1] = '\0';
-            run_command(work);
+            run_list(work);
         }
     }
 
@@ -2669,7 +2788,7 @@ static void interactive(void)
         cmdline_saved[sizeof(cmdline_saved) - 1] = '\0';
 
         edit_history_add(line);
-        run_command(line);
+        run_list(line);
     }
 }
 
@@ -2752,7 +2871,7 @@ int shell_main(int argc, char **args, char **envp)
         line[sizeof(line) - 1] = '\0';
         strncpy(cmdline_saved, line, sizeof(cmdline_saved) - 1);
         cmdline_saved[sizeof(cmdline_saved) - 1] = '\0';
-        run_command(line);
+        run_list(line);
         out_flush();
         return last_status;
     }

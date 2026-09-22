@@ -18,6 +18,17 @@
 static struct netif iface;
 
 /*
+ * THE LOOPBACK, lo. Frames never leave the machine -- net_loopback()
+ * queues them and net_poll() delivers them -- but it is an interface
+ * all the same: an address, counters, and a state that can be down, in
+ * which case 127/8 is unreachable, as it is on Linux. The address
+ * cannot be changed.
+ */
+static struct netif lo_if = {
+    0, { 0 }, IP4(127, 0, 0, 1), IP4(255, 0, 0, 0), 0, 1, 0, 0, 0, 0
+};
+
+/*
  * The receive ring.
  *
  * Frames are moved off the card into here by net_drain(), from the
@@ -65,6 +76,11 @@ static struct waitq net_waitq;
 struct netif *net_if(void)
 {
     return &iface;
+}
+
+struct netif *net_lo(void)
+{
+    return &lo_if;
 }
 
 int net_init(void)
@@ -156,27 +172,31 @@ int net_tx(const void *frame, u32 len)
  * and a kernel that printed a line for each would be a kernel nobody
  * could use.
  */
-static void net_input(const void *frame, u32 len)
+static void net_input(struct netif *in, const void *frame, u32 len)
 {
     const struct ethhdr *e = frame;
 
     if (len < ETH_HDR_LEN) {
-        iface.rx_dropped++;
+        in->rx_dropped++;
         return;
     }
-    iface.rx_packets++;
+    in->rx_packets++;
 
     switch (e->type) {
     case ETH_P_ARP:
+        if (in == &lo_if) {
+            in->rx_dropped++;   /* nothing to resolve on a loopback */
+            break;
+        }
         arp_input(frame, len);
         break;
 
     case ETH_P_IP:
-        ip_input(frame, len);
+        ip_input(frame, len, in == &lo_if);
         break;
 
     default:
-        iface.rx_dropped++;
+        in->rx_dropped++;
         break;
     }
 }
@@ -226,7 +246,11 @@ int net_loopback(const void *frame, u32 len)
 {
     u32 next = (lo_head + 1) % LO_RING;
 
+    if (!lo_if.up) {
+        return -ENETUNREACH;    /* as Linux says with lo down */
+    }
     if (next == lo_tail) {
+        lo_if.tx_errors++;
         return -ENOBUFS;        /* a real interface drops too */
     }
     if (len > NET_MTU) {
@@ -235,6 +259,7 @@ int net_loopback(const void *frame, u32 len)
     memcpy(lo_ring[lo_head].data, frame, len);
     lo_ring[lo_head].len = len;
     lo_head = next;
+    lo_if.tx_packets++;
     wake_all(&net_waitq);
     return 0;
 }
@@ -255,7 +280,7 @@ int net_poll(void)
             u32 t = lo_tail;
 
             lo_tail = (lo_tail + 1) % LO_RING;
-            net_input(lo_ring[t].data, lo_ring[t].len);
+            net_input(&lo_if, lo_ring[t].data, lo_ring[t].len);
             handled++;
         }
     }
@@ -267,7 +292,7 @@ int net_poll(void)
      * not.
      */
     while (handled < RX_RING && ring_tail != ring_head) {
-        net_input(ring[ring_tail].data, ring[ring_tail].len);
+        net_input(&iface, ring[ring_tail].data, ring[ring_tail].len);
         ring_tail = (ring_tail + 1) % RX_RING;
         handled++;
     }

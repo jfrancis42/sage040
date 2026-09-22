@@ -1445,6 +1445,112 @@ timeout that times out.
 **Negative controls**, all caught: the timeval passed through
 unconverted (2); no cache (4); no ID check on replies (2).
 
+### Notes for later: the stack, the framebuffer, the shell — done
+
+**Kernel stack high-water mark.** Every kernel stack is painted with a
+pattern when a task is made, and `task_reap()` measures how much of it
+was overwritten. `KSTAT_STACK` reports the deepest ever and which task
+reached it, and `irqs` prints it. After devtest's whole session --
+the stress run, the limits, a reset -- it is **4,104 of 8,192 bytes, by
+sh**; devtest fails if it passes three quarters.
+
+**`mmap` of `/dev/fb0`.** `struct file_ops` has an `mmap` member, last,
+through which a device names the physical page behind an offset;
+`fb.c` answers from the SM501's video memory. `do_mmap` maps those
+pages as themselves, uncached and shared, allocating nothing.
+Nothing had to mark them as not-owned: `pmm_free` already ignores
+an address outside its pool, reclaim already skips a page with no
+reference count, and `vm_clone` now hands the child the same device
+page instead of copying it. `FBIO_GETINFO` gained `mem_size`,
+`draw_offset` and `show_offset`.
+
+**Tests** (devtest, `apps/fbmap.c`): the mapping costs 9 pages of page
+tables for 16 MB and none of RAM; the page behind it is 0xf0000000;
+what the program and its forked child wrote reads back; munmap gives
+back nothing. Then a screendump through the monitor, read on the host:
+red where the parent drew, green where the child did, black between.
+
+**Found:** the first screendump was black. Not a mapping fault -- the
+console was on the screen, and fbmap's own ten lines of results
+scrolled the boxes off the top. devtest takes the console off the
+screen (`console fbcon off`) for that one program.
+
+**Negative controls**, all caught by devtest:
+
+| control | failures |
+|---|---|
+| `vm_clone` copies device pages, as it would RAM | 3 -- the child's green never reached the screen |
+| `fb_mmap` refuses | 4 |
+| a page of RAM mapped where the device's should be | 6 -- the cost, the physical address, and the screen |
+
+**The shell's command lists.** `;`, `&&`, `||`, and `&` between
+commands, outside quotes, with `2>&1` still a redirection. Everywhere
+the shell reads a command: the prompt, scripts, `if`, `sh -c`.
+**Found:** builtins never set `$?`, so `cd /nowhere && echo yes`
+printed yes. A builtin that reports an error now returns 1, `test`
+returns its answer, and everything else 0. Four harnesses had been
+checking `$?` after a builtin and so were passing on the stale value;
+they now test `cmd; echo X=$?` on one line. edittest has seven checks
+of the lists; the controls (no list parsing; builtins not setting
+`$?`) fail them.
+
+### A loopback interface — done
+
+127.0.0.1 has worked since task 10, but as a special case in
+`ip_output` with no interface behind it: nothing to list, nothing to
+count, nothing to take down. It is **`lo`** now -- 127.0.0.1/8, its own
+RX/TX counters, up or down -- beside `eth0`. `NETCTL_INFO`, `NETCTL_UP`
+and `NETCTL_DOWN` take an interface number (0 eth0, 1 lo; UP and DOWN
+had been defined and never implemented), `struct netinfo` gained
+`loopback`, and `ifconfig` shows every interface, or `ifconfig NAME`
+one, and `ifconfig NAME up|down`. lo exists with no card at all, and
+ping no longer refuses to run without one. A down lo makes 127/8
+`ENETUNREACH`, and ping now says why a packet was never sent rather
+than calling it "no reply".
+
+**Found: 127/8 was accepted from the wire.** `ip_input` took any
+datagram addressed to 127/8 whatever it arrived on, so anything on the
+LAN could reach a service bound to 127.0.0.1 by sending a frame to
+this machine's MAC. Martians -- 127/8 as destination OR source, off
+the wire -- are dropped and counted now; `ip_input` is told whether a
+frame came off lo.
+
+**Tests:** `kernel/lotest.sh`, 22 checks, on a wire the test owns:
+QEMU's `-nic socket,udp=...` carries each frame as a UDP datagram, so
+`kernel/wire.py` both captures everything the guest sends and puts
+hand-made frames on the wire. lo listed, addressed and counted exactly
+(6 each way for three pings; 4 for two pings of the machine's own
+address); eth0 sent nothing for any of it and no frame with a 127/8
+address appeared on the wire -- next to a ping of a neighbour whose ARP
+DID appear, so the capture is known to be looking; lo down and up;
+and each martian beside an ordinary datagram sent the same way that
+arrives (`apps/udpwait`).
+
+**Negative controls**, all caught:
+
+| control | failures |
+|---|---|
+| no martian filter | 3 |
+| lo's sends not counted | 1 |
+| lo down ignored | 2 |
+| the machine's own address sent to the wire | 3 |
+| lo's frames counted as eth0's | 2 |
+
+### Regression tests: two flakes in pagetest's out-of-memory check
+
+Found by a full-suite run, and both in the test, not the kernel:
+- **"every page came back" measured too soon** when the kernel chose
+  to kill the PARENT: its child, orphaned half way through touching
+  48 MB, was still running when `free` ran (12,344 pages used, 4 jobs).
+  The harness now polls `free` until the job count is back to where it
+  started. Confirmed by forcing the case: every parent-killed run gave
+  back every page within two polls.
+- **One run in six nobody ran out of memory at all** (`OOM=5`): the
+  child touched all of its memory and exited before the parent began,
+  so the two never overlapped. The processes now touch half, meet
+  through a pair of pipes, and touch the rest -- past the meeting both
+  cannot finish -- and 8 runs in 8 killed one of them.
+
 ## Decisions worth knowing about
 
 - **RAM 64 MB, disk 512 MB**, single-sourced in `machine.conf`. The
@@ -1457,17 +1563,11 @@ unconverted (2); no cache (4); no ID check on replies (2).
 
 ## Notes for later
 
-- **Kernel stack use is unmeasured.** `do_syscall`'s frame was 1,840
-  bytes with `do_spawn` inlined; task 6 cut it to 624, against an 8 KB
-  stack. A high-water mark (paint the stack, check at exit) would say
-  how much margin there is.
-- **`mmap` of `/dev/fb0`.** `mmap` exists; missing are a `file_ops` hook
-  through which a device offers physical pages, and a descriptor mark
-  for pages *not* owned so `vm_destroy` never hands VRAM to the
-  allocator. Three documents still give missing `mmap` as the reason. Not
-  on the editor's path.
-- **The shell has no `;`, `&&` or `||`.** Pipelines and redirection
-  work; command lists do not, so `a; b` passes `; b` to `a`.
+- **Kernel stack use -- measured.** 4,104 of 8,192 bytes at most, by
+  the shell, after devtest's whole session. Logged above.
+- **`mmap` of `/dev/fb0` -- done.** Logged above.
+- **The shell's `;`, `&&` and `||` -- done.** Logged above.
+- **A loopback interface, `lo` -- done.** Logged above.
 - **Names for picolibc programs -- done.** `libc/net/`: the socket
   headers and calls, `inet_*`, and a resolver with `getaddrinfo` and a
   per-process cache that honours TTLs (see `libc/README.md`). lib/ulib's

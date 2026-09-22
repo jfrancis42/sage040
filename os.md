@@ -471,8 +471,9 @@ made it legal since (task 14); the name stayed.
 `tty.c` is a terminal, not a driver. `/dev/console` has a list of input
 sources and a list of output sinks. `ns16550.c` is a raw serial port
 (`/dev/ttyS0`) registered as both; `fbcon.c` is a sink; the keyboard is a
-source. `console fb` moves the shell to the screen, `console serial` brings
-it back, `console both` mirrors.
+source. `console` lists the sinks and `console NAME on|off` switches one --
+`console fbcon off` takes output off the screen, `console ttyS0 off` off
+the serial line. Turning off the last one is refused.
 
 Echo goes to the *sinks*, never back to the source. Otherwise output on the
 screen means typing blind.

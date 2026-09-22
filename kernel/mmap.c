@@ -22,14 +22,19 @@
  * reason. brk refuses to grow over a mapped page, and placement never
  * chooses a page below the current break.
  *
- * FILE MAPPINGS ARE COPIES, read at mmap() time. There is no demand
- * paging (progress.md task 21), so there is nothing that could fault a
- * page in later. MAP_PRIVATE is therefore exact. MAP_SHARED is accepted
- * READ-ONLY and refused with PROT_WRITE: a read-only shared mapping
- * differs from the real thing only in not seeing somebody else's later
- * writes to the file, while a writable one would silently not write the
- * file at all -- and a shared mapping that does not share is the kind of
- * lie that costs somebody a day.
+ * FOUR KINDS OF PAGE. An anonymous mapping is lazy: its pages are
+ * made on first touch (vm_fault, task 21). A file mapped privately and
+ * read-only -- a shared library's text -- is the text cache's pages,
+ * shared by everyone who maps the same file. A device that is memory,
+ * /dev/fb0, is mapped as its own physical pages. Anything else from a
+ * file is a COPY, read in at mmap() time: file pages are not demand
+ * paged, so nothing could fault them in later. MAP_PRIVATE is therefore
+ * exact. MAP_SHARED of a file is accepted READ-ONLY and refused with
+ * PROT_WRITE: a read-only shared mapping differs from the real thing
+ * only in not seeing somebody else's later writes to the file, while a
+ * writable one would silently not write the file at all -- and a shared
+ * mapping that does not share is the kind of lie that costs somebody a
+ * day. The framebuffer is the exception because it really is shared.
  */
 #include "mmap.h"
 #include "vm.h"
@@ -141,6 +146,7 @@ s32 do_mmap(u32 addr, u32 len, u32 prot, u32 flags, int fd, u32 offset)
     u32 type = flags & (MAP_SHARED | MAP_PRIVATE);
     int anon = (flags & MAP_ANONYMOUS) != 0;
     int fixed = (flags & (MAP_FIXED | MAP_FIXED_NOREPLACE)) != 0;
+    int is_dev = 0;             /* a device that is memory: /dev/fb0 */
     u32 va, pages;
     int err;
 
@@ -166,10 +172,15 @@ s32 do_mmap(u32 addr, u32 len, u32 prot, u32 flags, int fd, u32 offset)
         if (err < 0) {
             return err;         /* -EBADF for a descriptor not open */
         }
-        if (!S_ISREG(st.st_mode)) {
+        {
+            struct file *f = fd_get(fd);
+
+            is_dev = f && f->ops && f->ops->mmap;
+        }
+        if (!S_ISREG(st.st_mode) && !is_dev) {
             return -ENODEV;     /* a terminal, a socket: nothing to copy */
         }
-        if (type == MAP_SHARED && (prot & PROT_WRITE)) {
+        if (type == MAP_SHARED && (prot & PROT_WRITE) && !is_dev) {
             return -ENODEV;
         }
     }
@@ -202,13 +213,39 @@ s32 do_mmap(u32 addr, u32 len, u32 prot, u32 flags, int fd, u32 offset)
      * asked is whether they could be had, memory and swap together. A
      * file's pages are read in at once, so they must be there.
      */
-    if (anon ? !vm_commit_ok(pages) : !enough_memory(pages)) {
+    if (!is_dev && (anon ? !vm_commit_ok(pages) : !enough_memory(pages))) {
         return -ENOMEM;
     }
 
     /* MAP_FIXED discards whatever was there, which is its definition. */
     for (va = addr; va < addr + len; va += PAGE_SIZE) {
         vm_unmap(as, va);
+    }
+
+    /*
+     * A DEVICE that is memory -- /dev/fb0 -- is mapped as itself: its
+     * own physical pages, shared by definition, uncached. Nothing is
+     * allocated and nothing is freed: the pages are not RAM, and the
+     * page allocator ignores them when they are unmapped (vm.c). A
+     * fork shares them too (vm_clone).
+     */
+    if (is_dev) {
+        struct file *f = fd_get(fd);
+
+        for (va = addr; va < addr + len; va += PAGE_SIZE) {
+            u32 pa;
+
+            if (f->ops->mmap(f, offset + (va - addr), &pa) < 0 ||
+                !vm_map(as, va, pa, VM_USER | VM_NOCACHE |
+                                    ((prot & PROT_WRITE) ? VM_WRITE : 0))) {
+                while (va > addr) {
+                    va -= PAGE_SIZE;
+                    vm_unmap(as, va);
+                }
+                return -EINVAL;
+            }
+        }
+        return (s32)addr;
     }
 
     /*

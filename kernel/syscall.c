@@ -1185,10 +1185,16 @@ static int do_netctl(int cmd, u32 arg, u32 p)
         struct netinfo out;
 
         memset(&out, 0, sizeof(out));
-        if (!n->dev) {
+        if (arg == 1) {
+            n = net_lo();
+            strncpy(out.name, "lo", sizeof(out.name) - 1);
+            out.loopback = 1;
+        } else if (arg != 0 || !n->dev) {
             return -ENODEV;
+        } else {
+            strncpy(out.name, n->dev->name, sizeof(out.name) - 1);
+            out.dns = dhcp_dns();
         }
-        strncpy(out.name, n->dev->name, sizeof(out.name) - 1);
         memcpy(out.mac, n->mac, 6);
         out.ip = n->ip;
         out.netmask = n->netmask;
@@ -1198,9 +1204,20 @@ static int do_netctl(int cmd, u32 arg, u32 p)
         out.tx_packets = n->tx_packets;
         out.rx_dropped = n->rx_dropped;
         out.tx_errors = n->tx_errors;
-        out.dns = dhcp_dns();
         return store(p, &out, sizeof(out));
     }
+
+    case NETCTL_UP:
+    case NETCTL_DOWN:
+        if (arg == 1) {
+            n = net_lo();
+        } else if (arg != 0 || !n->dev) {
+            return -ENODEV;
+        }
+        /* Down, a card's frames are left on it and its sends refused
+         * (net_drain, net_tx); lo's sends are refused (net_loopback). */
+        n->up = cmd == NETCTL_UP;
+        return 0;
 
     case NETCTL_SETADDR: {
         struct netaddr a;
@@ -1226,9 +1243,7 @@ static int do_netctl(int cmd, u32 arg, u32 p)
         u32 rtt = 0;
         int err;
 
-        if (!n->dev) {
-            return -ENODEV;
-        }
+        /* No card is no reason to refuse: 127.0.0.1 needs none. */
         err = icmp_ping(arg, 2000, &rtt);
         if (err < 0) {
             return err;
@@ -1806,6 +1821,14 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
             is.tty_overruns = tty_overruns();
             ata_counts(&is.disk_slept, &is.disk_polled);
             return store(a3, &is, a2 < sizeof(is) ? a2 : sizeof(is));
+        }
+        if (a1 == KSTAT_STACK) {
+            struct kstackstats ks;
+
+            memset(&ks, 0, sizeof(ks));
+            task_kstack_stats(&ks.size, &ks.max_used, ks.max_task,
+                              sizeof(ks.max_task));
+            return store(a3, &ks, a2 < sizeof(ks) ? a2 : sizeof(ks));
         }
         if (a1 == KSTAT_DISK_DELAY) {
             ata_set_delay(a2 > 1000 ? 1000 : a2);

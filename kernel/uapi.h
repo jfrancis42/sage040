@@ -202,6 +202,15 @@ struct fb_info {
     u32 bpp;
     u32 pitch;
     char name[16];
+    /*
+     * For a program that maps /dev/fb0 (mmap, offset 0 = the start of
+     * video memory): how much there is, where drawing goes, and where
+     * the display is showing. The two differ while double buffering is
+     * on; FBIO_FLIP swaps them. FBIO_DOUBLE 0 makes them one.
+     */
+    u32 mem_size;
+    u32 draw_offset;
+    u32 show_offset;
 };
 
 struct fb_mode {
@@ -793,10 +802,18 @@ struct fsck_report {
  */
 #define __NR_kstat     1005
 #define KSTAT_IRQ      1
+#define KSTAT_STACK    3        /* kstat(KSTAT_STACK, size, &kstackstats) */
 #define KSTAT_DISK_DELAY 2      /* kstat(KSTAT_DISK_DELAY, ms, 0): a test
                                  * knob -- every disk request sleeps ms
                                  * first, to widen the windows in which
                                  * a task is asleep inside the filesystem */
+
+/* How deep the kernel stacks have gone: measured by painting them. */
+struct kstackstats {
+    u32  size;                  /* bytes in a task's kernel stack        */
+    u32  max_used;              /* the most any task has used            */
+    char max_task[16];          /* and which task that was               */
+};
 
 struct irqstats {
     u32 count[16];
@@ -866,15 +883,17 @@ struct pageinfo {
  * they do not yet. When they do, this becomes those ioctls and the
  * shell's commands keep their shape.
  */
-#define NETCTL_INFO    0        /* p = struct netinfo *               */
+/* arg names the interface: 0 the card's (eth0), 1 the loopback (lo).
+ * -ENODEV past the last, or for 0 on a machine with no card. */
+#define NETCTL_INFO    0        /* arg = interface, p = struct netinfo * */
 #define NETCTL_SETADDR 1        /* p = struct netaddr *               */
 #define NETCTL_ARPING  2        /* arg = IPv4 address, host order     */
 #define NETCTL_ARP     3        /* arg = index, p = struct arpinfo *  */
 #define NETCTL_PING    6        /* arg = address; p = u32 *rtt_ms     */
 #define NETCTL_CONN    8        /* arg = index, p = struct conninfo * */
 #define NETCTL_DHCP    7        /* p = struct netaddr * (filled in)   */
-#define NETCTL_UP      4
-#define NETCTL_DOWN    5
+#define NETCTL_UP      4        /* arg = interface                    */
+#define NETCTL_DOWN    5        /* arg = interface                    */
 /*
  * For tests and comparisons, not for use: drop every Nth data segment a
  * TCP connection sends over loopback (1 drops every segment, empty ones
@@ -897,6 +916,7 @@ struct netinfo {
     u32  rx_dropped;
     u32  tx_errors;
     u32  dns;                   /* DHCP's name server, 0 if none      */
+    u32  loopback;              /* 1 for lo                           */
 };
 
 struct netaddr {

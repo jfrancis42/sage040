@@ -261,6 +261,7 @@ static const struct file_ops nv_ops = {
     nv_fstat,
     0,                          /* poll: the default; see dev.h */
     0,                          /* truncate: it is the size it is */
+    0,                          /* mmap: not memory to map */
 };
 
 static struct chardev nv_dev = {

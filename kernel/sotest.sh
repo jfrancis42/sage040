@@ -149,11 +149,9 @@ run 'export LD_TRACE_LOADED_OBJECTS=1' trset
 run '/sotest' trace
 run 'unset LD_TRACE_LOADED_OBJECTS' trunset
 run 'cp /libsot3.so /lib/libsot.so' swap3
-run '/sotest value' nosym
-run 'echo SYM-RC=$?' symrc
+run '/sotest value; echo SYM-RC=$?' nosym
 run 'rm /lib/libsot.so' rmlib
-run '/sotest value' nolib
-run 'echo LIB-RC=$?' librc
+run '/sotest value; echo LIB-RC=$?' nolib
 run 'mv /lib/ld.so /lib/ld.bak' mvld
 run '/sotest value' nold
 run 'mv /lib/ld.bak /lib/ld.so' mvback
@@ -217,12 +215,12 @@ check "LD_TRACE_LOADED_OBJECTS lists both libraries" $?
 ! between '/sotest' trace | grep -q "sotest: two shared"
 check "  and does not run the program" $?
 between '/sotest value' nosym | grep -qx "ld.so: undefined symbol: sot_bump" &&
-    between 'echo SYM-RC' symrc | grep -qx "SYM-RC=127"
+    between '/sotest value' nosym | grep -qx "SYM-RC=127"
 check "a symbol no library defines is refused at start, status 127" $?
 ! between '/sotest value' nosym | grep -q "sotest: value"
 check "  before main" $?
 between '/sotest value' nolib | grep -qx "ld.so: cannot find library: libsot.so" &&
-    between 'echo LIB-RC' librc | grep -qx "LIB-RC=127"
+    between '/sotest value' nolib | grep -qx "LIB-RC=127"
 check "a missing library is refused, status 127" $?
 between '/sotest value' nold | grep -q "cannot access a needed shared library"
 check "a missing ld.so: the exec fails with ELIBACC" $?

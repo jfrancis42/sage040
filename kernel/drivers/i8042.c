@@ -392,6 +392,7 @@ static const struct file_ops kbd_ops = {
     kbd_fstat,
     0,                          /* poll: the default; see dev.h */
     0,                          /* truncate: nothing to truncate */
+    0,                          /* mmap: not memory to map */
 };
 
 static struct chardev kbd_dev = {

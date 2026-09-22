@@ -206,6 +206,15 @@ static int sm501_flip(struct fbdev *f)
  * points drawing at whatever is currently visible, so the text console
  * does not have to know which of the two that is.
  */
+/* Where drawing goes, and where the panel is showing: one and the same
+ * when double buffering is off. */
+static void sm501_offsets(struct fbdev *f, u32 *draw, u32 *show)
+{
+    (void)f;
+    *draw = back;
+    *show = front;
+}
+
 static int sm501_setdouble(struct fbdev *f, int on)
 {
     (void)f;
@@ -333,6 +342,8 @@ static struct fbdev sm501_fb = {
     sm501_setdouble,
     sm501_sync,
     sm501_palette,
+    SM501_VRAM, SM501_VRAM_SIZE,        /* for mmap of /dev/fb0 */
+    sm501_offsets,
     0,
     0
 };

@@ -484,6 +484,7 @@ static int reply_ioctl(struct file *f, u32 request, u32 arg)
 static const struct file_ops reply_ops = {
     reply_read, 0, 0, reply_ioctl, 0, 0, 0,
     0,                          /* truncate: nothing to truncate */
+    0,                          /* mmap: not memory to map */
 };
 
 /* ---------------------------------------------------------------- */
@@ -1252,6 +1253,7 @@ static const struct file_ops fbcon_ops = {
     fbcon_fstat,
     0,                          /* poll: the default; see dev.h */
     0,                          /* truncate: nothing to truncate */
+    0,                          /* mmap: not memory to map */
 };
 
 /*
@@ -1307,6 +1309,7 @@ static const struct file_ops vcsa_ops = {
     fbcon_fstat,
     0,
     0,                          /* truncate: nothing to truncate */
+    0,                          /* mmap: not memory to map */
 };
 
 int fbcon_rows(void)

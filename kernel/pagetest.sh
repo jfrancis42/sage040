@@ -126,6 +126,11 @@ between() {
         f { buf = buf $0 "\n" }' "$3"
 }
 
+# The "N job(s)" figure from `free`, within a section.
+jobs_of() {
+    between free "$1" "$2" | sed -n 's/.* \([0-9]*\) job(s)$/\1/p'
+}
+
 # The "used" figure from `free`, within a section.
 used_of() {
     between free "$1" "$2" | awk '$1 == "used" { print $2; exit }'
@@ -154,18 +159,28 @@ boot "$RAM_MB" 16 0
 run 'free' free0
 run '/PAGETEST lazy' lazy
 run '/PAGETEST cow' cow
-run '/PAGETEST hog' hog
-run 'echo HOG=$?' hogrc
-run "/PAGETEST oom $(( RAM_MB * 3 / 4 ))" oom
-run 'echo OOM=$?' oomrc
+run '/PAGETEST hog; echo HOG=$?' hog
+run "/PAGETEST oom $(( RAM_MB * 3 / 4 )); echo OOM=\$?" oom
+# When the PARENT is the one killed, its child is orphaned mid-way
+# through touching its memory, and still running when the shell prompts
+# again -- so "every page came back" is only a fair question once the
+# job count is back where it started. If the orphan never goes, the
+# check below fails, as it should.
+tr -d '\r' < "$LOG" > "$A"
+j0=$(jobs_of free0 "$A")
+for k in $(seq 1 20); do
+    run 'free' "freew$k"
+    tr -d '\r' < "$LOG" > "$A"
+    [ "$(jobs_of "freew$k" "$A")" = "$j0" ] && break
+    sleep 0.5
+done
 run 'free' free1
 finish "$A"
 
 # --- the second: 12 MB, and swap --------------------------------------
 boot 12 48 24
 run 'free' sfree0
-run 'swapon /SWAP' swapon
-run 'echo SWAPON=$?' swaponrc
+run 'swapon /SWAP; echo SWAPON=$?' swapon
 run 'free' sfree1
 run '/PAGETEST fill 16' fill
 run '/PAGETEST pair 8' pair
@@ -182,14 +197,12 @@ run 'cp /PAGETEST /SWAP' cp
 run 'mv /SWAP /S2' mv
 run '/PAGETEST park 14 12 &' park
 sleep 10
-run 'swapoff /SWAP' off1
-run 'echo OFF1=$?' off1rc
+run 'swapoff /SWAP; echo OFF1=$?' off1
 # Its result, and then its exit: it prints a moment before its pages
 # are given back, so what is waited for is the swap file being empty.
 wait_for "park: pages that came back wrong"
 run '/PAGETEST drained' drained
-run 'swapoff /SWAP' off2
-run 'echo OFF2=$?' off2rc
+run 'swapoff /SWAP; echo OFF2=$?' off2
 run 'free' sfree2
 run '/PAGETEST stats' stats
 finish "$B"
@@ -199,11 +212,11 @@ grade '/PAGETEST lazy' lazy "$A"
 grade '/PAGETEST cow' cow "$A"
 between '/PAGETEST hog' hog "$A" | grep -q "mmap refused after MB"
 check "mmap refuses what memory could never supply" $?
-between 'echo HOG' hogrc "$A" | grep -qx "HOG=3"
+between '/PAGETEST hog' hog "$A" | grep -qx "HOG=3"
 check "  and says so, rather than the program being killed" $?
 between '/PAGETEST oom' oom "$A" | grep -q "^out of memory at 0x[0-9a-f]*: killed"
 check "memory promised twice over and then touched: out of memory, killed" $?
-between 'echo OOM' oomrc "$A" | grep -qE "^OOM=(0|137)$"
+between '/PAGETEST oom' oom "$A" | grep -qE "^OOM=(0|137)$"
 check "  by SIGKILL, or the child was and the parent survived" $?
 u0=$(used_of free0 "$A"); u1=$(used_of free1 "$A")
 echo "  used pages: before=${u0:-?} after=${u1:-?}"
@@ -213,7 +226,7 @@ check "  and every page came back: used before and after the same" $?
 check "no panic, no kernel exception" $?
 
 echo "=== checks: swap ==="
-between 'echo SWAPON' swaponrc "$B" | grep -qx "SWAPON=0"
+between 'swapon /SWAP' swapon "$B" | grep -qx "SWAPON=0"
 check "swapon" $?
 between free sfree1 "$B" | grep -qE '^swap +6144 +24576 +0 pages in use$'
 check "  and free shows 24 MB of it, none used" $?
@@ -230,14 +243,14 @@ between 'cp /PAGETEST /SWAP' cp "$B" | grep -q "text file busy"
 check "  nor overwritten" $?
 between 'mv /SWAP' mv "$B" | grep -q "text file busy"
 check "  nor moved" $?
-between 'swapoff /SWAP' off1 "$B" | grep -q "not enough memory" &&
-    between 'echo OFF1' off1rc "$B" | grep -qx "OFF1=1"
+between 'swapoff /SWAP; echo OFF1=$?' off1 "$B" | grep -q "not enough memory" &&
+    between 'swapoff /SWAP; echo OFF1=$?' off1 "$B" | grep -qx "OFF1=1"
 check "swapoff with more out than memory can hold: refused" $?
 grep -q "park: pages that came back wrong: 0" "$B"
 check "  and the parked process's pages are all still intact" $?
 between '/PAGETEST drained' drained "$B" | grep -qx "pagetest: swap drained"
 check "  and when it exits, its slots are given back" $?
-between 'echo OFF2' off2rc "$B" | grep -qx "OFF2=0"
+between 'swapoff /SWAP; echo OFF2=$?' off2 "$B" | grep -qx "OFF2=0"
 check "swapoff once they have gone" $?
 ! between free sfree2 "$B" | grep -q '^swap'
 check "  and free shows no swap" $?

@@ -80,7 +80,10 @@ struct netif {
     u32  tx_errors;
 };
 
+/* The network card's interface, eth0, and the loopback, lo. lo exists
+ * whether or not there is a card: 127.0.0.1/8, up until taken down. */
 struct netif *net_if(void);
+struct netif *net_lo(void);
 
 /*
  * Bring the interface up on whatever netdev registered itself. Returns
@@ -164,7 +167,9 @@ void net_set_addr(ip4_t ip, ip4_t mask, ip4_t gw);
 #define IPPROTO_UDP     17
 #define IPPROTO_TCP     6
 
-void ip_input(const void *frame, u32 len);
+/* from_lo: the frame came off the loopback, not the wire -- the only
+ * way 127/8 may arrive. */
+void ip_input(const void *frame, u32 len, int from_lo);
 int  ip_output(ip4_t dst, u8 proto, const void *payload, u32 len);
 
 /*

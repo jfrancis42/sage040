@@ -73,6 +73,15 @@ struct file_ops {
      * has no length -- a device, a pipe -- which gets EINVAL.
      */
     int (*truncate)(struct file *f, u32 len);
+
+    /*
+     * The physical page behind byte `offset` of a DEVICE, for mmap: what
+     * lets a program draw into /dev/fb0 as memory. Null for anything
+     * that is not memory to map -- a file is mapped by copying (or by
+     * sharing its read-only pages, textcache.c), not through this.
+     * Returns 0 with *pa, or -errno (EINVAL past the end).
+     */
+    int (*mmap)(struct file *f, u32 offset, u32 *pa);
 };
 
 struct file {
@@ -204,6 +213,14 @@ struct fbdev {
     int  (*setdouble)(struct fbdev *f, int on);
     int  (*sync)(struct fbdev *f);      /* wait for the blitter       */
     int  (*palette)(struct fbdev *f, u32 index, u32 rgb);
+    /*
+     * For mmap: where the video memory is, and how much of it; and
+     * where in it drawing goes and where the display shows (they differ
+     * while double buffering is on). Optional: without them /dev/fb0
+     * cannot be mapped.
+     */
+    u32  mem_phys, mem_size;
+    void (*offsets)(struct fbdev *f, u32 *draw, u32 *show);
     void *priv;
     struct fbdev *next;
 };

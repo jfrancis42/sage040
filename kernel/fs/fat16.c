@@ -3312,6 +3312,7 @@ static const struct file_ops fat_file_ops = {
     fat_file_fstat,
     0,                          /* poll: the default; see dev.h */
     fat_file_truncate,
+    0,                          /* mmap: a file is mapped by mmap.c */
 };
 
 static int fat_open(const char *path, int flags, struct file *f)

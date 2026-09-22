@@ -174,7 +174,7 @@ int ip_output(ip4_t dst, u8 proto, const void *payload, u32 len)
 
 /* --- in -------------------------------------------------------------- */
 
-void ip_input(const void *frame, u32 len)
+void ip_input(const void *frame, u32 len, int from_lo)
 {
     const struct iphdr *ip = (const struct iphdr *)((const u8 *)frame +
                                                     ETH_HDR_LEN);
@@ -210,6 +210,19 @@ void ip_input(const void *frame, u32 len)
 
     if (ip->frag_off & (IP_FLAG_MF | IP_FRAG_MASK)) {
         return;                 /* a fragment; no reassembly */
+    }
+
+    /*
+     * MARTIANS. 127/8 belongs to the loopback and nothing else: a frame
+     * from the wire addressed to it, or claiming to come from it, is
+     * forged or broken, and is dropped. Without this anything on the
+     * LAN could reach a service bound to 127.0.0.1 by sending a frame
+     * to this machine's MAC -- which defeats the only reason for binding
+     * to 127.0.0.1. Linux drops them the same way.
+     */
+    if (!from_lo && (IP4_IS_LOOPBACK(ip->daddr) || IP4_IS_LOOPBACK(ip->saddr))) {
+        n->rx_dropped++;
+        return;
     }
 
     /*

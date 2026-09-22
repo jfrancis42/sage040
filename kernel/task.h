@@ -208,6 +208,10 @@ extern struct task *current;
  */
 int task_can_sleep(void);
 
+/* The kernel stack's size, the most of it any task has used, and which
+ * task that was. See task.c. */
+void task_kstack_stats(u32 *size, u32 *max_used, char *name, u32 namelen);
+
 void task_init(void);
 
 /*

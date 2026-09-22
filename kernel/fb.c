@@ -144,6 +144,12 @@ static int do_getinfo(struct fb_info *out)
         out->name[i] = fb->name[i];
     }
     out->name[i] = '\0';
+    out->mem_size = fb->mem_size;
+    out->draw_offset = 0;
+    out->show_offset = 0;
+    if (fb->offsets) {
+        fb->offsets(fb, &out->draw_offset, &out->show_offset);
+    }
     return 0;
 }
 
@@ -310,6 +316,24 @@ static int fb_fstat(struct file *f, struct stat *st)
     return 0;
 }
 
+/*
+ * The framebuffer as memory. The pages are the chip's own video RAM,
+ * outside the machine's RAM altogether -- so the page allocator never
+ * owns them, never frees them when a program exits or unmaps, and
+ * never hands them to anybody else (pmm ignores what is not its). They
+ * are mapped uncached: the chip reads them for the display, and a line
+ * sitting in the CPU's data cache is a line the screen does not show.
+ */
+static int fb_mmap(struct file *f, u32 offset, u32 *pa)
+{
+    (void)f;
+    if (!fb || !fb->mem_size || offset >= fb->mem_size) {
+        return -EINVAL;
+    }
+    *pa = fb->mem_phys + offset;
+    return 0;
+}
+
 static const struct file_ops fb_ops = {
     fb_no_read,
     fb_no_write,
@@ -319,6 +343,7 @@ static const struct file_ops fb_ops = {
     fb_fstat,
     0,                          /* poll: the default; see dev.h */
     0,                          /* truncate: nothing to truncate */
+    fb_mmap,
 };
 
 int fb_init(void)

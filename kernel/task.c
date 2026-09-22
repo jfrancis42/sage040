@@ -60,16 +60,71 @@ static volatile int need_resched;
 #define KSTACK_TOTAL    (KSTACK_PAGES + 1)
 #define KSTACK_BYTES    (KSTACK_PAGES * (u32)PAGE_SIZE)
 
+/*
+ * THE HIGH-WATER MARK. Every kernel stack is painted with a pattern when
+ * it is made, and when its task is reaped the paint left at the bottom
+ * says how deep it ever went. The deepest of all is kept, with the name
+ * of the task that reached it, and kstat(KSTAT_STACK) reports it -- so
+ * "is 8 KB enough" is a measurement, not an estimate from one frame.
+ */
+#define KSTACK_PAINT    0x5ac3a55aUL
+
+static u32  kstack_max;
+static char kstack_max_name[TASK_NAME_MAX];
+
 static u32 kstack_alloc(u32 *top)
 {
     u32 base = pmm_alloc_pages(KSTACK_TOTAL);
+    u32 *p, *end;
 
     if (!base) {
         return 0;
     }
     vm_kernel_present(base, 0);
     *top = base + KSTACK_TOTAL * (u32)PAGE_SIZE;
+    for (p = (u32 *)(base + PAGE_SIZE), end = (u32 *)*top; p < end; p++) {
+        *p = KSTACK_PAINT;
+    }
     return base;
+}
+
+/* Bytes of a kernel stack ever used: from the top down to the deepest
+ * word that is not paint any more. */
+static u32 kstack_used(u32 base)
+{
+    const u32 *p = (const u32 *)(base + PAGE_SIZE);
+    const u32 *end = (const u32 *)(base + KSTACK_TOTAL * (u32)PAGE_SIZE);
+
+    while (p < end && *p == KSTACK_PAINT) {
+        p++;
+    }
+    return (u32)((const u8 *)end - (const u8 *)p);
+}
+
+static void kstack_note(const struct task *t)
+{
+    u32 used = t->kstack ? kstack_used(t->kstack) : 0;
+
+    if (used > kstack_max) {
+        kstack_max = used;
+        strncpy(kstack_max_name, t->name, sizeof(kstack_max_name) - 1);
+    }
+}
+
+void task_kstack_stats(u32 *size, u32 *max_used, char *name, u32 namelen)
+{
+    int i;
+
+    /* The live ones too: a task still running may be the deepest. */
+    for (i = 0; i < TASK_MAX; i++) {
+        if (tasks[i].state != TASK_UNUSED && tasks[i].kstack) {
+            kstack_note(&tasks[i]);
+        }
+    }
+    *size = KSTACK_BYTES;
+    *max_used = kstack_max;
+    strncpy(name, kstack_max_name, namelen - 1);
+    name[namelen - 1] = '\0';
 }
 
 static void kstack_free(u32 base)
@@ -673,6 +728,7 @@ void task_reap(struct task *t)
         vm_destroy(t->as);
         t->as = 0;
     }
+    kstack_note(t);
     kstack_free(t->kstack);
     t->kstack = 0;
     t->state = TASK_UNUSED;

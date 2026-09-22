@@ -1028,6 +1028,12 @@ struct addrspace *vm_clone(struct addrspace *src)
             }
 
             pa = d & PAGE_ADDR_MASK;
+            /* Not RAM at all -- a device's memory, /dev/fb0 mapped: the
+             * same pages in both, as they are the device's. */
+            if ((d & PDT_RESIDENT) && pmm_refcount(pa) == 0) {
+                table(dst_pt)[PAGE_INDEX(va)] = d;
+                continue;
+            }
             if (pmm_ref(pa)) {
                 /*
                  * SHARED. A page neither side can write stays as it

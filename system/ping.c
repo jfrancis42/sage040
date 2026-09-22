@@ -52,6 +52,12 @@ int main(int argc, char **argv)
             puts(" time=");
             putdec(rtt);
             puts(" ms\n");
+        } else if (err == -ENETUNREACH || err == -ENETDOWN ||
+                   err == -EADDRNOTAVAIL) {
+            /* Not sent at all -- a different thing from no answer. */
+            eputs(err == -ENETUNREACH ? "ping: network is unreachable\n" :
+                  err == -ENETDOWN ? "ping: the interface is down\n" :
+                                     "ping: no address to send from\n");
         } else {
             puts("no reply from ");
             put_ip(ip);

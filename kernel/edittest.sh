@@ -246,6 +246,22 @@ feed() {
     printf 'echo ok-ran-while-one-task-slept\r'
     sleep 6
 
+    # --- command lists: ; && || and & between commands ---
+    printf 'echo list-one; echo list-two\r'
+    sleep 0.5
+    printf 'cat /NOPE && echo list-and-must-not-run\r'
+    sleep 0.5
+    printf 'cat /NOPE || echo list-or-ran\r'
+    sleep 0.5
+    printf 'echo list-x && echo list-y || echo list-z-must-not-run\r'
+    sleep 0.5
+    printf 'cat /NOPE; echo list-status=$?\r'
+    sleep 0.5
+    printf "echo 'list-quoted;not-split' ; echo \"list-q && kept\"\r"
+    sleep 0.5
+    printf 'napper 1 & echo list-after-amp\r'
+    sleep 2
+
     # --- and the machine stops itself ---
     printf 'echo ok-about-to-shut-down\r'
     printf 'shutdown\r'
@@ -411,6 +427,24 @@ awk '/ok-ran-while-one-task-slept/ { ran = NR }
      /napper: awake/            { woke = NR }
      END { exit !(ran && woke && ran < woke) }' "$SCRATCH/clean.tmp"
 check "  other tasks ran while it slept, and finished first" $?
+
+echo "=== checks: command lists ==="
+
+grep -qx "list-one" "$SCRATCH/clean.tmp" && grep -qx "list-two" "$SCRATCH/clean.tmp"
+check "a; b runs both" $?
+! grep -qx "list-and-must-not-run" "$SCRATCH/clean.tmp"
+check "a && b does not run b when a fails" $?
+grep -qx "list-or-ran" "$SCRATCH/clean.tmp"
+check "a || b runs b when a fails" $?
+grep -qx "list-y" "$SCRATCH/clean.tmp" && ! grep -qx "list-z-must-not-run" "$SCRATCH/clean.tmp"
+check "a && b || c: left to right, c skipped when b succeeded" $?
+grep -qx "list-status=1" "$SCRATCH/clean.tmp"
+check "a builtin that fails sets \$? (it never did)" $?
+grep -qx "list-quoted;not-split" "$SCRATCH/clean.tmp" &&
+    grep -qx "list-q && kept" "$SCRATCH/clean.tmp"
+check "a ; or && inside quotes separates nothing" $?
+grep -qx "list-after-amp" "$SCRATCH/clean.tmp"
+check "a & b: a in the background, and b at once" $?
 
 echo "=== checks: shutdown ==="
 

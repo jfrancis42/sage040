@@ -333,6 +333,7 @@ static const struct file_ops sock_ops = {
     sock_fstat,
     sock_poll,
     0,                          /* truncate: nothing to truncate */
+    0,                          /* mmap: not memory to map */
 };
 
 /* --- the calls -------------------------------------------------------- */

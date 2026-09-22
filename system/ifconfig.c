@@ -10,8 +10,10 @@
  * should be one, and the ones that cannot are the argument for a system
  * call that is missing.
  *
- *   ifconfig                       show it
- *   ifconfig ADDR MASK [GATEWAY]   set it
+ *   ifconfig                       show every interface: eth0, lo
+ *   ifconfig NAME                  show that one
+ *   ifconfig NAME up|down          bring it up, or take it down
+ *   ifconfig ADDR MASK [GATEWAY]   set eth0's address
  *   ifconfig dhcp                  ask the network
  *   ifconfig nvram                 as the NVRAM says: net=dhcp, or
  *                                  net.ip, net.mask and net.gw (see
@@ -20,19 +22,25 @@
  */
 #include "ulib.h"
 
-static void show(void)
+/* Interfaces are numbered for netctl: 0 the card's, 1 the loopback. */
+#define IF_MAX  2
+
+static int show_one(int idx)
 {
     struct netinfo ni;
 
-    if (netctl(NETCTL_INFO, 0, &ni) < 0) {
-        eputs("ifconfig: no interface\n");
-        exit(1);
+    if (netctl(NETCTL_INFO, (u32)idx, &ni) < 0) {
+        return -1;
     }
 
     puts(ni.name);
-    puts("  hwaddr ");
-    put_mac(ni.mac);
-    puts(ni.up ? "  UP\n" : "  DOWN\n");
+    if (ni.loopback) {
+        puts(ni.up ? "  UP LOOPBACK\n" : "  DOWN LOOPBACK\n");
+    } else {
+        puts("  hwaddr ");
+        put_mac(ni.mac);
+        puts(ni.up ? "  UP\n" : "  DOWN\n");
+    }
 
     puts("      inet ");
     put_ip(ni.ip);
@@ -55,6 +63,36 @@ static void show(void)
     puts(" packets, ");
     putdec(ni.tx_errors);
     puts(" errors\n");
+    return 0;
+}
+
+static void show(void)
+{
+    int i, any = 0;
+
+    for (i = 0; i < IF_MAX; i++) {
+        if (show_one(i) == 0) {
+            any = 1;
+        }
+    }
+    if (!any) {
+        eputs("ifconfig: no interface\n");
+        exit(1);
+    }
+}
+
+/* The netctl number of the interface called `name`, or -1. */
+static int find(const char *name)
+{
+    struct netinfo ni;
+    int i;
+
+    for (i = 0; i < IF_MAX; i++) {
+        if (netctl(NETCTL_INFO, (u32)i, &ni) == 0 && strcmp(ni.name, name) == 0) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 /* One NVRAM setting into `out`, or 0 if it is not set. The layout is
@@ -124,6 +162,31 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    /* A name rather than an address: show it, or change its state. */
+    if (strcmp(argv[1], "dhcp") != 0 && (argv[1][0] < '0' || argv[1][0] > '9')) {
+        int idx = find(argv[1]);
+
+        if (idx < 0) {
+            eputs("ifconfig: no interface ");
+            eputs(argv[1]);
+            eputs("\n");
+            return 1;
+        }
+        if (argc == 2) {
+            show_one(idx);
+            return 0;
+        }
+        if (argc != 3 || (strcmp(argv[2], "up") != 0 && strcmp(argv[2], "down") != 0)) {
+            eputs("usage: ifconfig NAME [up|down]\n");
+            return 1;
+        }
+        if (netctl(argv[2][0] == 'u' ? NETCTL_UP : NETCTL_DOWN, (u32)idx, 0) < 0) {
+            eputs("ifconfig: cannot change it\n");
+            return 1;
+        }
+        return 0;
+    }
+
     if (strcmp(argv[1], "dhcp") == 0) {
         puts("requesting a lease...\n");
         if (netctl(NETCTL_DHCP, 0, &a) < 0) {
@@ -136,6 +199,7 @@ int main(int argc, char **argv)
 
     if (argc < 3) {
         eputs("usage: ifconfig [ADDR MASK [GATEWAY]]\n");
+        eputs("       ifconfig NAME [up|down]\n");
         eputs("       ifconfig dhcp\n");
         return 1;
     }

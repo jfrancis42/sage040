@@ -573,6 +573,7 @@ static const struct file_ops dir_ops = {
     dir_fstat,
     0,
     0,                          /* truncate: nothing to truncate */
+    0,                          /* mmap: not memory to map */
 };
 
 static int dir_open(const char *path, int flags)

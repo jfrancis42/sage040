@@ -124,8 +124,7 @@ run "echo '10.4.5.6 myhost myalias' > /etc/hosts" hosts
 run 'host foo.sage.test' a
 run 'host chain.sage.test' cname
 run 'host upper.SAGE.test' case
-run 'host nosuch.sage.test' nx
-run 'echo HOST-RC=$?' nxrc
+run 'host nosuch.sage.test; echo HOST-RC=$?' nx
 run 'host myalias' hostsfile
 run 'host localhost' local
 run 'host 10.20.30.40' quad
@@ -173,7 +172,7 @@ check "through two CNAMEs to the address" $?
 between 'host upper.SAGE.test' case | grep -qx "upper.SAGE.test has address 10.9.9.9"
 check "a name asked in another case" $?
 between 'host nosuch.sage.test' nx | grep -q "not found" &&
-    between 'echo HOST-RC' nxrc | grep -qx "HOST-RC=1"
+    between 'host nosuch.sage.test' nx | grep -qx "HOST-RC=1"
 check "NXDOMAIN is not found, exit status 1" $?
 between 'host myalias' hostsfile | grep -qx "myalias has address 10.4.5.6"
 check "/etc/hosts, by an alias" $?

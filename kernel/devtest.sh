@@ -75,6 +75,7 @@ for p in irqs nvram ifconfig shutdown; do
 done
 mcopy -o -i "$MIMG" ../apps/fsstress ::/FSSTRESS
 mcopy -o -i "$MIMG" ../apps/limits ::/LIMITS
+mcopy -o -i "$MIMG" ../apps/fbmap ::/FBMAP
 
 rm -f "$SCRATCH/in.fifo" "$MON"
 mkfifo "$SCRATCH/in.fifo"
@@ -122,13 +123,21 @@ run 'irqs' irq1
 run '/FSSTRESS 15' stress
 run 'irqs' irq2
 run '/LIMITS' limits
+# The console off the screen first: its own output scrolls the whole
+# screen up, and ten lines of fbmap's results carry the boxes off the top.
+run 'console fbcon off' conser
+run '/FBMAP' fbmap
+# What reached the screen, not what the program believes it wrote.
+printf 'screendump %s\n' "$SCRATCH/fbmap.ppm" | socat - "unix:$MON" >/dev/null
+sleep 1
+run 'console fbcon on' conboth
+run 'irqs' irq3
 run 'nvram net.ip=10.9.8.7' nv1
 run 'nvram net.mask=255.255.255.0' nv2
 run 'nvram greeting=hello-nvram' nv3
 run 'nvram greeting' nv4
 run 'nvram -d greeting' nv5
-run 'nvram greeting' nv6
-run 'echo NV6=$?' nv6rc
+run 'nvram greeting; echo NV6=$?' nv6
 run 'nvram' nvlist
 # The reset. The boot banner is the sign it happened.
 printf 'shutdown\r' >&3
@@ -142,7 +151,8 @@ done
 sleep "$BOOT_WAIT"
 run 'nvram net.ip' after
 run 'ifconfig nvram' ifc
-run 'shutdown -h' halt
+# Not run(): a halted machine never prints the DONE marker.
+printf 'shutdown -h\r' >&3
 wait_for "halting."
 sleep 1
 
@@ -197,10 +207,49 @@ done < <(between '/LIMITS' limits | grep -E '^  (ok  |FAIL) ')
 between '/LIMITS' limits | grep -qx "limits: 0 failed"
 check "limits ran to the end" $?
 
+echo "=== checks: /dev/fb0 as memory ==="
+while IFS= read -r line; do
+    case "$line" in
+        "  ok   "*)   check "${line#  ok   }" 0 ;;
+        "  FAIL "*)   check "${line#  FAIL }" 1 ;;
+    esac
+done < <(between '/FBMAP' fbmap | grep -E '^  (ok  |FAIL) ')
+between '/FBMAP' fbmap | grep -qx "fbmap: 0 failed"
+check "fbmap ran to the end" $?
+python3 - "$SCRATCH/fbmap.ppm" > "$SCRATCH/fbpix.tmp" <<'PY'
+import sys
+d = open(sys.argv[1], 'rb').read()
+parts = d.split(maxsplit=4)
+w, h = int(parts[1]), int(parts[2])
+px = parts[4]
+def at(x, y):
+    i = (y * w + x) * 3
+    return tuple(px[i:i + 3])
+print("red" if at(10, 10) == (255, 0, 0) else "notred", at(10, 10))
+print("green" if at(310, 10) == (0, 255, 0) else "notgreen", at(310, 10))
+print("black" if at(250, 50) == (0, 0, 0) else "notblack", at(250, 50))
+PY
+sed 's/^/  | /' "$SCRATCH/fbpix.tmp"
+grep -q '^red ' "$SCRATCH/fbpix.tmp"
+check "the screen shows red where the program wrote red through the mapping" $?
+grep -q '^green ' "$SCRATCH/fbpix.tmp"
+check "  and green where its forked child did" $?
+grep -q '^black ' "$SCRATCH/fbpix.tmp"
+check "  and nothing between them" $?
+rm -f "$SCRATCH/fbmap.ppm" "$SCRATCH/fbpix.tmp"
+
+echo "=== checks: the kernel stack ==="
+kline=$(between irqs irq3 | grep 'kernel stack:')
+echo "  $kline"
+kmax=$(echo "$kline" | sed -n 's/.*stack: \([0-9]*\) of \([0-9]*\) bytes.*/\1/p')
+ksize=$(echo "$kline" | sed -n 's/.*stack: \([0-9]*\) of \([0-9]*\) bytes.*/\2/p')
+[ "${kmax:-0}" -gt 512 ] && [ "${ksize:-0}" -gt 0 ] && [ "$kmax" -lt $((ksize * 3 / 4)) ]
+check "after all of the above, no kernel stack past three quarters full ($kmax of $ksize bytes)" $?
+
 echo "=== checks: the NVRAM ==="
 between 'nvram greeting' nv4 | grep -qx "hello-nvram"
 check "a setting written and read back" $?
-between 'echo NV6' nv6rc | grep -qx "NV6=1"
+between 'nvram greeting' nv6 | grep -qx "NV6=1"
 check "  deleted, and then not there (status 1)" $?
 between nvram nvlist | grep -qx "net.ip=10.9.8.7" &&
     between nvram nvlist | grep -qx "net.mask=255.255.255.0"
