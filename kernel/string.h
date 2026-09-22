@@ -31,4 +31,7 @@ char   *strncpy(char *dst, const char *src, ksize_t n);
 char   *strchr(const char *s, int c);
 int     stricmp(const char *a, const char *b);
 
+/* The name of signal `sig`, as a shell would report it. */
+const char *strsignal(int sig);
+
 #endif /* KERNEL_STRING_H */

@@ -67,31 +67,7 @@ static int default_action(int sig)
 
 const char *signal_name(int sig)
 {
-    switch (sig) {
-    case SIGHUP:  return "hangup";
-    case SIGINT:  return "interrupt";
-    case SIGQUIT: return "quit";
-    case SIGILL:  return "illegal instruction";
-    case SIGTRAP: return "trace trap";
-    case SIGABRT: return "aborted";
-    case SIGBUS:  return "bus error";
-    case SIGFPE:  return "arithmetic exception";
-    case SIGKILL: return "killed";
-    case SIGUSR1: return "user signal 1";
-    case SIGSEGV: return "segmentation fault";
-    case SIGUSR2: return "user signal 2";
-    case SIGPIPE: return "broken pipe";
-    case SIGALRM: return "alarm clock";
-    case SIGTERM: return "terminated";
-    case SIGCHLD: return "child exited";
-    case SIGCONT: return "continued";
-    case SIGSTOP: return "stopped (signal)";
-    case SIGTSTP: return "stopped";
-    case SIGTTIN: return "stopped (tty input)";
-    case SIGTTOU: return "stopped (tty output)";
-    case SIGWINCH: return "window changed";
-    default:      return "signal";
-    }
+    return strsignal(sig);
 }
 
 /* Would this signal be thrown away if it were delivered now? */

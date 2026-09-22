@@ -9,6 +9,7 @@
  * filesystem.  Worth revisiting when something measures as slow.
  */
 #include "string.h"
+#include "uapi.h"
 
 void *memcpy(void *dst, const void *src, ksize_t n)
 {
@@ -153,4 +154,39 @@ char *strchr(const char *s, int c)
         }
     }
     return c == '\0' ? (char *)s : 0;
+}
+
+/*
+ * What a signal is called, in the words a shell reports it with. Here
+ * rather than in signal.c because it is a pure table and the shell
+ * needs it: <string.h> is where C puts strsignal(), and the shell may
+ * include this header and no kernel one.
+ */
+const char *strsignal(int sig)
+{
+    switch (sig) {
+    case SIGHUP:  return "hangup";
+    case SIGINT:  return "interrupt";
+    case SIGQUIT: return "quit";
+    case SIGILL:  return "illegal instruction";
+    case SIGTRAP: return "trace trap";
+    case SIGABRT: return "aborted";
+    case SIGBUS:  return "bus error";
+    case SIGFPE:  return "arithmetic exception";
+    case SIGKILL: return "killed";
+    case SIGUSR1: return "user signal 1";
+    case SIGSEGV: return "segmentation fault";
+    case SIGUSR2: return "user signal 2";
+    case SIGPIPE: return "broken pipe";
+    case SIGALRM: return "alarm clock";
+    case SIGTERM: return "terminated";
+    case SIGCHLD: return "child exited";
+    case SIGCONT: return "continued";
+    case SIGSTOP: return "stopped (signal)";
+    case SIGTSTP: return "stopped";
+    case SIGTTIN: return "stopped (tty input)";
+    case SIGTTOU: return "stopped (tty output)";
+    case SIGWINCH: return "window changed";
+    default:      return "signal";
+    }
 }

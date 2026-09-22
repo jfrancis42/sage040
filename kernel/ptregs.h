@@ -40,6 +40,13 @@ struct pt_regs {
 
 #define PT_SR_SUPER     0x2000
 
+/*
+ * The registers of whatever the current device interrupt interrupted,
+ * or null outside one. Set by mfp_dispatch() for the length of a
+ * handler; the timer reads it to charge a tick to user or system time.
+ */
+extern struct pt_regs *irq_regs;
+
 /* Did the interrupted code run in user mode? */
 static inline int pt_user_mode(const struct pt_regs *r)
 {

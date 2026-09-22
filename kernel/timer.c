@@ -13,23 +13,106 @@
 
 volatile u32 jiffies;
 
+/* --- the clock -------------------------------------------------------- */
+
 /*
- * Called from the timer driver's interrupt handler.
+ * ONE clock, for time(), gettimeofday() and file timestamps alike, so
+ * that no two of them can disagree.
  *
- * Counting is the obvious half. The other half is why ctrl-C works at
- * all on a program that never calls the kernel: nobody is reading the
- * keyboard while a cube spins, so nobody would ever see the keystroke.
- * A hundred times a second this looks for one, and if it is the
- * interrupt character the program is unwound from here.
+ * The RTC says what second it is and nothing finer; the tick counts
+ * hundredths but knows nothing of the date. So the clock is the RTC's
+ * second, taken once, plus the ticks since. Taken at the moment the
+ * RTC's second CHANGES, which the tick watches for during the first
+ * second after boot -- otherwise every time would be up to a second
+ * out, and the fraction gettimeofday() reports would be fiction.
  *
- * Only while a program is running, and only while the kernel is not in
- * the middle of a system call -- an unwind from inside one would leave
- * whatever it was doing half done. In every other case this is two
- * comparisons and a return.
+ * Until that moment the RTC is read directly, with no fraction.
+ */
+static u32 clock_base_sec;          /* the RTC's second ...            */
+static u32 clock_base_jiffies;      /* ... began at this tick          */
+static int clock_state;             /* 0 unknown, 1 watching, 2 set    */
+static u32 clock_watch_sec;
+
+static int rtc_now(u32 *secs)
+{
+    struct rtcdev *r = dev_rtc();
+    time_t t;
+
+    if (!r || r->get(r, &t) != 0) {
+        return -1;
+    }
+    *secs = (u32)t;
+    return 0;
+}
+
+/* From the tick, until the clock is set. */
+static void clock_align(void)
+{
+    u32 s;
+
+    if (clock_state == 2 || rtc_now(&s) < 0) {
+        return;
+    }
+    if (clock_state == 0) {
+        clock_watch_sec = s;
+        clock_state = 1;
+    } else if (s != clock_watch_sec) {
+        clock_base_sec = s;
+        clock_base_jiffies = jiffies;
+        clock_state = 2;
+    }
+}
+
+void clock_get(struct timeval *tv)
+{
+    u32 elapsed;
+
+    if (clock_state != 2) {
+        u32 s = 0;
+
+        rtc_now(&s);
+        tv->tv_sec = (s32)s;
+        tv->tv_usec = 0;
+        return;
+    }
+    elapsed = jiffies - clock_base_jiffies;
+    tv->tv_sec = (s32)(clock_base_sec + elapsed / HZ);
+    tv->tv_usec = (s32)((elapsed % HZ) * (1000000 / HZ));
+}
+
+int clock_set(const struct timeval *tv)
+{
+    struct rtcdev *r = dev_rtc();
+    int err;
+
+    if (tv->tv_sec < 0 || tv->tv_usec < 0 || tv->tv_usec >= 1000000) {
+        return -EINVAL;
+    }
+    if (!r) {
+        return -ENODEV;
+    }
+    err = r->set(r, (time_t)tv->tv_sec);
+    if (err < 0) {
+        return err;
+    }
+    /* The fraction goes into where the second began. */
+    clock_base_sec = (u32)tv->tv_sec;
+    clock_base_jiffies = jiffies - (u32)tv->tv_usec / (1000000 / HZ);
+    clock_state = 2;
+    return 0;
+}
+
+/*
+ * Called from the timer driver's interrupt handler, a hundred times a
+ * second. Counting is the obvious part; the rest is everything on this
+ * machine that has to happen whether or not anybody is asking -- see
+ * each call below.
  */
 void timer_tick(void)
 {
     jiffies++;
+
+    clock_align();
 
     /*
      * Empty the network card, whatever else is going on.

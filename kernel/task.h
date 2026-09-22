@@ -150,6 +150,24 @@ struct task {
      * previous one's registers.
      */
     u32   fpu[52];
+
+    /*
+     * Time, in ticks. A tick is charged to user or system time by what
+     * the timer interrupt interrupted. The children's figures collect
+     * those of children that have been waited for, as POSIX says.
+     */
+    u32   utime, stime;
+    u32   cutime, cstime;
+
+    /*
+     * Interval timers. The real one is a deadline in jiffies, because it
+     * runs whether or not the task does; the other two count down only
+     * while the task is charged time. 0 means disarmed. The intervals
+     * are the reload values, 0 for a one-shot.
+     */
+    u32   it_real_at, it_real_interval;
+    u32   it_virt, it_virt_interval;
+    u32   it_prof, it_prof_interval;
 };
 
 struct addrspace;

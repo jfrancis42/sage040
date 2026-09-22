@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: 7 of 23 complete.**
+**Status: 8 of 23 complete.**
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -36,7 +36,7 @@ drive almost all of it:
 | 4 | `malloc` in `lib/` | so tasks 5–12 have something to test against | **done** |
 | 5 | Signals: `sigaction`, handlers, `sigreturn` | the largest kernel item; editors need it | **done** |
 | 6 | `select`/`poll` | the other half of an event loop | **done** |
-| 7 | Interval timers | depends on 5 | todo |
+| 7 | Interval timers | depends on 5 | **done** |
 | 8 | Pipes, `dup2`, real redirection | see the note below — `>` is broken today | todo |
 | 9 | Subprocesses: `fork`/`execve`/`waitpid` | `:!` and `:make` in an editor | todo |
 | 10 | The rest of the socket API, and the signatures | before a libc is written against the old ones | todo |
@@ -207,7 +207,7 @@ It grows one group per task, and a group is only added once its calls
 work — so a failure there is always a regression, never a thing not
 written yet.
 
-**319 checks across six suites now:** 12 device programs, 41 fs, 202
+**345 checks across six suites now:** 12 device programs, 41 fs, 228
 api, 29 edit, 18 vm, 17 net.
 
 ### 1. Grow the user address space — done
@@ -699,6 +699,55 @@ the program says it is waiting, for `poll` and then `select`. And
 server, waiting with `poll` at every step, including end of stream.
 **What the tty checks cannot prove:** that the tick's wakeup is prompt.
 The 100 ms fallback alone would pass them.
+
+### 7. Interval timers — done
+
+`alarm` (27), `setitimer` (104) and `getitimer` (105), with all three
+timers, plus `gettimeofday` (78) and `settimeofday` (79). These are the
+old numbers Linux/m68k shares with i386. `clock_gettime` and the
+`timer_create` family are **not** here, because I am not certain of
+their m68k numbers and would rather leave a gap than guess.
+
+**User and system time are real now.** A tick is charged to the running
+task's user or system time according to what the interrupt interrupted.
+The MFP stub publishes its `pt_regs` as `irq_regs` for the length of a
+handler, which is what Linux's `get_irq_regs()` is. `ITIMER_VIRTUAL`
+counts down only on user ticks and `ITIMER_PROF` on both.
+`ITIMER_REAL` is a deadline in jiffies, checked with the other deadlines
+in `task_timeouts()`. A repeating timer that falls behind is caught up
+with **one** signal, not a burst. `times()` takes Linux's `struct tms`
+now, and a reaped child's time goes into its parent's `cutime` and
+`cstime`, as POSIX says. That changed `times()`'s signature in `ulib`,
+and its seven callers now pass 0.
+
+**One clock.** `time()`, `gettimeofday()` and file timestamps all read
+`clock_get()` in `timer.c`: the RTC's second, taken **at the moment the
+second changes** (the tick watches for it during the first second after
+boot), plus the ticks since. So they cannot disagree, and the fraction
+`gettimeofday()` reports is real. `time()` used to read the RTC directly
+while the filesystem did the same separately, which was two clocks that
+happened to agree. `settimeofday` and `stime` set the RTC and the base
+together.
+
+**Found on the way:** the shell reported any signal it had no name for
+as "killed". `strsignal()` now lives in `string.c`, where C puts it and
+where the shell's layering allows it, and both the shell and
+`signal_name()` use it. An uncaught alarm reports "alarm clock" and a
+double free reports "aborted".
+
+**Tests:** `apps/timetest`, 24 checks. The clock never goes backwards
+over 2,000 reads, agrees with `time()`, measures a 300 ms sleep, and
+`settimeofday` moves it and puts it back. `alarm(1)` fires in about a
+second and `alarm` returns what was left. A 100 ms repeating timer
+fires five times in about 500 ms and `getitimer` reports it; a disarmed
+timer stays off. `ITIMER_VIRTUAL` does not advance during a 500 ms
+sleep and fires after 200 ms of computing, and `ITIMER_PROF` fires. The
+refusals are checked. 200 ms of computing is charged to user time and
+not system time, and a child's 300 ms arrive in `cutime`.
+`apitest.sh` also checks that an uncaught SIGALRM ends the program and
+the shell names it. The first `burn()` loop made a system call every
+few microseconds and **the system-time check caught it**, which is the
+check doing its job on the test's own mistake.
 
 ---
 

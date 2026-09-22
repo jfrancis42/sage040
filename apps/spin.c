@@ -34,7 +34,7 @@ int main(int argc, char **argv)
     for (;;) {
         n++;
         if (syscalls) {
-            times();
+            times(0);
         }
     }
 }

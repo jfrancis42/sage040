@@ -377,9 +377,34 @@ int fsync(int fd)
     return (int)sc1(__NR_fsync, (u32)fd);
 }
 
-u32 times(void)
+u32 times(struct tms *buf)
 {
-    return (u32)sc1(__NR_times, 0);
+    return (u32)sc1(__NR_times, (u32)buf);
+}
+
+int gettimeofday(struct timeval *tv, void *tz)
+{
+    return (int)sc2(__NR_gettimeofday, (u32)tv, (u32)tz);
+}
+
+int settimeofday(const struct timeval *tv, const void *tz)
+{
+    return (int)sc2(__NR_settimeofday, (u32)tv, (u32)tz);
+}
+
+u32 alarm(u32 seconds)
+{
+    return (u32)sc1(__NR_alarm, seconds);
+}
+
+int setitimer(int which, const struct itimerval *in, struct itimerval *old)
+{
+    return (int)sc3(__NR_setitimer, (u32)which, (u32)in, (u32)old);
+}
+
+int getitimer(int which, struct itimerval *cur)
+{
+    return (int)sc2(__NR_getitimer, (u32)which, (u32)cur);
 }
 
 int nanosleep(const struct timespec *req, struct timespec *rem)

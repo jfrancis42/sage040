@@ -111,7 +111,12 @@ int    rmdir(const char *path);
 int    uname(struct utsname *u);
 time_t time(time_t *t);
 int    fsync(int fd);
-u32    times(void);                  /* ticks since boot */
+u32    times(struct tms *buf);       /* ticks since boot; fills *buf if given */
+int    gettimeofday(struct timeval *tv, void *tz);
+int    settimeofday(const struct timeval *tv, const void *tz);
+u32    alarm(u32 seconds);
+int    setitimer(int which, const struct itimerval *in, struct itimerval *old);
+int    getitimer(int which, struct itimerval *cur);
 int    nanosleep(const struct timespec *req, struct timespec *rem);
 void   msleep(u32 ms);
 void   exit(int status) __attribute__((noreturn));

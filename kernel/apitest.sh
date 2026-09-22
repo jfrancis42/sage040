@@ -76,6 +76,7 @@ mcopy -o -i "$MIMG" ../apps/malloctest ::/MALLOCTE
 mcopy -o -i "$MIMG" ../apps/sigtest ::/SIGTEST
 mcopy -o -i "$MIMG" ../apps/fptest ::/FPTEST
 mcopy -o -i "$MIMG" ../apps/polltest ::/POLLTEST
+mcopy -o -i "$MIMG" ../apps/timetest ::/TIMETEST
 mcopy -o -i "$MIMG" ../apps/spin ::/SPIN
 mmd -i "$MIMG" ::/ETC
 mmd -i "$MIMG" ::/BIN
@@ -103,6 +104,8 @@ mcopy -o -i "$MIMG" "$SCRATCH/rc.tmp" ::/ETC/RC
     # --- the gate, and signals ---
     printf 'sigtest\r';                 sleep 6
     printf 'polltest\r';                sleep 4
+    printf 'timetest\r';                sleep 8
+    printf 'timetest alarm\r';          sleep 2
     printf 'sigtest badstack\r';        sleep 1.5
     printf 'sigtest forge\r';           sleep 1.5
     printf 'kill 2\r';                  sleep 1
@@ -237,6 +240,9 @@ check "sigtest ran to the end" $?
 grep -q "polltest: done" "$C"
 check "polltest ran to the end" $?
 
+grep -q "timetest: done" "$C"
+check "timetest ran to the end" $?
+
 grep -q "polltest: tty done" "$C"
 check "polltest waited for keys with poll and select" $?
 
@@ -349,6 +355,13 @@ check "a forged sigreturn cannot reach supervisor mode" $?
 
 test "$(grep -c "^sigtest: segmentation fault" "$C")" -eq 2
 check "  and both of those programs were killed for it" $?
+
+echo "=== checks: an alarm nobody catches ends the program ==="
+
+grep -q "timetest: waiting for an alarm nobody catches" "$C" &&
+    grep -q "^timetest: alarm clock" "$C" &&
+    ! grep -q "ALARM DID NOT END THE PROGRAM" "$C"
+check "SIGALRM's default action is to terminate, and the shell says why" $?
 
 echo "=== checks: stopping, and killing what is stopped ==="
 

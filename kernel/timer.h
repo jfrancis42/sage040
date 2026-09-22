@@ -39,6 +39,15 @@ extern volatile u32 jiffies;
 void timer_tick(void);
 
 u32  timer_jiffies(void);
+
+/*
+ * The time of day, to the tick: the one clock that time(),
+ * gettimeofday() and file timestamps all read. clock_set() sets the RTC
+ * as well. See timer.c.
+ */
+struct timeval;
+void clock_get(struct timeval *tv);
+int  clock_set(const struct timeval *tv);
 u32  timer_uptime_ms(void);
 
 /*

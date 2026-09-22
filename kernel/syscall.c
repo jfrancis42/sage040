@@ -213,15 +213,13 @@ static s32 rw_user(int fd, u32 ubuf, u32 len, int writing)
 /* The implementations                                               */
 /* ---------------------------------------------------------------- */
 
+/* The seconds of the one clock -- the same one gettimeofday() reads. */
 static time_t clock_now(void)
 {
-    struct rtcdev *r = dev_rtc();
-    time_t now = 0;
+    struct timeval tv;
 
-    if (r && r->get(r, &now) == 0) {
-        return now;
-    }
-    return 0;
+    clock_get(&tv);
+    return (time_t)tv.tv_sec;
 }
 
 static int do_uname(struct utsname *u)
@@ -239,15 +237,102 @@ static int do_uname(struct utsname *u)
 
 static int do_stime(const time_t *t)
 {
-    struct rtcdev *r = dev_rtc();
+    struct timeval tv;
 
     if (!t) {
         return -EINVAL;
     }
-    if (!r || !r->set) {
-        return -ENODEV;
+    tv.tv_sec = (s32)*t;
+    tv.tv_usec = 0;
+    return clock_set(&tv);
+}
+
+/* --- interval timers ---------------------------------------------------- */
+
+/* A timeval as ticks, rounded UP: a timer shorter than a tick is a tick,
+ * not nothing. -1 if it is not a valid time. */
+static s32 tv_to_ticks(const struct timeval *tv)
+{
+    u32 us_per_tick = 1000000 / HZ;
+
+    if (tv->tv_sec < 0 || tv->tv_usec < 0 || tv->tv_usec >= 1000000 ||
+        tv->tv_sec > 0x7fffffff / HZ - 1) {
+        return -1;
     }
-    return r->set(r, *t);
+    return tv->tv_sec * HZ +
+           (s32)(((u32)tv->tv_usec + us_per_tick - 1) / us_per_tick);
+}
+
+static void ticks_to_tv(u32 ticks, struct timeval *tv)
+{
+    tv->tv_sec = (s32)(ticks / HZ);
+    tv->tv_usec = (s32)((ticks % HZ) * (1000000 / HZ));
+}
+
+static int itimer_get(int which, struct itimerval *out)
+{
+    struct task *t = current;
+    u32 now = timer_jiffies(), left = 0, interval;
+
+    switch (which) {
+    case ITIMER_REAL:
+        if (t->it_real_at && (s32)(t->it_real_at - now) > 0) {
+            left = t->it_real_at - now;
+        } else if (t->it_real_at) {
+            left = 1;               /* due this tick */
+        }
+        interval = t->it_real_interval;
+        break;
+    case ITIMER_VIRTUAL:
+        left = t->it_virt;
+        interval = t->it_virt_interval;
+        break;
+    case ITIMER_PROF:
+        left = t->it_prof;
+        interval = t->it_prof_interval;
+        break;
+    default:
+        return -EINVAL;
+    }
+    ticks_to_tv(left, &out->it_value);
+    ticks_to_tv(interval, &out->it_interval);
+    return 0;
+}
+
+static int itimer_set(int which, const struct itimerval *in)
+{
+    struct task *t = current;
+    s32 value = tv_to_ticks(&in->it_value);
+    s32 interval = tv_to_ticks(&in->it_interval);
+    u16 sr;
+
+    if (value < 0 || interval < 0) {
+        return -EINVAL;
+    }
+    /* Masked: the tick reads and writes these. */
+    sr = irq_save();
+    switch (which) {
+    case ITIMER_REAL:
+        t->it_real_at = value ? timer_jiffies() + (u32)value : 0;
+        if (value && t->it_real_at == 0) {
+            t->it_real_at = 1;      /* 0 means off; do not land on it */
+        }
+        t->it_real_interval = (u32)interval;
+        break;
+    case ITIMER_VIRTUAL:
+        t->it_virt = (u32)value;
+        t->it_virt_interval = (u32)interval;
+        break;
+    case ITIMER_PROF:
+        t->it_prof = (u32)value;
+        t->it_prof_interval = (u32)interval;
+        break;
+    default:
+        irq_restore(sr);
+        return -EINVAL;
+    }
+    irq_restore(sr);
+    return 0;
 }
 
 static void do_reboot(int cmd)
@@ -1078,8 +1163,94 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
     case __NR_shutdown:
         return sock_shutdown((int)a1, (int)a2);
 
-    case __NR_times:
+    case __NR_times: {
+        struct tms tms;
+        int err;
+
+        if (a1) {
+            tms.tms_utime = current->utime;
+            tms.tms_stime = current->stime;
+            tms.tms_cutime = current->cutime;
+            tms.tms_cstime = current->cstime;
+            err = store(a1, &tms, sizeof(tms));
+            if (err < 0) {
+                return err;
+            }
+        }
         return (s32)timer_jiffies();
+    }
+
+    case __NR_gettimeofday: {
+        struct timeval tv;
+
+        clock_get(&tv);
+        /* The timezone is accepted and ignored, as it is everywhere. */
+        return a1 ? store(a1, &tv, sizeof(tv)) : 0;
+    }
+
+    case __NR_settimeofday: {
+        struct timeval tv;
+        int err;
+
+        if (!a1) {
+            return 0;               /* a timezone alone: nothing to do */
+        }
+        err = fetch(&tv, a1, sizeof(tv));
+        if (err < 0) {
+            return err;
+        }
+        return clock_set(&tv);
+    }
+
+    case __NR_alarm: {
+        struct itimerval old, set;
+        u32 left;
+
+        itimer_get(ITIMER_REAL, &old);
+        memset(&set, 0, sizeof(set));
+        set.it_value.tv_sec = (s32)a1;
+        if (itimer_set(ITIMER_REAL, &set) < 0) {
+            return -EINVAL;
+        }
+        /* Whole seconds left of the old one, rounded up, as Linux: an
+         * alarm that has not fired never reports 0. */
+        left = (u32)old.it_value.tv_sec;
+        if (old.it_value.tv_usec) {
+            left++;
+        }
+        return (s32)left;
+    }
+
+    case __NR_setitimer: {
+        struct itimerval in, old;
+        int err;
+
+        err = itimer_get((int)a1, &old);
+        if (err < 0) {
+            return err;
+        }
+        if (a2) {
+            err = fetch(&in, a2, sizeof(in));
+            if (err < 0) {
+                return err;
+            }
+            err = itimer_set((int)a1, &in);
+            if (err < 0) {
+                return err;
+            }
+        }
+        return a3 ? store(a3, &old, sizeof(old)) : 0;
+    }
+
+    case __NR_getitimer: {
+        struct itimerval cur;
+        int err = itimer_get((int)a1, &cur);
+
+        if (err < 0) {
+            return err;
+        }
+        return store(a2, &cur, sizeof(cur));
+    }
 
     case __NR_nanosleep: {
         struct timespec ts;

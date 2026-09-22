@@ -23,7 +23,7 @@ static void report(const char *what, int ok)
 
 static u32 now_ms(void)
 {
-    return times() * (1000 / HZ);
+    return times(0) * (1000 / HZ);
 }
 
 static volatile int got;

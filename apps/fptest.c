@@ -82,8 +82,8 @@ int main(int argc, char **argv)
     fpcr = (n & 1) ? 0x10 : 0x20;
     set_fpcr(fpcr);
 
-    until = times() + SECONDS * HZ;
-    while ((s32)(times() - until) < 0) {
+    until = times(0) + SECONDS * HZ;
+    while ((s32)(times(0) - until) < 0) {
         rounds++;
         volatile u32 spin;
 

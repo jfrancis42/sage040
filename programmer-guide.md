@@ -1286,10 +1286,23 @@ wants to animate afterwards must ask for it back with
 ### Time
 
 ```c
-time_t now = time(0);            /* seconds since 1970, from the M48T59 */
-u32 ticks = times();             /* ticks since boot, HZ = 100 */
+time_t now = time(0);            /* seconds since 1970 */
+struct timeval tv;
+gettimeofday(&tv, 0);            /* the same clock, to the tick */
+struct tms t;
+u32 ticks = times(&t);           /* ticks since boot; t gets your user
+                                    and system time, and your children's */
 msleep(20);                      /* nanosleep, rounded up to a tick */
+alarm(1);                        /* SIGALRM in a second */
+setitimer(ITIMER_REAL, &it, 0);  /* or VIRTUAL, or PROF: Linux's three */
 ```
+
+`time()`, `gettimeofday()` and the timestamps the filesystem writes all
+read **one clock**: the RTC's second, taken at the moment it changes,
+plus the ticks since. So they never disagree, and `gettimeofday()`'s
+fraction is real, good to the 10 ms tick. `settimeofday()` sets the RTC
+as well. Interval timers run at the tick's resolution, and one shorter
+than a tick is rounded up to a tick rather than to nothing.
 
 `HZ` is 100, so a tick is 10 ms and a 50 fps frame is exactly two of
 them. It comes from `uapi.h`, not from a kernel header: `times()`
@@ -1297,9 +1310,9 @@ returns ticks, and a count of ticks means nothing without the rate, so
 the rate crosses the boundary with it. Linux answers the same question
 through `sysconf(_SC_CLK_TCK)`; there is no `sysconf` here.
 
-Sleeping uses `STOP` in the kernel, so a sleeping program costs the
-host nothing — prefer it to a delay loop, which is only ever right on the
-machine it was tuned on.
+A sleeping program is off the run queue until its time is up, so it
+costs nothing and other programs run meanwhile. Prefer it to a delay
+loop, which is only ever right on the machine it was tuned on.
 
 ### What a program can do that it once could not
 

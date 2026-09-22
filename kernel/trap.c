@@ -191,6 +191,8 @@ void exception_handler(const u32 *regs, const u16 *frame)
     panic("unhandled exception");
 }
 
+struct pt_regs *irq_regs;
+
 void panic(const char *msg)
 {
     kputs("\n*** panic: ");

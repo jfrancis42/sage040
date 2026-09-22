@@ -410,14 +410,57 @@ void task_timeouts(void)
             t->wake_at = 0;
             t->state = TASK_READY;
         }
+
+        /* ITIMER_REAL: wall time, whether the task is running or not. */
+        if (t->it_real_at && t->state != TASK_UNUSED &&
+            t->state != TASK_ZOMBIE && (s32)(now - t->it_real_at) >= 0) {
+            if (t->it_real_interval) {
+                t->it_real_at += t->it_real_interval;
+                /* Fallen behind -- the machine was busy, or the interval
+                 * is shorter than a tick could keep up with: one signal,
+                 * not a burst of them, and the next one a period on. */
+                if ((s32)(now - t->it_real_at) >= 0) {
+                    t->it_real_at = now + t->it_real_interval;
+                }
+            } else {
+                t->it_real_at = 0;
+            }
+            signal_send(t, SIGALRM);
+        }
     }
 }
 
 void task_tick(void)
 {
-    if (!current) {
+    struct task *t = current;
+    int user;
+
+    if (!t) {
         return;
     }
+
+    /*
+     * Whose time this tick was. The interrupt's saved registers say
+     * whether it landed in user code or in the kernel, which is all the
+     * difference between user and system time.
+     */
+    user = irq_regs && pt_user_mode(irq_regs);
+    if (user) {
+        t->utime++;
+    } else {
+        t->stime++;
+    }
+    if (t->as) {
+        if (user && t->it_virt && --t->it_virt == 0) {
+            t->it_virt = t->it_virt_interval;
+            signal_send(t, SIGVTALRM);
+        }
+        if (t->it_prof && --t->it_prof == 0) {
+            t->it_prof = t->it_prof_interval;
+            signal_send(t, SIGPROF);
+        }
+    }
+
     if (current->slice > 0) {
         current->slice--;
     }
@@ -503,6 +546,12 @@ void task_reap(struct task *t)
 {
     if (!t || t->state != TASK_ZOMBIE) {
         return;
+    }
+    /* Its time becomes its parent's children's time, now that it has
+     * been waited for. */
+    if (t->parent) {
+        t->parent->cutime += t->utime + t->cutime;
+        t->parent->cstime += t->stime + t->cstime;
     }
     if (t->as) {
         vm_destroy(t->as);

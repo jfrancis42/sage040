@@ -266,7 +266,7 @@ int main(int argc, char **argv)
      * loop never was.
      */
     period = 1000 / fps;
-    started = times();
+    started = times(0);
 
     while (!key_waiting()) {
         render(ax, ay, az);
@@ -294,7 +294,7 @@ int main(int argc, char **argv)
     close(fb);
 
     {
-        u32 elapsed = times() - started;
+        u32 elapsed = times(0) - started;
 
         puts("cube: ");
         putdec(frames);

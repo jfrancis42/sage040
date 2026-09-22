@@ -1244,14 +1244,10 @@ static void report_status(const char *what, int status)
         return;
     }
     err_puts(what);
-    if (status > 128 && status < 128 + 32) {
-        switch (status - 128) {
-        case SIGSEGV: err_puts(": segmentation fault\n"); break;
-        case SIGILL:  err_puts(": illegal instruction\n"); break;
-        case SIGFPE:  err_puts(": arithmetic exception\n"); break;
-        case SIGTSTP: err_puts(": stopped\n"); break;
-        default:      err_puts(": killed\n"); break;
-        }
+    if (status > 128 && status < 128 + NSIG) {
+        err_puts(": ");
+        err_puts(strsignal(status - 128));
+        err_puts("\n");
         return;
     }
     err_puts(": exited ");

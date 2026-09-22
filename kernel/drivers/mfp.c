@@ -27,6 +27,7 @@
  * of magnitude of headroom, which is the right kind of margin for
  * something with no way to complain.
  */
+#include "ptregs.h"
 #include "dev.h"
 #include "timer.h"
 #include "errno.h"
@@ -92,10 +93,17 @@ static void mfp_clear_pending(int ch)
  * let a handler hold off lower-priority channels, and nothing here wants
  * that.
  */
-void mfp_dispatch(u32 vector)
+void mfp_dispatch(u32 vector, struct pt_regs *regs)
 {
     int ch = (int)(vector & 0x0f);
 
+    /*
+     * What was interrupted, for a handler that needs to know -- the
+     * timer does, to charge the tick to user or system time. Linux calls
+     * this get_irq_regs(). Interrupts do not nest here (the MFP's level
+     * masks its own), so one pointer is enough.
+     */
+    irq_regs = regs;
     if (irqs[ch].handler) {
         irqs[ch].handler(irqs[ch].arg);
     } else {
@@ -104,6 +112,7 @@ void mfp_dispatch(u32 vector)
          * be, and a silent one is very hard to find later. */
         spurious++;
     }
+    irq_regs = 0;
 }
 
 __asm__(
@@ -125,9 +134,11 @@ __asm__(
 "       move.w  66(%sp),%d0                 \n"   /* format/vector word */
 "       andi.l  #0xfff,%d0                  \n"   /* vector offset      */
 "       lsr.l   #2,%d0                      \n"   /* -> vector number   */
+"       lea     (%sp),%a0                   \n"   /* struct pt_regs *   */
+"       move.l  %a0,-(%sp)                  \n"
 "       move.l  %d0,-(%sp)                  \n"
 "       jsr     mfp_dispatch                \n"
-"       addq.l  #4,%sp                      \n"
+"       addq.l  #8,%sp                      \n"
 "       lea     (%sp),%a0                   \n"   /* struct pt_regs *   */
 "       move.l  %a0,-(%sp)                  \n"
 "       jsr     task_ret_to_user            \n"

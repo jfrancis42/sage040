@@ -136,7 +136,7 @@ static void note(char c)
 
 static u32 now_ms(void)
 {
-    return times() * (1000 / HZ);
+    return times(0) * (1000 / HZ);
 }
 
 static void catch(int sig, sighandler_t h, u32 flags, sigset_t mask)

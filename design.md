@@ -726,7 +726,7 @@ machine being small. The machine is not small now — 64 MB of RAM and a
 | **A C library** | picolibc or newlib over a dozen syscall stubs |
 | Pipelines | `pipe`, `dup2`, `SIGPIPE`, and `\|` `>` `>>` `<` in the shell |
 | The console | VT102 emulation, `TIOCGWINSZ`, termcap, curses |
-| POSIX surface | timers, subprocesses, and a dozen small calls (signal handlers and `select`/`poll` ✅) |
+| POSIX surface | subprocesses, and a dozen small calls (signals, `select`/`poll`, timers ✅) |
 | Sockets | the rest of the Linux socket API, and fixing the signatures |
 | Long file names | VFAT, and why not a different filesystem |
 | `fsck` | and a clean-unmount flag to say when it is needed |
@@ -994,10 +994,10 @@ only when somebody asks, so a socket has nothing that would wake a
 queue until a waiting task polls it anyway. Readiness comes from a new
 `file_ops->poll`, or from `FIONREAD` for a file that has none.
 
-**(6) Interval timers.** `timer_create`/`timer_settime`, or the older
-`setitimer`. The tick is already there and `sleep_on_timeout` already
-expresses a deadline; what is missing is per-task timers that deliver a
-signal rather than waking a sleeper. ~150 lines, and it depends on (4).
+**(6) Interval timers. Done:** `alarm`, and `setitimer`/`getitimer` with
+all three timers. The tick charges each task's time to user or system
+from the registers it interrupted, which is what `ITIMER_VIRTUAL`, `ITIMER_PROF`
+and `times()`'s `struct tms` needed. `timer_create` is not here.
 
 **(8) The small missing calls.** Individually trivial, collectively the
 difference between a program building and not:

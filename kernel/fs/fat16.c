@@ -38,6 +38,7 @@
  *   something checks, and then fails a check it should pass.  Every FAT
  *   write goes to all copies.
  */
+#include "timer.h"
 #include "vfs.h"
 #include "dev.h"
 #include "time.h"
@@ -101,12 +102,14 @@ static void put_le32(u8 *p, u32 v)
 
 static void fs_now(u16 *date, u16 *time)
 {
-    struct rtcdev *r = dev_rtc();
+    struct timeval tv;
     struct tm now;
-    time_t secs;
 
-    if (r && r->get(r, &secs) == 0) {
-        gmtime_r(secs, &now);
+    /* The same clock time() reads, so a file just written is never
+     * stamped later than the time a program then asks for. */
+    clock_get(&tv);
+    if (tv.tv_sec > 0) {
+        gmtime_r((time_t)tv.tv_sec, &now);
         *date = tm_to_fat_date(&now);
         *time = tm_to_fat_time(&now);
         if (*date != 0) {

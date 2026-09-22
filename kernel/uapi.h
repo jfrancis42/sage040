@@ -310,6 +310,54 @@ struct statfs {
  * nothing outside it knows where one ends. In raw mode, which is what a
  * program that polls a terminal uses, readable means exactly that.
  */
+struct timeval {
+    s32 tv_sec;
+    s32 tv_usec;
+};
+
+/*
+ * Timers and the clock. Linux's numbers, which m68k shares with i386
+ * for everything this old.
+ *
+ * ITIMER_REAL counts wall time and raises SIGALRM; ITIMER_VIRTUAL
+ * counts the time the process runs in USER mode and raises SIGVTALRM;
+ * ITIMER_PROF counts user and system time and raises SIGPROF. All three
+ * run at the resolution of the tick, 10 ms, and a value shorter than a
+ * tick is rounded up to one rather than to nothing. alarm() is
+ * ITIMER_REAL in whole seconds, and the two share one timer, as they do
+ * on Linux.
+ *
+ * gettimeofday() and time() read the same clock, so they cannot
+ * disagree; see timer.c. The timezone argument is accepted and ignored,
+ * as it is almost everywhere.
+ */
+#define __NR_alarm          27
+#define __NR_gettimeofday   78
+#define __NR_settimeofday   79
+#define __NR_setitimer     104
+#define __NR_getitimer     105
+
+#define ITIMER_REAL         0
+#define ITIMER_VIRTUAL      1
+#define ITIMER_PROF         2
+
+struct itimerval {
+    struct timeval it_interval;     /* reload value; zero: one shot */
+    struct timeval it_value;        /* time left; zero: disarmed    */
+};
+
+/*
+ * What times() fills in, in ticks (clock_t, HZ per second). The
+ * children's figures are for children that have been waited for,
+ * as POSIX says.
+ */
+struct tms {
+    u32 tms_utime;
+    u32 tms_stime;
+    u32 tms_cutime;
+    u32 tms_cstime;
+};
+
 #define __NR_select     82
 #define __NR__newselect 142
 #define __NR_poll      168
@@ -329,11 +377,6 @@ struct pollfd {
     int fd;
     short events;
     short revents;
-};
-
-struct timeval {
-    s32 tv_sec;
-    s32 tv_usec;
 };
 
 #define FD_SETSIZE      1024
@@ -581,9 +624,10 @@ struct job_info {
 };
 
 /*
- * times() here returns ticks since boot and takes no struct tms: there
- * are no processes to account time to. The number is Linux's; the
- * meaning is the subset of it that makes sense.
+ * times() returns ticks since boot, and fills in a struct tms if it is
+ * given one: this task's user and system time, and its waited-for
+ * children's. It used to take no argument, from before there was
+ * anything to account time to.
  */
 #define __NR_times      43
 #define __NR_nanosleep 162
