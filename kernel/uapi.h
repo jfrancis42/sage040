@@ -767,6 +767,35 @@ struct fsck_report {
 };
 
 /*
+ * memctl: what memory is doing, which sysinfo() has no fields for.
+ *
+ * memctl(MEMCTL_STATS, 0, &memstats): the page allocator, and the cache
+ * of read-only file pages that shared libraries' text lives in
+ * (kernel/textcache.c).
+ *
+ * memctl(MEMCTL_PAGE, va, &pageinfo): the physical page behind one of
+ * the CALLER's addresses, and how many address spaces hold it. What a
+ * test of sharing needs, and only about the caller's own memory -- a
+ * physical address says nothing another process could use.
+ */
+#define __NR_memctl    1004
+#define MEMCTL_STATS   1
+#define MEMCTL_PAGE    2
+
+struct memstats {
+    u32 pages_total, pages_free;
+    u32 tc_cached;              /* file pages held for sharing        */
+    u32 tc_hits, tc_misses;     /* mappings that found one / read one */
+    u32 tc_evicted, tc_forgotten;
+};
+
+struct pageinfo {
+    u32 pa;                     /* 0: not mapped                      */
+    u32 refs;                   /* address spaces (and the cache) holding it */
+    u32 writable;
+};
+
+/*
  * What spawn() returns when the program was stopped by ctrl-Z rather
  * than finishing. It is still in the job table, still holding the
  * program area, and `fg` will resume it.
@@ -937,9 +966,11 @@ struct timespec {
 /*
  * What sysinfo() fills in.
  *
- * Linux's call, with Linux's number and a cut-down version of its
- * structure: the fields that mean something on a machine with no swap
- * and no load average are there and the rest are not. `mem_unit` is
+ * Linux's call, number AND structure -- Linux/m68k's, field for field,
+ * 64 bytes. It was a cut-down version holding only the fields that
+ * meant something here, which is an ABI of this system's own under a
+ * Linux name: a program compiled for Linux read its fields from the
+ * wrong offsets. There is no load average, so `loads` is zero. `mem_unit` is
  * Linux's way of reporting sizes in something other than bytes, and it
  * is the page size here -- which is the unit the allocator actually
  * works in, so reporting anything else would be arithmetic performed in
@@ -947,10 +978,18 @@ struct timespec {
  */
 struct sysinfo {
     u32 uptime;                 /* seconds since boot            */
+    u32 loads[3];               /* always 0: no load average     */
     u32 totalram;               /* in mem_unit                   */
     u32 freeram;
-    u32 procs;                  /* jobs that exist               */
+    u32 sharedram;              /* pages more than one space holds */
+    u32 bufferram;              /* the file-page cache, when only it
+                                 * holds them: free for the asking */
+    u32 totalswap, freeswap;
+    u16 procs;                  /* jobs that exist               */
+    u16 pad;
+    u32 totalhigh, freehigh;    /* 0: there is no high memory    */
     u32 mem_unit;               /* bytes per unit: the page size */
+    u8  _f[8];
 };
 
 /* What uname() fills in. */
@@ -1134,6 +1173,7 @@ struct sigcontext {
 #define __NR_getdents64    220
 #define __NR_madvise       238
 #define __NR_clock_gettime 260
+#define __NR_clock_getres  261
 #define __NR_statfs64      263
 #define __NR_fstatfs64     264
 #define __NR_openat        288

@@ -608,6 +608,20 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
     case __NR_clock_gettime:
         return do_clock_gettime((int)a1, a2);
 
+    case __NR_clock_getres: {
+        /* Every clock here counts in ticks, so a tick is the answer. */
+        struct timespec ts;
+
+        if ((int)a1 != CLOCK_REALTIME && (int)a1 != CLOCK_MONOTONIC &&
+            (int)a1 != CLOCK_PROCESS_CPUTIME_ID &&
+            (int)a1 != CLOCK_THREAD_CPUTIME_ID) {
+            return -EINVAL;
+        }
+        ts.tv_sec = 0;
+        ts.tv_nsec = 1000000000UL / HZ;
+        return a2 ? store(a2, &ts, sizeof(ts)) : 0;
+    }
+
     case __NR_getrlimit:
     case __NR_ugetrlimit:
         return do_getrlimit((int)a1, a2);

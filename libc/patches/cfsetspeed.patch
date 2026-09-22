@@ -1,0 +1,38 @@
+picolibc 1.8.12: libos/linux/cfsetspeed.c defines cfsetospeed, a second
+time, instead of cfsetspeed -- so cfsetspeed does not exist, and linking
+the whole library (libc.so) fails on the duplicate. And none of the
+three returns a value, which the build's -Wno-return-type hides: POSIX
+says 0 on success. Found building libc.so. Not specific to m68k.
+
+diff -ru a/libos/linux/cfsetispeed.c b/libos/linux/cfsetispeed.c
+--- a/libos/linux/cfsetispeed.c	2026-09-22 00:03:40.493835228 -0600
++++ b/libos/linux/cfsetispeed.c	2026-09-22 00:03:40.515220993 -0600
+@@ -41,4 +41,5 @@
+     if (speed == 0)
+         speed = termios->c_ospeed;
+     termios->c_ispeed = speed;
++    return 0;
+ }
+diff -ru a/libos/linux/cfsetospeed.c b/libos/linux/cfsetospeed.c
+--- a/libos/linux/cfsetospeed.c	2026-09-22 00:03:40.491721568 -0600
++++ b/libos/linux/cfsetospeed.c	2026-09-22 00:03:40.515172843 -0600
+@@ -39,4 +39,5 @@
+ cfsetospeed(struct termios *termios, speed_t speed)
+ {
+     termios->c_ospeed = speed;
++    return 0;
+ }
+diff -ru a/libos/linux/cfsetspeed.c b/libos/linux/cfsetspeed.c
+--- a/libos/linux/cfsetspeed.c	2026-09-22 00:03:40.489554328 -0600
++++ b/libos/linux/cfsetspeed.c	2026-09-22 00:03:40.515113718 -0600
+@@ -36,8 +36,9 @@
+ #include <termios.h>
+ 
+ int
+-cfsetospeed(struct termios *termios, speed_t speed)
++cfsetspeed(struct termios *termios, speed_t speed)
+ {
+     termios->c_ospeed = speed;
+     termios->c_ispeed = speed;
++    return 0;
+ }

@@ -13,6 +13,23 @@ make -C libc/test             # a program built against it
 It installs outside the tree, the way the toolchain and the emulator do:
 `~/m68k/sage040-libc`, or `$SAGE_LIBC`.
 
+Two ways to link against it, chosen by `LINK` in `libc.mk`:
+
+- **static** (the default): the library is copied into the program,
+  which then runs on any disk.
+- **`LINK=dynamic`**: the program uses `/lib/libc.so` through
+  `/lib/ld.so` (`../ldso/`), and every process shares one copy of libc's
+  text in memory. `make programs` installs both onto `hd.img`.
+  `programmer-guide.md`, *Shared libraries*, covers building a library
+  of your own.
+
+`build.sh` builds the sources twice for that: once as the static
+`libc.a`, and once `-fPIC` for `libc.so`, linked with `libc-so.ld`.
+That script is GNU ld's own for `-shared` with three changes, each
+marked `SAGE040` and explained where it is; the one worth knowing about
+is that libgcc, which is not position independent, goes in the data
+segment so the text stays free of relocations.
+
 ## Why this was a small port
 
 picolibc already runs on Linux. `libos/linux` is a POSIX layer over
@@ -79,6 +96,10 @@ arrays), so they come out the same under m68k's two-byte alignment of
   termcap from them.
 - **One thread per process**, so picolibc is built without thread-local
   storage or locking, and `errno` is an ordinary global.
+- **A function's address is canonical**, as C requires: a dynamic
+  program's `&printf` is the program's own PLT entry, and `ld.so` hands
+  the same address to any library that asks. It is not an address inside
+  libc.so.
 
 ## Licence
 

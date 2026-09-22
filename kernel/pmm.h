@@ -55,6 +55,16 @@ u32  pmm_alloc(void);
 void pmm_free(u32 pa);
 
 /*
+ * Sharing a page. pmm_ref() adds a holder -- 1, or 0 if `pa` is not an
+ * allocated page or the count is full, in which case the caller must
+ * make its own copy instead. Every holder gives it back with pmm_free(),
+ * and the page is free again when the last one has. pmm_refcount() is
+ * how many hold it now: 0 for a free page, 1 for the usual owned page.
+ */
+int  pmm_ref(u32 pa);
+u32  pmm_refcount(u32 pa);
+
+/*
  * `n` pages that are next to each other, or 0.
  *
  * Needed because a stack has to be contiguous: it grows downward

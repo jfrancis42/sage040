@@ -1762,9 +1762,16 @@ static int run_builtin(int argc)
             out_putdec_pad(si.totalram, 10);
             out_putdec_pad(si.totalram * kb, 9);
             out_putc('\n');
+            /* "used" leaves out the cache, as Linux's free does: those
+             * pages are held only in case somebody maps the file again,
+             * and are given up the moment memory is wanted. */
             out_puts("used   ");
-            out_putdec_pad(si.totalram - si.freeram, 10);
-            out_putdec_pad((si.totalram - si.freeram) * kb, 9);
+            out_putdec_pad(si.totalram - si.freeram - si.bufferram, 10);
+            out_putdec_pad((si.totalram - si.freeram - si.bufferram) * kb, 9);
+            out_putc('\n');
+            out_puts("cache  ");
+            out_putdec_pad(si.bufferram, 10);
+            out_putdec_pad(si.bufferram * kb, 9);
             out_putc('\n');
             out_puts("free   ");
             out_putdec_pad(si.freeram, 10);

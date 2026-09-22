@@ -56,6 +56,8 @@ const char *strerror(int err)
     case EPROTONOSUPPORT: return "protocol not supported";
     case EOPNOTSUPP:      return "operation not supported";
     case EOVERFLOW:       return "value too large for defined data type";
+    case ELIBACC:         return "cannot access a needed shared library";
+    case ELIBBAD:         return "accessing a corrupted shared library";
     case EAFNOSUPPORT:    return "address family not supported";
     case ENOBUFS:         return "no buffer space available";
     case EISCONN:         return "transport endpoint is already connected";

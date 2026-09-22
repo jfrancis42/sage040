@@ -21,7 +21,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: all boot run test tests fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest libc cube programs clean distclean
+.PHONY: all boot run test tests fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest libc cube programs clean distclean
 
 all:
 	$(MAKE) -C bootrom
@@ -50,12 +50,13 @@ boot: programs
 programs:
 	$(MAKE) -C system install
 	$(MAKE) -C apps install
+	$(MAKE) -C ldso install
 
 # The kernel without the boot ROM in the way. Same kernel, quicker loop.
 run:
 	$(MAKE) -C kernel run
 
-test: tests fstest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest
+test: tests fstest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest
 
 tests:
 	$(MAKE) -C tests run
@@ -93,6 +94,9 @@ dnstest:
 tcptest:
 	cd kernel && ./tcptest.sh
 
+sotest:
+	cd kernel && ./sotest.sh
+
 # picolibc, built and installed outside the tree (libc/README.md). Once.
 libc:
 	libc/build.sh
@@ -111,6 +115,7 @@ clean:
 	$(MAKE) -C cube clean
 	$(MAKE) -C system clean
 	$(MAKE) -C apps clean
+	$(MAKE) -C ldso clean
 	$(MAKE) -C tests clean
 	#
 	# Everything the test suites write lives in scratch/ -- the disk

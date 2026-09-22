@@ -572,6 +572,27 @@ int vm_protect(struct addrspace *as, u32 va, int flags)
         return -1;
     }
     pa = d & PAGE_ADDR_MASK;
+
+    /*
+     * COPY ON WRITE, done at the only moment write can be granted. A
+     * page with more than one holder is shared -- a library's text from
+     * textcache.c, or a read-only page a fork left in both processes --
+     * and letting one of them write to it would change it under all the
+     * others. So a writable mapping of it gets a page of its own first.
+     * Nothing else in the tree maps a page writable that it did not
+     * just allocate, which is why this one check is enough.
+     */
+    if ((flags & VM_WRITE) && !(flags & VM_NONE) && pmm_refcount(pa) > 1) {
+        u32 copy = pmm_alloc();
+
+        if (!copy) {
+            return -1;
+        }
+        memcpy((void *)copy, (void *)pa, PAGE_SIZE);
+        pmm_free(pa);                   /* one holder fewer */
+        pa = copy;
+    }
+
     if (flags & VM_NONE) {
         pt[PAGE_INDEX(va)] = pa | DESC_SW_NONE;
     } else {
@@ -716,6 +737,25 @@ struct addrspace *vm_clone(struct addrspace *src)
             u32 dst_pt, pa;
 
             if (!desc_owned(d)) {
+                continue;
+            }
+            /*
+             * A page neither process can write is SHARED, not copied:
+             * a library's text, a read-only mapping, a PROT_NONE page.
+             * vm_protect() copies it first if either side later makes
+             * it writable, so the two can never see each other's
+             * writes. For a program linked against libc.so this is
+             * most of what a fork used to copy.
+             */
+            if (((d & DESC_WP) || (d & DESC_SW_NONE)) &&
+                pmm_ref(d & PAGE_ADDR_MASK)) {
+                dst_pt = as_pagetable(as, va, 1);
+                if (!dst_pt) {
+                    pmm_free(d & PAGE_ADDR_MASK);
+                    vm_destroy(as);
+                    return 0;
+                }
+                table(dst_pt)[PAGE_INDEX(va)] = d;
                 continue;
             }
             pa = pmm_alloc();

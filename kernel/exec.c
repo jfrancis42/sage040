@@ -13,10 +13,14 @@
  * by the time a program is loaded there is a filesystem, a seek and room
  * to do it properly.
  *
- * Deliberately not supported: dynamic linking, relocation, shared
- * objects, interpreters. A program is statically linked at a fixed
- * address, which is the only thing that makes sense without an MMU
- * turned on.
+ * A program is linked at a fixed address. A dynamically linked one
+ * also names an INTERPRETER (PT_INTERP) -- /lib/ld.so, ldso/ld.c --
+ * which is loaded beside it, at its own fixed address, and started
+ * first; it finds the program's headers and entry point through the
+ * auxiliary vector below the environment, loads the shared libraries
+ * and relocates everything, then jumps to the program. This file does
+ * no relocation at all: the interpreter is an ET_EXEC too, so it needs
+ * none, and the libraries are ld.so's business, through mmap.
  *
  * Every field is read a byte at a time. ELF32 for m68k is big-endian, so
  * a direct load would work -- but it would work by accident of the
@@ -49,6 +53,39 @@
 #define ET_EXEC       2
 #define EM_68K        4
 #define PT_LOAD       1
+#define PT_INTERP     3
+#define PT_PHDR       6
+
+/*
+ * Where an interpreter may live: the megabyte below the stack's guard
+ * page, which ldso/ld.ld links it into. Anything else offered as an
+ * interpreter is refused, so a program cannot name some other file and
+ * have it placed over its own image.
+ */
+#define LDSO_BASE     0x1fe00000UL
+#define LDSO_END      (USER_BRK_LIMIT)
+
+/* The auxiliary vector's keys, Linux's numbers. */
+#define AT_NULL       0
+#define AT_PHDR       3
+#define AT_PHENT      4
+#define AT_PHNUM      5
+#define AT_PAGESZ     6
+#define AT_BASE       7
+#define AT_FLAGS      8
+#define AT_ENTRY      9
+#define AUXV_WORDS    16
+
+#define INTERP_MAX    64
+
+/* What loading an image learned that the stack needs to say. */
+struct image {
+    u32 entry;
+    u32 phdr;                   /* where its program headers are, loaded */
+    u32 phnum;
+    u32 end;                    /* the highest byte of any segment      */
+    char interp[INTERP_MAX];    /* "" for a static program               */
+};
 
 /* Header offsets, from the specification. */
 #define E_TYPE        16
@@ -205,8 +242,13 @@ static int read_into(struct addrspace *as, int fd, u32 off, u32 va, u32 len)
     return 0;
 }
 
-/* Load every PT_LOAD segment into `as` and return the entry point. */
-static int load_image(struct addrspace *as, int fd, u32 *entry)
+/*
+ * Load every PT_LOAD segment into `as`, and say where things are. `lo`
+ * and `hi` bound where the segments may go: the whole user area for a
+ * program, the interpreter's megabyte for an interpreter.
+ */
+static int load_image(struct addrspace *as, int fd, struct image *img,
+                      u32 lo, u32 hi)
 {
     u8 ehdr[EHDR_SIZE];
     u8 phdr[PHDR_SIZE];
@@ -214,6 +256,9 @@ static int load_image(struct addrspace *as, int fd, u32 *entry)
     int phnum, phentsize, i, err;
     int loaded = 0;
     u32 image_end = 0;
+    u32 *entry = &img->entry;
+
+    memset(img, 0, sizeof(*img));
 
     err = read_at(fd, 0, ehdr, sizeof(ehdr));
     if (err < 0) {
@@ -232,9 +277,10 @@ static int load_image(struct addrspace *as, int fd, u32 *entry)
     if (phoff == 0 || phnum <= 0 || phentsize < PHDR_SIZE) {
         return -ENOEXEC;
     }
-    if (*entry < USER_VA_BASE || *entry >= USER_VA_END) {
+    if (*entry < lo || *entry >= hi) {
         return -ENOEXEC;
     }
+    img->phnum = (u32)phnum;
 
     for (i = 0; i < phnum; i++) {
         u32 type, off, vaddr, filesz, memsz;
@@ -246,14 +292,36 @@ static int load_image(struct addrspace *as, int fd, u32 *entry)
         }
 
         type = be32(&phdr[P_TYPE]);
-        if (type != PT_LOAD) {
-            continue;
-        }
-
         off = be32(&phdr[P_OFFSET]);
         vaddr = be32(&phdr[P_VADDR]);
         filesz = be32(&phdr[P_FILESZ]);
         memsz = be32(&phdr[P_MEMSZ]);
+
+        if (type == PT_INTERP) {
+            if (filesz < 2 || filesz > INTERP_MAX) {
+                return -ENOEXEC;
+            }
+            err = read_at(fd, off, img->interp, filesz);
+            if (err < 0) {
+                return err;
+            }
+            if (img->interp[filesz - 1] != '\0') {
+                return -ENOEXEC;        /* not a string */
+            }
+            continue;
+        }
+        if (type == PT_PHDR) {
+            img->phdr = vaddr;
+            continue;
+        }
+        if (type != PT_LOAD) {
+            continue;
+        }
+        /* Headers inside the first bytes of a loaded segment are loaded
+         * with it; that is where they are when there is no PT_PHDR. */
+        if (!img->phdr && off <= phoff && phoff < off + filesz) {
+            img->phdr = vaddr + (phoff - off);
+        }
 
         if (memsz < filesz) {
             return -ENOEXEC;
@@ -266,8 +334,7 @@ static int load_image(struct addrspace *as, int fd, u32 *entry)
          * has no page tables behind it, so refusing here gives a clear
          * answer instead of a fault during loading.
          */
-        if (vaddr < USER_VA_BASE || vaddr + memsz > USER_VA_END ||
-            vaddr + memsz < vaddr) {
+        if (vaddr < lo || vaddr + memsz > hi || vaddr + memsz < vaddr) {
             return -ENOEXEC;
         }
         /* Leave room for the stack at the top. */
@@ -301,15 +368,7 @@ static int load_image(struct addrspace *as, int fd, u32 *entry)
     if (loaded == 0) {
         return -ENOEXEC;
     }
-
-    /*
-     * The heap starts on the page after the highest segment, which is
-     * where Linux puts it. Page aligned, so the last page of .bss --
-     * already mapped by reserve() -- belongs to the image and not to the
-     * heap, and shrinking the heap can never unmap part of the program.
-     */
-    as->brk_start = PAGE_ALIGN_UP(image_end);
-    as->brk_cur = as->brk_start;
+    img->end = image_end;
     return 0;
 }
 
@@ -330,7 +389,8 @@ static int load_image(struct addrspace *as, int fd, u32 *entry)
  * is unmapped in every address space, so a program that manages to
  * return from _start faults instead of wandering.
  */
-static int setup_stack(int argc, char **argv, char **envp, u32 *out_sp)
+static int setup_stack(int argc, char **argv, char **envp, const u32 *auxv,
+                       u32 auxv_words, u32 *out_sp)
 {
     /* Static: 2 KB of them, too much for a kernel stack, and nothing in
      * here can sleep, so no second exec can be in the middle of it. */
@@ -363,7 +423,19 @@ static int setup_stack(int argc, char **argv, char **envp, u32 *out_sp)
     }
     uenv[envc] = 0;
 
+    /*
+     * The auxiliary vector, immediately after envp's terminating NULL --
+     * which is the only way anything finds it: Linux's layout, and what
+     * ld.so walks. Key and value pairs, ending in AT_NULL. Every program
+     * gets one; a static program has no use for it, and no harm from it.
+     */
     sp &= ~3UL;
+    sp -= auxv_words * 4;
+    err = copy_to_user(sp, auxv, auxv_words * 4);
+    if (err < 0) {
+        return err;
+    }
+
     sp -= (envc + 1) * 4;
     err = copy_to_user(sp, uenv, (envc + 1) * 4);
     if (err < 0) {
@@ -436,6 +508,8 @@ static void describe(char *out, u32 max, int argc, char **argv)
 static int build(struct addrspace *as, const char *path,
                  int argc, char **argv, char **envp, u32 *entry, u32 *sp)
 {
+    static struct image prog, interp;   /* nothing here sleeps */
+    u32 auxv[AUXV_WORDS], n = 0;
     u32 va;
     int fd, err;
 
@@ -443,11 +517,54 @@ static int build(struct addrspace *as, const char *path,
     if (fd < 0) {
         return fd;
     }
-    err = load_image(as, fd, entry);
+    err = load_image(as, fd, &prog, USER_VA_BASE, USER_VA_END);
     fd_close(fd);
     if (err < 0) {
         return err;
     }
+
+    /*
+     * The heap starts on the page after the program's highest segment,
+     * which is where Linux puts it. Page aligned, so the last page of
+     * .bss -- already mapped by reserve() -- belongs to the image and not
+     * to the heap, and shrinking the heap can never unmap part of the
+     * program. Set from the PROGRAM, not the interpreter, which lives
+     * far above it.
+     */
+    as->brk_start = PAGE_ALIGN_UP(prog.end);
+    as->brk_cur = as->brk_start;
+    *entry = prog.entry;
+
+    /*
+     * A dynamically linked program: load its interpreter too, and start
+     * THERE. The interpreter must be a plain program -- one that names
+     * an interpreter of its own is refused, not followed.
+     */
+    interp.entry = 0;
+    if (prog.interp[0]) {
+        fd = fd_open(prog.interp, O_RDONLY);
+        if (fd < 0) {
+            return fd == -ENOENT ? -ELIBACC : fd;
+        }
+        err = load_image(as, fd, &interp, LDSO_BASE, LDSO_END);
+        fd_close(fd);
+        if (err < 0) {
+            return err == -ENOEXEC ? -ELIBBAD : err;
+        }
+        if (interp.interp[0]) {
+            return -ELIBBAD;
+        }
+        *entry = interp.entry;
+    }
+
+    auxv[n++] = AT_PHDR;   auxv[n++] = prog.phdr;
+    auxv[n++] = AT_PHENT;  auxv[n++] = PHDR_SIZE;
+    auxv[n++] = AT_PHNUM;  auxv[n++] = prog.phnum;
+    auxv[n++] = AT_PAGESZ; auxv[n++] = PAGE_SIZE;
+    auxv[n++] = AT_BASE;   auxv[n++] = prog.interp[0] ? LDSO_BASE : 0;
+    auxv[n++] = AT_FLAGS;  auxv[n++] = 0;
+    auxv[n++] = AT_ENTRY;  auxv[n++] = prog.entry;
+    auxv[n++] = AT_NULL;   auxv[n++] = 0;
 
     /*
      * The stack, at the top of the user area, and nothing below it.
@@ -466,7 +583,7 @@ static int build(struct addrspace *as, const char *path,
         }
     }
 
-    return setup_stack(argc, argv, envp, sp);
+    return setup_stack(argc, argv, envp, auxv, n, sp);
 }
 
 /*

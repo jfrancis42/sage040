@@ -31,6 +31,7 @@
 #include "pmm.h"
 #include "vm.h"
 #include "mmap.h"
+#include "textcache.h"
 #include "poll.h"
 #include "pipe.h"
 #include "ptregs.h"
@@ -1679,8 +1680,9 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         si.uptime = timer_jiffies() / HZ;
         si.totalram = pmm_total();
         si.freeram = pmm_available();
+        si.bufferram = textcache_idle();
         si.mem_unit = (u32)PAGE_SIZE;
-        si.procs = (u32)task_count();
+        si.procs = (u16)task_count();
         return store(a1, &si, sizeof(si));
     }
 
@@ -1729,6 +1731,34 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         }
         return a3 ? store(a3, &r, sizeof(r)) : 0;
     }
+
+    case __NR_memctl:
+        if (a1 == MEMCTL_STATS) {
+            struct memstats m;
+            struct tc_stats t;
+
+            textcache_stats(&t);
+            m.pages_total = pmm_total();
+            m.pages_free = pmm_available();
+            m.tc_cached = t.cached;
+            m.tc_hits = t.hits;
+            m.tc_misses = t.misses;
+            m.tc_evicted = t.evicted;
+            m.tc_forgotten = t.forgotten;
+            return store(a3, &m, sizeof(m));
+        }
+        if (a1 == MEMCTL_PAGE) {
+            struct pageinfo pi;
+
+            if (!current->as) {
+                return -ENODEV;
+            }
+            pi.pa = PAGE_ALIGN_DOWN(vm_translate(current->as, a2, 0));
+            pi.refs = pi.pa ? pmm_refcount(pi.pa) : 0;
+            pi.writable = vm_translate(current->as, a2, 1) != 0;
+            return store(a3, &pi, sizeof(pi));
+        }
+        return -EINVAL;
 
     case __NR_socket:
         return sock_create((int)a1, (int)a2, (int)a3);

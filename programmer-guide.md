@@ -906,6 +906,10 @@ include $(TOPDIR)/libc/libc.mk
 from glibc -- mostly that `environ` must be declared by the program and
 `CLOCK_MONOTONIC` wants `_GNU_SOURCE`.
 
+That builds a **static** program, which runs on any disk. `LINK=dynamic`
+(or naming the target `myprog.dyn`) links it against `/lib/libc.so`
+instead -- see *Shared libraries* below.
+
 **Against `lib/ulib`**, this system's own few hundred lines of wrappers,
 for the programs in `apps/` and `system/`: small, no stdio, and the
 system's own calls such as `spawn`. The rest of this section is about
@@ -977,6 +981,70 @@ disk and run. **Programs carry no extension** — the kernel decides what
 is executable by reading the first four bytes of the file, not its name,
 because a FAT16 volume has no execute permission bit to consult. A text
 file named `CUBE.EXE` is still refused.
+
+### Shared libraries
+
+A program built against picolibc can link against **`/lib/libc.so`**
+rather than carry its own copy of the library. It is then a fifth of
+the size -- libctest is 23 KB on disk instead of 118, 18 KB of its own
+in memory instead of 72 -- and, what
+matters more, **every program running shares one copy of libc's text in
+memory**: the kernel hands each process the same physical pages
+(`kernel/textcache.c`), and only libc's data is per process.
+
+```make
+LINK := dynamic
+include $(TOPDIR)/libc/libc.mk
+```
+
+It works the way it does on Linux, deliberately, and nothing about it is
+this system's own invention:
+
+- The program names an interpreter, **`/lib/ld.so`** (`ldso/`), in a
+  `PT_INTERP` header. The kernel loads both and starts the interpreter,
+  which loads each `DT_NEEDED` library -- from `LD_LIBRARY_PATH`, then
+  `/lib` -- relocates everything, runs the libraries' constructors, and
+  jumps to the program.
+- **Every symbol is bound before `main`** (there is no lazy binding). A
+  missing library or a missing symbol is refused at start, exit status
+  127, with a message saying which -- never a crash half way through.
+- `LD_TRACE_LOADED_OBJECTS=1` makes a program list its libraries and
+  stop, as `ldd` does elsewhere.
+- Lookup is the ELF rule: the program first, then the libraries in load
+  order, first definition wins.
+
+**Writing a library of your own:**
+
+```make
+libfoo.so: foo.c
+	$(CC) $(CFLAGS) -fPIC -mcpu=68040 -nostdlib -Wl,-shared \
+	    -Wl,-soname,libfoo.so -Wl,--hash-style=sysv -Wl,-z,now \
+	    $< -L$(SAGE_LIBC)/lib -lc -o $@
+```
+
+`libc/test/Makefile` builds `libsot.so` exactly this way. Three things
+there are not optional:
+
+- **`-Wl,-shared`, not `-shared`.** This toolchain's gcc is the
+  bare-metal `m68k-elf` one, and its driver passes neither `-shared` nor
+  `-static` on to the linker. `-shared` alone quietly produces an
+  executable.
+- **`-fPIC`**, so the library's text holds no absolute addresses and can
+  be shared. A library built without it still works -- ld.so applies its
+  text relocations -- but each process then has its own copy of every
+  page that needed one.
+- **`--hash-style=sysv`**, which is the table `ld.so` reads.
+
+A function's address is the same in the program and every library, as C
+requires: when a program calls `printf`, the linker gives `printf` an
+address in the program's own PLT, and `ld.so` hands that address to any
+library that asks for `&printf`. (So `&printf` in a program is not an
+address inside libc -- which only matters to a test that goes looking
+for libc's pages, as `libc/test/sotest.c` explains.)
+
+**Private memory.** A read-only page of a library is shared; making it
+writable (`mprotect`) gives the process its own copy first, so no
+process can ever change another's code. Library data is always private.
 
 ### The memory a program gets
 
@@ -1487,7 +1555,8 @@ older copy should know which way round it is now.
 - **Map the framebuffer.** `mmap` exists, but `/dev/fb0` does not
   support it yet, so drawing goes through the `FBIO_*` ioctls rather
   than through the memory itself.
-- **Resolve a name.** Addresses are numeric; there is no DNS.
+- **Resolve a name through picolibc.** `lib/ulib` has `resolve_host()`
+  (`/etc/hosts`, then DNS); picolibc has no `getaddrinfo` yet.
 
 `design.md` §11 is the open-items list, and `emacs.md` costs the whole
 set out against one real program.

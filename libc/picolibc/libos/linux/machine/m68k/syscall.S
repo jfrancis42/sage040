@@ -62,7 +62,11 @@ syscall:
         cmp.l   #-4095,%d0
         bcs.s   1f                      | below -4095 unsigned: a result
         move.l  %d0,-(%sp)
+#ifdef __PIC__
+        bsr.l   _syscall_error@PLTPC    | libc.so: no absolute address in text
+#else
         jsr     _syscall_error
+#endif
         addq.l  #4,%sp
 1:      rts
         .size   syscall, . - syscall

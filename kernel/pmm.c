@@ -22,9 +22,24 @@
  * That was true of the machine and false of the emulator, which accepts
  * up to 2 GB -- and the failure was silent, because pmm_init() clamped
  * to MAX_PAGES and reported the clamped figure as though it were the
- * memory found. Scaling it costs one page per 128 MB.
+ * memory found. Scaling it costs one page per 128 MB -- and the
+ * reference counts below, placed after it, two bytes a page.
  */
 static u8 *bitmap;
+
+/*
+ * REFERENCES BEYOND THE FIRST, one count per page, placed after the
+ * bitmap the same way. Zero for almost every page: an allocated page has
+ * one owner and pmm_free() gives it back. A page shared between address
+ * spaces -- a shared library's text, from textcache.c -- is counted up
+ * by pmm_ref() for each extra holder, and pmm_free() only counts it down
+ * until the last one lets go.
+ *
+ * Counting the EXTRA references, rather than all of them, is what lets
+ * every existing caller stay as it is: pmm_alloc() did not have to learn
+ * to set a count, and a page nobody shares frees exactly as before.
+ */
+static u16 *refs;
 static u32 base;                /* physical address of page 0 of the pool */
 static u32 total;
 static u32 used;
@@ -67,6 +82,8 @@ void pmm_init(u32 first, u32 last)
      * address is physical either way.
      */
     map_bytes = (pages + 7) / 8;
+    map_bytes = (map_bytes + 1) & ~1UL;         /* refs[] is u16 */
+    map_bytes += pages * sizeof(u16);
     map_pages = (map_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
 
     if (map_pages >= pages) {
@@ -77,6 +94,7 @@ void pmm_init(u32 first, u32 last)
 
     bitmap = (u8 *)base;
     memset(bitmap, 0, map_pages * PAGE_SIZE);
+    refs = (u16 *)(base + (((pages + 7) / 8 + 1) & ~1UL));
 
     total = pages;
 
@@ -120,6 +138,10 @@ void pmm_free(u32 pa)
         return;
     }
     i = (pa - base) / PAGE_SIZE;
+    if (i < total && test_bit(i) && refs[i]) {
+        refs[i]--;              /* somebody else still has it */
+        return;
+    }
     if (i >= total || !test_bit(i)) {
         /*
          * Freeing something twice, or something that was never ours.
@@ -173,6 +195,35 @@ void pmm_free_pages(u32 pa, u32 n)
         pmm_free(pa);
         pa += PAGE_SIZE;
     }
+}
+
+int pmm_ref(u32 pa)
+{
+    u32 i;
+
+    if (pa < base) {
+        return 0;
+    }
+    i = (pa - base) / PAGE_SIZE;
+    if (i >= total || !test_bit(i) || refs[i] == 0xffff) {
+        return 0;               /* not a page, or shared by 65536 already */
+    }
+    refs[i]++;
+    return 1;
+}
+
+u32 pmm_refcount(u32 pa)
+{
+    u32 i;
+
+    if (pa < base) {
+        return 0;
+    }
+    i = (pa - base) / PAGE_SIZE;
+    if (i >= total || !test_bit(i)) {
+        return 0;
+    }
+    return 1 + (u32)refs[i];
 }
 
 u32 pmm_total(void)

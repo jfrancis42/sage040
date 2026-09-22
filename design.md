@@ -210,7 +210,8 @@ catch a byte-order error, because both directions swap.
 | `fsck`, clean-unmount flag, check at boot | ✅ done — task 15 |
 | `mmap`/`brk` | ✅ done — `vm.c`, `mmap.c` |
 | TCP options — window scaling, timestamps, SACK, keepalives, `TIME_WAIT` | ✅ done — task 19 |
-| Pipes and redirection, paging, shared libraries | ✗ open — §11 |
+| Shared libraries — `/lib/ld.so`, `/lib/libc.so`, shared text pages | ✅ done — task 20 |
+| Paging and swapping | ✗ open — §11 |
 
 **Every hardware dependency is satisfied**, and has been for some time.
 What the machine now runs is described in **[`os.md`](os.md)**; what is
@@ -752,7 +753,7 @@ machine being small. The machine is not small now — 64 MB of RAM and a
 | Long file names | VFAT, and why not a different filesystem |
 | `fsck` | and a clean-unmount flag to say when it is needed |
 | TCP | ✅ window scaling, timestamps, SACK, keepalives, a real `TIME_WAIT` |
-| Shared libraries | downstream of `mmap` and a libc |
+| Shared libraries | ✅ `ld.so`, `libc.so`, and one copy of their text in memory |
 | Paging | downstream of `mmap`, and what makes a big address space affordable |
 
 `emacs.md` is the same list approached from the other end: one real
@@ -1261,24 +1262,36 @@ Being able to run the *host's* `fsck.fat` over the same image afterwards
 is the thing that makes this testable, and it is the same argument that
 chose FAT16 in the first place.
 
-### Shared libraries
+### Shared libraries — done (task 20)
 
-Moved up from "deliberately not doing this". Everything is statically
-linked and each program carries its own copy of `ulib` at ~12 KB, which
-is not yet a real cost and becomes one the moment there is a libc worth
-the name -- a picolibc-linked editor is not 12 KB.
+Kept as a record of how, because every step of the plan that stood here
+changed shape on contact:
 
-What it needs, and the order:
+1. **Position-independent code** is what the plan said, and libc is
+   built `-fPIC` -- a second picolibc build, since PIC costs a register.
+   **libgcc is not PIC** and there is no PIC build of it, so its code is
+   renamed and placed in libc.so's *data* segment (`libc/libc-so.ld`):
+   its absolute addresses become data relocations, in a few pages each
+   process copies anyway, and the rest of the text has no relocations at
+   all. `build.sh` refuses a libc.so with `DT_TEXTREL`, or with anything
+   left undefined.
+2. **`mmap`** places the segments, from `ld.so`, as planned.
+3. **The ELF loader** learned `PT_INTERP` and `PT_PHDR` and an auxiliary
+   vector -- and nothing about `.dynamic`, `.got` or `.plt`, which the
+   plan had it learning. Those are `ld.so`'s. `ld.so` is itself linked at
+   a fixed address, so the kernel relocates nothing and neither does
+   `ld.so` relocate itself.
+4. **The dynamic linker** binds eagerly -- no lazy binding, no resolver
+   trampoline -- so a missing symbol is a refusal before `main`.
+5. **Sharing pages** needed a reference count per page in `pmm.c`, a
+   cache of read-only file pages (`textcache.c`) that mmap consults, and
+   one rule in `vm_protect()`: a page anyone else holds is copied before
+   it is made writable. That rule is copy-on-write without a fault
+   handler, and it is why nothing in the fault path had to change.
 
-1. **Position-independent code.** The 68040 has PC-relative addressing
-   with a 16-bit displacement, and `-fPIC` on m68k reaches the GOT
-   through `a5`. Conventional, and GCC supports it.
-2. **`mmap`**, to place segments. Downstream of *Memory* above.
-3. **`.dynamic`, `.got`, `.plt`** in the ELF loader, which currently
-   reads program headers and nothing else.
-4. **A dynamic linker** -- a program that runs before the program.
-5. **Sharing the physical pages** between address spaces, which `vm.c`
-   can express and nothing currently asks it to.
+What was learned the hard way is in the working notes and `progress.md`: this
+gcc's driver passes neither `-static` nor `-shared` to the linker, and
+a program's `&printf` is its own PLT entry.
 
 ### Paging and swapping
 

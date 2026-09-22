@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: 20 of 23 complete.**
+**Status: 21 of 23 complete.**
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -49,7 +49,7 @@ drive almost all of it:
 | 17 | Build and run vi | the other one | **done** |
 | 18 | A resolver (DNS), then **NTP** | independent of the editor work; both are UDP clients and NTP wants a name | **done** |
 | 19 | TCP: window scaling, timestamps, SACK, keepalives, real `TIME_WAIT` | was "deliberately not doing"; now on the list | **done** |
-| 20 | Shared libraries | downstream of `mmap` and the libc | todo |
+| 20 | Shared libraries | downstream of `mmap` and the libc | **done** |
 | 21 | Paging and swapping | downstream of `mmap` | todo |
 | 22 | Interrupt-driven input **and disk**, the NVRAM, the static limits | cleanup, any time | todo |
 | 23 | Regression tests throughout | every task ships with its tests | ongoing |
@@ -1167,6 +1167,90 @@ redirection truncates the log**. The checks then graded the previous
 run's log and passed. All five now source `../machine.conf`, `runtest.sh`
 likewise, and every suite deletes its log before starting QEMU, so a run
 that never reaches the guest has nothing to grade.
+
+### 20. Shared libraries — done
+
+**The ELF model, unchanged:** a dynamic program names `/lib/ld.so` in
+`PT_INTERP`; the kernel loads both, puts an auxiliary vector after the
+environment, and starts `ld.so`, which loads the `DT_NEEDED` libraries
+(`LD_LIBRARY_PATH`, then `/lib`) with `mmap`, relocates everything --
+`R_68K_32`, `PC32`, `GLOB_DAT`, `JMP_SLOT`, `RELATIVE` and `COPY` --
+runs the libraries' initialisers and jumps to the program.
+
+- **`ld.so`** (`ldso/`, 4.6 KB, freestanding) is linked `ET_EXEC` at
+  0x1fe00000, which Linux also accepts, so nobody relocates it. Binding
+  is eager: a missing library or symbol is refused before `main`, status
+  127. `LD_TRACE_LOADED_OBJECTS` works as `ldd` does. Function addresses
+  are canonical across modules, by the ELF rule.
+- **`libc.so`** is picolibc built a second time with `-fPIC`
+  (`libc/build.sh`, `libc/libc-so.ld`). libgcc is not PIC, so its code
+  is renamed and put in the data segment; the text has no relocations,
+  and `build.sh` refuses the library if it has any, or leaves a symbol
+  undefined.
+- **`crt0-dyn.s`** runs the program's own constructors (libc.so's
+  `__libc_init_array` walks libc's) and registers its destructors with
+  `atexit`, so they run before libc's flush of stdout.
+- **`LINK=dynamic`** in `libc.mk`, and `NAME.dyn` targets. **uEmacs and
+  vi are now dynamic**: 113 KB and 150 KB on disk, from 169 and 203.
+
+**Sharing the pages** -- the point, since disk is not scarce:
+- `pmm.c` keeps a reference count per page (holders beyond the first,
+  so every existing `pmm_free` caller is unchanged);
+- `textcache.c` holds one copy of each page of a file mapped privately
+  and read-only, keyed by inode and offset, and `mmap` takes those pages
+  from it. The VFS makes it forget a file on write, `O_TRUNC`, truncate,
+  unlink, rename, fsck repair and unmount;
+- `fork` shares every page neither side can write;
+- `vm_protect()` copies a page anyone else holds before making it
+  writable -- copy-on-write, at the one moment write can be granted.
+
+`memctl` (1004) reports the cache and, for tests, the physical page
+behind one of the caller's own addresses.
+
+**Tests:** `kernel/sotest.sh`, a new suite, 117 checks:
+- `sotest` (`libc/test/sotest.c`) against `libsot.so` and `libc.so`: a
+  library's function, variable (COPY), constructor, and its own call
+  into libc; one address for a function everywhere; libc's text on the
+  SAME physical page in a separately exec'd program and in a forked
+  child, found in the cache; the library's data private; `mprotect`
+  giving one process its own copy while the child keeps the shared one.
+- from the shell: a library replaced by `cp`, and rewritten in place
+  without truncating, seen by the next program; a mapping of a file
+  truncated and not written showing zeroes; a file moved into the slot
+  (and so the inode number) of a deleted one, and one moved over an
+  existing file, each showing its own bytes -- with a check that the
+  inode number really was reused, without which those two would prove
+  nothing; `LD_LIBRARY_PATH`; `LD_TRACE_LOADED_OBJECTS`; a missing
+  symbol, a missing library, a missing `ld.so` (`ELIBACC`).
+- libctest, all 90 checks, linked dynamically.
+
+**Negative controls**, all caught: mmap not using the cache (4 checks);
+no forget on write, on `O_TRUNC`, on unlink, on rename (one each -- the
+last two only after the harness was made to reuse an inode, since a
+rename within a directory keeps its slot); no copy in `vm_protect`
+(1); `fork` copying everything (2); `ld.so` without canonical function
+addresses (1).
+
+**Found on the way:**
+- **This gcc passes neither `-static` nor `-shared` to the linker.**
+  With libc.so installed beside libc.a, `libc.mk`'s "static" link was
+  producing a dynamic program asking for `/usr/lib/libc.so.1`, and
+  `-shared` made an executable. Both now go as `-Wl,`, and `libc.mk`
+  refuses a static program with a `PT_INTERP`. The ports' build scripts
+  had the same bare `-lc` and would have broken on their next build.
+- **picolibc 1.8.12's `cfsetspeed.c` defines `cfsetospeed`** -- so there
+  is no `cfsetspeed`, and linking the whole library fails -- and none of
+  the three `cfset*speed` returns a value (`patches/cfsetspeed.patch`).
+- **`clock_getres` existed nowhere**, kernel or libc, though picolibc's
+  `timespec_getres` calls it.
+- **libctest exec'd `/LIBCTEST` by name**, so its dynamic build tested
+  the static one's exit status; it now execs itself.
+- **`struct sysinfo` was not Linux's.** It was a cut-down private
+  layout under Linux's number, so a Linux program read its fields from
+  the wrong offsets. It is Linux/m68k's now, 64 bytes, with `bufferram`
+  counting the cache's idle pages and `free` showing them as "cache" --
+  which is what apitest's leak check needed once the cache kept pages
+  after a program exited: used before 192, after 192.
 
 ## Decisions worth knowing about
 

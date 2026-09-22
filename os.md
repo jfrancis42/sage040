@@ -187,6 +187,27 @@ disappearance is the signature.
 indirection and then writes the used and modified bits back over the
 *indirect pointer*, corrupting the page table on first access.
 
+### Shared pages
+
+A page can belong to more than one address space. `pmm.c` keeps a
+reference count beside its bitmap -- the number of holders *beyond the
+first*, so a page nobody shares frees exactly as it always did -- and
+two things use it:
+
+- **`textcache.c`**, which holds one copy of any page of a file mapped
+  privately and read-only. That is how a shared library's text is
+  shared: `ld.so` maps libc's text read-only, and every process that
+  does so gets the same physical pages. A write, truncate, unlink or
+  rename of the file makes the cache forget it (the VFS calls in), and
+  when the table is full a page only the cache still holds is given up.
+- **`fork`**, which shares every page neither side can write instead of
+  copying it.
+
+Nothing in the fault path knows about any of this, and nothing needs
+to: the only way a page becomes writable is `vm_protect()`, and that
+gives the caller a private copy first when anyone else holds the page.
+Copy-on-write, done eagerly, at the one moment write can be granted.
+
 ### Reaching into a program
 
 A system call that takes a pointer cannot dereference it. The address
@@ -518,12 +539,14 @@ deliberately did *not* do, on the grounds that a machine talking to its own
 LAN is not where the internet's congestion is decided. That reasoning held
 exactly as long as the only network was QEMU's NAT.
 
-Still absent, each on purpose: window scaling, SACK, timestamps, PAWS, path
-MTU discovery, Nagle. All but the last are negotiated options that a peer
-works fine without. Nagle is left out because a machine with a 4 KB send
-buffer and a human on the other end is not where the forty-byte-header
-problem gets solved, and coalescing would make an interactive session
-worse.
+And the negotiated options: **window scaling, timestamps with PAWS, and
+SACK** (RFC 7323, RFC 2018), on 64 KB send and 128 KB receive buffers;
+**keepalives** with Linux's `TCP_KEEP*` options; and a **60-second
+`TIME_WAIT`** that a reset does not cut short.
+
+Still absent, each on purpose: path MTU discovery, and Nagle -- a human
+on the other end is not where the forty-byte-header problem gets
+solved, and coalescing would make an interactive session worse.
 
 ### On a real LAN
 
@@ -558,7 +581,16 @@ command-line interface.
 
 `ulib` is a thin wrapper over the system calls plus the handful of string
 and output helpers that every program needs, and `lib/malloc.c`, a
-stand-in allocator. **There is no stdio and no libc.**
+stand-in allocator. Anything written the way programs are written
+elsewhere is built against **picolibc** instead (`libc/`), whose Linux
+layer runs unchanged because the system calls are Linux/m68k's.
+
+A picolibc program can be **dynamically linked**: `PT_INTERP` names
+`/lib/ld.so` (`ldso/`), which the kernel loads beside the program and
+starts first; it loads `/lib/libc.so` and any other `DT_NEEDED`
+library, binds every symbol before `main`, and jumps to the program.
+The editors in `ports/` are built that way. `programmer-guide.md` has
+the details, and why each is as it is.
 
 `crt0.s` reads `argc` and `argv` at `4(%sp)` and `8(%sp)`, not 0 and 4 —
 the kernel enters a program with `jsr`, which pushes a return address
@@ -604,16 +636,27 @@ the machine instead of ending it.
 
 ## Testing
 
-106 checks across five suites, all of which boot the machine and drive it
-over its serial line:
+Fourteen suites, `make test`, all of which boot the machine and drive it
+over its serial line -- 890 checks as of task 20:
 
 | | | |
 |---|---|---|
 | `tests/` | 12 programs | devices: UART, ATA, MFP, RTC, keyboard, SM501 |
-| `kernel/fstest.sh` | 39 | the filesystem, verified with the host's mtools |
-| `kernel/edittest.sh` | 27 | the editor, history, job control, shutdown |
-| `kernel/vmtest.sh` | 15 | what a program cannot touch |
-| `kernel/nettest.sh` | 13 | ARP, DHCP, ICMP and TCP against a host web server |
+| `kernel/fstest.sh` | 59 | the filesystem, long names included, verified with the host's mtools and fsck.fat |
+| `kernel/apitest.sh` | 368 | the system call surface a ported program expects |
+| `kernel/edittest.sh` | 29 | the line editor, history, job control, shutdown |
+| `kernel/vmtest.sh` | 18 | what a program cannot touch |
+| `kernel/nettest.sh` | 19 | ARP, DHCP, ICMP and TCP against the host; the SYN's options decoded on the host |
+| `kernel/vttest.sh` | 95 | the VT102 console, checked against screenshots |
+| `kernel/libctest.sh` | 90 | picolibc |
+| `kernel/fscktest.sh` | 23 | fsck, against damage made on the host |
+| `kernel/uemacstest.sh` | 9 | uEmacs, a real editor |
+| `kernel/vitest.sh` | 9 | neatvi, the other one |
+| `kernel/dnstest.sh` | 18 | the resolver and ntpdate, against servers on the host |
+| `kernel/tcptest.sh` | 24 | TCP's options, loss, keepalives and TIME_WAIT |
+| `kernel/sotest.sh` | 117 | shared libraries, ld.so, and the sharing of their pages |
+
+The picolibc suites need `make libc` first.
 
 Everything they write goes in `scratch/`, and `make clean` removes the lot.
 `hd.img` is not in there: that is the machine's disk, not a build product.
@@ -641,10 +684,12 @@ seconds later" landed before the program existed and went to the shell.
 
 Named, so that nobody has to discover them by trying:
 
-**`fork` copies eagerly.** There is no copy-on-write until there is
-page-fault handling (task 21), so a `fork` of a large program costs its
-whole address space, even when an `execve` follows at once. `spawn` is
-the cheap way to start a program.
+**`fork` copies every writable page eagerly.** Pages neither side can
+write -- a shared library's text, read-only mappings -- are shared, but
+there is no copy-on-write for writable ones until there is page-fault
+handling (task 21), so a `fork` of a large program costs its whole data
+and heap, even when an `execve` follows at once. `spawn` is the cheap
+way to start a program.
 
 **Signals are complete except for `sigaltstack`**, refused with `EINVAL`
 rather than half supported. `SA_SIGINFO` handlers get Linux/m68k's

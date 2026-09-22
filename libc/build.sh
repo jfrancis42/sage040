@@ -135,4 +135,70 @@ rm -f "$PREFIX/lib/libtermcap.a"
 "$BIN/m68k-elf-ar" rcs "$PREFIX/lib/libtermcap.a" "$BUILD/termcap.o"
 cp "$HERE/termcap/termcap.h" "$PREFIX/include/termcap.h"
 
+# libc.so: the same sources again, position independent, in a build of
+# their own (a PIC object is slower -- a5 holds the GOT -- so the static
+# libc.a is not built this way). Nothing from this build is installed
+# except the one shared object linked from its archives.
+#
+# -fPIC: the whole library is reached through its GOT, so nothing in
+# its text needs relocating and every process shares the same pages.
+# libgcc is not PIC and there is no PIC build of it, so its code is
+# renamed .libgcc and marked writable, and libc-so.ld puts it in the
+# data segment: its absolute addresses become data relocations, in a
+# few pages each process copies anyway. `readelf -d` showing no TEXTREL
+# is the check that the text is shareable.
+BUILD_PIC=$BUILD-pic
+if [ ! -f "$BUILD_PIC/build.ninja" ]; then
+    meson setup "$BUILD_PIC" "$SRC" \
+        --cross-file "$BUILD/cross-sage040.txt" \
+        --prefix="$BUILD_PIC/staging" \
+        -Dc_args=-fPIC \
+        -Dbuildtype=release \
+        -Doptimization=2 \
+        -Dos-linux=true \
+        -Dsemihost=false \
+        -Dfake-semihost=false \
+        -Dpicocrt=false \
+        -Dpicocrt-lib=false \
+        -Dmultilib=false \
+        -Dtests=false \
+        -Dthread-local-storage=false \
+        -Dsingle-thread=true \
+        -Dio-long-long=true \
+        -Dstdio-exit-flush=true \
+        -Dfstat-bufsiz=true \
+        -Dspecsdir=none \
+        -Dincludedir=include \
+        -Dlibdir=lib
+fi
+ninja -C "$BUILD_PIC"
+# The archive, less the one member that is not for a hosted system:
+# interrupt.c.o, picolibc's bare-metal m68k vector table, which wants
+# __stack and _start. A static link never pulls it in; linking the
+# whole archive does.
+cp "$BUILD_PIC/libc.a" "$BUILD_PIC/libc-so.a"
+"$BIN/m68k-elf-ar" d "$BUILD_PIC/libc-so.a" interrupt.c.o
+"$BIN/m68k-elf-objcopy" --rename-section .text=.libgcc,alloc,load,contents,code \
+    "$("$CC" -mcpu=68040 -print-libgcc-file-name)" "$BUILD_PIC/libgcc-rw.a"
+"$BIN/m68k-elf-ld" -shared -soname libc.so -T "$HERE/libc-so.ld" \
+    --hash-style=sysv -z now --build-id=none --no-warn-rwx-segments \
+    -o "$BUILD_PIC/libc.so" \
+    --whole-archive "$BUILD_PIC/libc-so.a" \
+    "$BUILD_PIC/libos/linux/liblinux.a" --no-whole-archive \
+    "$BUILD_PIC/libos/fallback/libos-fallback.a" \
+    "$BUILD_PIC/libgcc-rw.a"
+if "$BIN/m68k-elf-readelf" -d "$BUILD_PIC/libc.so" | grep -q TEXTREL; then
+    echo "build.sh: libc.so has text relocations" >&2
+    exit 1
+fi
+# Nothing left undefined but the weak hooks a program may supply: an
+# undefined symbol here is a failure at every program's start.
+undef=$("$BIN/m68k-elf-nm" -D --undefined-only "$BUILD_PIC/libc.so" | awk '$1 != "w"')
+if [ -n "$undef" ]; then
+    echo "build.sh: libc.so leaves these undefined:" >&2
+    echo "$undef" >&2
+    exit 1
+fi
+install -m 644 "$BUILD_PIC/libc.so" "$PREFIX/lib/libc.so"
+
 echo "picolibc $VERSION installed in $PREFIX"

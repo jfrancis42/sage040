@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -347,6 +348,7 @@ static void test_dirs(const char *self)
     DIR *d = opendir("/");
     struct dirent *e;
     int dot = 0, dotdot = 0, bin = 0, me = 0, zero_ino = 0;
+    const char *myname = strrchr(self, '/') ? strrchr(self, '/') + 1 : self;
     struct stat st;
 
     report("opendir", d != 0);
@@ -354,7 +356,7 @@ static void test_dirs(const char *self)
         if (strcmp(e->d_name, ".") == 0) dot = 1;
         if (strcmp(e->d_name, "..") == 0) dotdot = 1;
         if (strcmp(e->d_name, "BIN") == 0) bin = 1;
-        if (strcmp(e->d_name, "LIBCTEST") == 0) me = 1;
+        if (strcasecmp(e->d_name, myname) == 0) me = 1;   /* this program */
         if (e->d_ino == 0) zero_ino = 1;
     }
     if (d) {
@@ -403,12 +405,20 @@ static void test_processes(const char *self)
         char *argv[] = { (char *)self, "child", "7", 0 };
 
         execve(self, argv, environ);
+        printf("libctest: execve %s: %s\n", self, strerror(errno));
+        fflush(stdout);
         _exit(99);
     }
     report("fork", pid > 0);
-    report("  and waitpid sees the exec'd child's exit status",
-           waitpid(pid, &st, 0) == pid && WIFEXITED(st) &&
-           WEXITSTATUS(st) == 7);
+    {
+        pid_t w = waitpid(pid, &st, 0);
+        int ok = w == pid && WIFEXITED(st) && WEXITSTATUS(st) == 7;
+
+        report("  and waitpid sees the exec'd child's exit status", ok);
+        if (!ok) {
+            printf("libctest: waitpid gave %d, status %#x\n", (int)w, st);
+        }
+    }
 
     report("pipe", pipe(p) == 0);
     pid = fork();
@@ -570,8 +580,10 @@ int main(int argc, char **argv)
     test_memory();
     test_control();
     test_files();
+    /* This program, by the name it was run as: the static and the
+     * dynamic builds are two files, and each must exec itself. */
     test_dirs(argv[0][0] == '/' ? argv[0] : "/LIBCTEST");
-    test_processes("/LIBCTEST");
+    test_processes(argv[0][0] == '/' ? argv[0] : "/LIBCTEST");
     test_signals();
     test_time();
     test_tty();

@@ -20,6 +20,7 @@
  * underneath it, and the calls above it do not change when that stops
  * being true.
  */
+#include "textcache.h"
 #include "vfs.h"
 #include "errno.h"
 #include "task.h"
@@ -132,6 +133,7 @@ int vfs_umount(void)
     if (mounted_fs->umount) {
         mounted_fs->umount();
     }
+    textcache_forget_all();
     mounted_fs = 0;
     mounted_dev = 0;
     return 0;
@@ -660,6 +662,9 @@ int fd_open(const char *path, int flags)
         current->fds[fd] = f;
         current->fd_flags[fd] = (flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
     }
+    if (flags & O_TRUNC) {
+        textcache_forget_fd(fd);
+    }
     return fd;
 }
 
@@ -854,7 +859,18 @@ s32 fd_write(int fd, const void *buf, u32 len)
     if (!f->ops->write) {
         return -EINVAL;
     }
-    return f->ops->write(f, buf, len);
+    {
+        s32 n = f->ops->write(f, buf, len);
+
+        /* A file that changes is not what textcache.c holds of it any
+         * more. The same after a truncate, an O_TRUNC open, an unlink
+         * and a rename: every way a file's contents or its inode number
+         * can change goes through here or one of those. */
+        if (n > 0) {
+            textcache_forget_fd(fd);
+        }
+        return n;
+    }
 }
 
 s32 fd_lseek(int fd, s32 offset, int whence)
@@ -930,6 +946,9 @@ int vfs_unlink(const char *path)
     if (!mounted_fs->unlink) {
         return -ENOSYS;
     }
+    /* Before, while the name still leads to the inode number: once the
+     * entry is gone its slot can be a different file's. */
+    textcache_forget_path(path);
     return mounted_fs->unlink(path);
 }
 
@@ -944,6 +963,10 @@ int vfs_rename(const char *from, const char *to)
     if (!mounted_fs->rename) {
         return -ENOSYS;
     }
+    /* Both: the moved file's inode number is where its entry was, and a
+     * file it replaces is going. */
+    textcache_forget_path(from);
+    textcache_forget_path(to);
     return mounted_fs->rename(from, to);
 }
 
@@ -975,6 +998,7 @@ int vfs_ftruncate(int fd, u32 len)
     if (!f->ops || !f->ops->truncate) {
         return -EINVAL;
     }
+    textcache_forget_fd(fd);
     return f->ops->truncate(f, len);
 }
 
@@ -985,6 +1009,9 @@ int vfs_check(int flags, struct fsck_report *r)
     }
     if (!mounted_fs->check) {
         return -ENOSYS;
+    }
+    if (flags & FSCK_REPAIR) {
+        textcache_forget_all();     /* a repair can change any file */
     }
     return mounted_fs->check(flags, r);
 }

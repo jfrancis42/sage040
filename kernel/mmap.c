@@ -36,6 +36,7 @@
 #include "pmm.h"
 #include "vfs.h"
 #include "task.h"
+#include "textcache.h"
 #include "errno.h"
 
 /* The same allowance brk makes for the tables the pages will need. */
@@ -205,6 +206,33 @@ s32 do_mmap(u32 addr, u32 len, u32 prot, u32 flags, int fd, u32 offset)
         vm_unmap(as, va);
     }
 
+    /*
+     * A file mapped privately and READ-ONLY -- a shared library's text
+     * -- is mapped from textcache.c, which hands every process the same
+     * physical pages. Nothing can write to them: a later mprotect that
+     * asks to is given its own copy (vm_protect). PROT_NONE is left to
+     * the ordinary path; there is nothing to share in a page nobody can
+     * read.
+     */
+    if (!anon && type == MAP_PRIVATE && !(prot & PROT_WRITE) &&
+        (prot & (PROT_READ | PROT_EXEC))) {
+        for (va = addr; va < addr + len; va += PAGE_SIZE) {
+            u32 pa = textcache_get(fd, offset + (va - addr));
+
+            if (!pa || !vm_map(as, va, pa, VM_USER)) {
+                if (pa) {
+                    pmm_free(pa);
+                }
+                while (va > addr) {
+                    va -= PAGE_SIZE;
+                    vm_unmap(as, va);
+                }
+                return -ENOMEM;
+            }
+        }
+        return (s32)addr;
+    }
+
     for (va = addr; va < addr + len; va += PAGE_SIZE) {
         if (!vm_map(as, va, 0, VM_USER | VM_WRITE)) {
             while (va > addr) {
@@ -277,7 +305,9 @@ int do_mprotect(u32 addr, u32 len, u32 prot)
         }
     }
     for (va = addr; va < addr + len; va += PAGE_SIZE) {
-        vm_protect(as, va, prot_flags(prot));
+        if (vm_protect(as, va, prot_flags(prot)) < 0) {
+            return -ENOMEM;     /* no page to copy a shared one into */
+        }
     }
     return 0;
 }

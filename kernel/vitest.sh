@@ -52,6 +52,7 @@ make -s kernel.rom || exit 1
 make -s -C ../bootrom bootrom.elf || exit 1
 make -s -C ../apps || exit 1
 make -s -C ../system || exit 1
+make -s -C ../ldso || exit 1
 if ! ../ports/vi/build.sh >/dev/null; then
     echo "vitest.sh: could not build vi -- is picolibc built (make libc)?" >&2
     exit 1
@@ -65,7 +66,10 @@ printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
 mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
     $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
 mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mmd -i "$MIMG" ::/BIN
+mmd -i "$MIMG" ::/BIN ::/lib
+# The editor is linked against libc.so: its interpreter and its library.
+mcopy -o -i "$MIMG" ../ldso/ld.so ::/lib/ld.so
+mcopy -o -i "$MIMG" "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" ::/lib/libc.so
 mcopy -o -i "$MIMG" ../ports/vi/vi ::/BIN/VI
 mcopy -o -i "$MIMG" ../apps/vcsnap ::/BIN/VCSNAP
 mcopy -o -i "$MIMG" ../system/stty ::/BIN/STTY

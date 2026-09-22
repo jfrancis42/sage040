@@ -34,14 +34,15 @@
  */
 
 /*
- * pause, usleep, select, flock, ftruncate and truncate are not in
- * picolibc's libos/linux (1.8.12)
+ * pause, usleep, select, flock, ftruncate, truncate and clock_getres
+ * are not in picolibc's libos/linux (1.8.12)
  * on any architecture. They are here, in the m68k backend, only so that
  * the release underneath stays unmodified; nothing in them is specific
  * to m68k, and they belong beside the other calls in libos/linux.
  */
 
 #include "../../local-linux.h"
+#include "../../local-time.h"
 #include <sys/select.h>
 #include <sys/file.h>
 #include <time.h>
@@ -120,4 +121,38 @@ truncate(const char *path, off_t len)
         return -1;
     }
     return syscall(LINUX_SYS_truncate, path, (long)len);
+}
+
+/*
+ * Referenced by timespec_getres() in picolibc and defined nowhere, so a
+ * static program that used it would not link and libc.so, which links
+ * everything, did not. The clock ids map exactly as clock_gettime's do.
+ */
+int
+clock_getres(clockid_t id, struct timespec *res)
+{
+    struct __kernel_timespec kts;
+    int                      kid;
+    int                      ret;
+
+    if (id == CLOCK_MONOTONIC)
+        kid = LINUX_CLOCK_MONOTONIC;
+    else if (id == CLOCK_PROCESS_CPUTIME_ID)
+        kid = LINUX_CLOCK_PROCESS_CPUTIME_ID;
+    else if (id == CLOCK_REALTIME)
+        kid = LINUX_CLOCK_REALTIME;
+    else if (id == CLOCK_THREAD_CPUTIME_ID)
+        kid = LINUX_CLOCK_THREAD_CPUTIME_ID;
+    else {
+        errno = EINVAL;
+        return -1;
+    }
+    ret = syscall(LINUX_SYS_clock_getres, kid, &kts);
+    if (ret < 0)
+        return ret;
+    if (res) {
+        res->tv_sec = kts.tv_sec;
+        res->tv_nsec = kts.tv_nsec;
+    }
+    return 0;
 }

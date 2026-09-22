@@ -66,6 +66,10 @@ system/stty
 system/resize
 apps/winsize
 libc/test/libctest
+libc/test/libctest.dyn
+libc/test/sotest
+libc/test/*.so
+ldso/ld.so
 system/fsck
 ports/uemacs/em
 apps/vcsnap

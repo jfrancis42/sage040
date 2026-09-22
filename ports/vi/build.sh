@@ -54,10 +54,22 @@ for f in $OBJS; do
     fi
     objs="$objs $o"
 done
+# Against /lib/libc.so by default, as libc/libc.mk links a program with
+# LINK=dynamic; LINK=static for a program that needs no /lib. Either way
+# the linker is told which it is: this gcc does not pass -static on, and
+# with libc.so beside libc.a a bare -lc finds the shared one.
 # shellcheck disable=SC2086
-"$CC" -mcpu=68040 -nostdlib -T "$TOP/libc/sage040.ld" \
-    -Wl,--build-id=none -Wl,--no-warn-rwx-segments -Wl,--gc-sections \
-    "$TOP/libc/crt0.s" $objs -L"$SAGE_LIBC/lib" \
-    -Wl,--start-group -lc -llinux -Wl,--end-group -lgcc \
-    -o "$HERE/vi"
+if [ "${LINK:-dynamic}" = static ]; then
+    "$CC" -mcpu=68040 -nostdlib -Wl,-Bstatic -T "$TOP/libc/sage040.ld" \
+        -Wl,--build-id=none -Wl,--no-warn-rwx-segments -Wl,--gc-sections \
+        "$TOP/libc/crt0.s" $objs -L"$SAGE_LIBC/lib" \
+        -Wl,--start-group -lc -llinux -Wl,--end-group -lgcc \
+        -o "$HERE/vi"
+else
+    "$CC" -mcpu=68040 -nostdlib -Wl,-Ttext-segment=0x10000000 \
+        -Wl,--dynamic-linker=/lib/ld.so -Wl,-z,now -Wl,--hash-style=sysv \
+        -Wl,--build-id=none -Wl,--gc-sections \
+        "$TOP/libc/crt0-dyn.s" $objs -L"$SAGE_LIBC/lib" \
+        -lc -lgcc -o "$HERE/vi"
+fi
 "${CC%gcc}size" "$HERE/vi"

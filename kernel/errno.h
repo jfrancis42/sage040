@@ -57,6 +57,8 @@
 #define EPROTONOSUPPORT 93      /* protocol not supported             */
 #define EOPNOTSUPP      95      /* operation not supported            */
 #define EOVERFLOW       75      /* value too large for defined type   */
+#define ELIBACC         79      /* cannot access a needed shared library */
+#define ELIBBAD         80      /* accessing a corrupted shared library */
 #define EAFNOSUPPORT    97      /* address family not supported       */
 #define EADDRINUSE      98      /* address already in use             */
 #define EMSGSIZE        90      /* message too long                   */
