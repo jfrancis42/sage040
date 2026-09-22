@@ -583,6 +583,81 @@ void tty_poll_signals(void)
 /* ioctl                                                             */
 /* ---------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------- */
+/* Size                                                              */
+/* ---------------------------------------------------------------- */
+
+/*
+ * The serial line's size. A terminal on a wire cannot say how big it
+ * is, so it is a VT100's 24x80 until TIOCSWINSZ -- `stty rows`, or
+ * `resize`, which asks the terminal -- says otherwise.
+ */
+static struct winsize line_ws = { 24, 80, 0, 0 };
+
+/*
+ * What a program is told: the smallest of the enabled outputs, because
+ * a full-screen program has to fit on every one of them at once. A sink
+ * that knows its own size answers TIOCGWINSZ (the screen does); one
+ * that does not counts as the line.
+ */
+static void effective_ws(struct winsize *out)
+{
+    struct winsize w[TTY_MAX_SINKS], best;
+    int i, n = 0;
+
+    for (i = 0; i < nsinks; i++) {
+        struct file f;
+
+        if (!sinks[i].enabled) {
+            continue;
+        }
+        as_file(&f, sinks[i].dev);
+        memset(&w[n], 0, sizeof(w[n]));
+        if (!sinks[i].dev->ops->ioctl ||
+            sinks[i].dev->ops->ioctl(&f, TIOCGWINSZ, (u32)&w[n]) < 0 ||
+            w[n].ws_row == 0 || w[n].ws_col == 0) {
+            w[n] = line_ws;
+        }
+        n++;
+    }
+    if (n == 0) {
+        *out = line_ws;
+        return;
+    }
+
+    best = w[0];
+    for (i = 1; i < n; i++) {
+        if (w[i].ws_row < best.ws_row) {
+            best.ws_row = w[i].ws_row;
+        }
+        if (w[i].ws_col < best.ws_col) {
+            best.ws_col = w[i].ws_col;
+        }
+    }
+    /* Pixels only when one output is exactly the size chosen; a
+     * mixture of two outputs' dimensions is not the size of anything. */
+    best.ws_xpixel = best.ws_ypixel = 0;
+    for (i = 0; i < n; i++) {
+        if (w[i].ws_row == best.ws_row && w[i].ws_col == best.ws_col) {
+            best.ws_xpixel = w[i].ws_xpixel;
+            best.ws_ypixel = w[i].ws_ypixel;
+            break;
+        }
+    }
+    *out = best;
+}
+
+/* Tell the foreground if something just changed what it would be told. */
+static void winch_if_changed(const struct winsize *before)
+{
+    struct winsize after;
+
+    effective_ws(&after);
+    if (after.ws_row != before->ws_row || after.ws_col != before->ws_col) {
+        signal_group(fg_pgrp, SIGWINCH);
+    }
+}
+
 static int tty_ioctl(struct file *f, u32 request, u32 arg)
 {
     (void)f;
@@ -656,11 +731,37 @@ static int tty_ioctl(struct file *f, u32 request, u32 arg)
 
     case TIOCSCONS: {
         const struct console_set *cs = (const struct console_set *)arg;
+        struct winsize before;
+        int err;
 
         if (!cs) {
             return -EINVAL;
         }
-        return tty_sink_enable(cs->name, cs->on);
+        effective_ws(&before);
+        err = tty_sink_enable(cs->name, cs->on);
+        if (err == 0) {
+            winch_if_changed(&before);
+        }
+        return err;
+    }
+
+    case TIOCGWINSZ:
+        if (!arg) {
+            return -EINVAL;
+        }
+        effective_ws((struct winsize *)arg);
+        return 0;
+
+    case TIOCSWINSZ: {
+        struct winsize before;
+
+        if (!arg) {
+            return -EINVAL;
+        }
+        effective_ws(&before);
+        line_ws = *(const struct winsize *)arg;
+        winch_if_changed(&before);
+        return 0;
     }
 
     case TCGETS:

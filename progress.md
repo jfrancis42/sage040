@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: 12 of 23 complete.**
+**Status: 13 of 23 complete.**
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -41,7 +41,7 @@ drive almost all of it:
 | 9 | Subprocesses: `fork`/`execve`/`waitpid` | `:!` and `:make` in an editor | **done** |
 | 10 | The rest of the socket API, and the signatures | before a libc is written against the old ones | **done** |
 | 11 | **VT102** emulation in `fbcon.c` | a full-screen program needs cursor addressing | **done** |
-| 12 | `TIOCGWINSZ` and `SIGWINCH` | depends on 5 and 11 | todo |
+| 12 | `TIOCGWINSZ` and `SIGWINCH` | depends on 5 and 11 | **done** |
 | 13 | A C library (picolibc or newlib) | the gate everything real passes through | todo |
 | 14 | VFAT long file names | 8.3 decides what can be shipped | todo |
 | 15 | `fsck`, and a clean-unmount flag | the machine cannot check its own disk | todo |
@@ -146,8 +146,8 @@ printing `ok`/`FAIL` per line, counted and named by the script — a new
 check is a line of C. A group is added only once its calls work, so a
 failure there is always a regression.
 
-**539 checks across seven suites now:** 12 device programs, 41 fs, 357
-api, 29 edit, 18 vm, 17 net, 65 vt.
+**569 checks across seven suites now:** 12 device programs, 41 fs, 357
+api, 29 edit, 18 vm, 17 net, 95 vt.
 
 ### 1. Grow the user address space — done
 
@@ -763,6 +763,44 @@ pixels -- which is why the suite has both halves.
 
 The one failure on the first run was the test's own expectation for
 insert mode (`XYZC` where a VT102 gives `XYZBC`).
+
+### 12. `TIOCGWINSZ` and `SIGWINCH` — done
+
+Linux's numbers (0x5413/0x5414) and `struct winsize`, in the syscall
+layer's ioctl table so user pointers are checked.
+
+**The answer is the smallest enabled output.** Two outputs of different
+sizes are live at once, and a program told the screen's 30 rows while an
+80x24 terminal is also showing its output paints rows that terminal
+lacks. The screen reports its own size (`fbcon.c` answers `TIOCGWINSZ`,
+so `tty.c` still does not know there is a screen); the serial line
+cannot, so it is 24x80 until `TIOCSWINSZ`. That makes `TIOCSWINSZ` the
+**line's** size rather than the answer. Setting the answer directly
+was rejected: after `resize` on a 50-row xterm every program would
+paint 50 rows onto a 30-row screen.
+
+**`SIGWINCH`** goes to the foreground group whenever the answer
+changes -- from `TIOCSWINSZ`, or from `console` switching an output on
+or off -- and not when it does not. Default action ignore (it already
+was).
+
+**New programs:** `stty` (size, `rows`/`cols`, the honoured flags,
+`raw`/`sane`) and `resize`, which asks the terminal (cursor to 999;999,
+`ESC[6n`) as xterm's resize(1) does. `TERM=vt102` in the shell's
+environment.
+
+**Tests:** in `vttest.sh`, now 95 checks. `apps/winsize` makes 21:
+the boot size, the screen alone with its pixel size, each way the
+answer can change and the SIGWINCH each sends, no signal when nothing
+changed, the screen limiting a bigger line, a background group not
+signalled, default action, `EFAULT`. The harness plays a 40x100
+terminal answering `resize`, then checks `stty size` with the screen on
+(30 80), off (40 100) and after `stty rows 20 cols 60`. **Negative
+control:** with the `signal_group` call removed, exactly the five
+SIGWINCH checks fail.
+
+**Named `winsize`, not `winchtest`:** nine characters, and FAT's 8.3
+truncated it to a name the shell could not find.
 
 ## Decisions worth knowing about
 

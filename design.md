@@ -953,10 +953,21 @@ no longer the only thing that works on the screen.
    visibly slow however correct the emulation is. Scroll regions and the
    insert and delete operations are the performance story, not niceties.
 
-2. **`TIOCGWINSZ`**, and `SIGWINCH` behind it. Without the ioctl every
-   program assumes 80×24; the framebuffer console is 80×30, so six rows
-   simply go unused. The ioctl is trivial. The signal needs user-mode
-   signal handlers, which is its own item.
+2. **`TIOCGWINSZ`, and `SIGWINCH` behind it -- done** (task 12). The
+   interesting part is not the ioctl but what the answer should be,
+   with two outputs of different sizes live at once. It is **the
+   smallest of the enabled outputs**: a program told 30 rows while an
+   80x24 terminal is also showing its output paints six rows the
+   terminal does not have. The screen answers `TIOCGWINSZ` for itself;
+   the serial line cannot be measured, so it is 24x80 until
+   `TIOCSWINSZ` says otherwise -- which makes `TIOCSWINSZ` "the line's
+   size", not "the answer". `stty` sets it by hand and `resize` asks
+   the terminal. Any change to the answer, including switching an
+   output on or off with `console`, sends `SIGWINCH` to the foreground
+   group. `TERM=vt102` is set by the shell.
+
+   Rejected: making `TIOCSWINSZ` override everything. After `resize` on
+   a 50-row xterm, programs would paint 50 rows onto the 30-row screen.
 
 3. **A terminfo or termcap database**, or a deliberate decision not to
    have one. This is the real choice in this section:

@@ -62,3 +62,6 @@ apps/socktest
 
 # Scratch disk and log from kernel/fstest.sh
 apps/vtcheck
+system/stty
+system/resize
+apps/winsize

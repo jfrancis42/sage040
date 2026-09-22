@@ -369,6 +369,24 @@ struct statfs {
 #define TIOCSPGRP       0x5410
 
 /*
+ * The terminal's size, in Linux's numbers and layout. What TIOCGWINSZ
+ * reports is the smallest of the console's enabled outputs, since a
+ * full-screen program has to fit on all of them; TIOCSWINSZ sets the
+ * size of the one output that cannot report its own -- the serial line,
+ * 24x80 until told otherwise. A change to what TIOCGWINSZ would report
+ * sends SIGWINCH to the foreground group.
+ */
+#define TIOCGWINSZ      0x5413
+#define TIOCSWINSZ      0x5414
+
+struct winsize {
+    u16 ws_row;
+    u16 ws_col;
+    u16 ws_xpixel;
+    u16 ws_ypixel;
+};
+
+/*
  * Waiting on several descriptors. Linux/m68k's numbers and shapes:
  *
  *   poll        168  (struct pollfd *, count, timeout in ms; -1 waits)

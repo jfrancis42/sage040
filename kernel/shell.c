@@ -2661,6 +2661,7 @@ void shell(void)
     env_set("PATH", "/bin:.");
     env_set("HOME", "/");
     env_set("SHELL", "/bin/sh");
+    env_set("TERM", "vt102");   /* what fbcon.c is, and any serial terminal can be */
 
     /*
      * /etc/rc, if there is one. Not an error if there is not: a machine
@@ -2715,6 +2716,9 @@ int shell_main(int argc, char **args, char **envp)
     }
     if (!env_get("SHELL")) {
         env_set("SHELL", "/bin/sh");
+    }
+    if (!env_get("TERM")) {
+        env_set("TERM", "vt102");
     }
 
     if (argc > 2 && strcmp(args[1], "-c") == 0) {

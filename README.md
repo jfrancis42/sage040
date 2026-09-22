@@ -319,7 +319,7 @@ The short version of the gotchas:
 | `bootrom/` | a boot ROM that finds `KERNEL.ROM` on the disk and runs it |
 | `kernel/` | the kernel: system calls, drivers, VFS, FAT16, shell |
 | `lib/` | what a program links against — `crt0.s`, `ulib.c`, `user.ld` |
-| `system/` | the system's own programs, installed into `/BIN` — `ifconfig`, `ping`, `netstat`, `shutdown`, `env` |
+| `system/` | the system's own programs, installed into `/BIN` — `ifconfig`, `ping`, `netstat`, `shutdown`, `env`, `stty`, `resize`, `sh` |
 | `apps/` | everything else, installed at the disk root — `cube`, `hello`, `fbtest`, `fetch`, `httpd`, `spin`, `faulter` |
 | `tools/` | `qemu-net.sh`, which decides how the guest reaches the network |
 | `scratch/` | everything the test suites write; `make clean` removes it |

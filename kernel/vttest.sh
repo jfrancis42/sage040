@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Jeff Francis
 #
-# vttest.sh - the framebuffer console as a VT102.
+# vttest.sh - the framebuffer console as a VT102, and the terminal size.
 #
 # Two halves, because a terminal emulator can be wrong in two ways.
 #
@@ -67,6 +67,10 @@ mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
     $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
 mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
 mcopy -o -i "$MIMG" ../apps/vtcheck ::/VTCHECK
+mcopy -o -i "$MIMG" ../apps/winsize ::/WINSIZE
+mmd -i "$MIMG" ::/BIN
+mcopy -o -i "$MIMG" ../system/stty ::/BIN/STTY
+mcopy -o -i "$MIMG" ../system/resize ::/BIN/RESIZE
 
 rm -f "$SCRATCH/in.fifo" "$MON" "$SCRATCH"/vt-shot*.ppm
 mkfifo "$SCRATCH/in.fifo"
@@ -116,6 +120,38 @@ shot "$SCRATCH/vt-shot2.ppm"
 printf 'x' >&3
 wait_for "vtcheck: blit done"
 
+# --- the size: TIOCGWINSZ, TIOCSWINSZ, SIGWINCH ---
+sleep 0.5
+printf 'echo TERM-IS-$TERM\r' >&3;         sleep 0.5
+printf 'echo SIZE-AT-BOOT\r' >&3;          sleep 0.3
+printf 'stty size\r' >&3;                  sleep 1
+printf 'winsize\r' >&3
+wait_for "winsize: done"
+sleep 0.3
+
+# resize asks the terminal; this script is the terminal, and answers
+# as one 40 rows by 100 columns would.
+printf 'resize\r' >&3
+if wait_for $'\033[999;999H\033[6n'; then
+    sleep 0.3
+    printf '\033[40;100R' >&3
+fi
+wait_for "resize: "
+sleep 0.3
+printf 'echo SIZE-AFTER-RESIZE\r' >&3;     sleep 0.3
+printf 'stty size\r' >&3;                  sleep 1
+printf 'console fbcon off\r' >&3;          sleep 0.5
+printf 'echo SIZE-LINE-ONLY\r' >&3;        sleep 0.3
+printf 'stty size\r' >&3;                  sleep 1
+printf 'console fbcon on\r' >&3;           sleep 0.5
+printf 'stty rows 20 cols 60\r' >&3;       sleep 1
+printf 'echo SIZE-AFTER-STTY\r' >&3;       sleep 0.3
+printf 'stty size\r' >&3;                  sleep 1
+printf 'stty rows 24 cols 80\r' >&3;       sleep 1
+printf 'stty\r' >&3;                       sleep 1
+printf 'stty bogus\r' >&3;                 sleep 1
+printf 'stty rows 0\r' >&3;                sleep 1
+
 printf 'echo VT-FINISHED\r' >&3
 wait_for "VT-FINISHED"
 sleep 0.3
@@ -130,9 +166,10 @@ tr -d '\r' < "$LOG" > "$SCRATCH/clean.tmp"
 echo "=== guest session ==="
 sed 's/^/  | /' "$SCRATCH/clean.tmp"
 
-echo "=== checks: the emulation, through /dev/vcsa ==="
+echo "=== checks: the emulation, through /dev/vcsa, and winsize ==="
 
-# Each line vtcheck prints is one check, named by its own text.
+# Each line vtcheck or winsize prints is one check, named by its own
+# text.
 while IFS= read -r line; do
     case "$line" in
         "  ok   "*)   check "${line#  ok   }" 0 ;;
@@ -144,7 +181,7 @@ test "$(grep -cE '^  ok   ' "$SCRATCH/clean.tmp")" -ge 50
 check "vtcheck ran all of its checks" $?
 
 grep -qF "vtcheck: done" "$SCRATCH/clean.tmp"
-check "and finished" $?
+check "vtcheck finished" $?
 
 echo "=== checks: the pixels, blitter against redraw ==="
 
@@ -164,6 +201,45 @@ if ! cmp -s "$SCRATCH/vt-shot1.ppm" "$SCRATCH/vt-shot2.ppm"; then
         "$SCRATCH/vt-diff.png" 2>&1 | sed 's/^/  differing pixels: /'
     echo "  difference image: $SCRATCH/vt-diff.png"
 fi
+
+echo "=== checks: the size ==="
+
+# The line after a marker's echo: what `stty size` printed.
+size_after() {
+    awk -v m="$1" '$0 == m { f = 1; next } f && /^[0-9]+ [0-9]+$/ { print; exit }' \
+        "$SCRATCH/clean.tmp"
+}
+
+grep -qx "TERM-IS-vt102" "$SCRATCH/clean.tmp"
+check "TERM is vt102" $?
+
+test "$(size_after SIZE-AT-BOOT)" = "24 80"
+check "the size at boot is 24x80: the line's, smaller than the screen" $?
+
+grep -qF "winsize: done" "$SCRATCH/clean.tmp"
+check "winsize finished" $?
+
+grep -qF "resize: 40 rows, 100 columns" "$SCRATCH/clean.tmp"
+check "resize read the terminal's answer" $?
+
+test "$(size_after SIZE-AFTER-RESIZE)" = "30 80"
+check "  and with the screen on too, the screen's 30 rows still win" $?
+
+test "$(size_after SIZE-LINE-ONLY)" = "40 100"
+check "  and with the screen off, the terminal's 40x100" $?
+
+test "$(size_after SIZE-AFTER-STTY)" = "20 60"
+check "stty rows and cols set the line" $?
+
+grep -qx "rows 24; columns 80;" "$SCRATCH/clean.tmp" &&
+    grep -qx "icrnl opost onlcr isig icanon echo" "$SCRATCH/clean.tmp"
+check "stty shows the size and the modes" $?
+
+grep -qF "stty: unknown setting bogus" "$SCRATCH/clean.tmp"
+check "stty refuses a setting it does not know" $?
+
+grep -qF "stty: rows wants a number from 1 to 255" "$SCRATCH/clean.tmp"
+check "  and a size of zero" $?
 
 grep -qx "VT-FINISHED" "$SCRATCH/clean.tmp"
 check "the shell is still there afterwards" $?

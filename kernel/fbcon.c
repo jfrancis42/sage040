@@ -1193,9 +1193,22 @@ static int fbcon_ioctl(struct file *f, u32 request, u32 arg)
      * pixels from one that moved the right ones -- a screenshot before
      * and after must be identical.
      *
-     * No FIONREAD: that would be answering a question about input,
-     * which this is not.
+     * And TIOCGWINSZ, which is how tty.c learns how big the screen
+     * is without knowing there is a screen. No FIONREAD: that would be
+     * answering a question about input, which this is not.
      */
+    if (request == TIOCGWINSZ) {
+        struct winsize *w = (struct winsize *)arg;
+
+        if (!fb) {
+            return -ENODEV;
+        }
+        w->ws_row = (u16)rows;
+        w->ws_col = (u16)cols;
+        w->ws_xpixel = (u16)(cols * FONT_WIDTH);
+        w->ws_ypixel = (u16)(rows * FONT_HEIGHT);
+        return 0;
+    }
     if (request == FBCON_REDRAW) {
         if (!fb) {
             return -ENODEV;

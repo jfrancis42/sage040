@@ -549,7 +549,7 @@ names.
 
 `lib/` is what a program links against: `crt0.s`, `ulib.c`, `user.ld`.
 `system/` is what the system ships, installed into `/BIN`: `ifconfig`,
-`ping`, `netstat`, `shutdown`, `env`. `apps/` is everything else — `cube`,
+`ping`, `netstat`, `shutdown`, `env`, `stty`, `resize`. `apps/` is everything else — `cube`,
 `fbtest`, `hello`, `fetch`, `httpd`, `spin`, `faulter` — installed at the
 root.
 
