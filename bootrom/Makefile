@@ -39,7 +39,7 @@ LDFLAGS := $(CPUFLAGS) -ffreestanding -nostdlib -T bootrom.ld \
 
 # How much of the disk the ROM reads. Must cover the payload and must stay
 # below the boot ROM at 2 MB.
-BOOT_SECTORS ?= 256
+BOOT_SECTORS ?= 1920      # 960 KB: see bootrom.c
 
 # The disk the machine boots from: a real MS-DOS disk in the project root,
 # shared with the kernel and with the host. See ../disk.mk.

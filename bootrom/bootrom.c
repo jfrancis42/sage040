@@ -59,8 +59,17 @@
 #define MBR_PART_LBA    8
 #define MBR_SIG         510             /* 0x55 0xAA                       */
 
+/*
+ * The most the payload may be. It was 256 sectors, 128 KB, and the
+ * kernel passed that the day /bin/sh's wrappers moved into it -- the ROM
+ * said "short read" and nothing booted. 1920 sectors is 960 KB: the
+ * most the raw fallback can read from the gap before a partition at LBA
+ * 2048, and far below the ROM itself at 2 MB. Loading KERNEL.ROM from
+ * the filesystem reads only the file's own size, so this costs a normal
+ * boot nothing.
+ */
 #ifndef BOOT_SECTORS
-#define BOOT_SECTORS    256             /* 128 KB */
+#define BOOT_SECTORS    1920            /* 960 KB */
 #endif
 
 #define LOAD_LIMIT      (LOAD_ADDR + (u32)BOOT_SECTORS * SECTOR_SIZE)

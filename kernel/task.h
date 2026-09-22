@@ -111,6 +111,7 @@ struct task {
     int   background;
     int   exiting;
     int   stop_reported;        /* its stop has been told to the parent */
+    int   continued;            /* resumed, and not yet told (WCONTINUED) */
 
     /*
      * The working directory, as two halves: what the filesystem uses to
@@ -175,6 +176,10 @@ struct task {
 
 struct addrspace;
 
+/* fork(): a copy of the current task. Null if there is not the memory. */
+struct pt_regs;
+struct task *task_fork(struct pt_regs *regs);
+
 /* Made by exec.c, which builds the address space and user stack first. */
 struct task *task_create_user(const char *name, u32 entry, u32 usp,
                               struct addrspace *as);
@@ -221,8 +226,13 @@ void task_cwd_inherit(struct task *t, struct task *from);
 /* Never returns. */
 void task_exit(int status) __attribute__((noreturn));
 
-/* Wait for a child to finish. Returns its pid, or -ECHILD. */
-int  task_wait(int pid, int *status);
+/*
+ * Wait for a child to change state, waitpid()'s way: `pid` > 0 is that
+ * child, -1 any, 0 any in the caller's group, -N any in group N. The
+ * status is Linux's encoding. Returns the child's pid, 0 with WNOHANG
+ * and nothing to report, -ECHILD, or -EINTR for a signal.
+ */
+int  task_wait(int pid, int *status, int options);
 
 /* Let go of a zombie's last resources. */
 void task_reap(struct task *t);

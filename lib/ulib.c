@@ -185,8 +185,68 @@ int raise(int sig)
 
 int waitpid(int pid, int *status, int options)
 {
-    (void)options;              /* no WNOHANG yet */
-    return (int)sc2(__NR_waitpid, (u32)pid, (u32)status);
+    return (int)sc3(__NR_waitpid, (u32)pid, (u32)status, (u32)options);
+}
+
+int fork(void)
+{
+    return (int)sc1(__NR_fork, 0);
+}
+
+int execve(const char *path, char *const argv[], char *const envp[])
+{
+    return (int)sc3(__NR_execve, (u32)path, (u32)argv, (u32)envp);
+}
+
+int execv(const char *path, char *const argv[])
+{
+    return execve(path, argv, environ);
+}
+
+/*
+ * The way a shell finds a program: a name with a slash is a path, and
+ * anything else is tried in each directory of PATH in turn. Only "not
+ * there" moves on to the next directory; a program that exists and
+ * cannot run is an error to report.
+ */
+int execvp(const char *file, char *const argv[])
+{
+    static char full[PATH_MAX + 1];
+    const char *path = getenv("PATH");
+    const char *p;
+    int err = -ENOENT;
+
+    for (p = file; *p; p++) {
+        if (*p == '/') {
+            return execv(file, argv);
+        }
+    }
+    if (!path || !*path) {
+        path = ".";
+    }
+    while (*path) {
+        u32 n = 0;
+        const char *q;
+
+        while (*path && *path != ':' && n + 1 < sizeof(full)) {
+            full[n++] = *path++;
+        }
+        if (n && full[n - 1] != '/' && n + 1 < sizeof(full)) {
+            full[n++] = '/';
+        }
+        for (q = file; *q && n + 1 < sizeof(full); q++) {
+            full[n++] = *q;
+        }
+        full[n] = '\0';
+        err = execv(full, argv);
+        if (err != -ENOENT && err != -EINVAL) {
+            return err;
+        }
+        while (*path == ':') {
+            path++;
+        }
+    }
+    return err;
 }
 
 int spawn(const char *path, int argc, char **argv, char **envp)

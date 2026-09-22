@@ -237,6 +237,71 @@ struct task *task_create_user(const char *name, u32 entry, u32 usp,
     return t;
 }
 
+/*
+ * fork(): a copy of the current task, returning from the same system
+ * call with 0 where the parent gets the child's pid.
+ *
+ * The child's kernel stack is built like any new task's -- which is to
+ * say, as struct pt_regs and a format 0 frame, what every return to user
+ * mode pops -- and then the parent's registers are copied into it. So the
+ * child's first rte lands on the instruction after the parent's trap,
+ * with everything the parent had except d0.
+ */
+struct task *task_fork(struct pt_regs *regs)
+{
+    struct task *p = current;
+    struct task *t;
+    u32 top, usp;
+    struct pt_regs *cr;
+
+    if (!p->as) {
+        return 0;               /* a kernel task has nothing to copy */
+    }
+    t = alloc_task(p->name);
+    if (!t) {
+        return 0;
+    }
+    t->kstack = kstack_alloc(&top);
+    if (!t->kstack) {
+        t->state = TASK_UNUSED;
+        return 0;
+    }
+    t->as = vm_clone(p->as);
+    if (!t->as) {
+        kstack_free(t->kstack);
+        t->state = TASK_UNUSED;
+        return 0;
+    }
+
+    __asm__ volatile ("move.l %%usp,%0" : "=a"(usp));
+    build_stack(t, top, regs->pc, usp, 1);
+    cr = (struct pt_regs *)(top - sizeof(struct pt_regs));
+    memcpy(cr->d, regs->d, sizeof(cr->d));
+    memcpy(cr->a, regs->a, sizeof(cr->a));
+    cr->d[0] = 0;               /* fork() returns 0 in the child */
+    cr->sr = regs->sr;
+    cr->pc = regs->pc;
+    cr->format = 0;
+
+    /* What a forked child inherits, as POSIX lists it. */
+    memcpy(t->cmd, p->cmd, sizeof(t->cmd));
+    t->parent = p;
+    t->pgid = p->pgid;
+    fd_fork(t, p);
+    task_cwd_inherit(t, p);
+    memcpy(t->sigact, p->sigact, sizeof(t->sigact));
+    t->sig_blocked = p->sig_blocked;
+    /* Pending signals, timers and times are the parent's own: not copied. */
+
+    /* The FPU is live in the parent right now; the child starts with
+     * what it holds. */
+    fpu_save(p->fpu);
+    memcpy(t->fpu, p->fpu, sizeof(t->fpu));
+
+    t->state = TASK_READY;
+    return t;
+}
+
 /* --- the table ------------------------------------------------------- */
 
 struct task *task_find(int pid)
@@ -321,10 +386,30 @@ static struct task *pick_next(void)
     return idle;
 }
 
+/*
+ * Zombies that nobody will ever wait for, because their parent has gone.
+ * Not the current task: a task cannot free the kernel stack it is
+ * standing on, so a zombie is always reaped by somebody else.
+ */
+static void reap_orphans(void)
+{
+    int i;
+
+    for (i = 0; i < TASK_MAX; i++) {
+        struct task *t = &tasks[i];
+
+        if (t->state == TASK_ZOMBIE && !t->parent && t != current) {
+            task_reap(t);
+        }
+    }
+}
+
 void schedule(void)
 {
     struct task *prev = current;
     struct task *next;
+
+    reap_orphans();
 
     need_resched = 0;
 
@@ -523,6 +608,19 @@ void task_exit(int status)
     }
 
     /*
+     * Its children are orphans now. Linux gives them to init, which
+     * waits for them; there is no init here, so an orphan that finishes
+     * is reaped by the scheduler instead (see reap_orphans) -- otherwise
+     * every child a program did not wait for would hold a task slot for
+     * as long as the machine ran.
+     */
+    for (i = 0; i < TASK_MAX; i++) {
+        if (tasks[i].state != TASK_UNUSED && tasks[i].parent == t) {
+            tasks[i].parent = 0;
+        }
+    }
+
+    /*
      * A zombie rather than gone: whoever started it is entitled to its
      * exit status, and the shell prints it. task_reap() finishes the
      * job once somebody has collected it.
@@ -563,7 +661,25 @@ void task_reap(struct task *t)
     t->state = TASK_UNUSED;
 }
 
-int task_wait(int pid, int *status)
+/* Is `t` one of the children a waitpid(pid) is asking about? */
+static int wait_matches(struct task *t, int pid)
+{
+    if (t->state == TASK_UNUSED || t->parent != current) {
+        return 0;
+    }
+    if (pid > 0) {
+        return t->pid == pid;
+    }
+    if (pid == -1) {
+        return 1;
+    }
+    if (pid == 0) {
+        return t->pgid == current->pgid;
+    }
+    return t->pgid == -pid;
+}
+
+int task_wait(int pid, int *status, int options)
 {
     for (;;) {
         int i, children = 0;
@@ -571,47 +687,57 @@ int task_wait(int pid, int *status)
         for (i = 0; i < TASK_MAX; i++) {
             struct task *t = &tasks[i];
 
-            if (t->state == TASK_UNUSED || t->parent != current) {
-                continue;
-            }
-            if (pid > 0 && t->pid != pid) {
+            if (!wait_matches(t, pid)) {
                 continue;
             }
             children++;
 
+            /* Linux's status words: the exit code in the second byte,
+             * or the signal in the low seven bits, or 0x7f and the
+             * signal that stopped it. */
             if (t->state == TASK_ZOMBIE) {
                 int got = t->pid;
 
                 if (status) {
-                    *status = t->signalled ? 128 + t->signalled
-                                           : t->exit_status;
+                    *status = t->signalled ? t->signalled
+                                           : (t->exit_status & 0xff) << 8;
                 }
                 task_reap(t);
                 return got;
             }
 
             /*
-             * A child that has STOPPED is reported too, once.
-             *
-             * Without this the shell waits forever for a task that is
-             * never going to finish, because ctrl-Z did not end it -- it
-             * put it to one side. Real systems make this optional, with
-             * WUNTRACED; here a shell is the only caller and it always
-             * wants to know.
-             *
-             * Reported once, because the child stays stopped and would
-             * otherwise be reported again on the next wait.
+             * A child that has STOPPED is reported, once, if asked for
+             * with WUNTRACED -- which a shell always asks for, or it
+             * would wait for ever for a job that ctrl-Z put to one side.
              */
-            if (t->state == TASK_STOPPED && !t->stop_reported) {
+            if (t->state == TASK_STOPPED && !t->stop_reported &&
+                (options & WUNTRACED)) {
                 t->stop_reported = 1;
                 if (status) {
-                    *status = 128 + SIGTSTP;
+                    *status = ((t->signalled ? t->signalled : SIGSTOP) << 8)
+                              | 0x7f;
+                }
+                return t->pid;
+            }
+            if (t->continued && (options & WCONTINUED)) {
+                t->continued = 0;
+                if (status) {
+                    *status = 0xffff;
                 }
                 return t->pid;
             }
         }
         if (!children) {
             return -ECHILD;
+        }
+        if (options & WNOHANG) {
+            return 0;
+        }
+        /* Interruptible, as waitpid is everywhere: a handler runs, and
+         * the wait resumes after it only with SA_RESTART. */
+        if (signal_pending(current)) {
+            return -EINTR;
         }
         sleep_on(&current->child_wait);
     }

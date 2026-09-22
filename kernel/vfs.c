@@ -461,6 +461,33 @@ void fd_inherit(struct task *child, struct task *parent)
     }
 }
 
+/* fork's inheritance: every descriptor, close-on-exec ones included,
+ * with its flag -- nothing is being exec'd yet. */
+void fd_fork(struct task *child, struct task *parent)
+{
+    int i;
+
+    for (i = 0; i < OPEN_MAX; i++) {
+        child->fds[i] = parent->fds[i];
+        child->fd_flags[i] = parent->fd_flags[i];
+        file_get(child->fds[i]);
+    }
+}
+
+/* execve's: the close-on-exec descriptors go. */
+void fd_exec(struct task *t)
+{
+    int i;
+
+    for (i = 0; i < OPEN_MAX; i++) {
+        if (t->fds[i] && (t->fd_flags[i] & FD_CLOEXEC)) {
+            file_put(t->fds[i]);
+            t->fds[i] = 0;
+        }
+        t->fd_flags[i] = 0;
+    }
+}
+
 void fd_close_all(struct task *t)
 {
     int i;

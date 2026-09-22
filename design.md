@@ -726,7 +726,7 @@ machine being small. The machine is not small now — 64 MB of RAM and a
 | **A C library** | picolibc or newlib over a dozen syscall stubs |
 | Pipelines | `pipe`, `dup2`, `SIGPIPE`, and `\|` `>` `>>` `<` in the shell |
 | The console | VT102 emulation, `TIOCGWINSZ`, termcap, curses |
-| POSIX surface | subprocesses, and a dozen small calls (signals, `select`/`poll`, timers ✅) |
+| POSIX surface | a dozen small calls (signals, `select`/`poll`, timers, subprocesses ✅) |
 | Sockets | the rest of the Linux socket API, and fixing the signatures |
 | Long file names | VFAT, and why not a different filesystem |
 | `fsck` | and a clean-unmount flag to say when it is needed |
@@ -1015,12 +1015,9 @@ difference between a program building and not:
 
 ~300 lines for the lot.
 
-**(9) Subprocesses.** `spawn` creates a task, but there is no way to talk
-to one and no `execve` to replace an image in place. A ported program
-that wants to run `grep`, or a compiler, or a shell needs `fork` (or a
-`posix_spawn`-shaped call with file actions), `execve` and `waitpid`
-working together with pipes. `waitpid` exists already. ~300 lines, and it
-is downstream of *Pipelines and redirection*.
+**(9) Subprocesses. Done:** `fork` (an eager copy), `execve`,
+`waitpid` with Linux's statuses and options, orphans reaped, and
+`/bin/sh`, the kernel's shell built as a program, for `sh -c`.
 
 Items (1) and (2) are *Memory* above; (3) is *A C library*; (7) is *Long
 file names* below; (10) and (11) are *The console*. Nothing in

@@ -33,19 +33,8 @@
  * space, and the gap below the stack was a convention rather than a
  * rule. It is now a hole in a page table.
  */
-#define EXEC_MAX_ARGS   8
-#define EXEC_MAX_ENV    16
-
-/*
- * Load `path` and run it. Returns the program's exit status, or a
- * negated errno if it could not be loaded.
- *
- * This is not execve(). It does not replace the caller, because there is
- * no process to replace: it loads, calls, and comes back. When there are
- * processes, this becomes fork + execve + waitpid, the caller keeps the
- * same shape, and the syscall underneath it changes.
- */
-int exec_spawn(const char *path, int argc, char **argv, char **envp);
+#define EXEC_MAX_ARGS   256
+#define EXEC_MAX_ENV    256
 
 /*
  * Load `path` and start it as a task. Returns the new pid, or -errno.
@@ -56,5 +45,16 @@ int exec_spawn(const char *path, int argc, char **argv, char **envp);
  * decision is what `&` is.
  */
 int exec_spawn(const char *path, int argc, char **argv, char **envp);
+
+/*
+ * execve(): replace the CURRENT task's program with `path`, rewriting
+ * `regs` so that the return to user mode enters it. The new image is
+ * built completely before the old one is touched, so a failure leaves
+ * the caller exactly as it was, with the error to report. Returns 0 --
+ * into the new program -- or -errno into the old one.
+ */
+struct pt_regs;
+int exec_replace(const char *path, int argc, char **argv, char **envp,
+                 struct pt_regs *regs);
 
 #endif /* EXEC_H */

@@ -317,6 +317,33 @@ struct statfs {
  * on, restarted, as if nothing had happened.
  */
 #define __NR_pipe           42
+
+/*
+ * Processes, the Unix way. Linux's numbers.
+ *
+ * fork() copies the address space eagerly -- every page, now -- because
+ * there is no copy-on-write yet (that wants the page-fault machinery of
+ * progress.md task 21). execve() replaces the calling program; spawn()
+ * (400) is still here and is still fork and exec in one.
+ *
+ * waitpid's status is Linux's encoding, read with the W* macros below.
+ * pid > 0 is that child, -1 any child, 0 any child in the caller's
+ * group, and -N any child in group N.
+ */
+#define __NR_fork            2
+#define __NR_execve         11
+
+#define WNOHANG         0x00000001
+#define WUNTRACED       0x00000002
+#define WCONTINUED      0x00000008
+
+#define WEXITSTATUS(s)  (((s) >> 8) & 0xff)
+#define WTERMSIG(s)     ((s) & 0x7f)
+#define WSTOPSIG(s)     WEXITSTATUS(s)
+#define WIFEXITED(s)    (WTERMSIG(s) == 0)
+#define WIFSIGNALED(s)  (WTERMSIG(s) != 0 && WTERMSIG(s) != 0x7f)
+#define WIFSTOPPED(s)   (((s) & 0xff) == 0x7f)
+#define WIFCONTINUED(s) ((s) == 0xffff)
 #define __NR_fcntl          55
 #define __NR_setpgid        57
 #define __NR_getppid        64

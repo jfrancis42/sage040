@@ -48,7 +48,7 @@ LDFLAGS := $(CPUFLAGS) -ffreestanding -nostdlib -T kernel.ld \
 # The kernel proper, then the drivers, then the filesystems. Nothing in
 # the first group names a chip; everything in the second does, and only
 # there.
-SRCS := main.c version.c console.c trap.c syscall.c vfs.c dev.c \
+SRCS := main.c version.c console.c trap.c syscall.c sysuser.c vfs.c dev.c \
  time.c timer.c errno.c string.c exec.c tty.c edit.c \
  pmm.c vm.c mmap.c poll.c pipe.c uaccess.c task.c wait.c signal.c random.c fb.c fbcon.c \
  font8x16.c \

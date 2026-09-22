@@ -164,6 +164,13 @@ int  vm_enabled(void);
 /* A fresh, empty user address space, or null if there is no memory. */
 struct addrspace *vm_create(void);
 
+/*
+ * A new address space holding a private copy of every page of `src`,
+ * with the same protections, for fork(). Null if there is not the
+ * memory; nothing is left allocated in that case.
+ */
+struct addrspace *vm_clone(struct addrspace *src);
+
 /* Give back every page it owns, including the pages mapped into it. */
 void vm_destroy(struct addrspace *as);
 

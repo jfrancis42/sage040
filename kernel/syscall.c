@@ -47,66 +47,6 @@
 static struct waitq sleep_waitq;
 
 /* ---------------------------------------------------------------- */
-/* The trap itself                                                   */
-/* ---------------------------------------------------------------- */
-
-s32 syscall0(u32 nr)
-{
-    register u32 d0 __asm__("d0") = nr;
-
-    __asm__ volatile ("trap #0" : "+d"(d0) : : "memory", "cc");
-    return (s32)d0;
-}
-
-s32 syscall1(u32 nr, u32 a1)
-{
-    register u32 d0 __asm__("d0") = nr;
-    register u32 d1 __asm__("d1") = a1;
-
-    __asm__ volatile ("trap #0" : "+d"(d0) : "d"(d1) : "memory", "cc");
-    return (s32)d0;
-}
-
-s32 syscall2(u32 nr, u32 a1, u32 a2)
-{
-    register u32 d0 __asm__("d0") = nr;
-    register u32 d1 __asm__("d1") = a1;
-    register u32 d2 __asm__("d2") = a2;
-
-    __asm__ volatile ("trap #0"
-                      : "+d"(d0) : "d"(d1), "d"(d2) : "memory", "cc");
-    return (s32)d0;
-}
-
-s32 syscall4(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4)
-{
-    register u32 d0 __asm__("d0") = nr;
-    register u32 d1 __asm__("d1") = a1;
-    register u32 d2 __asm__("d2") = a2;
-    register u32 d3 __asm__("d3") = a3;
-    register u32 d4 __asm__("d4") = a4;
-
-    __asm__ volatile ("trap #0"
-                      : "+d"(d0)
-                      : "d"(d1), "d"(d2), "d"(d3), "d"(d4)
-                      : "memory", "cc");
-    return (s32)d0;
-}
-
-s32 syscall3(u32 nr, u32 a1, u32 a2, u32 a3)
-{
-    register u32 d0 __asm__("d0") = nr;
-    register u32 d1 __asm__("d1") = a1;
-    register u32 d2 __asm__("d2") = a2;
-    register u32 d3 __asm__("d3") = a3;
-
-    __asm__ volatile ("trap #0"
-                      : "+d"(d0)
-                      : "d"(d1), "d"(d2), "d"(d3) : "memory", "cc");
-    return (s32)d0;
-}
-
-/* ---------------------------------------------------------------- */
 /* Getting at the caller's memory                                    */
 /*                                                                    */
 /* A program's pointers are addresses in ITS address space and mean   */
@@ -471,7 +411,108 @@ static int do_ioctl(int fd, u32 request, u32 arg)
  * space -- the new program's -- by which time the old one may not even
  * be mapped.
  */
-#define SPAWN_ARG_MAX  64
+/*
+ * THE ARGUMENTS OF A NEW PROGRAM, copied into the kernel.
+ *
+ * They have to be: the new program's address space is a different one,
+ * and for execve the old one is destroyed before the new program runs.
+ * They used to be copied into fixed arrays on the kernel stack -- eight
+ * arguments of 64 bytes -- which is both too small for `sh -c "some
+ * long command"` and too big to grow on an 8 KB stack. So they go into
+ * ARG_PAGES of their own, pointer arrays first and the strings packed
+ * after them, and that block is given back once the new image is built.
+ */
+#define ARG_PAGES       8                       /* 32 KB, all told */
+#define ARG_BYTES       (ARG_PAGES * PAGE_SIZE)
+
+struct argblock {
+    u32   pa;                   /* the pages, 0 if none                */
+    int   argc;
+    char **argv;                /* EXEC_MAX_ARGS + 1 slots             */
+    char **envp;                /* EXEC_MAX_ENV + 1 slots              */
+};
+
+static void args_free(struct argblock *b)
+{
+    if (b->pa) {
+        pmm_free_pages(b->pa, ARG_PAGES);
+        b->pa = 0;
+    }
+}
+
+/*
+ * `argc` of -1 means "count them, up to the null", which is execve's
+ * way; spawn says how many. `uenvp` of 0 is an empty environment.
+ */
+static int args_fetch(struct argblock *b, int argc, u32 uargv, u32 uenvp)
+{
+    char *strings, *end;
+    u32 p;
+    int i, n, err;
+
+    b->pa = pmm_alloc_pages(ARG_PAGES);
+    if (!b->pa) {
+        return -ENOMEM;
+    }
+    b->argv = (char **)b->pa;
+    b->envp = b->argv + EXEC_MAX_ARGS + 1;
+    strings = (char *)(b->envp + EXEC_MAX_ENV + 1);
+    end = (char *)b->pa + ARG_BYTES;
+
+    for (i = 0; argc < 0 || i < argc; i++) {
+        if (i == EXEC_MAX_ARGS) {
+            err = -E2BIG;
+            goto fail;
+        }
+        err = fetch(&p, uargv + (u32)i * 4, sizeof(p));
+        if (err < 0) {
+            goto fail;
+        }
+        if (!p) {
+            if (argc < 0) {
+                break;          /* execve: the end of the list */
+            }
+            err = -EFAULT;
+            goto fail;
+        }
+        n = fetch_str(strings, p, (u32)(end - strings));
+        if (n < 0) {
+            err = n == -ENAMETOOLONG ? -E2BIG : n;
+            goto fail;
+        }
+        b->argv[i] = strings;
+        strings += n + 1;
+    }
+    b->argc = i;
+    b->argv[i] = 0;
+
+    for (i = 0; uenvp; i++) {
+        if (i == EXEC_MAX_ENV) {
+            err = -E2BIG;
+            goto fail;
+        }
+        err = fetch(&p, uenvp + (u32)i * 4, sizeof(p));
+        if (err < 0) {
+            goto fail;
+        }
+        if (!p) {
+            break;
+        }
+        n = fetch_str(strings, p, (u32)(end - strings));
+        if (n < 0) {
+            err = n == -ENAMETOOLONG ? -E2BIG : n;
+            goto fail;
+        }
+        b->envp[i] = strings;
+        strings += n + 1;
+    }
+    b->envp[i] = 0;
+    return 0;
+
+fail:
+    args_free(b);
+    return err;
+}
 
 /*
  * noinline, like every system call here with big buffers: inlined into
@@ -483,64 +524,43 @@ static __attribute__((noinline))
 int do_spawn(u32 upath, int argc, u32 uargv, u32 uenvp)
 {
     char path[PATH_MAX];
-    char argstore[EXEC_MAX_ARGS][SPAWN_ARG_MAX];
-    char *argv[EXEC_MAX_ARGS];
-    char envstore[EXEC_MAX_ENV][SPAWN_ARG_MAX];
-    char *envp[EXEC_MAX_ENV + 1];
-    u32 uptr[EXEC_MAX_ARGS];
-    int i, err, envc = 0;
+    struct argblock b;
+    int err;
 
-    if (argc < 0 || argc > EXEC_MAX_ARGS) {
-        return -E2BIG;
+    if (argc < 0) {
+        return -EINVAL;
     }
     err = fetch_str(path, upath, sizeof(path));
     if (err < 0) {
         return err;
     }
-
-    if (!from_program()) {
-        return exec_spawn(path, argc, (char **)uargv, (char **)uenvp);
+    err = args_fetch(&b, argc, uargv, uenvp);
+    if (err < 0) {
+        return err;
     }
+    err = exec_spawn(path, b.argc, b.argv, b.envp);
+    args_free(&b);
+    return err;
+}
 
-    if (argc > 0) {
-        err = fetch(uptr, uargv, (u32)argc * 4);
-        if (err < 0) {
-            return err;
-        }
+static __attribute__((noinline))
+int do_execve(u32 upath, u32 uargv, u32 uenvp, struct pt_regs *regs)
+{
+    char path[PATH_MAX];
+    struct argblock b;
+    int err;
+
+    err = fetch_str(path, upath, sizeof(path));
+    if (err < 0) {
+        return err;
     }
-    for (i = 0; i < argc; i++) {
-        err = fetch_str(argstore[i], uptr[i], SPAWN_ARG_MAX);
-        if (err < 0) {
-            return err;
-        }
-        argv[i] = argstore[i];
+    err = args_fetch(&b, -1, uargv, uenvp);
+    if (err < 0) {
+        return err;
     }
-
-    /*
-     * The environment the same way, one level of user pointer deeper.
-     * It has to end up in kernel memory because exec_spawn copies it
-     * into a DIFFERENT address space, by which time this one may not
-     * even be mapped.
-     */
-    if (uenvp) {
-        u32 eptr[EXEC_MAX_ENV + 1];
-
-        err = fetch(eptr, uenvp, sizeof(eptr));
-        if (err < 0) {
-            return err;
-        }
-        while (envc < EXEC_MAX_ENV && eptr[envc]) {
-            err = fetch_str(envstore[envc], eptr[envc], SPAWN_ARG_MAX);
-            if (err < 0) {
-                return err;
-            }
-            envp[envc] = envstore[envc];
-            envc++;
-        }
-    }
-    envp[envc] = 0;
-
-    return exec_spawn(path, argc, argv, envp);
+    err = exec_replace(path, b.argc, b.argv, b.envp, regs);
+    args_free(&b);
+    return err;
 }
 
 /* --- waiting on descriptors ------------------------------------------ */
@@ -1143,6 +1163,15 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         do_reboot((int)a1);
         return 0;               /* not reached */
 
+    case __NR_fork: {
+        struct task *t = task_fork(regs);
+
+        return t ? t->pid : -ENOMEM;
+    }
+
+    case __NR_execve:
+        return do_execve(a1, a2, a3, regs);
+
     case __NR_spawn:
         return do_spawn(a1, (int)a2, a3, a4);
 
@@ -1516,7 +1545,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
 
     case __NR_waitpid: {
         int status = 0;
-        int got = task_wait((int)a1, &status);
+        int got = task_wait((int)a1, &status, (int)a3);
 
         if (got < 0) {
             return got;
@@ -1570,205 +1599,4 @@ void syscall_dispatch(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
      */
     task_ret_to_user(regs);
     current->syscall_nr = -1;
-}
-
-/* ---------------------------------------------------------------- */
-/* Wrappers                                                          */
-/* ---------------------------------------------------------------- */
-
-int sys_open(const char *path, int flags)
-{
-    return (int)syscall2(__NR_open, (u32)path, (u32)flags);
-}
-
-int sys_close(int fd)
-{
-    return (int)syscall1(__NR_close, (u32)fd);
-}
-
-s32 sys_read(int fd, void *buf, u32 len)
-{
-    return syscall3(__NR_read, (u32)fd, (u32)buf, len);
-}
-
-s32 sys_write(int fd, const void *buf, u32 len)
-{
-    return syscall3(__NR_write, (u32)fd, (u32)buf, len);
-}
-
-s32 sys_lseek(int fd, s32 offset, int whence)
-{
-    return syscall3(__NR_lseek, (u32)fd, (u32)offset, (u32)whence);
-}
-
-int sys_unlink(const char *path)
-{
-    return (int)syscall1(__NR_unlink, (u32)path);
-}
-
-int sys_rename(const char *from, const char *to)
-{
-    return (int)syscall2(__NR_rename, (u32)from, (u32)to);
-}
-
-int sys_stat(const char *path, void *st)
-{
-    return (int)syscall2(__NR_stat, (u32)path, (u32)st);
-}
-
-int sys_getdents(int index, void *dirent)
-{
-    return (int)syscall2(__NR_getdents, (u32)index, (u32)dirent);
-}
-
-int sys_statfs(void *sfs)
-{
-    return (int)syscall1(__NR_statfs, (u32)sfs);
-}
-
-int sys_fsync(int fd)
-{
-    return (int)syscall1(__NR_fsync, (u32)fd);
-}
-
-int sys_sync(void)
-{
-    return (int)syscall0(__NR_sync);
-}
-
-int sys_sysinfo(struct sysinfo *si)
-{
-    return (int)syscall1(__NR_sysinfo, (u32)si);
-}
-
-int sys_uname(struct utsname *u)
-{
-    return (int)syscall1(__NR_uname, (u32)u);
-}
-
-int sys_ioctl(int fd, u32 request, u32 arg)
-{
-    return (int)syscall3(__NR_ioctl, (u32)fd, request, arg);
-}
-
-int sys_spawn(const char *path, int argc, char **argv, char **envp)
-{
-    return (int)syscall4(__NR_spawn, (u32)path, (u32)argc, (u32)argv,
-                         (u32)envp);
-}
-
-int sys_jobctl(int cmd, int arg, void *p)
-{
-    return (int)syscall3(__NR_jobctl, (u32)cmd, (u32)arg, (u32)p);
-}
-
-int sys_mkdir(const char *path)
-{
-    return (int)syscall1(__NR_mkdir, (u32)path);
-}
-
-int sys_rmdir(const char *path)
-{
-    return (int)syscall1(__NR_rmdir, (u32)path);
-}
-
-int sys_chdir(const char *path)
-{
-    return (int)syscall1(__NR_chdir, (u32)path);
-}
-
-int sys_getcwd(char *buf, u32 len)
-{
-    return (int)syscall2(__NR_getcwd, (u32)buf, len);
-}
-
-int sys_waitpid(int pid, int *status)
-{
-    return (int)syscall2(__NR_waitpid, (u32)pid, (u32)status);
-}
-
-int sys_kill(int pid, int sig)
-{
-    return (int)syscall2(__NR_kill, (u32)pid, (u32)sig);
-}
-
-int sys_getpid(void)
-{
-    return (int)syscall0(__NR_getpid);
-}
-
-int sys_setpgid(int pid, int pgid)
-{
-    return (int)syscall2(__NR_setpgid, (u32)pid, (u32)pgid);
-}
-
-int sys_pipe(int fds[2])
-{
-    return (int)syscall1(__NR_pipe, (u32)fds);
-}
-
-int sys_dup(int fd)
-{
-    return (int)syscall1(__NR_dup, (u32)fd);
-}
-
-int sys_dup2(int oldfd, int newfd)
-{
-    return (int)syscall2(__NR_dup2, (u32)oldfd, (u32)newfd);
-}
-
-int sys_fcntl(int fd, int cmd, u32 arg)
-{
-    return (int)syscall3(__NR_fcntl, (u32)fd, (u32)cmd, arg);
-}
-
-void sys_yield(void)
-{
-    syscall0(__NR_sched_yield);
-}
-
-int sys_netctl(int cmd, u32 arg, void *p)
-{
-    return (int)syscall3(__NR_netctl, (u32)cmd, arg, (u32)p);
-}
-
-int sys_socket(int domain, int type, int protocol)
-{
-    return (int)syscall3(__NR_socket, (u32)domain, (u32)type, (u32)protocol);
-}
-
-int sys_connect(int fd, const struct sockaddr_in *addr)
-{
-    return (int)syscall2(__NR_connect, (u32)fd, (u32)addr);
-}
-
-u32 sys_times(void)
-{
-    return (u32)syscall0(__NR_times);
-}
-
-int sys_nanosleep(const struct timespec *req, struct timespec *rem)
-{
-    return (int)syscall2(__NR_nanosleep, (u32)req, (u32)rem);
-}
-
-void sys_exit(int status)
-{
-    syscall1(__NR_exit, (u32)status);
-}
-
-time_t sys_time(time_t *t)
-{
-    return (time_t)syscall1(__NR_time, (u32)t);
-}
-
-int sys_stime(const time_t *t)
-{
-    return (int)syscall1(__NR_stime, (u32)t);
-}
-
-void sys_reboot(int cmd)
-{
-    syscall1(__NR_reboot, (u32)cmd);
-    halt();                     /* the call does not return */
 }

@@ -78,10 +78,14 @@ mcopy -o -i "$MIMG" ../apps/fptest ::/FPTEST
 mcopy -o -i "$MIMG" ../apps/polltest ::/POLLTEST
 mcopy -o -i "$MIMG" ../apps/timetest ::/TIMETEST
 mcopy -o -i "$MIMG" ../apps/pipetest ::/PIPETEST
+mcopy -o -i "$MIMG" ../apps/proctest ::/PROCTEST
 mcopy -o -i "$MIMG" ../apps/spin ::/SPIN
 mmd -i "$MIMG" ::/ETC
 mmd -i "$MIMG" ::/BIN
 mcopy -o -i "$MIMG" ../system/env ::/BIN/ENV
+mcopy -o -i "$MIMG" ../system/sh ::/BIN/SH
+printf 'echo from-a-script\r\nexit 6\r\n' > "$SCRATCH/t.tmp"
+mcopy -o -i "$MIMG" "$SCRATCH/t.tmp" ::/T.SH
 printf 'echo rc-ran\r\n' > "$SCRATCH/rc.tmp"
 mcopy -o -i "$MIMG" "$SCRATCH/rc.tmp" ::/ETC/RC
 
@@ -123,6 +127,23 @@ mcopy -o -i "$MIMG" "$SCRATCH/rc.tmp" ::/ETC/RC
     printf 'pipetest out x | nosuchcmd\r';          sleep 2
     printf 'pipetest gen 100000 | pipetest out reader-gone\r'; sleep 2
     printf 'echo AFTER-PIPELINES\r';                sleep 1
+
+    # --- fork, execve, waitpid, and /bin/sh ---
+    printf 'proctest\r';                            sleep 7
+    printf "sh -c 'pipetest out via-sh-c | pipetest count'\r"; sleep 2
+    printf "sh -c 'exit 3'\r";                      sleep 1
+    printf 'echo SH-C-STATUS=$?\r';                 sleep 1
+    printf 'sh /T.SH\r';                            sleep 1
+    printf 'echo SH-FILE-STATUS=$?\r';              sleep 1
+    printf "echo 'a  |  b' \"x > y\" c\\\\ d\r";          sleep 1
+    printf 'export QV=quoted-value\r';              sleep 0.5
+    printf "echo '\$QV' \"\$QV\"\r";                sleep 1
+    printf 'nosuchcmd\r';                           sleep 1
+    printf 'echo NOTFOUND-STATUS=$?\r';             sleep 1
+    printf 'sh\r';                                  sleep 1.5
+    printf 'hello inside-bin-sh\r';                 sleep 1.5
+    printf 'exit 4\r';                              sleep 1
+    printf 'echo SH-EXIT-STATUS=$?\r';              sleep 1
     printf 'sigtest badstack\r';        sleep 1.5
     printf 'sigtest forge\r';           sleep 1.5
     printf 'kill 2\r';                  sleep 1
@@ -284,6 +305,11 @@ check "timetest ran to the end" $?
 grep -q "pipetest: done" "$C"
 check "pipetest ran to the end" $?
 
+grep -q "proctest: done" "$C"
+check "proctest ran to the end" $?
+grep -q "proctest: exec'd with argument-one and PROCVAR=from-execve" "$C"
+check "  and the program it exec'd said what it was given" $?
+
 grep -q "polltest: tty done" "$C"
 check "polltest waited for keys with poll and select" $?
 
@@ -403,6 +429,23 @@ grep -q "timetest: waiting for an alarm nobody catches" "$C" &&
     grep -q "^timetest: alarm clock" "$C" &&
     ! grep -q "ALARM DID NOT END THE PROGRAM" "$C"
 check "SIGALRM's default action is to terminate, and the shell says why" $?
+
+echo "=== checks: /bin/sh, and quoting ==="
+
+grep -q "pipetest: counted 9 bytes" "$C"
+check "sh -c ran a pipeline" $?
+grep -q "^SH-C-STATUS=3" "$C"
+check "  and sh -c's exit status reached \$?" $?
+grep -q "^from-a-script" "$C" && grep -q "^SH-FILE-STATUS=6" "$C"
+check "sh FILE ran a script, and its exit status came back" $?
+grep -q "^a  |  b x > y c d$" "$C"
+check "quotes keep spaces, | and > literal, and a backslash quotes" $?
+grep -q '^\$QV quoted-value$' "$C"
+check "single quotes stop \$ expansion; double quotes do not" $?
+grep -q "^NOTFOUND-STATUS=127" "$C"
+check "a command that is not found is status 127" $?
+grep -q "argv\[1\] = inside-bin-sh" "$C" && grep -q "^SH-EXIT-STATUS=4" "$C"
+check "an interactive /bin/sh ran a program, and exit 4 came back" $?
 
 echo "=== checks: redirection, read back on the host ==="
 

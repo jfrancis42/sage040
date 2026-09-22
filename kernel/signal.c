@@ -121,6 +121,12 @@ int signal_send(struct task *t, int sig)
         t->sig_pending &= ~STOP_SIGNALS;
         if (t->state == TASK_STOPPED) {
             t->state = TASK_READY;
+            if (sig == SIGCONT) {
+                t->continued = 1;       /* for waitpid(WCONTINUED) */
+                if (t->parent) {
+                    wake_all(&t->parent->child_wait);
+                }
+            }
         }
     } else if (bit & STOP_SIGNALS) {
         t->sig_pending &= ~SIGMASK(SIGCONT);

@@ -271,7 +271,7 @@ static void test_group_kill(void)
     signal(SIGTERM, SIG_IGN);           /* spare this one */
     report("kill(0, SIGTERM) reaches the whole group",
            kill(0, SIGTERM) == 0 && waitpid(child, &st, 0) == child &&
-           st == 128 + SIGTERM);
+           WIFSIGNALED(st) && WTERMSIG(st) == SIGTERM);
     signal(SIGTERM, SIG_DFL);
 }
 

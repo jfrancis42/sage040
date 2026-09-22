@@ -22,7 +22,9 @@
 #ifndef SYSCALL_H
 #define SYSCALL_H
 
-#include "kernel.h"
+/* types.h, not kernel.h: this header is compiled into /bin/sh, which is
+ * a program and must not see the kernel's own declarations. */
+#include "types.h"
 #include "uapi.h"
 
 /* The dispatcher, called from _trap0_entry in start.s. */
@@ -30,14 +32,6 @@ struct pt_regs;
 void syscall_dispatch(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
                       u32 a6, struct pt_regs *regs);
 
-/*
- * Is the kernel inside a system call right now?
- *
- * Asked by the timer tick before it unwinds a program for ctrl-C: the
- * answer decides whether throwing the stack away is safe or would leave
- * a directory half written.
- */
-int  syscall_in_kernel(void);
 
 
 /*
@@ -69,7 +63,7 @@ int  sys_sysinfo(struct sysinfo *si);
 int  sys_ioctl(int fd, u32 request, u32 arg);
 int  sys_spawn(const char *path, int argc, char **argv, char **envp);
 int  sys_jobctl(int cmd, int arg, void *p);
-int  sys_waitpid(int pid, int *status);
+int  sys_waitpid(int pid, int *status, int options);
 int  sys_mkdir(const char *path);
 int  sys_rmdir(const char *path);
 int  sys_chdir(const char *path);

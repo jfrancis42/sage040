@@ -11,7 +11,7 @@
 #ifndef KERNEL_STRING_H
 #define KERNEL_STRING_H
 
-#include "kernel.h"
+#include "types.h"
 
 typedef unsigned long ksize_t;
 

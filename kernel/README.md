@@ -268,14 +268,13 @@ still buys is a clear answer at load time: a segment outside the user
 area has no page tables behind it, so refusing it here gives `-ENOEXEC`
 instead of a fault partway through loading.
 
-`spawn()` is **not** `execve()`. `execve` replaces the calling process;
-this one starts a new task and returns its pid. **It does not wait.**
-Whether to wait is the caller's decision, and that decision is the whole
-of what `&` means: a foreground job is one the shell waits for with
-`waitpid()`, a background job is one it does not. What is left to do is
-the split — `spawn` is still fork and execve in one call, and separating
-them is what would let a program arrange its own descriptors between the
-two.
+`spawn()` is fork and exec in one call: it starts a new task and
+returns its pid. **It does not wait.** Whether to wait is the caller's
+decision, and that decision is the whole of what `&` means. `fork()`,
+`execve()` and `waitpid()` exist too, with Linux's meanings and status
+encoding. `fork` copies the address space eagerly (`vm_clone`), and
+`execve` builds the new image before destroying the old, so a failure
+returns into an intact caller.
 
 A program leaves through `exit()`, which is `task_exit()`: its
 descriptors are closed, its address space and kernel stack are freed by

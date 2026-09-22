@@ -31,6 +31,7 @@
 #include "vm.h"
 #include "pmm.h"
 #include "uaccess.h"
+#include "ptregs.h"
 #include "syscall.h"
 #include "console.h"
 #include "errno.h"
@@ -331,8 +332,10 @@ static int load_image(struct addrspace *as, int fd, u32 *entry)
  */
 static int setup_stack(int argc, char **argv, char **envp, u32 *out_sp)
 {
-    u32 uargv[EXEC_MAX_ARGS + 1];
-    u32 uenv[EXEC_MAX_ENV + 1];
+    /* Static: 2 KB of them, too much for a kernel stack, and nothing in
+     * here can sleep, so no second exec can be in the middle of it. */
+    static u32 uargv[EXEC_MAX_ARGS + 1];
+    static u32 uenv[EXEC_MAX_ENV + 1];
     u32 sp = USER_VA_STACK_TOP & ~3UL;
     u32 envc = 0;
     int i, err;
@@ -548,4 +551,80 @@ int exec_spawn(const char *path, int argc, char **argv, char **envp)
     t->pgid = current->pgid;
 
     return t->pid;
+}
+
+/* --- replacing a program: execve ------------------------------------- */
+
+extern void fpu_restore(const u32 *area);
+
+int exec_replace(const char *path, int argc, char **argv, char **envp,
+                 struct pt_regs *regs)
+{
+    struct addrspace *as, *old = current->as;
+    u32 entry = 0, sp = 0;
+    int err, sig;
+
+    if (argc < 0 || argc > EXEC_MAX_ARGS) {
+        return -E2BIG;
+    }
+    if (!old) {
+        return -EPERM;          /* a kernel task is not a program */
+    }
+    as = vm_create();
+    if (!as) {
+        return -ENOMEM;
+    }
+    {
+        struct addrspace *saved = uaccess_set(as);
+
+        err = build(as, path, argc, argv, envp, &entry, &sp);
+        uaccess_set(saved);
+    }
+    if (err < 0) {
+        vm_destroy(as);
+        return err;             /* the caller carries on, untouched */
+    }
+
+    /* The point of no return: the old image goes. */
+    current->as = as;
+    vm_switch(as);
+    vm_destroy(old);
+
+    describe(current->cmd, JOB_CMD_MAX, argc, argv);
+    strncpy(current->name, argv[0] ? argv[0] : path, TASK_NAME_MAX - 1);
+    current->name[TASK_NAME_MAX - 1] = '\0';
+
+    /*
+     * What POSIX says survives an exec: the pid, the parent, the group,
+     * the descriptors that are not close-on-exec, the working directory,
+     * the signal mask, pending signals, ignored signals, the timers. What
+     * does not: caught signals, which have nothing to return to, and go
+     * back to their default.
+     */
+    fd_exec(current);
+    for (sig = 1; sig < NSIG; sig++) {
+        if (current->sigact[sig].sa_handler != SIG_IGN) {
+            memset(&current->sigact[sig], 0, sizeof(current->sigact[sig]));
+        }
+    }
+    current->sig_restore_mask = 0;
+
+    /* A fresh FPU, as a new program's is. */
+    {
+        static u32 fresh[52];
+
+        memset(fresh, 0, sizeof(fresh));
+        fresh[0] = 0x41000000UL;        /* idle frame; see taskasm.s */
+        fpu_restore(fresh);
+    }
+
+    /* And into it: every register clear, as a new program's are. */
+    memset(regs->d, 0, sizeof(regs->d));
+    memset(regs->a, 0, sizeof(regs->a));
+    regs->pc = entry;
+    regs->sr = 0;
+    regs->format = 0;
+    __asm__ volatile ("move.l %0,%%usp" : : "a"(sp));
+    current->syscall_nr = -1;           /* never "restart" an exec */
+    return 0;
 }

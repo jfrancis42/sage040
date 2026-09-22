@@ -8,7 +8,7 @@
  * which is more use than "unknown error" on its own.
  */
 #include "errno.h"
-#include "kernel.h"
+#include "types.h"
 
 const char *strerror(int err)
 {

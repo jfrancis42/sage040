@@ -46,5 +46,17 @@ system/ping
 system/netstat
 system/shutdown
 system/env
+system/sh
+apps/napper
+apps/cdtest
+apps/statfs
+apps/memtest
+apps/malloctest
+apps/sigtest
+apps/fptest
+apps/polltest
+apps/timetest
+apps/pipetest
+apps/proctest
 
 # Scratch disk and log from kernel/fstest.sh

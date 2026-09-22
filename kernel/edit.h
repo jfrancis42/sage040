@@ -17,7 +17,7 @@
 #ifndef EDIT_H
 #define EDIT_H
 
-#include "kernel.h"
+#include "types.h"
 
 /*
  * Read one line, editing it. Returns its length, or:

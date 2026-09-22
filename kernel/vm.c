@@ -686,6 +686,61 @@ u32 vm_brk(struct addrspace *as, u32 addr)
     return addr;
 }
 
+struct addrspace *vm_clone(struct addrspace *src)
+{
+    struct addrspace *as;
+    u32 pages = vm_mapped_pages(src), va;
+
+    /*
+     * Refused before anything is copied if it plainly cannot fit: the
+     * pages, and a page of tables per 448 of them, as brk reckons it.
+     */
+    if (pmm_available() < pages + pages / 448 + 4) {
+        return 0;
+    }
+    as = vm_create();
+    if (!as) {
+        return 0;
+    }
+
+    for (va = USER_VA_BASE; va < USER_VA_END; ) {
+        u32 pt_pa = as_pagetable(src, va, 0);
+        u32 i;
+
+        if (!pt_pa) {
+            va += PAGE_ENTRIES * PAGE_SIZE;
+            continue;
+        }
+        for (i = 0; i < PAGE_ENTRIES; i++, va += PAGE_SIZE) {
+            u32 d = table(pt_pa)[i];
+            u32 dst_pt, pa;
+
+            if (!desc_owned(d)) {
+                continue;
+            }
+            pa = pmm_alloc();
+            dst_pt = as_pagetable(as, va, 1);
+            if (!pa || !dst_pt) {
+                if (pa) {
+                    pmm_free(pa);
+                }
+                vm_destroy(as);
+                return 0;
+            }
+            /* The kernel sees all of RAM at its own address, so a page
+             * copy is a memcpy between physical addresses. */
+            memcpy((void *)pa, (void *)(d & PAGE_ADDR_MASK), PAGE_SIZE);
+            /* Same protection, same everything, different page -- a
+             * PROT_NONE page stays one. */
+            table(dst_pt)[PAGE_INDEX(va)] = pa | (d & ~PAGE_ADDR_MASK);
+        }
+    }
+    as->brk_start = src->brk_start;
+    as->brk_cur = src->brk_cur;
+    pflusha();
+    return as;
+}
+
 void vm_destroy(struct addrspace *as)
 {
     u32 va, pg;

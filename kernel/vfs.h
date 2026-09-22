@@ -108,6 +108,8 @@ int  fd_dup2(int oldfd, int newfd);
 
 struct task;
 void fd_inherit(struct task *child, struct task *parent);
+void fd_fork(struct task *child, struct task *parent);
+void fd_exec(struct task *t);
 void fd_close_all(struct task *t);
 
 /* Operations that name a path rather than a descriptor. */

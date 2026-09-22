@@ -113,17 +113,19 @@ The payload lands at address 0, so the boot ROM cannot live there:
 0x00200000 - 0x003fffff   boot ROM, stack at the top of RAM
 ```
 
-`BOOT_SECTORS` (default 256, so 128 KB) bounds the **raw** fallback path, and
-`make write-raw` refuses if the image is larger and tells you what to rebuild
-with:
+`BOOT_SECTORS` (default 1920, so 960 KB) bounds the payload on **both**
+paths. The raw fallback reads that many sectors from the gap before the
+partition, and `make write-raw` refuses if the image is larger and tells
+you what to rebuild with:
 
 ```
-make BOOT_SECTORS=512 write-raw boot
+make BOOT_SECTORS=1920 write-raw boot
 ```
 
-The filesystem path has no such limit — it follows the cluster chain for as
-many clusters as the file has, and stops at the 2 MB where the ROM itself
-lives.
+The filesystem path follows the cluster chain and reads only the file's
+own size, but it stops at the same limit. This README used to say it had
+none; it did, at 128 KB, and a kernel that grew past it stopped booting
+with "short read".
 
 ## Targets
 

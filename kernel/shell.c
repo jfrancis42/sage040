@@ -42,6 +42,9 @@ static char cmdline_saved[LINE_MAX];
 
 /* What the last command returned, for $? and for scripts. */
 static int last_status;
+
+/* 1 in /bin/sh, 0 in the machine's own shell: see shell_main(). */
+static int shell_is_program;
 static char *argv[MAX_ARGS];
 
 /* ---------------------------------------------------------------- */
@@ -280,24 +283,59 @@ struct redirs {
     int err_to_out;             /* 2>&1                               */
 };
 
-/* The next word of `*s`, NUL-terminated in place, or null if none. */
-static char *next_word(char **s)
+/*
+ * The next word of `*s`, NUL-terminated in place, or null if none.
+ *
+ * With the quoting sh has: '...' is literal, "..." keeps its spaces
+ * (its $NAMEs were expanded already, by expand()), and a backslash
+ * quotes the next character. The quotes are removed as the word is
+ * copied down over itself. *quoted says whether any quoting was seen,
+ * so that a quoted ">" is an argument and not a redirection.
+ */
+static char *next_word(char **s, int *quoted)
 {
-    char *w;
+    char *w, *out;
+    char q = 0;
 
+    *quoted = 0;
     while (**s == ' ' || **s == '\t') {
         (*s)++;
     }
     if (**s == '\0') {
         return 0;
     }
-    w = *s;
-    while (**s && **s != ' ' && **s != '\t') {
+    w = out = *s;
+    while (**s) {
+        char c = **s;
+
+        if (q) {
+            if (c == q) {
+                q = 0;
+            } else if (c == '\\' && q == '"' && (*s)[1]) {
+                (*s)++;
+                *out++ = **s;
+            } else {
+                *out++ = c;
+            }
+        } else if (c == ' ' || c == '\t') {
+            break;
+        } else if (c == '\'' || c == '"') {
+            q = c;
+            *quoted = 1;
+        } else if (c == '\\' && (*s)[1]) {
+            (*s)++;
+            *out++ = **s;
+            *quoted = 1;
+        } else {
+            *out++ = c;
+        }
         (*s)++;
     }
+    /* An unterminated quote runs to the end of the line. */
     if (**s) {
-        *(*s)++ = '\0';
+        (*s)++;
     }
+    *out = '\0';
     return w;
 }
 
@@ -325,10 +363,20 @@ static int split(char *s, char **av, struct redirs *r, int *background)
     memset(r, 0, sizeof(*r));
     *background = 0;
 
-    while ((tok = next_word(&s)) != 0) {
+    int quoted;
+
+    while ((tok = next_word(&s, &quoted)) != 0) {
         const char **target = 0;
         int *append = 0;
         char *rest = 0;
+
+        if (quoted) {
+            if (argc == MAX_ARGS) {
+                return -2;
+            }
+            av[argc++] = tok;   /* quoted: an argument, whatever it says */
+            continue;
+        }
 
         /*
          * A trailing & asks for the background. Only a whole token:
@@ -363,7 +411,7 @@ static int split(char *s, char **av, struct redirs *r, int *background)
                 }
             }
             if (*rest == '\0') {
-                rest = next_word(&s);
+                rest = next_word(&s, &quoted);
                 if (!rest) {
                     return -1;
                 }
@@ -1455,10 +1503,10 @@ static int wait_for(int pid, const char *what)
     (void)what;
     sys_jobctl(JOBCTL_FG, pid, 0);
 
-    got = sys_waitpid(pid, &status);
+    got = sys_waitpid(pid, &status, WUNTRACED);
     sys_jobctl(JOBCTL_FG, 0, 0);        /* the terminal comes back */
 
-    if (got == pid && status == 128 + SIGTSTP) {
+    if (got == pid && WIFSTOPPED(status)) {
         /* ctrl-Z. It is still there, and `fg` resumes it. */
         out_putc('\n');
         out_putc('[');
@@ -1484,7 +1532,15 @@ static int wait_for(int pid, const char *what)
         }
         return got;
     }
-    return status;
+    /*
+     * The kernel reports Linux's status word; the shell speaks the
+     * convention every shell reports and `$?` shows: the exit code, or
+     * 128 plus the signal that ended it.
+     */
+    if (WIFSIGNALED(status)) {
+        return 128 + WTERMSIG(status);
+    }
+    return WEXITSTATUS(status);
 }
 
 /*
@@ -1512,13 +1568,31 @@ static void expand(char *line, u32 max)
     char out[LINE_MAX];
     u32 i = 0, o = 0;
 
+    int in_single = 0, in_double = 0;
+
     while (line[i] && o + 1 < max) {
         char name[32];
         u32 n = 0;
         const char *val;
         int braced = 0;
 
-        if (line[i] != '$' || !line[i + 1]) {
+        /*
+         * Quotes are left in place for split() to remove, but they
+         * decide what is expanded here: nothing inside '...', and a
+         * backslash protects the next character anywhere but there.
+         */
+        if (line[i] == '\'' && !in_double) {
+            in_single = !in_single;
+        } else if (line[i] == '"' && !in_single) {
+            in_double = !in_double;
+        } else if (line[i] == '\\' && !in_single && line[i + 1]) {
+            out[o++] = line[i++];
+            if (o + 1 < max) {
+                out[o++] = line[i++];
+            }
+            continue;
+        }
+        if (line[i] != '$' || !line[i + 1] || in_single) {
             out[o++] = line[i++];
             continue;
         }
@@ -1774,6 +1848,31 @@ static int run_builtin(int argc)
         last_status = r;
         return 1;
 
+    } else if (strcmp(argv[0], "exit") == 0) {
+        /*
+         * /bin/sh ends, with the status given or the last one. The
+         * machine's own shell has nothing to return to; `shutdown` is
+         * how the machine stops.
+         */
+        if (!shell_is_program) {
+            err_puts("exit: this is the machine's own shell; "
+                     "`shutdown` stops the machine\n");
+        } else {
+            int code = last_status;
+
+            if (argc > 1) {
+                const char *p = argv[1];
+
+                code = 0;
+                while (*p >= '0' && *p <= '9') {
+                    code = code * 10 + (*p++ - '0');
+                }
+            }
+            redirect_end();
+            out_flush();
+            sys_exit(code & 0xff);
+        }
+
     } else if (strcmp(argv[0], "source") == 0 ||
                strcmp(argv[0], ".") == 0) {
         if (need(argc, 2, "source FILE")) {
@@ -1921,6 +2020,29 @@ static const char *strchr_(const char *s, char c)
     return 0;
 }
 
+/* Is there a | outside quotes -- is this a pipeline? */
+static int has_bar(const char *p)
+{
+    char q = 0;
+
+    for (; *p; p++) {
+        if (q) {
+            if (*p == q) {
+                q = 0;
+            } else if (*p == '\\' && q == '"' && p[1]) {
+                p++;
+            }
+        } else if (*p == '\'' || *p == '"') {
+            q = *p;
+        } else if (*p == '\\' && p[1]) {
+            p++;
+        } else if (*p == '|') {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /*
  * a | b | c
  *
@@ -1945,11 +2067,30 @@ static void run_pipeline(char *line)
     int ac[MAX_STAGES], pid[MAX_STAGES];
     int rd[MAX_STAGES], wr[MAX_STAGES];
     int n = 0, i, background = 0, leader = 0, status = 0, stopped = 0;
+    int missing_last = 0;
     char *p = line;
 
-    /* Cut it at the bars. */
+    /* Cut it at the bars -- not the ones inside quotes. */
+    char q = 0;
+
     stage_text[n++] = p;
     for (; *p; p++) {
+        if (q) {
+            if (*p == q) {
+                q = 0;
+            } else if (*p == '\\' && q == '"' && p[1]) {
+                p++;
+            }
+            continue;
+        }
+        if (*p == '\'' || *p == '"') {
+            q = *p;
+            continue;
+        }
+        if (*p == '\\' && p[1]) {
+            p++;
+            continue;
+        }
         if (*p == '|') {
             *p = '\0';
             if (n == MAX_STAGES) {
@@ -2031,6 +2172,10 @@ static void run_pipeline(char *line)
             err_puts(av[i][0]);
             err_puts(got == -ENOENT || got == -EINVAL ?
                      ": command not found\n" : ": cannot run\n");
+            if (i == n - 1) {
+                status = got == -ENOENT || got == -EINVAL ? 127 : 126;
+                missing_last = 1;
+            }
             continue;
         }
         pid[i] = got;
@@ -2054,6 +2199,9 @@ close_pipes:
         }
     }
     if (!leader) {
+        if (missing_last) {
+            last_status = status;
+        }
         return;
     }
 
@@ -2074,7 +2222,7 @@ close_pipes:
 
             if (st == SPAWN_STOPPED) {
                 stopped = 1;
-            } else if (i == n - 1) {
+            } else if (i == n - 1 && !missing_last) {
                 status = st;
             }
         }
@@ -2095,7 +2243,7 @@ static void run_command(char *cmdline)
 
     {
         expand(cmdline, LINE_MAX);
-        if (strchr_(cmdline, '|')) {
+        if (has_bar(cmdline)) {
             run_pipeline(cmdline);
             return;
         }
@@ -2177,6 +2325,7 @@ static void run_command(char *cmdline)
                  */
                 err_puts(argv[0]);
                 err_puts(": command not found\n");
+                last_status = 127;          /* what every sh says */
             } else if (status == -ENOEXEC) {
                 /*
                  * Not an ELF image. It may be a script -- but only if
@@ -2198,9 +2347,11 @@ static void run_command(char *cmdline)
                 } else {
                     err_puts(argv[0]);
                     err_puts(": not an executable\n");
+                    last_status = 126;
                 }
             } else if (status < 0) {
                 err_report(argv[0], status);
+                last_status = 126;
             } else {
                 last_status = status;
                 report_status(argv[0], status);
@@ -2421,39 +2572,11 @@ static int run_script(const char *path)
  *
  * All the editing is in edit.c, above the system call boundary, the way
  * a shell's is. What is left here is what a shell's loop actually is:
- * read a line, remember it, run it.
+ * read a line, remember it, run it. Returns only for /bin/sh, at end of
+ * input; the machine's own shell has nowhere to return to.
  */
-void shell(void)
+static void interactive(void)
 {
-    /*
-     * The defaults, before /etc/rc gets a chance to change them.
-     *
-     * PATH has /bin first because that is where the system's own
-     * programs live, and the current directory last -- which is the
-     * ordering that stops a program dropped in the working directory
-     * from quietly replacing a system one.
-     */
-    env_set("PATH", "/bin:.");
-    env_set("HOME", "/");
-    env_set("SHELL", "/bin/sh");
-
-    /*
-     * /etc/rc, if there is one. Not an error if there is not: a machine
-     * with a blank disk should still come up to a prompt, and saying
-     * "no such file" at every boot would be noise rather than news.
-     *
-     * Note the name. rc.local would be the conventional one and is not
-     * a legal 8.3 name -- five characters of extension -- so the
-     * filesystem chose this, not taste.
-     */
-    {
-        struct stat st;
-
-        if (sys_stat("/etc/rc", &st) == 0) {
-            run_script("/etc/rc");
-        }
-    }
-
     for (;;) {
         char prompt[PATH_MAX + 8];
         int n;
@@ -2498,10 +2621,14 @@ void shell(void)
             continue;           /* ctrl-C: a fresh prompt, nothing run */
         }
         if (n < 0) {
-            /* End of input on the terminal. There is nowhere to exit to,
-             * so start a fresh line and carry on. */
+            /* End of input on the terminal. /bin/sh ends, as any shell
+             * does; the machine's own shell has nowhere to exit to, so
+             * it starts a fresh line and carries on. */
             out_putc('\n');
             out_flush();
+            if (shell_is_program) {
+                return;
+            }
             continue;
         }
         if (n == 0) {
@@ -2518,4 +2645,97 @@ void shell(void)
         edit_history_add(line);
         run_command(line);
     }
+}
+
+/* The machine's own shell: a kernel task, started at boot. */
+void shell(void)
+{
+    /*
+     * The defaults, before /etc/rc gets a chance to change them.
+     *
+     * PATH has /bin first because that is where the system's own
+     * programs live, and the current directory last -- which is the
+     * ordering that stops a program dropped in the working directory
+     * from quietly replacing a system one.
+     */
+    env_set("PATH", "/bin:.");
+    env_set("HOME", "/");
+    env_set("SHELL", "/bin/sh");
+
+    /*
+     * /etc/rc, if there is one. Not an error if there is not: a machine
+     * with a blank disk should still come up to a prompt, and saying
+     * "no such file" at every boot would be noise rather than news.
+     *
+     * Note the name. rc.local would be the conventional one and is not
+     * a legal 8.3 name -- five characters of extension -- so the
+     * filesystem chose this, not taste.
+     */
+    {
+        struct stat st;
+
+        if (sys_stat("/etc/rc", &st) == 0) {
+            run_script("/etc/rc");
+        }
+    }
+
+    interactive();
+}
+
+/*
+ * /bin/sh: this same shell, built as a program. `sh -c 'COMMAND'` runs
+ * one command line, `sh FILE` runs a script, and `sh` alone is
+ * interactive until end of input or `exit`. It takes the environment
+ * it was given rather than setting defaults, and does not run /etc/rc,
+ * which belongs to the machine and not to every shell.
+ */
+int shell_main(int argc, char **args, char **envp)
+{
+    int i;
+
+    shell_is_program = 1;
+    for (i = 0; envp && envp[i]; i++) {
+        char name[64];
+        const char *eq = strchr_(envp[i], '=');
+        u32 n;
+
+        if (!eq) {
+            continue;
+        }
+        n = (u32)(eq - envp[i]);
+        if (n >= sizeof(name)) {
+            continue;
+        }
+        memcpy(name, envp[i], n);
+        name[n] = '\0';
+        env_set(name, eq + 1);
+    }
+    if (!env_get("PATH")) {
+        env_set("PATH", "/bin:.");
+    }
+    if (!env_get("SHELL")) {
+        env_set("SHELL", "/bin/sh");
+    }
+
+    if (argc > 2 && strcmp(args[1], "-c") == 0) {
+        strncpy(line, args[2], sizeof(line) - 1);
+        line[sizeof(line) - 1] = '\0';
+        strncpy(cmdline_saved, line, sizeof(cmdline_saved) - 1);
+        cmdline_saved[sizeof(cmdline_saved) - 1] = '\0';
+        run_command(line);
+        out_flush();
+        return last_status;
+    }
+    if (argc > 1) {
+        int err = run_script(args[1]);
+
+        if (err < 0) {
+            err_report(args[1], err);
+            return 127;
+        }
+        out_flush();
+        return last_status;
+    }
+    interactive();
+    return last_status;
 }

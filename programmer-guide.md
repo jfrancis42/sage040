@@ -860,9 +860,9 @@ Forty of them.
 | `spawn` 400, `jobctl` 401, `netctl` 402 | **not Linux** — see below |
 
 The three above 400 are local because Linux has nothing to match.
-`spawn` takes a path and an argument vector and creates a task directly
-— there is no copy-on-write here, so a `fork` would copy an address
-space only for the child to throw it away. `jobctl` is what `fg`, `bg`,
+`spawn` takes a path and an argument vector and creates a task directly,
+the cheap alternative to `fork` + `execve`: `fork` works, but copies the
+whole address space, because there is no copy-on-write yet. `jobctl` is what `fg`, `bg`,
 `jobs` and `ps` are built on; `netctl` is what `ifconfig`, `ping` and
 `netstat` are built on, being the operations that configure an interface
 or send one echo request and so have no socket to hang off.
@@ -872,10 +872,11 @@ the negated error. A global would only start making sense once there are
 threads to get it wrong.
 
 `spawn` is numbered well above Linux's range because Linux has no such
-call. It is not `execve` — `execve` replaces the calling process, and
-there are no processes here to replace. It loads a program, runs it, and
-returns its exit status. When there are processes it becomes fork +
-execve + waitpid and this number goes away.
+call. `fork` (2), `execve` (11) and `waitpid` (7) are the real ones, and
+`waitpid`'s status is Linux's encoding: use `WIFEXITED`, `WEXITSTATUS`,
+`WIFSIGNALED`, `WTERMSIG`, `WIFSTOPPED` from `uapi.h`. To run a command
+the way `system()` does, `fork`, then `execvp("sh", {"sh", "-c", cmd})`,
+then `waitpid`.
 
 ### What a program includes
 

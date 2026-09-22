@@ -359,10 +359,12 @@ above 400 are local, because Linux has nothing to match.
 | **System** | `uname` `sysinfo` `reboot` |
 | **Network** | `socket` `bind` `connect` `listen` `accept` `sendto` `recvfrom` `shutdown` `netctl` (402) |
 
-`spawn` rather than `fork` + `execve`: there is no copy-on-write here, so a
-`fork` would have to copy the whole address space only for the child to
-throw it away at once. `spawn` takes a path and an argument vector and
-creates the task directly.
+`fork`, `execve` and `waitpid` are Linux's. `fork` copies the address
+space eagerly, since there is no copy-on-write yet. `spawn` is still
+here, fork and exec in one call: a path and an argument vector, and a
+new task, with no address space copied only to be thrown away.
+`/bin/sh` is the kernel's own shell built as a program, and it is what
+`sh -c` and `system()` run.
 
 `jobctl` is what `fg`, `bg`, `jobs` and `ps` are built on. `netctl` is what
 `ifconfig`, `ping` and `netstat` are built on — the operations that
@@ -643,8 +645,10 @@ seconds later" landed before the program existed and went to the shell.
 
 Named, so that nobody has to discover them by trying:
 
-**No `fork`.** `spawn` instead. Without copy-on-write, a `fork` would copy
-an address space for the child to discard immediately.
+**`fork` copies eagerly.** There is no copy-on-write until there is
+page-fault handling (task 21), so a `fork` of a large program costs its
+whole address space, even when an `execve` follows at once. `spawn` is
+the cheap way to start a program.
 
 **Signals are complete except for `SA_SIGINFO` and `sigaltstack`**, both
 refused with `EINVAL` rather than half supported. A fault's own signal

@@ -18,7 +18,21 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-PROGS := ifconfig ping netstat shutdown env
+PROGS := ifconfig ping netstat shutdown env sh
 INSTALL_DIR := /BIN
 
 include $(TOPDIR)/lib/program.mk
+
+# sh is the kernel's own shell, built as a program: the shell and line
+# editor sources, the gate's calling side, and the pure helpers they use
+# -- and NOT ulib, whose string functions would collide with the
+# kernel's own string.c that the shell is written against.
+K := $(TOPDIR)/kernel
+SH_SRCS := sh.c $(K)/shell.c $(K)/edit.c $(K)/sysuser.c $(K)/string.c \
+           $(K)/errno.c $(K)/time.c
+
+sh: $(SH_SRCS) $(LIB)/crt0.s $(LIB)/user.ld $(K)/syscall.h
+	$(CC) $(CFLAGS) $(LDFLAGS) \
+	    -x assembler-with-cpp $(LIB)/crt0.s \
+	    -x c $(SH_SRCS) -o $@
+	@$(SIZE) $@
