@@ -34,6 +34,7 @@
 #define EACCES          13      /* permission denied                  */
 #define EFAULT          14      /* bad address                        */
 #define EBUSY           16      /* device or resource busy            */
+#define ETXTBSY         26      /* text file busy: the swap file      */
 #define EEXIST          17      /* file exists                        */
 #define EXDEV           18      /* cross-device link                  */
 #define ENODEV          19      /* no such device                     */

@@ -211,7 +211,7 @@ catch a byte-order error, because both directions swap.
 | `mmap`/`brk` | ✅ done — `vm.c`, `mmap.c` |
 | TCP options — window scaling, timestamps, SACK, keepalives, `TIME_WAIT` | ✅ done — task 19 |
 | Shared libraries — `/lib/ld.so`, `/lib/libc.so`, shared text pages | ✅ done — task 20 |
-| Paging and swapping | ✗ open — §11 |
+| Paging and swapping — demand paging, copy-on-write, a swap file | ✅ done — task 21 |
 
 **Every hardware dependency is satisfied**, and has been for some time.
 What the machine now runs is described in **[`os.md`](os.md)**; what is
@@ -700,16 +700,14 @@ format/vector word on every exception, so the handler identifies itself from
 its own frame instead of needing 255 stubs, and reports the vector, its
 name, the PC, the SR and all fifteen registers before halting.
 
-**A fault in user mode kills the program, not the machine.** `trap.c`
-checks whether the frame came from user mode and, if so, raises `SIGSEGV`
-against the current task and exits it; the shell prints what happened and
-prompts again. Only a fault in supervisor mode panics, because there is
-nothing else it could safely do.
-
-It has to kill rather than return, because the 68040 pushes the address of
-the **faulting instruction** — so `rte` re-runs it and faults again
-forever. Resolving a fault instead of reporting it is what demand paging
-would mean, and that is §11. Note also that the SSW says nothing about
+**A fault in user mode is first offered to `vm_fault()`**, which may make
+the page -- lazy, swapped out, or copy-on-write -- and return, and then
+the 68040 runs the faulting instruction again, because it pushed the
+address of the **faulting instruction**. That is the whole mechanism of
+demand paging (task 21), and why it needed no instruction decoding. A
+fault `vm_fault()` cannot resolve kills the program, not the machine:
+`trap.c` raises `SIGSEGV` and exits the task, and the shell prints what
+happened. Only a fault in supervisor mode panics. Note also that the SSW says nothing about
 *why*: no bit distinguishes "not mapped" from "write protected" from
 "supervisor only", so a handler that needs to know must walk the tables or
 use `ptest`.
@@ -754,7 +752,7 @@ machine being small. The machine is not small now — 64 MB of RAM and a
 | `fsck` | and a clean-unmount flag to say when it is needed |
 | TCP | ✅ window scaling, timestamps, SACK, keepalives, a real `TIME_WAIT` |
 | Shared libraries | ✅ `ld.so`, `libc.so`, and one copy of their text in memory |
-| Paging | downstream of `mmap`, and what makes a big address space affordable |
+| Paging | ✅ demand paging, copy-on-write `fork`, a swap file |
 
 `emacs.md` is the same list approached from the other end: one real
 program, and everything it needs that is not here.
@@ -1293,31 +1291,33 @@ What was learned the hard way is in the working notes and `progress.md`: this
 gcc's driver passes neither `-static` nor `-shared` to the linker, and
 a program's `&printf` is its own PLT entry.
 
-### Paging and swapping
+### Paging and swapping — done (task 21)
 
-Also moved up. There is no demand paging and nothing is ever written to
-backing store: a program's pages are all mapped at exec and stay
-resident until it exits, and an access fault kills the program rather
-than filling a page.
+Built as the plan here said, and the plan's list is what it took:
 
-The machine has what this needs -- a full 68040 MMU, a disk, and a fault
-handler that already distinguishes user from kernel. What it does not
-have is the bookkeeping:
+- **A fault path that resolves** -- `vm_fault()`, called from the access
+  fault handler and from `uaccess` (the kernel walks tables rather than
+  touching, so it must do what a fault would).
+- **Lazy pages.** Stacks, the heap and anonymous `mmap` are invalid
+  descriptors marked `SW_LAZY` until touched. A program's 1 MB stack
+  cost 256 pages at exec; it now costs the pages it uses.
+- **Copy-on-write `fork`**: writable pages go read-only in both spaces,
+  marked `SW_COW`, and the first write copies -- or, if the other side
+  has gone, just makes the page writable again.
+- **A swap file**, not a partition: `swapon` turns its clusters into
+  sectors once (the filesystem's `bmap`), and the kernel then reads and
+  writes them directly, never re-entering the filesystem. The file is
+  refused to writes, truncation, renames and deletion while in use.
+- **Replacement** is the clock algorithm over the MMU's used bits, across
+  every address space; only pages with one holder are taken, which also
+  covers **pinning**: a system call that sleeps holding a user page's
+  physical address takes a reference to it first.
 
-- a fault path that can **resolve** a fault rather than only report it.
-  Note that the 68040 pushes the address of the *faulting instruction*,
-  so returning with `rte` re-runs it -- which is exactly what demand
-  paging wants and exactly what the current handler cannot allow.
-- a swap area, a partition or a file
-- page-replacement state. The MMU's used and modified bits are there for
-  this, and `vm.c` already knows not to touch indirect descriptors.
-- a reverse mapping, or a scan, to find what to evict
-- pinning, so a page a driver is reading into cannot be taken
-
-The argument for doing it is that it is the natural companion to a large
-address space: 256 MB of virtual space is only useful if the unused
-parts need not be resident. Sequenced after `mmap`, which shares most of
-the machinery.
+Deliberate limits: eviction happens only where a page is about to be
+given to a program, never inside `pmm_alloc`; there is no swap cache, so
+a page read back in gives up its slot; and when memory is overcommitted
+and nothing is left, whoever faults is killed (SIGKILL) -- not one
+chosen victim as Linux's OOM killer would pick.
 
 ### Loose ends
 

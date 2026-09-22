@@ -3548,6 +3548,57 @@ static int fat_sync(void)
     return fat_flush_all();
 }
 
+/*
+ * bmap: the sector holding byte `off` of an open file.
+ *
+ * Walking the chain from the start for every sector would make swapon,
+ * which asks for every sector of the file in order, quadratic -- tens of
+ * millions of FAT lookups for a swap file of a few megabytes. So the
+ * last answer is remembered, and a question further along the same
+ * file starts from there.
+ */
+static int fat_bmap(struct file *f, u32 off, u32 *lba, struct blockdev **bd)
+{
+    static const struct fat_node *last_node;
+    static u32 last_first, last_index, last_cluster;
+    struct fat_file *ff = handle(priv_to_handle(f));
+    u32 index, cl, k;
+
+    if (!ff) {
+        return -EBADF;
+    }
+    if (off >= ff->node->size || !ff->node->first) {
+        return -EINVAL;
+    }
+    index = off / cluster_bytes;
+    /* The same node AND the same chain: a node is reused for another
+     * file once this one is closed. */
+    if (last_node == ff->node && last_first == ff->node->first &&
+        last_index <= index) {
+        k = last_index;
+        cl = last_cluster;
+    } else {
+        k = 0;
+        cl = ff->node->first;
+    }
+    for (; k < index; k++) {
+        u16 next;
+
+        if (fat_get(cl, &next) != 0 || !cluster_valid(next)) {
+            last_node = 0;
+            return -EIO;
+        }
+        cl = next;
+    }
+    last_node = ff->node;
+    last_first = ff->node->first;
+    last_index = index;
+    last_cluster = cl;
+    *lba = cluster_lba(cl) + (off % cluster_bytes) / 512;
+    *bd = dev;
+    return 0;
+}
+
 static struct fs_type fat16_type = {
     "fat16",
     fat_mount,
@@ -3566,6 +3617,7 @@ static struct fs_type fat16_type = {
     fat_readdir_in,
     fat_dir_ino,
     fat_check,
+    fat_bmap,
     0
 };
 

@@ -167,6 +167,13 @@ feed() {
     printf '\022needle\r'
 
     # --- ctrl-C on a half-typed line abandons it and prompts again ---
+    #
+    # After a pause: the shell turns ctrl-C into "abandon the line" only
+    # while it is reading one. Sent in the same burst as the commands
+    # before it, the 0x03 could arrive while the shell was still running
+    # the last of them -- and a ctrl-C nobody is reading for is thrown
+    # away, as a terminal's is. About one run in ten under load.
+    sleep 1
     printf 'echo this must never run\003'
     printf 'echo ok-after-ctrl-c\r'
 

@@ -83,7 +83,7 @@ static struct memstats stats(void)
     struct memstats m;
 
     memset(&m, 0, sizeof(m));
-    syscall(NR_memctl, MEMCTL_STATS, 0, &m);
+    syscall(NR_memctl, MEMCTL_STATS, sizeof(m), &m);
     return m;
 }
 
@@ -238,6 +238,8 @@ int main(int argc, char **argv)
 
         snprintf(addr, sizeof(addr), "%lx", (unsigned long)&sot_counter);
         other = ask_other(argv[0], "page", addr);
+        printf("sotest: data page %x, %u holders, writable %u; the other's %x\n",
+               d.pa, d.refs, d.writable, other);
         report("the library's data is this process's own",
                d.writable && d.refs == 1 && other && other != d.pa);
     }

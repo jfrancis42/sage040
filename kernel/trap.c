@@ -18,14 +18,19 @@
  * made held: everything above the kernel already went through the gate
  * rather than around it, so nothing above had to change when it did.
  *
- * A fault from user mode kills the program (SIGSEGV) and leaves the
- * machine running; a fault in supervisor mode panics, because there is
- * nothing else it could safely do.
+ * An access fault from user mode is first offered to vm_fault(), which
+ * may make the page (demand paging, task 21): then the handler returns,
+ * and the 68040 runs the faulting instruction again. A fault it cannot
+ * resolve kills the program (SIGSEGV) and leaves the machine running; a
+ * fault in supervisor mode panics, because there is nothing else it
+ * could safely do.
  */
 #include "kernel.h"
 #include "console.h"
 #include "task.h"
 #include "signal.h"
+#include "vm.h"
+#include "errno.h"
 #include "uapi.h"
 
 #define VEC_TRAP0   32          /* vectors 32..47 are TRAP #0..#15 */
@@ -76,6 +81,28 @@ static u32 fault_address(const u16 *f)
     return ((u32)f[10] << 16) | (u32)f[11];
 }
 
+/*
+ * The special status word of a format 7 frame, and the bits of it that
+ * matter here. RW is set for a read. WBnS are the 68040's pending
+ * write-backs: a fault can leave up to three writes the processor had
+ * accepted but not done, and the handler must do them before returning
+ * (chapter 8). QEMU never leaves any -- it re-runs the whole instruction
+ * -- so they are checked rather than emulated, and a frame that has one
+ * is reported rather than resumed with a write silently lost.
+ */
+#define SSW_RW          0x0100
+#define WB_VALID        0x0080
+
+static u16 fault_ssw(const u16 *f)
+{
+    return f[6];
+}
+
+static int writebacks_pending(const u16 *f)
+{
+    return (f[7] | f[8] | f[9]) & WB_VALID;
+}
+
 static const char *exception_name(unsigned vec)
 {
     switch (vec) {
@@ -115,9 +142,10 @@ static const char *regnames[15] = {
 
 /*
  * Called from _exc_common with the fifteen saved registers and the
- * exception frame.  Nothing here is recoverable yet, so it reports as
- * much as it can and stops -- a silent hang is the one outcome worth
- * ruling out.
+ * exception frame. An access fault from a program may be resolved --
+ * demand paging, below -- and then this returns and the instruction runs
+ * again. Anything else reports as much as it can and stops -- a silent
+ * hang is the one outcome worth ruling out.
  */
 void exception_handler(const u32 *regs, const u16 *frame)
 {
@@ -134,11 +162,60 @@ void exception_handler(const u32 *regs, const u16 *frame)
      * address space of whatever ran off the end of itself.
      *
      * Note what is NOT done here: returning. The 68040 pushes the
-     * address of the FAULTING INSTRUCTION, so an rte re-runs it and
-     * faults again, forever. There is nothing to resume to -- no
-     * demand paging, no swap -- so the only honest answer is to end the
-     * program.
+     * address of the FAULTING INSTRUCTION, so an rte re-runs it -- which
+     * is what the demand paging above relies on, and why a fault it
+     * could not resolve must end the program here, not return and fault
+     * again forever.
      */
+    /*
+     * DEMAND PAGING. The page may be lazy, in the swap file, or shared
+     * copy-on-write: vm_fault() makes it what the access needs, and
+     * returning re-runs the instruction.
+     *
+     * One answer can loop: VM_FAULT_NOCHANGE, a page the tables say is
+     * there and accessible, which is taken to be a stale translation and
+     * flushed. If the MMU faults on it again regardless, something the
+     * tables do not show is wrong -- a bus error, say -- so three of
+     * those in a row, at one address, from one instruction, are treated
+     * as the real fault they are. A fault that CHANGED something always
+     * makes progress, and resets the count: counting those instead once
+     * killed a program for making, in a fresh process in a reused task
+     * slot, the same first-touch fault its predecessor had made.
+     */
+    if (vec == 2 && fmt == 7 && from_user(frame) && current && current->as &&
+        !writebacks_pending(frame)) {
+        static u32 last_addr, last_pc, nochange;
+        u32 addr = fault_address(frame);
+        int write = !(fault_ssw(frame) & SSW_RW);
+        int r = vm_fault(current->as, addr, write);
+
+        if (r == 0) {
+            nochange = 0;
+            return;
+        }
+        if (r == VM_FAULT_NOCHANGE) {
+            if (addr == last_addr && frame_pc(frame) == last_pc) {
+                nochange++;
+            } else {
+                nochange = 1;
+            }
+            last_addr = addr;
+            last_pc = frame_pc(frame);
+            if (nochange < 3) {
+                return;
+            }
+            nochange = 0;
+        }
+        if (r == -ENOMEM) {
+            /* Linux's answer to a page that cannot be had: SIGKILL. */
+            kputs("\nout of memory at 0x");
+            kputhex32(addr);
+            kputs(": killed\n");
+            current->signalled = SIGKILL;
+            task_exit(128 + SIGKILL);
+        }
+    }
+
     if (from_user(frame) && current && current->as) {
         kputs("\n");
         kputs(exception_name(vec));

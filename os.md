@@ -222,12 +222,26 @@ moment a program became a task of its own, nothing set it, every user
 pointer looked like a kernel pointer, and the first `write()` handed the
 terminal an address belonging to a different address space.
 
-There is no demand paging. An access fault kills the program — it has to,
-because the 68040 pushes the address of the *faulting instruction*, so
-`rte` re-runs it and faults again forever. And the SSW says nothing about
-*why*: no bit distinguishes "not mapped" from "write protected" from
-"supervisor only". A handler that needs to know must walk the tables or use
-`ptest`.
+### Demand paging and swap
+
+An access fault is first offered to `vm_fault()`, and because the 68040
+pushes the address of the *faulting instruction*, returning from the
+fault re-runs it -- which is all demand paging needs from the processor.
+A page can be absent in three ways, each an invalid descriptor the fault
+path understands: **lazy** (made, zeroed, on first touch -- stacks, the
+heap, anonymous `mmap`), **swapped out** (in the swap file, its slot in
+the descriptor), or present but **copy-on-write** after a `fork`. The SSW
+says nothing about *why* a fault happened, so `vm_fault()` walks the
+tables to find out.
+
+**Swap** is a file: `swapon /swap` and `swapoff /swap`. Eviction is the
+clock algorithm over the MMU's used bits; it happens only where a page
+is about to go to a program, and only takes pages with one holder -- so a
+page a sleeping `read()` holds the physical address of, which the
+system call pins with a reference, stays put. An address space's memory
+is given back when its process exits, not when it is reaped: a zombie
+used to hold every page, and then every swap slot, until its parent
+waited.
 
 ---
 
@@ -380,10 +394,10 @@ above 400 are local, because Linux has nothing to match.
 | **System** | `uname` `sysinfo` `reboot` |
 | **Network** | `socket` `bind` `connect` `listen` `accept` `sendto` `recvfrom` `shutdown` `netctl` (402) |
 
-`fork`, `execve` and `waitpid` are Linux's. `fork` copies the address
-space eagerly, since there is no copy-on-write yet. `spawn` is still
-here, fork and exec in one call: a path and an argument vector, and a
-new task, with no address space copied only to be thrown away.
+`fork`, `execve` and `waitpid` are Linux's. `fork` shares the address
+space copy-on-write, so fork-then-exec copies almost nothing. `spawn` is
+still here, fork and exec in one call: a path and an argument vector,
+and a new task.
 `/bin/sh` is the kernel's own shell built as a program, and it is what
 `sh -c` and `system()` run.
 
@@ -636,8 +650,8 @@ the machine instead of ending it.
 
 ## Testing
 
-Fourteen suites, `make test`, all of which boot the machine and drive it
-over its serial line -- 890 checks as of task 20:
+Fifteen suites, `make test`, all of which boot the machine and drive it
+over its serial line -- 938 checks as of task 21:
 
 | | | |
 |---|---|---|
@@ -655,6 +669,7 @@ over its serial line -- 890 checks as of task 20:
 | `kernel/dnstest.sh` | 18 | the resolver and ntpdate, against servers on the host |
 | `kernel/tcptest.sh` | 24 | TCP's options, loss, keepalives and TIME_WAIT |
 | `kernel/sotest.sh` | 117 | shared libraries, ld.so, and the sharing of their pages |
+| `kernel/pagetest.sh` | 48 | demand paging, copy-on-write, swap, and running out |
 
 The picolibc suites need `make libc` first.
 
@@ -684,12 +699,10 @@ seconds later" landed before the program existed and went to the shell.
 
 Named, so that nobody has to discover them by trying:
 
-**`fork` copies every writable page eagerly.** Pages neither side can
-write -- a shared library's text, read-only mappings -- are shared, but
-there is no copy-on-write for writable ones until there is page-fault
-handling (task 21), so a `fork` of a large program costs its whole data
-and heap, even when an `execve` follows at once. `spawn` is the cheap
-way to start a program.
+**`fork` copies nothing up front.** Every page is shared, writable ones
+copy-on-write, so a fork costs its page tables -- a 1 MB process forks
+for six pages -- and a fork followed at once by `execve` costs almost
+nothing. `spawn` is still the direct way to start a program.
 
 **Signals are complete except for `sigaltstack`**, refused with `EINVAL`
 rather than half supported. `SA_SIGINFO` handlers get Linux/m68k's
@@ -724,7 +737,10 @@ put them.
 network interface.** All static. There is no allocator pressure anywhere in
 the kernel because there is nothing dynamic to allocate.
 
-**No paging to disk**, and no demand paging at all.
+**Swap is a file, one at a time**, and there is no swap cache: a page
+read back in gives up its slot, so evicting it again writes it again.
+When memory is overcommitted and runs out, whoever faults is killed --
+there is no chosen victim.
 
 None of these is hard to fix in isolation. The point of listing them is
 that a program expecting any of them will not build, and will not say so

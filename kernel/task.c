@@ -600,13 +600,28 @@ void task_exit(int status)
     t->exit_status = status;
     t->exiting = 1;
 
-    /* Its descriptors go now; its stack and address space cannot, because
-     * this is still standing on one of them. */
+    /* Its descriptors go now; its kernel stack cannot, because this is
+     * still standing on it. */
     for (i = 0; i < OPEN_MAX; i++) {
         if (t->fds[i]) {
             file_put(t->fds[i]);
             t->fds[i] = 0;
         }
+    }
+
+    /*
+     * Its address space goes now too, as Linux's does at exit. It used
+     * to wait for the reap, so a zombie nobody had waited for yet held
+     * every page it ever had -- and, once there was swap, every slot:
+     * swapoff met a process that had finished long before and still
+     * had pages out. Nothing here runs on the user address space; the
+     * kernel's own map is switched to first, so the tables being freed
+     * are not the ones the MMU is looking at.
+     */
+    if (t->as) {
+        vm_switch(0);
+        vm_destroy(t->as);
+        t->as = 0;
     }
 
     /*

@@ -123,7 +123,12 @@ static void test_mmap(void)
     report("  on a page boundary", ((u32)a & (PAGE - 1)) == 0);
     report("  above the heap and below the stack",
            (u32)a > (u32)sbrk(0) && (u32)a + 16 * PAGE <= 0x1ff00000UL);
-    report("  and took 16 pages", before - free_pages() >= 16);
+    /* The pages come when they are touched (demand paging), so touch
+     * them: a program that never does takes nothing. */
+    for (i = 0; a != MAP_FAILED && i < 16; i++) {
+        a[i * PAGE] = 0;
+    }
+    report("  and took 16 pages once touched", before - free_pages() >= 16);
     report("  reads as zero", all_zero(a, 16 * PAGE));
     for (i = 0; i < 16 * PAGE; i++) {
         a[i] = (u8)(i ^ 0x55);
@@ -327,9 +332,11 @@ int main(int argc, char **argv)
     report("sbrk(64 KB) returns the old break", p == start);
     report("  and the break moved by exactly that",
            sbrk(0) == start + 16 * PAGE);
-    report("  and took 16 pages from the machine",
-           before - free_pages() >= 16);
+    /* Reading it touches every page, and a touched page is taken:
+     * demand paging, so the zero check comes first. */
     report("new heap memory reads as zero", all_zero(p, 16 * PAGE));
+    report("  and, touched, took 16 pages from the machine",
+           before - free_pages() >= 16);
 
     for (i = 0; i < 16 * PAGE; i++) {
         p[i] = (u8)(i * 7 + 3);

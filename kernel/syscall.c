@@ -32,6 +32,7 @@
 #include "vm.h"
 #include "mmap.h"
 #include "textcache.h"
+#include "swap.h"
 #include "poll.h"
 #include "pipe.h"
 #include "ptregs.h"
@@ -138,7 +139,16 @@ static s32 rw_user(int fd, u32 ubuf, u32 len, int writing)
         if (!k) {
             return total > 0 ? total : -EFAULT;
         }
+        /*
+         * PINNED for the length of the call: a read from a pipe or a
+         * terminal can sleep with this physical address in hand, and
+         * another task's fault could otherwise evict the page and give
+         * it away meanwhile. Reclaim never takes a page with two
+         * holders, and this is the second.
+         */
+        pmm_ref(PAGE_ALIGN_DOWN((u32)k));
         got = writing ? fd_write(fd, k, n) : fd_read(fd, k, n);
+        pmm_free(PAGE_ALIGN_DOWN((u32)k));
         if (got < 0) {
             return total > 0 ? total : got;
         }
@@ -930,6 +940,7 @@ static s32 sock_xfer(struct file *f, int k, u32 ubuf, u32 len, int flags,
         if (!kp) {
             return total > 0 ? total : -EFAULT;
         }
+        pmm_ref(PAGE_ALIGN_DOWN((u32)kp));      /* pinned: see rw_user */
         if (sending) {
             got = k == SK_INET ? sock_send(f, kp, n, flags, 0)
                                : usock_send(f, kp, n, flags);
@@ -937,6 +948,7 @@ static s32 sock_xfer(struct file *f, int k, u32 ubuf, u32 len, int flags,
             got = k == SK_INET ? sock_recv(f, kp, n, flags, 0, 0)
                                : usock_recv(f, kp, n, flags);
         }
+        pmm_free(PAGE_ALIGN_DOWN((u32)kp));
         if (got < 0) {
             return total > 0 ? total : got;
         }
@@ -1681,6 +1693,13 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         si.totalram = pmm_total();
         si.freeram = pmm_available();
         si.bufferram = textcache_idle();
+        {
+            struct swapstats s;
+
+            swap_stats(&s);
+            si.totalswap = s.slots;
+            si.freeswap = s.slots - s.used;
+        }
         si.mem_unit = (u32)PAGE_SIZE;
         si.procs = (u16)task_count();
         return store(a1, &si, sizeof(si));
@@ -1745,7 +1764,22 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
             m.tc_misses = t.misses;
             m.tc_evicted = t.evicted;
             m.tc_forgotten = t.forgotten;
-            return store(a3, &m, sizeof(m));
+            {
+                struct vm_stats v;
+                struct swapstats s;
+
+                vm_stats(&v);
+                swap_stats(&s);
+                m.faults_zero = v.faults_zero;
+                m.faults_cow = v.faults_cow;
+                m.faults_swapin = v.faults_swapin;
+                m.evicted = v.evicted;
+                m.swap_slots = s.slots;
+                m.swap_used = s.used;
+                m.pageouts = s.pageouts;
+                m.pageins = s.pageins;
+            }
+            return store(a3, &m, a2 < sizeof(m) ? a2 : sizeof(m));
         }
         if (a1 == MEMCTL_PAGE) {
             struct pageinfo pi;
@@ -1755,7 +1789,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
             }
             pi.pa = PAGE_ALIGN_DOWN(vm_translate(current->as, a2, 0));
             pi.refs = pi.pa ? pmm_refcount(pi.pa) : 0;
-            pi.writable = vm_translate(current->as, a2, 1) != 0;
+            pi.writable = vm_may_write(current->as, a2);
             return store(a3, &pi, sizeof(pi));
         }
         return -EINVAL;

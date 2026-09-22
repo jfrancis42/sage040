@@ -1777,6 +1777,14 @@ static int run_builtin(int argc)
             out_putdec_pad(si.freeram, 10);
             out_putdec_pad(si.freeram * kb, 9);
             out_putc('\n');
+            if (si.totalswap) {
+                out_puts("swap   ");
+                out_putdec_pad(si.totalswap, 10);
+                out_putdec_pad(si.totalswap * kb, 9);
+                out_puts("   ");
+                out_putdec(si.totalswap - si.freeswap);
+                out_puts(" pages in use\n");
+            }
             out_puts("\npage size ");
             out_putdec(si.mem_unit);
             out_puts(" bytes, ");

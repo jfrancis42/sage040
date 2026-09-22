@@ -46,7 +46,10 @@
  */
 #include "vm.h"
 #include "pmm.h"
+#include "swap.h"
+#include "textcache.h"
 #include "console.h"
+#include "errno.h"
 #include "string.h"
 
 /* --- descriptor bits ----------------------------------------------- */
@@ -71,6 +74,27 @@
  * exit, and comes back intact when the protection is lifted.
  */
 #define DESC_SW_NONE    0x800
+
+/*
+ * DEMAND PAGING's descriptors (task 21). The first two are INVALID
+ * descriptors, so the MMU faults on the page and vm_fault() decides;
+ * the third is a bit on a RESIDENT one.
+ *
+ *   SW_LAZY  nothing yet: the first touch makes a zeroed page
+ *   SW_SWAP  in the swap file, at the slot in bits 31..12
+ *   SW_COW   resident but write-protected because another address
+ *            space holds it too; a write copies it (fork's pages)
+ *
+ * DESC_WP on a lazy or swapped descriptor means what it does on a
+ * resident one -- read-only -- so the protection survives the page
+ * being away. SW_NONE on either means PROT_NONE. SW_COW shares bit 11
+ * with SW_NONE, which is safe because one is only ever looked at on a
+ * resident descriptor and the other only on an invalid one.
+ */
+#define DESC_SW_LAZY    0x400
+#define DESC_SW_SWAP    0x200
+#define DESC_SW_COW     0x800
+#define DESC_USED       0x008           /* set by the MMU on access     */
 
 #define PTR_TABLE_MASK  0xfffffe00UL    /* root descriptor -> pointer table */
 #define PAGE_TABLE_MASK 0xffffff00UL    /* pointer descriptor -> page table */
@@ -164,10 +188,68 @@ static u32 *table(u32 pa)
 
 /* --- building a mapping -------------------------------------------- */
 
-/* Does this descriptor hold a page the address space owns? */
+/* Does this descriptor occupy its address -- a page, or a promise of
+ * one? What mmap and brk ask before putting something there. */
 static int desc_owned(u32 d)
 {
-    return (d & PDT_RESIDENT) || (d & DESC_SW_NONE);
+    return (d & PDT_RESIDENT) ||
+           (d & (DESC_SW_NONE | DESC_SW_LAZY | DESC_SW_SWAP));
+}
+
+/* Does it hold a physical page? Resident, or PROT_NONE with its page. */
+static int desc_has_page(u32 d)
+{
+    return (d & PDT_RESIDENT) ||
+           ((d & DESC_SW_NONE) && !(d & (DESC_SW_LAZY | DESC_SW_SWAP)));
+}
+
+/* Give back whatever the descriptor holds: a page, a swap slot, or
+ * nothing at all for a lazy one. */
+static void desc_release(u32 d)
+{
+    if (desc_has_page(d)) {
+        pmm_free(d & PAGE_ADDR_MASK);
+    } else if (d & DESC_SW_SWAP) {
+        swap_free(d >> PAGE_SHIFT);
+    }
+}
+
+static struct vm_stats stats;
+
+void vm_stats(struct vm_stats *out)
+{
+    *out = stats;
+}
+
+/*
+ * Pages kept back from programs for the kernel's own use -- page
+ * tables, a task's kernel stack, a socket's buffers -- which take pages
+ * straight from pmm and must not find them all gone to a program that
+ * touched too much.
+ */
+#define RESERVE_PAGES   24
+#define RECLAIM_BATCH   32
+
+/* A page for a program: reclaiming first if memory is short. */
+static u32 page_alloc_user(void)
+{
+    if (pmm_available() <= RESERVE_PAGES + 1) {
+        vm_reclaim(RECLAIM_BATCH);
+    }
+    if (pmm_available() <= RESERVE_PAGES) {
+        return 0;
+    }
+    return pmm_alloc();
+}
+
+int vm_commit_ok(u32 pages)
+{
+    struct swapstats s;
+    u32 have = pmm_available() + textcache_idle();
+
+    swap_stats(&s);
+    have += s.slots - s.used;
+    return pages + RESERVE_PAGES <= have;
 }
 
 static u32 page_bits(int flags)
@@ -457,6 +539,7 @@ struct addrspace *vm_create(void)
         return 0;
     }
     as->used = 1;
+    as->busy = 1;               /* until vm_ready(): see vm.h */
 
     /*
      * Nothing else is filled in. Every root entry is invalid until
@@ -477,8 +560,15 @@ u32 vm_map(struct addrspace *as, u32 va, u32 pa, int flags)
         return 0;
     }
     if (!pa) {
-        pa = pmm_alloc();
+        pa = page_alloc_user();
         if (!pa) {
+            return 0;
+        }
+        /* The tables may have been where the page came from, if
+         * reclaim ran: look again. */
+        pt_pa = as_pagetable(as, va, 1);
+        if (!pt_pa) {
+            pmm_free(pa);
             return 0;
         }
     }
@@ -493,6 +583,134 @@ u32 vm_map(struct addrspace *as, u32 va, u32 pa, int flags)
      */
     pflusha();
     return pa;
+}
+
+int vm_may_write(struct addrspace *as, u32 va)
+{
+    u32 pt_pa = as_pagetable(as, va, 0);
+    u32 d;
+
+    if (!pt_pa) {
+        return 0;
+    }
+    d = table(pt_pa)[PAGE_INDEX(va)];
+    if (d & PDT_RESIDENT) {
+        return !(d & DESC_SUPER) && (!(d & DESC_WP) || (d & DESC_SW_COW));
+    }
+    return (d & (DESC_SW_LAZY | DESC_SW_SWAP)) &&
+           !(d & (DESC_WP | DESC_SW_NONE));
+}
+
+void vm_ready(struct addrspace *as)
+{
+    if (as) {
+        as->busy = 0;
+    }
+}
+
+int vm_map_lazy(struct addrspace *as, u32 va, int flags)
+{
+    u32 pt_pa = as_pagetable(as, va, 1);
+    u32 d = DESC_SW_LAZY;
+
+    if (!pt_pa) {
+        return -1;
+    }
+    if (!(flags & VM_WRITE)) {
+        d |= DESC_WP;
+    }
+    if (flags & VM_NONE) {
+        d |= DESC_SW_NONE;
+    }
+    /* An invalid descriptor replacing an invalid one: nothing cached to
+     * flush. The callers unmap first when there was a page. */
+    table(pt_pa)[PAGE_INDEX(va)] = d;
+    return 0;
+}
+
+/*
+ * THE FAULT PATH. Every way a mapped page can be absent, made present:
+ *
+ *   resident, write-protected, SW_COW   copy it if anyone else holds
+ *                                       it, then make it writable
+ *   SW_LAZY                             a zeroed page (pmm zeroes)
+ *   SW_SWAP                             read back from the swap file
+ *
+ * and a resident, accessible page is a translation the MMU had cached
+ * from before it changed -- flushed, and the access tried again.
+ * Everything else is a real fault. The page made is marked USED, so
+ * that reclaim does not take it back before the instruction that
+ * wanted it has run again.
+ */
+int vm_fault(struct addrspace *as, u32 va, int write)
+{
+    u32 pt_pa = as_pagetable(as, va, 0);
+    u32 *pt, d, pa;
+    int idx = (int)PAGE_INDEX(va);
+
+    if (!pt_pa) {
+        return -EFAULT;
+    }
+    pt = table(pt_pa);
+    d = pt[idx];
+
+    if (d & PDT_RESIDENT) {
+        if (d & DESC_SUPER) {
+            return -EFAULT;
+        }
+        if (!write || !(d & DESC_WP)) {
+            pflusha();
+            return VM_FAULT_NOCHANGE;
+        }
+        if (!(d & DESC_SW_COW)) {
+            return -EFAULT;             /* read-only, and meant to be */
+        }
+        pa = d & PAGE_ADDR_MASK;
+        if (pmm_refcount(pa) > 1) {
+            /* Reclaim never takes a page with two holders, so `pa` is
+             * still this descriptor's after the allocation. */
+            u32 copy = page_alloc_user();
+
+            if (!copy) {
+                return -ENOMEM;
+            }
+            memcpy((void *)copy, (void *)pa, PAGE_SIZE);
+            pmm_free(pa);
+            pa = copy;
+        }
+        pt[idx] = pa | page_bits(VM_USER | VM_WRITE) | DESC_USED;
+        stats.faults_cow++;
+        pflusha();
+        return 0;
+    }
+
+    if ((d & DESC_SW_NONE) || !(d & (DESC_SW_LAZY | DESC_SW_SWAP))) {
+        return -EFAULT;                 /* PROT_NONE, or nothing there */
+    }
+    if (write && (d & DESC_WP)) {
+        return -EFAULT;
+    }
+    pa = page_alloc_user();
+    if (!pa) {
+        return -ENOMEM;
+    }
+    d = pt[idx];                        /* reclaim leaves it, but look */
+    if (d & DESC_SW_SWAP) {
+        u32 slot = d >> PAGE_SHIFT;
+
+        if (swap_read(slot, (void *)pa) < 0) {
+            pmm_free(pa);
+            return -EFAULT;
+        }
+        swap_free(slot);                /* this space's hold on it */
+        stats.faults_swapin++;
+    } else {
+        stats.faults_zero++;
+    }
+    pt[idx] = pa | page_bits(VM_USER | ((d & DESC_WP) ? 0 : VM_WRITE)) |
+              DESC_USED;
+    pflusha();
+    return 0;
 }
 
 u32 vm_translate(struct addrspace *as, u32 va, int write)
@@ -541,8 +759,10 @@ u32 vm_mapped_pages(struct addrspace *as)
             va += PAGE_ENTRIES * PAGE_SIZE;
             continue;
         }
+        /* Pages in memory: a lazy page is not one yet, and a swapped
+         * one is not one any more. */
         for (i = 0; i < PAGE_ENTRIES; i++) {
-            if (desc_owned(table(pt_pa)[i])) {
+            if (desc_has_page(table(pt_pa)[i])) {
                 n++;
             }
         }
@@ -571,6 +791,21 @@ int vm_protect(struct addrspace *as, u32 va, int flags)
     if (!desc_owned(d)) {
         return -1;
     }
+
+    /* Lazy or swapped: no page to change, only what it will be when it
+     * comes -- the bits vm_fault() reads. */
+    if (!desc_has_page(d)) {
+        u32 nd = d & ~(DESC_WP | DESC_SW_NONE);
+
+        if (!(flags & VM_WRITE)) {
+            nd |= DESC_WP;
+        }
+        if (flags & VM_NONE) {
+            nd |= DESC_SW_NONE;
+        }
+        pt[PAGE_INDEX(va)] = nd;
+        return 0;
+    }
     pa = d & PAGE_ADDR_MASK;
 
     /*
@@ -583,7 +818,7 @@ int vm_protect(struct addrspace *as, u32 va, int flags)
      * just allocate, which is why this one check is enough.
      */
     if ((flags & VM_WRITE) && !(flags & VM_NONE) && pmm_refcount(pa) > 1) {
-        u32 copy = pmm_alloc();
+        u32 copy = page_alloc_user();
 
         if (!copy) {
             return -1;
@@ -620,7 +855,7 @@ void vm_unmap(struct addrspace *as, u32 va)
         return;
     }
     pt[PAGE_INDEX(va)] = 0;
-    pmm_free(d & PAGE_ADDR_MASK);
+    desc_release(d);
 
     /* Before anything can reuse that page, not after: a cached
      * translation would let the program keep writing to memory that now
@@ -678,7 +913,13 @@ u32 vm_brk(struct addrspace *as, u32 addr)
          * on the way would stay with the address space until it died,
          * so a failed request would cost the machine memory for nothing.
          */
-        if (pmm_available() < pages + pages / 448 + 2) {
+        /*
+         * The pages are lazy (demand paging, task 21): nothing is taken
+         * until they are touched, so what is checked is whether they
+         * could be -- memory and swap together -- plus a page of
+         * tables per 448 of them, which ARE taken now.
+         */
+        if (!vm_commit_ok(pages) || pmm_available() < pages / 448 + 2) {
             return as->brk_cur;
         }
         for (va = old_end; va < new_end; va += PAGE_SIZE) {
@@ -687,7 +928,7 @@ u32 vm_brk(struct addrspace *as, u32 addr)
             }
         }
         for (va = old_end; va < new_end; va += PAGE_SIZE) {
-            if (!vm_map(as, va, 0, VM_USER | VM_WRITE)) {
+            if (vm_map_lazy(as, va, VM_USER | VM_WRITE) < 0) {
                 /* All or nothing: a half-grown heap is a break that
                  * does not match what is mapped. */
                 while (va > old_end) {
@@ -713,10 +954,11 @@ struct addrspace *vm_clone(struct addrspace *src)
     u32 pages = vm_mapped_pages(src), va;
 
     /*
-     * Refused before anything is copied if it plainly cannot fit: the
-     * pages, and a page of tables per 448 of them, as brk reckons it.
+     * COPY ON WRITE (task 21): nothing is copied here, so all a fork
+     * needs up front is the tables -- a page of them per 448 pages, as
+     * brk reckons it.
      */
-    if (pmm_available() < pages + pages / 448 + 4) {
+    if (pmm_available() < pages / 448 + 4) {
         return 0;
     }
     as = vm_create();
@@ -733,50 +975,68 @@ struct addrspace *vm_clone(struct addrspace *src)
             continue;
         }
         for (i = 0; i < PAGE_ENTRIES; i++, va += PAGE_SIZE) {
-            u32 d = table(pt_pa)[i];
+            u32 *sp = &table(pt_pa)[i];
+            u32 d = *sp;
             u32 dst_pt, pa;
 
             if (!desc_owned(d)) {
                 continue;
             }
-            /*
-             * A page neither process can write is SHARED, not copied:
-             * a library's text, a read-only mapping, a PROT_NONE page.
-             * vm_protect() copies it first if either side later makes
-             * it writable, so the two can never see each other's
-             * writes. For a program linked against libc.so this is
-             * most of what a fork used to copy.
-             */
-            if (((d & DESC_WP) || (d & DESC_SW_NONE)) &&
-                pmm_ref(d & PAGE_ADDR_MASK)) {
-                dst_pt = as_pagetable(as, va, 1);
-                if (!dst_pt) {
-                    pmm_free(d & PAGE_ADDR_MASK);
+            dst_pt = as_pagetable(as, va, 1);
+            if (!dst_pt) {
+                vm_destroy(as);
+                return 0;
+            }
+
+            /* Nothing yet: the child gets the same promise. */
+            if (d & DESC_SW_LAZY) {
+                table(dst_pt)[PAGE_INDEX(va)] = d;
+                continue;
+            }
+            /* In the swap file: both hold the slot until one of them
+             * brings it back (vm_fault gives up its own hold). */
+            if (d & DESC_SW_SWAP) {
+                if (swap_ref(d >> PAGE_SHIFT) < 0) {
                     vm_destroy(as);
                     return 0;
                 }
                 table(dst_pt)[PAGE_INDEX(va)] = d;
                 continue;
             }
-            pa = pmm_alloc();
-            dst_pt = as_pagetable(as, va, 1);
-            if (!pa || !dst_pt) {
-                if (pa) {
-                    pmm_free(pa);
+
+            pa = d & PAGE_ADDR_MASK;
+            if (pmm_ref(pa)) {
+                /*
+                 * SHARED. A page neither side can write stays as it
+                 * is in both. A writable one becomes read-only in both
+                 * and marked SW_COW, so that the first write by either
+                 * faults, and vm_fault() gives the writer its own copy
+                 * -- or, if the other has gone by then, simply makes
+                 * the page writable again.
+                 */
+                if ((d & PDT_RESIDENT) && (!(d & DESC_WP) || (d & DESC_SW_COW))) {
+                    d = (d | DESC_WP | DESC_SW_COW) & ~DESC_USED;
+                    *sp = d;
                 }
+                table(dst_pt)[PAGE_INDEX(va)] = d;
+                continue;
+            }
+
+            /* 65535 holders already: a copy of its own, then. */
+            pa = page_alloc_user();
+            if (!pa) {
                 vm_destroy(as);
                 return 0;
             }
-            /* The kernel sees all of RAM at its own address, so a page
-             * copy is a memcpy between physical addresses. */
             memcpy((void *)pa, (void *)(d & PAGE_ADDR_MASK), PAGE_SIZE);
-            /* Same protection, same everything, different page -- a
-             * PROT_NONE page stays one. */
-            table(dst_pt)[PAGE_INDEX(va)] = pa | (d & ~PAGE_ADDR_MASK);
+            table(dst_pt)[PAGE_INDEX(va)] = pa | (d & ~(PAGE_ADDR_MASK | DESC_SW_COW));
         }
     }
     as->brk_start = src->brk_start;
     as->brk_cur = src->brk_cur;
+    as->busy = 0;
+    /* The parent's writable pages just became read-only: its cached
+     * translations still say writable. */
     pflusha();
     return as;
 }
@@ -804,7 +1064,7 @@ void vm_destroy(struct addrspace *as)
             u32 d = table(pt_pa)[i];
 
             if (desc_owned(d)) {
-                pmm_free(d & PAGE_ADDR_MASK);
+                desc_release(d);
                 table(pt_pa)[i] = 0;
             }
         }
@@ -835,6 +1095,154 @@ void vm_destroy(struct addrspace *as)
     /* Whatever was cached for those addresses now refers to pages that
      * belong to nobody. */
     pflusha();
+}
+
+/*
+ * RECLAIM: the clock algorithm, over every address space's pages.
+ *
+ * The hand walks (space, address) positions and remembers where it
+ * stopped. A resident page the MMU has marked USED since the hand last
+ * passed has its mark cleared and is left; one without the mark has
+ * not been touched for a whole turn of the hand, and is written to the
+ * swap file and freed. Two turns at most, so a machine where every page
+ * is in use gives up rather than spinning.
+ *
+ * Only pages with ONE holder are taken. A shared page -- a library's
+ * text, a page a fork left in two spaces, a page pinned by a system
+ * call that is reading into it -- has more, and is skipped: evicting it
+ * from one space would not free it, and a pinned one must stay where
+ * the kernel was told it is.
+ *
+ * Called only where a page is about to be given to a program (see
+ * page_alloc_user), never from inside pmm_alloc(): the kernel takes
+ * pages for its own use all over, at moments when an address space's
+ * tables may be half built, and nothing there expects its pages to move.
+ */
+static u32 hand_space, hand_va = USER_VA_BASE;
+
+static int evict(u32 *pt, int idx)
+{
+    u32 d = pt[idx], pa = d & PAGE_ADDR_MASK, slot;
+    int ro = (d & DESC_WP) && !(d & DESC_SW_COW);
+
+    slot = swap_alloc();
+    if (slot == SWAP_NONE) {
+        return -1;                      /* swap is full */
+    }
+    if (swap_write(slot, (void *)pa) < 0) {
+        swap_free(slot);
+        return -1;
+    }
+    pt[idx] = (slot << PAGE_SHIFT) | DESC_SW_SWAP | (ro ? DESC_WP : 0);
+    pmm_free(pa);
+    stats.evicted++;
+    return 0;
+}
+
+u32 vm_reclaim(u32 want)
+{
+    u32 freed = textcache_shrink(want);
+    u32 steps, limit;
+
+    if (freed >= want || !swap_is_on()) {
+        return freed;
+    }
+
+    /* Two full turns: every possible position, twice. */
+    limit = 2 * MAX_SPACES * (USER_VA_SIZE / PAGE_SIZE);
+    for (steps = 0; steps < limit && freed < want; ) {
+        struct addrspace *as = &spaces[hand_space];
+        u32 pt_pa;
+
+        if (!as->used || as->busy || hand_va >= USER_VA_END) {
+            hand_space = (hand_space + 1) % MAX_SPACES;
+            hand_va = USER_VA_BASE;
+            steps += (USER_VA_SIZE / PAGE_SIZE);
+            continue;
+        }
+        pt_pa = as_pagetable(as, hand_va, 0);
+        if (!pt_pa) {
+            /* No table here: skip the 64 pages it would have covered. */
+            u32 next = (hand_va & ~(PAGE_ENTRIES * PAGE_SIZE - 1)) +
+                       PAGE_ENTRIES * PAGE_SIZE;
+
+            steps += (next - hand_va) / PAGE_SIZE;
+            hand_va = next;
+            continue;
+        }
+        {
+            u32 *pt = table(pt_pa);
+            int idx = (int)PAGE_INDEX(hand_va);
+            u32 d = pt[idx];
+
+            if ((d & PDT_RESIDENT) && !(d & DESC_SUPER) &&
+                pmm_refcount(d & PAGE_ADDR_MASK) == 1) {
+                if (d & DESC_USED) {
+                    pt[idx] = d & ~DESC_USED;
+                } else if (evict(pt, idx) == 0) {
+                    freed++;
+                } else {
+                    break;              /* swap full or failing */
+                }
+            }
+        }
+        hand_va += PAGE_SIZE;
+        steps++;
+    }
+    /* The USED marks cleared and the pages taken may be cached in the
+     * ATC as they were: gone before any program runs again. */
+    pflusha();
+    return freed;
+}
+
+int vm_swapoff(void)
+{
+    int i;
+
+    for (i = 0; i < MAX_SPACES; i++) {
+        struct addrspace *as = &spaces[i];
+        u32 va;
+
+        if (!as->used) {
+            continue;
+        }
+        for (va = USER_VA_BASE; va < USER_VA_END; ) {
+            u32 pt_pa = as_pagetable(as, va, 0);
+            u32 k;
+
+            if (!pt_pa) {
+                va += PAGE_ENTRIES * PAGE_SIZE;
+                continue;
+            }
+            for (k = 0; k < PAGE_ENTRIES; k++, va += PAGE_SIZE) {
+                u32 d = table(pt_pa)[k], pa, slot;
+
+                if (!(d & DESC_SW_SWAP)) {
+                    continue;
+                }
+                /* Straight from pmm: reclaiming now would only send
+                 * something else out to the file being emptied. */
+                pa = pmm_available() > RESERVE_PAGES ? pmm_alloc() : 0;
+                if (!pa) {
+                    return -ENOMEM;
+                }
+                slot = d >> PAGE_SHIFT;
+                if (swap_read(slot, (void *)pa) < 0) {
+                    pmm_free(pa);
+                    return -EIO;
+                }
+                swap_free(slot);
+                if (d & DESC_SW_NONE) {
+                    table(pt_pa)[k] = pa | DESC_SW_NONE;
+                } else {
+                    table(pt_pa)[k] = pa | page_bits(VM_USER |
+                                        ((d & DESC_WP) ? 0 : VM_WRITE));
+                }
+            }
+        }
+    }
+    pflusha();
+    return 0;
 }
 
 void vm_kernel_present(u32 va, int present)

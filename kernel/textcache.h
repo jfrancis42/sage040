@@ -38,4 +38,7 @@ void textcache_stats(struct tc_stats *out);
  * which sysinfo reports as bufferram and `free` as cache. */
 u32  textcache_idle(void);
 
+/* Give up to `want` of those back to the allocator. How many it did. */
+u32  textcache_shrink(u32 want);
+
 #endif

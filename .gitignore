@@ -77,3 +77,6 @@ ports/vi/vi
 system/host
 system/ntpdate
 apps/tcptest
+apps/pagetest
+system/swapon
+system/swapoff

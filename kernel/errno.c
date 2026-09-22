@@ -33,6 +33,7 @@ const char *strerror(int err)
     case EACCES:          return "permission denied";
     case EFAULT:          return "bad address";
     case EBUSY:           return "device or resource busy";
+    case ETXTBSY:         return "text file busy";
     case EEXIST:          return "file exists";
     case EXDEV:           return "invalid cross-device link";
     case ENODEV:          return "no such device";

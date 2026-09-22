@@ -60,6 +60,23 @@ struct addrspace *uaccess_current(void)
  * allocator had one. Crossing a page boundary without noticing would
  * read the wrong memory and would do it silently.
  */
+/*
+ * The kernel's side of demand paging. A user page may be lazy, in the
+ * swap file, or copy-on-write -- all of which the MMU would fault on,
+ * and vm_fault() would resolve, had the PROGRAM touched it. The kernel
+ * walks the tables instead of touching, so it does what the fault
+ * would: asks vm_fault() and looks again.
+ */
+static u32 translate(struct addrspace *as, u32 uva, int write)
+{
+    u32 pa = vm_translate(as, uva, write);
+
+    if (!pa && vm_fault(as, uva, write) >= 0) {
+        pa = vm_translate(as, uva, write);
+    }
+    return pa;
+}
+
 static u32 chunk_len(u32 uva, u32 len)
 {
     u32 to_end = (u32)PAGE_SIZE - (uva & PAGE_MASK);
@@ -76,7 +93,7 @@ void *uaccess_chunk(u32 uva, u32 *len, int write)
     if (!as || !len || *len == 0) {
         return 0;
     }
-    pa = vm_translate(as, uva, write);
+    pa = translate(as, uva, write);
     if (!pa) {
         return 0;
     }
@@ -107,7 +124,7 @@ int uaccess_check(u32 uva, u32 len, int write)
     while (len > 0) {
         u32 n = chunk_len(uva, len);
 
-        if (!vm_translate(as, uva, write)) {
+        if (!translate(as, uva, write)) {
             return -EFAULT;
         }
         uva += n;

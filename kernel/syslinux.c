@@ -24,6 +24,7 @@
  * descriptor here knows WHICH directory, not where it is, and the
  * filesystem's walk starts from the working directory.
  */
+#include "swap.h"
 #include "sysint.h"
 #include "syscall.h"
 #include "vfs.h"
@@ -454,6 +455,26 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         err = vfs_stat(path, &st);
         return err < 0 ? err : -EINVAL;     /* there, and not a link */
     }
+
+    case __NR_swapon:
+    case __NR_swapoff:
+        err = fetch_str(path, a1, sizeof(path));
+        if (err < 0) {
+            return err;
+        }
+        if (nr == __NR_swapon) {
+            err = swap_on(path);
+            return err < 0 ? err : 0;
+        }
+        if (!swap_matches(path)) {
+            return -EINVAL;             /* Linux's answer: not a swap file */
+        }
+        err = vm_swapoff();
+        if (err < 0) {
+            return err;
+        }
+        swap_release();
+        return 0;
 
     case __NR_flock:
         return vfs_flock((int)a1, (int)a2);

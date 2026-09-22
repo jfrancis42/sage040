@@ -21,6 +21,7 @@
  * being true.
  */
 #include "textcache.h"
+#include "swap.h"
 #include "vfs.h"
 #include "errno.h"
 #include "task.h"
@@ -593,6 +594,9 @@ s32 vfs_getdents64(int fd, u8 *buf, u32 len)
     return (s32)used;
 }
 
+static int path_is_swapfile(const char *path);
+static int is_swapfile(int fd);
+
 int fd_open(const char *path, int flags)
 {
     struct chardev *cd;
@@ -640,6 +644,11 @@ int fd_open(const char *path, int flags)
         }
         if (exists && (flags & O_CREAT) && (flags & O_EXCL)) {
             return -EEXIST;
+        }
+        /* Truncating happens inside the filesystem's open: refused
+         * before it, not after. */
+        if (exists && (flags & O_TRUNC) && path_is_swapfile(path)) {
+            return -ETXTBSY;
         }
     }
 
@@ -859,6 +868,9 @@ s32 fd_write(int fd, const void *buf, u32 len)
     if (!f->ops->write) {
         return -EINVAL;
     }
+    if (is_swapfile(fd)) {
+        return -ETXTBSY;
+    }
     {
         s32 n = f->ops->write(f, buf, len);
 
@@ -946,6 +958,9 @@ int vfs_unlink(const char *path)
     if (!mounted_fs->unlink) {
         return -ENOSYS;
     }
+    if (path_is_swapfile(path)) {
+        return -ETXTBSY;
+    }
     /* Before, while the name still leads to the inode number: once the
      * entry is gone its slot can be a different file's. */
     textcache_forget_path(path);
@@ -962,6 +977,9 @@ int vfs_rename(const char *from, const char *to)
     }
     if (!mounted_fs->rename) {
         return -ENOSYS;
+    }
+    if (path_is_swapfile(from) || path_is_swapfile(to)) {
+        return -ETXTBSY;
     }
     /* Both: the moved file's inode number is where its entry was, and a
      * file it replaces is going. */
@@ -998,8 +1016,48 @@ int vfs_ftruncate(int fd, u32 len)
     if (!f->ops || !f->ops->truncate) {
         return -EINVAL;
     }
+    if (is_swapfile(fd)) {
+        return -ETXTBSY;
+    }
     textcache_forget_fd(fd);
     return f->ops->truncate(f, len);
+}
+
+/*
+ * Is this descriptor the swap file? The kernel writes the swap file's
+ * sectors directly (swap.c); anything written to it through the
+ * filesystem would be overwritten, or overwrite a program's memory. So
+ * while it is in use, Linux's ETXTBSY for any change to it.
+ */
+static int is_swapfile(int fd)
+{
+    struct stat st;
+
+    return swap_is_on() && vfs_fstat(fd, &st) == 0 && S_ISREG(st.st_mode) &&
+           swap_holds(st.st_ino);
+}
+
+static int path_is_swapfile(const char *path)
+{
+    struct stat st;
+
+    return swap_is_on() && vfs_stat(path, &st) == 0 && S_ISREG(st.st_mode) &&
+           swap_holds(st.st_ino);
+}
+
+int vfs_bmap(int fd, u32 off, u32 *lba, struct blockdev **dev)
+{
+    struct file *f = fd_get(fd);
+    struct stat st;
+
+    if (!f) {
+        return -EBADF;
+    }
+    if (!mounted_fs || !mounted_fs->bmap || !f->ops || !f->ops->fstat ||
+        f->ops->fstat(f, &st) < 0 || !S_ISREG(st.st_mode)) {
+        return -EINVAL;
+    }
+    return mounted_fs->bmap(f, off, lba, dev);
 }
 
 int vfs_check(int flags, struct fsck_report *r)

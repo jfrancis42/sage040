@@ -231,6 +231,20 @@ void textcache_forget_path(const char *path)
     }
 }
 
+u32 textcache_shrink(u32 want)
+{
+    u32 i, n = 0;
+
+    for (i = 0; ready && i < TC_ENTRIES && n < want; i++) {
+        if (entries[i].pa && pmm_refcount(entries[i].pa) == 1) {
+            drop(i);
+            stats.evicted++;
+            n++;
+        }
+    }
+    return n;
+}
+
 u32 textcache_idle(void)
 {
     u32 i, n = 0;

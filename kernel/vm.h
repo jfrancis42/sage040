@@ -150,6 +150,14 @@ struct addrspace {
     u32 brk_cur;
 
     int used;
+
+    /*
+     * Still being built -- by exec, before it is anybody's. Reclaim
+     * leaves such a space alone: its pages are being filled through
+     * their physical addresses, and one evicted from under the loader
+     * would take the loaded bytes with it. vm_ready() clears it.
+     */
+    int busy;
 };
 
 /*
@@ -213,6 +221,58 @@ int  vm_is_mapped(struct addrspace *as, u32 va);
  * or -1 if the page is not owned.
  */
 int  vm_protect(struct addrspace *as, u32 va, int flags);
+
+/*
+ * DEMAND PAGING (task 21). A page need not exist to be mapped: it can
+ * be LAZY -- zeroes, made on first touch -- or out in the swap file.
+ * Both are descriptors the MMU sees as invalid, so touching one faults,
+ * and vm_fault() makes the page and returns, and the 68040 runs the
+ * faulting instruction again.
+ */
+
+/* Map `va` lazily: no page until it is touched. 0, or -1 for no tables. */
+int  vm_map_lazy(struct addrspace *as, u32 va, int flags);
+
+/*
+ * Resolve a fault on `va`: make a lazy page, bring a swapped one back,
+ * or copy a copy-on-write one for writing. 0 when it changed something
+ * and the access can now succeed; VM_FAULT_NOCHANGE when the page was
+ * already there and accessible (a stale translation, flushed); -EFAULT
+ * when it never could (unmapped, read-only, PROT_NONE); -ENOMEM when
+ * there is no page to be had.
+ */
+#define VM_FAULT_NOCHANGE   1
+int  vm_fault(struct addrspace *as, u32 va, int write);
+
+/* May the program write here -- now, or after a fault (copy-on-write,
+ * lazy, swapped)? What the program sees, not what the MMU does. */
+int  vm_may_write(struct addrspace *as, u32 va);
+
+/* The address space is complete and belongs to a task: fair game for
+ * reclaim from now on. */
+void vm_ready(struct addrspace *as);
+
+/*
+ * Free at least `want` pages if it can: first the file-page cache's idle
+ * pages, then -- with swap on -- the least recently used pages of every
+ * address space, written to the swap file. Returns how many it freed.
+ */
+u32  vm_reclaim(u32 want);
+
+/* Bring every swapped page back in, for swapoff. 0, or -ENOMEM. */
+int  vm_swapoff(void);
+
+/* Could `pages` more be promised to programs? Free memory and free swap
+ * together, less the kernel's reserve. */
+int  vm_commit_ok(u32 pages);
+
+struct vm_stats {
+    u32 faults_zero;            /* lazy pages made                     */
+    u32 faults_cow;             /* copy-on-write resolved              */
+    u32 faults_swapin;          /* pages brought back from swap        */
+    u32 evicted;                /* pages written out to make room      */
+};
+void vm_stats(struct vm_stats *out);
 
 /*
  * The highest address the heap may reach: one guard page below the

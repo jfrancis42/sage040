@@ -769,9 +769,13 @@ struct fsck_report {
 /*
  * memctl: what memory is doing, which sysinfo() has no fields for.
  *
- * memctl(MEMCTL_STATS, 0, &memstats): the page allocator, and the cache
- * of read-only file pages that shared libraries' text lives in
- * (kernel/textcache.c).
+ * memctl(MEMCTL_STATS, sizeof(memstats), &memstats): the page
+ * allocator, the cache of read-only file pages that shared libraries'
+ * text lives in (kernel/textcache.c), and paging. The SIZE is the
+ * caller's, and no more than that is written: the structure has grown
+ * once already, and a program built against the shorter one -- sotest
+ * keeps its own copy, having no uapi.h -- had its stack overwritten.
+ * Fields are only ever added at the end.
  *
  * memctl(MEMCTL_PAGE, va, &pageinfo): the physical page behind one of
  * the CALLER's addresses, and how many address spaces hold it. What a
@@ -787,12 +791,20 @@ struct memstats {
     u32 tc_cached;              /* file pages held for sharing        */
     u32 tc_hits, tc_misses;     /* mappings that found one / read one */
     u32 tc_evicted, tc_forgotten;
+    /* Demand paging and swap (task 21). */
+    u32 faults_zero;            /* lazy pages made on first touch     */
+    u32 faults_cow;             /* copy-on-write faults resolved      */
+    u32 faults_swapin;          /* pages brought back from swap       */
+    u32 evicted;                /* pages written out to swap          */
+    u32 swap_slots, swap_used;  /* pages the swap file holds, in use  */
+    u32 pageouts, pageins;      /* swap writes and reads              */
 };
 
 struct pageinfo {
     u32 pa;                     /* 0: not mapped                      */
     u32 refs;                   /* address spaces (and the cache) holding it */
-    u32 writable;
+    u32 writable;               /* may the program write it: copy-on-
+                                 * write counts, as it does to the program */
 };
 
 /*
@@ -1148,6 +1160,8 @@ struct sigcontext {
 #define __NR_clone         120
 #define __NR_fchdir        133
 #define __NR_flock         143
+#define __NR_swapon         87      /* swapon(path, flags)             */
+#define __NR_swapoff       115      /* swapoff(path)                   */
 #define __NR__llseek       140
 #define __NR_msync         144
 #define __NR_mlock         150

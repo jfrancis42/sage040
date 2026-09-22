@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: 21 of 23 complete.**
+**Status: 22 of 23 complete.**
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -50,7 +50,7 @@ drive almost all of it:
 | 18 | A resolver (DNS), then **NTP** | independent of the editor work; both are UDP clients and NTP wants a name | **done** |
 | 19 | TCP: window scaling, timestamps, SACK, keepalives, real `TIME_WAIT` | was "deliberately not doing"; now on the list | **done** |
 | 20 | Shared libraries | downstream of `mmap` and the libc | **done** |
-| 21 | Paging and swapping | downstream of `mmap` | todo |
+| 21 | Paging and swapping | downstream of `mmap` | **done** |
 | 22 | Interrupt-driven input **and disk**, the NVRAM, the static limits | cleanup, any time | todo |
 | 23 | Regression tests throughout | every task ships with its tests | ongoing |
 
@@ -1251,6 +1251,83 @@ addresses (1).
   counting the cache's idle pages and `free` showing them as "cache" --
   which is what apitest's leak check needed once the cache kept pages
   after a program exited: used before 192, after 192.
+
+### 21. Paging and swapping — done
+
+**Demand paging.** An access fault from a program goes to `vm_fault()`
+first; because the 68040 pushes the address of the faulting
+instruction, returning re-runs it, and that is all demand paging needs
+from the processor. Three kinds of absent page, each an invalid
+descriptor the fault path understands:
+- **lazy** (`SW_LAZY`) -- stacks, the heap, anonymous `mmap`: a zeroed
+  page on first touch. A program's 1 MB stack cost 256 pages at exec;
+  a running `spin` now holds 7. `mmap` of 32 MB costs its 18 pages of
+  tables.
+- **swapped** (`SW_SWAP`, slot in bits 31..12);
+- **copy-on-write** (`SW_COW` on a resident, write-protected page):
+  `fork` shares every page, and a 1 MB process forks for 6 pages.
+
+`uaccess` calls `vm_fault()` too: the kernel walks tables rather than
+touching, so it must do what a fault would.
+
+**Swap** is a file (`swapon`/`swapoff`, Linux's 87 and 115, and
+`/bin/swapon`, `/bin/swapoff`): its clusters are turned into sectors
+once, by a new filesystem `bmap`, and the kernel then reads and writes
+them directly. While on, the file refuses writes, truncation, renames
+and deletion (`ETXTBSY`). Replacement is the clock algorithm over the
+MMU's used bits, across every address space, run only where a page is
+about to go to a program. Only pages with one holder are taken -- which
+is also how **pinning** works: `read`/`write`/`send`/`recv` hold a
+reference to each user page for the length of the call, since a read
+from a pipe can sleep holding its physical address. Allocation is first
+fit. `mmap` and `brk` refuse what memory and swap together could not
+supply; past that, a page that cannot be had kills whoever faulted
+(SIGKILL, 137).
+
+`sysinfo` reports `totalswap`/`freeswap`, `free` a swap line, and
+`memctl` the fault and swap counters.
+
+**Tests:** `kernel/pagetest.sh`, a new suite, 48 checks, two machines:
+64 MB without swap (laziness, copy-on-write both ways, the commit
+refusal, two overcommitted processes killed and the machine not, every
+page back) and 12 MB with 24 MB of swap (16 MB filled and read back by
+one process and by two; a fork with pages out, the parent rewriting
+everything while the child must still see the old; a read blocked on a
+pipe while another process thrashes; the swap file refusing rm, cp and
+mv; swapoff refused with too much out -- the parked process's pages
+intact -- then allowed once it has gone). Every graded program must
+reach its own "N failed" line: before that rule a pagetest killed by
+the OOM path passed, because it printed no FAIL lines.
+
+**Negative controls**, all caught (checks failed):
+
+| Change | |
+|---|---|
+| stack mapped whole at exec | vmtest 1 |
+| anonymous mmap eager | 7 |
+| fork copies instead of sharing | 2 |
+| copy-on-write fault without the copy | 7 |
+| eviction that does not write the page | 8 |
+| swap-in that does not free its slot | 5 |
+| no pinning in read/write | 1 -- only once the filler thrashed for the whole wait |
+| fork not taking a hold on a swapped page's slot | 1 -- only once allocation was first fit and the parent rewrote everything |
+| exit keeping the address space until reaped | 1 |
+| no commit check | 2 |
+
+**Found on the way:**
+- **A zombie held all its memory until reaped** -- every page, then
+  every swap slot. The address space goes at exit now, as Linux's does.
+- **The fault loop guard killed a fourth run of the same program**, by
+  counting identical first-touch faults in a reused task slot. It counts
+  only `VM_FAULT_NOCHANGE` now.
+- **`memctl`'s stats struct grew and overran sotest's shorter copy** --
+  a crash at pc=2. It takes the caller's size now.
+- **edittest's ctrl-C check was racy** (about 1 in 10 under load): its
+  0x03 could arrive while the shell was still running the previous
+  command, and a ctrl-C nobody is reading for is discarded. A pause
+  before it.
+- vmtest and apitest checked that memory was taken at `mmap`/`brk`/exec
+  time; they check it is taken when TOUCHED now.
 
 ## Decisions worth knowing about
 

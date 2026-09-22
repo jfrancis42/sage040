@@ -873,8 +873,8 @@ The three at 1000 are local because Linux has nothing to match. They
 were at 400-402 until it turned out Linux/m68k gives those to `msgsnd`,
 `msgrcv` and `msgctl`.
 `spawn` takes a path and an argument vector and creates a task directly,
-the cheap alternative to `fork` + `execve`: `fork` works, but copies the
-whole address space, because there is no copy-on-write yet. `jobctl` is what `fg`, `bg`,
+the direct alternative to `fork` + `execve` -- though `fork` shares its
+pages copy-on-write, so the pair is cheap too. `jobctl` is what `fg`, `bg`,
 `jobs` and `ps` are built on; `netctl` is what `ifconfig`, `ping` and
 `netstat` are built on, being the operations that configure an interface
 or send one echo request and so have no socket to hang off.
@@ -981,6 +981,32 @@ disk and run. **Programs carry no extension** — the kernel decides what
 is executable by reading the first four bytes of the file, not its name,
 because a FAT16 volume has no execute permission bit to consult. A text
 file named `CUBE.EXE` is still refused.
+
+### Memory is demand paged, and there can be swap
+
+A program's stack, heap and anonymous `mmap`s take no memory until they
+are touched: `mmap` of 32 MB costs its page tables, and each page comes
+into being, zeroed, the first time it is used. `mmap` still refuses
+what memory and swap together could never supply. `fork` shares every
+page copy-on-write.
+
+With a swap file, memory can be overcommitted past RAM:
+
+```
+sage$ swapon /swap          # an existing file, at its full size
+sage$ free                  # shows the swap line
+sage$ swapoff /swap         # brings every page back first, or refuses
+```
+
+Make the file on the host (`dd` of zeroes, then `mcopy`); the kernel
+refuses to use a file it would have to grow, and while it is on the
+file cannot be written, truncated, renamed or deleted -- `ETXTBSY`.
+A program that touches more than memory and swap can hold is killed
+(SIGKILL, status 137) when it touches a page there is no room for.
+
+`memctl(MEMCTL_STATS, sizeof m, &m)` (1004) reports the counters --
+faults, pages in and out, swap in use. Pass the size of YOUR structure:
+it has grown, and the kernel writes no more than it is told.
 
 ### Shared libraries
 

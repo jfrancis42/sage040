@@ -576,9 +576,14 @@ static int build(struct addrspace *as, const char *path,
      * shared one flat space. That is the first thing here that the MMU
      * buys which a comment could not.
      */
+    /*
+     * LAZILY, a megabyte of it: the pages come as the stack reaches them
+     * (vm_fault). It was mapped whole, which made every program -- the
+     * smallest included -- cost a megabyte before it ran an instruction.
+     */
     for (va = USER_VA_END - (u32)USER_STACK_PAGES * PAGE_SIZE;
          va < USER_VA_END; va += PAGE_SIZE) {
-        if (!vm_map(as, va, 0, VM_USER | VM_WRITE)) {
+        if (vm_map_lazy(as, va, VM_USER | VM_WRITE) < 0) {
             return -ENOMEM;
         }
     }
@@ -633,6 +638,7 @@ int exec_spawn(const char *path, int argc, char **argv, char **envp)
         return err;
     }
 
+    vm_ready(as);
     describe(cmd, sizeof(cmd), argc, argv);
 
     t = task_create_user(argv[0] ? argv[0] : path, entry, sp, as);
@@ -706,6 +712,7 @@ int exec_replace(const char *path, int argc, char **argv, char **envp,
     current->as = as;
     vm_switch(as);
     vm_destroy(old);
+    vm_ready(as);
 
     describe(current->cmd, JOB_CMD_MAX, argc, argv);
     strncpy(current->name, argv[0] ? argv[0] : path, TASK_NAME_MAX - 1);

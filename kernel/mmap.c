@@ -197,7 +197,12 @@ s32 do_mmap(u32 addr, u32 len, u32 prot, u32 flags, int fd, u32 offset)
         }
     }
 
-    if (!enough_memory(pages)) {
+    /*
+     * An anonymous mapping takes no pages now (demand paging): what is
+     * asked is whether they could be had, memory and swap together. A
+     * file's pages are read in at once, so they must be there.
+     */
+    if (anon ? !vm_commit_ok(pages) : !enough_memory(pages)) {
         return -ENOMEM;
     }
 
@@ -223,6 +228,21 @@ s32 do_mmap(u32 addr, u32 len, u32 prot, u32 flags, int fd, u32 offset)
                 if (pa) {
                     pmm_free(pa);
                 }
+                while (va > addr) {
+                    va -= PAGE_SIZE;
+                    vm_unmap(as, va);
+                }
+                return -ENOMEM;
+            }
+        }
+        return (s32)addr;
+    }
+
+    if (anon) {
+        int flags = prot_flags(prot);
+
+        for (va = addr; va < addr + len; va += PAGE_SIZE) {
+            if (vm_map_lazy(as, va, VM_USER | flags) < 0) {
                 while (va > addr) {
                     va -= PAGE_SIZE;
                     vm_unmap(as, va);

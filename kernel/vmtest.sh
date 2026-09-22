@@ -218,9 +218,13 @@ echo "  used pages: before=${before:-?} during=${during:-?} after=${after:-?}"
 test -n "$spin_pid"
 check "ps listed the background job" $?
 
-# 256 pages of stack alone, so anything under 200 means spin never ran.
-test -n "$before" && test -n "$during" && [ $((during - before)) -ge 200 ]
-check "a running program holds its stack (~1 MB)" $?
+# Its image, the stack it has touched and their tables -- a handful of
+# pages. It used to be 256 and more: the whole 1 MB stack was mapped at
+# exec, and demand paging (task 21) is why it is not. More than one page
+# says spin really ran; far fewer than 256 says the stack is lazy.
+test -n "$before" && test -n "$during" && [ $((during - before)) -ge 2 ] &&
+    [ $((during - before)) -lt 64 ]
+check "a running program holds the pages it touched, not its 1 MB stack" $?
 
 # A few pages of slack for whatever the shell itself allocated.
 test -n "$after" && [ $((after - before)) -le 4 ] && [ $((after - before)) -ge -4 ]

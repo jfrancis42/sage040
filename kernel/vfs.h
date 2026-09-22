@@ -68,6 +68,13 @@ struct fs_type {
     /* Check the volume, and with FSCK_REPAIR put it right. */
     int (*check)(int flags, struct fsck_report *r);
 
+    /*
+     * Where on the disk byte `off` of an open file is: the sector, and
+     * the device it is on. What swapon needs, to reach the swap file's
+     * pages without going through the filesystem (swap.c).
+     */
+    int (*bmap)(struct file *f, u32 off, u32 *lba, struct blockdev **dev);
+
     struct fs_type *next;
 };
 
@@ -135,6 +142,7 @@ const char *vfs_getcwd(void);
 int  vfs_rename(const char *from, const char *to);
 int  vfs_stat(const char *path, struct stat *st);
 int  vfs_fstat(int fd, struct stat *st);
+int  vfs_bmap(int fd, u32 off, u32 *lba, struct blockdev **dev);
 int  vfs_access(const char *path, int mode);
 int  vfs_readdir(int index, struct dirent *d);
 s32  vfs_getdents64(int fd, u8 *buf, u32 len);
