@@ -1,0 +1,28 @@
+picolibc 1.8.12's <sys/types.h> does not pull in <sys/select.h>. glibc
+and the BSDs both do, and a great deal of portable code relies on it:
+fd_set, FD_SET and select() used having included only <sys/types.h>.
+CPython's select module is one such program -- without this it reports
+select as implicitly declared and `struct timeval` as an incomplete
+type.
+
+Not specific to m68k.
+
+diff -ru a/libc/include/sys/types.h b/libc/include/sys/types.h
+--- a/libc/include/sys/types.h	2026-09-22 15:36:22.499516374 -0600
++++ b/libc/include/sys/types.h	2026-09-22 15:36:32.659211810 -0600
+@@ -257,4 +257,15 @@
+ #define __Long  int32_t
+ #define __ULong uint32_t
+ 
++/*
++ * <sys/select.h>, as glibc and the BSDs do from here. A great deal of
++ * portable code uses fd_set, FD_SET and select() having included only
++ * <sys/types.h>, because on those systems that is enough -- CPython's
++ * select module is one. Without it the program does not see select at
++ * all, and `struct timeval` is an incomplete type in the middle of it.
++ */
++#if __BSD_VISIBLE || __POSIX_VISIBLE || __XSI_VISIBLE
++#include <sys/select.h>
++#endif
++
+ #endif /* _SYS_TYPES_H */

@@ -48,7 +48,9 @@
 #include "../../local-linux.h"
 #include "../../local-dirent.h"
 #include "../../local-time.h"
+#include <errno.h>
 #include <fcntl.h>
+#include <termios.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -221,6 +223,61 @@ void
 sync(void)
 {
     (void)syscall(LINUX_SYS_sync);
+}
+
+/*
+ * fsync and fdatasync: one file's writes out to the disk, rather than
+ * every file's. picolibc's libos/linux has neither, and a program that
+ * cares whether its data reached the media -- a database, a mail
+ * spool, CPython's os.fsync -- calls them by name.
+ *
+ * This kernel makes no distinction between the two: it has no separate
+ * metadata journal to skip, so fdatasync does what fsync does.
+ */
+int
+fsync(int fd)
+{
+    return syscall(LINUX_SYS_fsync, fd);
+}
+
+int
+fdatasync(int fd)
+{
+    return syscall(LINUX_SYS_fdatasync, fd);
+}
+
+/*
+ * tcdrain: wait until everything written to this terminal has been
+ * sent. Nothing here buffers output beyond the UART's own FIFO and the
+ * write system call does not return until the characters are in it, so
+ * there is nothing to wait for and this is honestly a no-op -- but a
+ * program that calls it has to find it.
+ */
+int
+tcdrain(int fd)
+{
+    if (!isatty(fd)) {
+        errno = ENOTTY;
+        return -1;
+    }
+    return 0;
+}
+
+/*
+ * tcsendbreak: hold the line in the break state. The 16550 can do it
+ * and this system's terminal has no way to ask, so rather than
+ * pretending, it says so.
+ */
+int
+tcsendbreak(int fd, int duration)
+{
+    (void)duration;
+    if (!isatty(fd)) {
+        errno = ENOTTY;
+        return -1;
+    }
+    errno = ENOTSUP;
+    return -1;
 }
 
 /* A directory with a unique name made from TEMPLATE's trailing XXXXXX. */

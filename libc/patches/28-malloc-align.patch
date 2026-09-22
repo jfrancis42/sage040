@@ -1,0 +1,50 @@
+picolibc 1.8.12 aligns malloc's result to _Alignof(max_align_t), which
+on m68k is TWO BYTES -- the m68k ABI aligns even a double to 2. That is
+conforming, and it breaks a great deal of real software: anything that
+stores flags in the low bits of a pointer it got from malloc assumes
+what glibc, musl and the BSDs all guarantee, which is 2 * sizeof(size_t).
+
+CPython is one. Its garbage collector tags the low two bits of the list
+pointers in every object's GC header, and its first collection followed
+a corrupted pointer into nowhere -- a bus error at a wild address, on
+`python3 -c "print(1+1)"`, on a build that was otherwise complete.
+
+This makes the alignment the larger of the two. Not specific to m68k,
+but nothing else picolibc targets has an alignment small enough to
+notice.
+
+diff -ru a/libc/stdlib/local-malloc.h b/libc/stdlib/local-malloc.h
+--- a/libc/stdlib/local-malloc.h	2026-09-22 16:16:01.278319421 -0600
++++ b/libc/stdlib/local-malloc.h	2026-09-22 16:16:01.291455176 -0600
+@@ -109,9 +109,28 @@
+     struct malloc_chunk *next;
+ } chunk_t;
+ 
+-/* Alignment of allocated chunk. Compute the alignment required from a
+- * range of types */
+-#define MALLOC_CHUNK_ALIGN _Alignof(align_chunk_t)
++/*
++ * Alignment of an allocated chunk: the strictest of any ordinary type,
++ * but NEVER LESS THAN 2 * sizeof(size_t), which is what glibc, musl and
++ * the BSDs all guarantee and what the world's software assumes.
++ *
++ * The C standard only asks for an alignment suitable for any type with
++ * a fundamental alignment, and on m68k that is TWO BYTES -- the ABI
++ * aligns even a double to 2. A conforming malloc may therefore return
++ * an odd-word address there, and picolibc's did. Software that stores
++ * flags in the low bits of a pointer it got from malloc then corrupts
++ * itself: CPython's garbage collector tags the low two bits of every
++ * object's list pointers, and died on its first collection with a
++ * 2-byte-aligned object in the list.
++ *
++ * The cost is a few bytes per allocation on targets whose natural
++ * alignment is smaller. The alternative is being right in law and
++ * broken in fact.
++ */
++#define MALLOC_MIN_ALIGN   (2 * sizeof(size_t))
++#define MALLOC_CHUNK_ALIGN                                          \
++    (_Alignof(align_chunk_t) > MALLOC_MIN_ALIGN                     \
++     ? _Alignof(align_chunk_t) : MALLOC_MIN_ALIGN)
+ 
+ /* Alignment of the header. Never larger than MALLOC_CHUNK_ALIGN, but
+  * may be smaller on some targets when size_t is smaller than

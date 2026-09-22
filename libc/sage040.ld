@@ -58,6 +58,27 @@ SECTIONS {
         PROVIDE_HIDDEN(__fini_array_end = .);
     } > USER
 
+    /*
+     * THE GLOBAL OFFSET TABLE, and it has to be named here.
+     *
+     * With no rule for it, ld places .got and .got.plt as ORPHAN
+     * sections -- near sections with similar attributes, which is not
+     * the same as together -- and defines _GLOBAL_OFFSET_TABLE_ from
+     * where it decided to put one of them. Code then reads its GOT
+     * entries at offsets that land past the end of the table, in .bss,
+     * where they are zero. Every address a position-independent object
+     * fetches from the GOT comes back null.
+     *
+     * Nothing noticed for a long time because only a STATIC program
+     * uses this script and almost nothing static here is built -fPIC.
+     * CPython compiles its modules that way, and died dereferencing a
+     * null module definition. The order below is ld's own default.
+     */
+    .got : {
+        *(.got.plt) *(.igot.plt) *(.got) *(.igot)
+    } > USER
+    .data.rel.ro : { *(.data.rel.ro .data.rel.ro.*) } > USER
+
     .data : { *(.data .data.*) } > USER
     .bss  : {
         . = ALIGN(4);

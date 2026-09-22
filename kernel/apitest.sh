@@ -94,6 +94,14 @@ mcopy -o -i "$MIMG" "$SCRATCH/t.tmp" ::/T.SH
 printf 'echo rc-ran\r\n' > "$SCRATCH/rc.tmp"
 mcopy -o -i "$MIMG" "$SCRATCH/rc.tmp" ::/ETC/RC
 
+# PATH: the same program name in two directories, to see which is
+# found. /BIN/HELLO and /OTHER/HELLO are different programs -- one
+# prints "hello from a program", the other is `env`, which prints the
+# environment -- so which one ran is visible in the output.
+mmd -i "$MIMG" ::/OTHER
+mcopy -o -i "$MIMG" ../apps/hello ::/BIN/HELLO2
+mcopy -o -i "$MIMG" ../system/env ::/OTHER/HELLO2
+
 : > "$SCRATCH/session.tmp"
 {
     # --- descriptors: fstat, access, dup, isatty ---
@@ -110,6 +118,21 @@ mcopy -o -i "$MIMG" "$SCRATCH/rc.tmp" ::/ETC/RC
     printf 'stat /BIN/ENV\r';           sleep 1
     printf '/BIN/ENV\r';                sleep 1
     printf 'cd /\r';                    sleep 1
+
+    # --- PATH: what a bare name means ---
+    printf 'echo $PATH\r';                         sleep 1
+    printf 'hello2\r';                             sleep 2
+    printf 'export PATH=/OTHER:/BIN\r';            sleep 1
+    printf 'hello2\r';                             sleep 2
+    printf 'export PATH=/BIN:.\r';                 sleep 1
+    printf 'cd /OTHER\r';                          sleep 1
+    printf 'hello2\r';                             sleep 2
+    printf './hello2\r';                           sleep 2
+    printf 'cd /\r';                               sleep 1
+    printf 'export PATH=/NOSUCHDIR\r';             sleep 1
+    printf 'hello2\r';                             sleep 2
+    printf 'export PATH=/BIN:.\r';                 sleep 1
+    printf 'echo PATH-DONE\r';                     sleep 1
 
     # --- the gate, and signals ---
     printf 'sigtest\r';                 sleep 6
@@ -361,6 +384,40 @@ check "cat of an absolute path worked from inside that directory" $?
 
 grep -q "PATH=" "$C"
 check "a program ran by absolute path from another directory" $?
+
+echo "=== checks: PATH ==="
+
+grep -q "^/bin:\.$" "$C"
+check "the shell sets PATH to /bin:. before /etc/rc runs" $?
+
+# Between "hello2" the first time and the export, the /BIN one ran.
+sed -n '/echo \$PATH/,/export PATH=\/OTHER/p' "$C" | grep -q "hello from a program"
+check "a bare name is found along PATH" $?
+
+# With /OTHER first, the OTHER one runs -- which is `env`, and prints
+# the environment rather than a greeting.
+sed -n '/export PATH=\/OTHER/,/export PATH=\/BIN:\.$/p' "$C" | grep -q "PATH=/OTHER:/BIN"
+check "  and PATH is an order of preference, not a set" $?
+
+sed -n '/export PATH=\/OTHER/,/export PATH=\/BIN:\.$/p' "$C" |
+    grep -qv "hello from a program"
+check "  the earlier directory won" $?
+
+# Back to /BIN:. and standing in /OTHER: the bare name finds /BIN's,
+# because . is last; ./hello2 finds the one here, because a name with a
+# slash is a path and not a search.
+sed -n '/^\/OTHER\$ hello2/,/^\/OTHER\$ \.\/hello2/p' "$C" | grep -q "hello from a program"
+check "the current directory is searched LAST, not first" $?
+
+sed -n '/^\/OTHER\$ \.\/hello2/,/^\/\$ export PATH=\/NOSUCHDIR/p' "$C" |
+    grep -q "PATH=/BIN:\."
+check "  and ./name runs the one here whatever PATH says" $?
+
+sed -n '/export PATH=\/NOSUCHDIR/,/PATH-DONE/p' "$C" | grep -q "not found"
+check "a name that is on no directory of PATH is not found" $?
+
+grep -q "PATH-DONE" "$C"
+check "  and the shell carried on afterwards" $?
 
 echo "=== checks: memory the heap gave back is gone ==="
 

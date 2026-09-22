@@ -22,14 +22,14 @@ this list is something Python wants.
 | # | Task | Why here | State |
 |---|------|----------|-------|
 | 31a | **Threads**: `clone`, futexes, and a pthread layer | CPython has required threads since 3.7 -- this is the one real blocker | **done** |
-| 38 | **Time zones**: `TZ`, `tzset`, `localtime` | `time.localtime`, `datetime`, and every timestamp a program prints | |
-| 39 | **terminfo**: a real database, not one terminal compiled in | curses reads it; so does `less` | |
-| 40 | **curses (ncurses)** | Python's `curses` and `_curses_panel`; `less` and any full-screen program | |
+| 38 | **Time zones**: `TZ`, `tzset`, `localtime` | `time.localtime`, `datetime`, and every timestamp a program prints | **done** |
+| 39 | **terminfo**: a real database, not one terminal compiled in | curses reads it; so does `less` | **done** |
+| 40 | **curses (ncurses)** | Python's `curses` and `_curses_panel`; `less` and any full-screen program | **done** |
 | 30 | **The POSIX gaps**: FIFOs, `/dev/fd`, pseudo-terminals, `PATH_MAX`, `ARG_MAX` | the rest of what a port expects to find | |
-| 31 | **Python (CPython)** | the largest port yet | |
-| 32 | **PATH**: that it is set, inherited, and searched | small, and everything assumes it | |
+| 31 | **Python (CPython)** | the largest port yet | in progress |
+| 32 | **PATH**: that it is set, inherited, and searched | small, and everything assumes it | **done** |
 | 37 | **cron** | needs the clock, a daemon, and somewhere to log | |
-| 43 | **`/var`, and `/var/log`**: the kernel's log to `/var/log/syslog` | asked for 2026-09-22; `syslog()` already writes to `/var/log/messages` | |
+| 43 | **`/var`, and `/var/log`**: the kernel's log to `/var/log/syslog` | asked for 2026-09-22 | **done** |
 | 44 | **`/bin/less`** | asked for 2026-09-22; wants terminfo (39) | |
 
 Left for later, and not started:
@@ -104,6 +104,160 @@ Four bugs it found, each now a check:
   and not Linux's: SIGUSR1 is 16 here and 10 there, so the program was
   killed by SIGSTKFLT instead.
 - **`errno` was a global**, shared by every thread.
+
+---
+
+### 38. Time zones -- done
+
+The clock keeps UTC and `TZ` says how to turn that into a local time;
+picolibc's `tzset` reads it, and the shell sets `TZ=UTC0` by default so
+a machine that has not been told where it is does not guess. There is no
+zoneinfo database and no need of one: a POSIX TZ string carries its own
+rules, which is what the format is for -- `export
+TZ=MST7MDT,M3.2.0,M11.1.0` in `/etc/rc` is a machine in Colorado,
+daylight saving included.
+
+Nine checks in `libc/test/posixtest.c`, including a zone whose offset is
+not a whole hour (IST-5:30) and the same zone read in January, which is
+what tells a rule from a fixed offset.
+
+The shell's own `date` still prints UTC and says so; local time is what
+programs show, because that is where TZ lives.
+
+---
+
+### 39, 40. terminfo and curses -- done
+
+ncurses 6.5 (`ports/ncurses`), built twice: a host build for `tic`,
+which compiles the database, and the cross build for libncurses,
+libtinfo, libform, libmenu, libpanel and the programs `tput`, `tset`,
+`infocmp`, `clear` and `tabs`. The database is at
+`/usr/share/terminfo`, seventeen terminals of it.
+
+**Every terminal in it begins with a lower-case letter**, and that is
+not an accident: terminfo stores one directory per first letter, FAT is
+case-insensitive, and the full database has entries (`Eterm`, `emu`)
+whose directories would collide. The build refuses a set with two names
+that differ only in case.
+
+Four terminals are compiled into the library as fallbacks (vt102, vt100,
+dumb, unknown) so a program works on a disk with no database at all --
+which is exactly why `kernel/curstest.sh` asks about wyse50 and xterm,
+which are not. 28 checks, and the control renames the database away and
+runs the whole thing again: vt102 keeps working, the other two fail.
+
+---
+
+### 31. Python -- in progress
+
+CPython **3.14.7**, cross-built against picolibc, statically linked, with
+every extension module built in (there is no dlopen here) and the
+standard library on the disk at `/usr/local/lib/python3.14`. It runs:
+big integers, floating point on the FPU, f-strings, comprehensions, the
+standard library imported off a FAT filesystem, hashes, zlib, threads.
+
+What it needed, in the order it was found -- and most of it was not
+Python's fault:
+
+- **`clone`, futexes and pthreads** (31a). CPython has required threads
+  since 3.7.
+- **Eight bugs in the C library**, each now a patch in `libc/patches/`:
+  `SSIZE_MAX` defined with a cast, so unusable in `#if` (23); `struct
+  rusage` with two fields instead of sixteen (24); `ioctl` declared
+  taking `void *` rather than variadic, and refusing every request it
+  did not know (25); `<sys/types.h>` not pulling in `<sys/select.h>` as
+  glibc and the BSDs do (26); **`RLIMIT_*` numbers that were not
+  Linux's**, so `getrlimit(RLIMIT_NOFILE)` asked the kernel about the
+  resident set size and got a plausible wrong answer (27); and
+  **`malloc` aligned to two bytes** (28).
+- **`<sys/syscall.h>`**, generated from the same table `abicheck.sh`
+  checks the kernel against, so the numbers a program calls and the
+  numbers the kernel implements cannot drift apart.
+- **64-bit atomics**, which the 68040 has no instruction for and this
+  toolchain has no libatomic for: `atomic64.c` in the m68k backend,
+  over a table of locks, as libatomic does it.
+- **`fsync`, `fdatasync`, `tcdrain`, `tcsendbreak`**, declared by
+  picolibc and implemented by nobody.
+
+Two bugs were ours, and both had been waiting a long time:
+
+- **`malloc` returned two-byte-aligned memory.** The m68k ABI aligns
+  even a double to 2, so picolibc's malloc was conforming -- and
+  CPython's garbage collector, which keeps flags in the low two bits of
+  every object's list pointers, corrupted itself on its first
+  collection. `python3 -c "print(1+1)"` died with a bus error at a wild
+  address.
+- **The static linker script never placed `.got`.** With no rule for it,
+  ld puts the GOT where it likes and defines `_GLOBAL_OFFSET_TABLE_`
+  from that, so code read its GOT entries past the end of the table, in
+  .bss, where everything is zero. Every address fetched from the GOT
+  came back null. Only a static program built `-fPIC` notices, and
+  CPython is the first one here.
+
+Two patches to CPython itself, both about the same thing: it asks the
+COMPILER whether thread-local storage exists, and gcc offers `__thread`
+on m68k whether or not the C library can support it (a TLS access
+becomes a call to `__m68k_read_tp`, which needs an ELF TLS block per
+thread). `ports/python/patches/` takes the thread-key path its own
+comments describe, and one fixes a `struct timeval` declared in
+prototype scope, which is a portability bug on any platform whose
+headers do not drag `<sys/time.h>` in first.
+
+Not done: `_ctypes` (no libffi, no dlopen), `ssl`, `sqlite3`, `bz2`,
+`lzma`, `zstd`, `readline`, `tkinter`. `mimalloc` is off because it
+wants thread-local storage; pymalloc is used instead.
+
+---
+
+### 32. PATH -- done
+
+It was already there -- `spawn_on_path()` in `kernel/shell.c` walks
+`$PATH` and has for some time, while a comment three hundred lines away
+still said "there is one directory on this volume, so the name is the
+path". What this task added is the comment's correction and the checks
+that say what the rule is, in `kernel/apitest.sh`:
+
+- the shell sets `PATH=/bin:.` before `/etc/rc` runs;
+- a bare name is found along it, and the FIRST directory that has it
+  wins -- the same program name in `/BIN` and `/OTHER` proves which;
+- the current directory is searched LAST, so a program dropped in the
+  working directory cannot quietly replace a system one;
+- `./name` runs the one here whatever PATH says, because a name with a
+  slash is a path and not a search;
+- and a name on no directory of PATH is "not found", with the shell
+  carrying on afterwards.
+
+`execvp` in lib/ulib and picolibc's both do the same walk, so a program
+that spawns by name agrees with the shell.
+
+---
+
+### 43. /var, /var/log, and the kernel's log -- done
+
+The kernel keeps everything it prints in an 8 KB ring
+(`kernel/klog.c`), readable as **`/dev/klog`**, and writes to no file
+itself -- it cannot, because its first messages exist before there is a
+disk driver and a panic has to work with the filesystem in any state.
+
+**`klogd`** (`system/klogd.c`), started from `/etc/rc`, reads that
+device -- which BLOCKS, so it is a sleeping task rather than a poll --
+and appends each line to **`/var/log/syslog`** with a timestamp and the
+machine's name. **`dmesg`** reads the same device for a machine with no
+klogd running.
+
+A read DRAINS the ring: what one reader takes, another does not see.
+That is `/proc/kmsg`'s rule rather than `/dev/kmsg`'s, and it is the
+right one here because the only reader is the one whose job is to put
+the bytes somewhere they can be read repeatedly.
+
+`/etc/rc` is installed by `make programs` if the disk has none, and
+never overwritten if it has one: it is the machine's configuration.
+
+`kernel/logtest.sh`: 10 checks, including the boot messages appearing in
+a file read back with the HOST's tools, and a second boot with `/etc/rc`
+renamed away -- where dmesg gets everything instead, which is both the
+proof that the ring drains and the proof that `/etc/rc` is what starts
+klogd.
 
 ---
 

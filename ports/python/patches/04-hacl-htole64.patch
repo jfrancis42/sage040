@@ -1,0 +1,52 @@
+CPython 3.14.7 bundles HACL*'s lowstar_endianness.h, whose generic
+big-endian fallback defines htole64 with htobe32 on each half. On a
+big-endian machine htobe32 is the identity, so that macro exchanges the
+two 32-bit halves and reverses nothing inside them: every 64-bit
+little-endian store is wrong.
+
+MD5 is what notices. Its padding ends with the message length as a
+little-endian 64-bit integer, so the digest of the empty string is
+correct -- zero survives any permutation -- and the digest of anything
+else is not:
+
+    md5(b"abc") = 4e949884141cdf648a8f92f5502abd2f
+           want   900150983cd24fb0d6963f7d28e17f72
+
+SHA-1 and SHA-2 are unaffected: they are big-endian formats.
+
+The fallback is only reached on a big-endian platform that does not
+have <endian.h> (the first branch of the file), which is why this has
+gone unnoticed -- big-endian Linux takes the first branch.
+
+diff -ru a/Modules/_hacl/include/krml/lowstar_endianness.h b/Modules/_hacl/include/krml/lowstar_endianness.h
+--- a/Modules/_hacl/include/krml/lowstar_endianness.h	2026-09-22 16:41:05.646431936 -0600
++++ b/Modules/_hacl/include/krml/lowstar_endianness.h	2026-09-22 16:41:05.659951101 -0600
+@@ -115,11 +115,26 @@
+ 
+ #  define htobe64(x) (x)
+ #  define be64toh(x) (x)
++/*
++ * htole64 on a big-endian machine must reverse ALL EIGHT BYTES. This
++ * used htobe32 on each half, which on a big-endian machine is the
++ * identity -- so it exchanged the two halves and reversed nothing
++ * inside them, and every 64-bit little-endian store came out wrong.
++ *
++ * What it breaks is MD5, whose padding ends with the message length as
++ * a little-endian 64-bit integer. The digest of the empty string is
++ * right, because its length is zero and zero survives any permutation;
++ * every other digest is wrong. SHA-1 and SHA-2 are unaffected, being
++ * big-endian formats.
++ *
++ * htole32 below is the byte-reversing one, which is what each half
++ * needs.
++ */
+ #  define htole64(x)                                                           \
+     (__extension__({                                                           \
+       uint64_t __temp = (x);                                                   \
+-      uint32_t __low = htobe32((uint32_t)__temp);                              \
+-      uint32_t __high = htobe32((uint32_t)(__temp >> 32));                     \
++      uint32_t __low = htole32((uint32_t)__temp);                              \
++      uint32_t __high = htole32((uint32_t)(__temp >> 32));                     \
+       (((uint64_t)__low) << 32) | __high;                                      \
+     }))
+ #  define le64toh(x) (htole64((x)))

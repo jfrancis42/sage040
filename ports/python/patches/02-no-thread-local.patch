@@ -1,0 +1,46 @@
+CPython uses a thread-local variable for the current thread state where
+the compiler has one, and falls back to the PyThread_tss_*() API where
+it does not -- but it decides that by asking the COMPILER, and gcc
+offers __thread on every target whether or not the C library can support
+it.
+
+On m68k a thread-local access compiles into a call to __m68k_read_tp,
+which only a C library setting up an ELF TLS block per thread can
+provide. SuckOS's threads carry their state in their descriptors, so the
+link fails with hundreds of undefined references to that symbol.
+
+This takes the fallback, which is what it is for.
+
+diff -ru a/Include/pyport.h b/Include/pyport.h
+--- a/Include/pyport.h	2026-09-22 15:50:10.811044972 -0600
++++ b/Include/pyport.h	2026-09-22 15:50:10.825192411 -0600
+@@ -513,6 +513,18 @@
+ #    ifdef HAVE_THREAD_LOCAL
+ #      error "HAVE_THREAD_LOCAL is already defined"
+ #    endif
++#    ifdef __mc68000__
++       /*
++        * m68k has no thread register, and a thread-local access
++        * therefore compiles into a call to __m68k_read_tp -- which a C
++        * library can only provide by setting up an ELF TLS block per
++        * thread. SuckOS's does not; its threads carry their state in
++        * their descriptors instead. CPython's own fallback, the
++        * PyThread_tss_*() API, is what is used here, and it is the
++        * reason that fallback exists.
++        */
++#      define Py_NO_THREAD_LOCAL 1
++#    endif
+ #    define HAVE_THREAD_LOCAL 1
+ #    ifdef thread_local
+ #      define _Py_thread_local thread_local
+@@ -526,6 +538,10 @@
+        // fall back to the PyThread_tss_*() API, or ignore.
+ #      undef HAVE_THREAD_LOCAL
+ #    endif
++#    ifdef Py_NO_THREAD_LOCAL
++#      undef HAVE_THREAD_LOCAL
++#      undef _Py_thread_local
++#    endif
+ #  endif
+ #endif
+ 

@@ -1,0 +1,31 @@
+picolibc 1.8.12 defines __SSIZE_MAX__, and so SSIZE_MAX, with a cast:
+((__ssize_t)(__SIZE_MAX__ >> 1)). POSIX requires the macros in
+<limits.h> to be usable in #if, and a cast is not -- the preprocessor
+says "missing binary operator before token '('". CPython writes
+`#if PY_SSIZE_T_MAX <= INT64_MAX / PyLong_SHIFT`, and does not build.
+
+__PTRDIFF_MAX__ is the same value wherever ssize_t and ptrdiff_t agree,
+which is every target this branch of the header covers, and it is a
+plain constant. Not specific to m68k.
+
+diff -ru a/libc/include/sys/_types.h b/libc/include/sys/_types.h
+--- a/libc/include/sys/_types.h	2026-09-22 15:19:42.870370391 -0600
++++ b/libc/include/sys/_types.h	2026-09-22 15:19:42.892975925 -0600
+@@ -149,7 +149,16 @@
+ #define unsigned signed
+ typedef __SIZE_TYPE__ __ssize_t;
+ #undef unsigned
+-#define __SSIZE_MAX__ ((__ssize_t)(__SIZE_MAX__ >> 1))
++/*
++ * SSIZE_MAX has to survive the PREPROCESSOR: POSIX puts it in
++ * <limits.h>, and every macro there must be usable in #if. A cast is
++ * not -- "#if SSIZE_MAX <= INT64_MAX" fails with "missing binary
++ * operator before token '('" -- and CPython, among others, writes
++ * exactly that. __PTRDIFF_MAX__ is the same number on every target
++ * where ssize_t and ptrdiff_t agree, which is every target that has
++ * __SIZE_TYPE__, and it is a plain constant.
++ */
++#define __SSIZE_MAX__ __PTRDIFF_MAX__
+ #else
+ #if defined(__INT_MAX__) && __INT_MAX__ == 2147483647
+ typedef int __ssize_t;

@@ -1,0 +1,74 @@
+picolibc 1.8.12 declares ioctl as taking `void *` and implements four
+requests, refusing every other with EINVAL. Two problems on a
+Linux-shaped kernel:
+
+  - ioctl's third argument is not always a pointer, and POSIX and Linux
+    both declare it variadic. A program passing an int -- CPython's
+    fcntl module, among many -- does not compile at all under a compiler
+    that makes int-to-pointer an error, which is every compiler since
+    GCC 14.
+  - Refusing unknown requests is right for a system whose ioctl numbers
+    are its own. Where the kernel's numbers ARE Linux's, the number a
+    program passes is already the kernel's, and refusing it here means a
+    program can never reach a device driver.
+
+Not specific to m68k: any libos/linux target wants both.
+
+diff -ru a/libc/include/sys/ioctl.h b/libc/include/sys/ioctl.h
+--- a/libc/include/sys/ioctl.h	2026-09-22 15:33:26.393529862 -0600
++++ b/libc/include/sys/ioctl.h	2026-09-22 15:33:26.426323723 -0600
+@@ -44,7 +44,7 @@
+ 
+ _BEGIN_STD_C
+ 
+-int ioctl(int fd, unsigned long op, void *param);
++int ioctl(int __fd, unsigned long __op, ...);
+ 
+ #define TIOCGWINSZ (('T' << 8) | 1)
+ #define TIOCSWINSZ (('T' << 8) | 2)
+diff -ru a/libos/linux/ioctl.c b/libos/linux/ioctl.c
+--- a/libos/linux/ioctl.c	2026-09-22 15:33:26.391928359 -0600
++++ b/libos/linux/ioctl.c	2026-09-22 15:33:26.426256368 -0600
+@@ -37,10 +37,25 @@
+ #include <sys/ioctl.h>
+ #include <termios.h>
+ #include <errno.h>
++#include <stdarg.h>
+ 
++/*
++ * VARIADIC, as POSIX and Linux have it. ioctl's third argument is not
++ * always a pointer -- plenty of requests take an int -- and a program
++ * that passes one to a `void *` parameter does not compile at all under
++ * a compiler that treats int-to-pointer as an error, which is every
++ * compiler since GCC 14. CPython's fcntl module is one such program.
++ */
+ int
+-ioctl(int fd, unsigned long op, void *arg)
++ioctl(int fd, unsigned long op, ...)
+ {
++    va_list ap;
++    void *arg;
++
++    va_start(ap, op);
++    arg = va_arg(ap, void *);
++    va_end(ap);
++
+     switch (op) {
+     case TIOCGWINSZ:
+         return tcgetwinsize(fd, arg);
+@@ -51,7 +66,13 @@
+     case FIONREAD:
+         return syscall(LINUX_SYS_ioctl, fd, LINUX_FIONREAD, arg);
+     default:
+-        errno = EINVAL;
+-        return -1;
++        /*
++         * Anything else goes to the kernel as it stands. picolibc used
++         * to refuse it, which is right for a system whose ioctl numbers
++         * are its own -- but on a Linux-shaped kernel the numbers a
++         * program passes ARE the kernel's, and refusing them here means
++         * a program can never reach a device driver at all.
++         */
++        return syscall(LINUX_SYS_ioctl, fd, op, arg);
+     }
+ }

@@ -842,6 +842,24 @@ static void test_misc(void)
         report("  and refuses any other clock",
                clock_settime(CLOCK_MONOTONIC, &now) < 0 && errno == EINVAL);
     }
+    {
+        /*
+         * The descriptor limit, which is a NUMBER this system knows:
+         * OPEN_MAX, 64. Asking for "some plausible value" would have
+         * passed while picolibc's RLIMIT_NOFILE (5) was asking the
+         * kernel about its resident set size (Linux's 5), which
+         * answered RLIM_INFINITY.
+         */
+        struct rlimit rl;
+
+        report("getrlimit(RLIMIT_NOFILE) is this system's 64",
+               getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur == 64);
+        report("  and getdtablesize agrees", getdtablesize() == 64);
+        report("getrlimit(RLIMIT_NPROC) is the task table's 64",
+               getrlimit(RLIMIT_NPROC, &rl) == 0 && rl.rlim_cur == 64);
+        report("getrlimit refuses a resource that does not exist",
+               getrlimit(RLIM_NLIMITS, &rl) < 0);
+    }
     sync();
     report("sync", 1);
     {

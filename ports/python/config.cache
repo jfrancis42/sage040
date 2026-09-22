@@ -1,0 +1,132 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Jeff Francis
+#
+# The answers CPython's configure cannot find out when cross-compiling,
+# because finding them out means running a program on the machine. Each
+# one is a fact about SuckOS; where it is Linux's answer, that is because
+# this kernel's ABI is Linux's.
+
+# There are no pseudo-terminals here: FAT cannot hold a device node and
+# the kernel has no pty driver. Python's pty and tty modules import, and
+# openpty fails.
+ac_cv_file__dev_ptmx=${ac_cv_file__dev_ptmx=no}
+ac_cv_file__dev_ptc=${ac_cv_file__dev_ptc=no}
+
+# The machine is big-endian, and its double is the IEEE 754 one in the
+# same order -- a 68040 FPU.
+ac_cv_c_bigendian=${ac_cv_c_bigendian=yes}
+ax_cv_c_float_words_bigendian=${ax_cv_c_float_words_bigendian=yes}
+ac_cv_little_endian_double=${ac_cv_little_endian_double=no}
+ac_cv_big_endian_double=${ac_cv_big_endian_double=yes}
+ac_cv_mixed_endian_double=${ac_cv_mixed_endian_double=no}
+
+# printf("%zd") and friends work: picolibc's are C99's.
+ac_cv_have_size_t_format=${ac_cv_have_size_t_format=yes}
+
+# The kernel's clocks, which are the ones clock_gettime answers for.
+ac_cv_func_clock_gettime=${ac_cv_func_clock_gettime=yes}
+# Threads need NO compiler flag: they are in the C library here, not in
+# a separate libpthread. Saying otherwise puts -pthread on the command
+# line, which this compiler does not accept -- and then every single
+# link test in configure fails, so configure decides the system has no
+# uname, no waitpid and no writev either.
+ac_cv_pthread_is_default=${ac_cv_pthread_is_default=yes}
+ac_cv_pthread=${ac_cv_pthread=no}
+ac_cv_kpthread=${ac_cv_kpthread=no}
+ac_cv_kthread=${ac_cv_kthread=no}
+
+# No dynamic loading of extension modules: there is no dlopen here, so
+# every module is built into the interpreter (Modules/Setup.local).
+ac_cv_func_dlopen=${ac_cv_func_dlopen=no}
+ac_cv_lib_dl_dlopen=${ac_cv_lib_dl_dlopen=no}
+
+# What the kernel does not have, said here rather than discovered by a
+# link that succeeds against a stub.
+ac_cv_func_fork1=${ac_cv_func_fork1=no}
+ac_cv_func_setgroups=${ac_cv_func_setgroups=no}
+ac_cv_func_getspnam=${ac_cv_func_getspnam=no}
+ac_cv_func_sendfile=${ac_cv_func_sendfile=no}
+ac_cv_func_memfd_create=${ac_cv_func_memfd_create=no}
+ac_cv_func_eventfd=${ac_cv_func_eventfd=no}
+ac_cv_func_timerfd_create=${ac_cv_func_timerfd_create=no}
+ac_cv_func_inotify_init=${ac_cv_func_inotify_init=no}
+ac_cv_func_epoll_create=${ac_cv_func_epoll_create=no}
+ac_cv_func_epoll_create1=${ac_cv_func_epoll_create1=no}
+ac_cv_func_kqueue=${ac_cv_func_kqueue=no}
+ac_cv_func_pipe2=${ac_cv_func_pipe2=yes}
+ac_cv_func_getrandom=${ac_cv_func_getrandom=yes}
+ac_cv_func_getrandom_syscall=${ac_cv_func_getrandom_syscall=yes}
+ac_cv_func_posix_spawn=${ac_cv_func_posix_spawn=yes}
+ac_cv_func_posix_spawnp=${ac_cv_func_posix_spawnp=yes}
+ac_cv_func_dup3=${ac_cv_func_dup3=yes}
+ac_cv_func_utimensat=${ac_cv_func_utimensat=yes}
+ac_cv_func_futimens=${ac_cv_func_futimens=yes}
+ac_cv_func_sigaltstack=${ac_cv_func_sigaltstack=yes}
+ac_cv_func_wait4=${ac_cv_func_wait4=yes}
+ac_cv_func_getrusage=${ac_cv_func_getrusage=yes}
+ac_cv_func_setsid=${ac_cv_func_setsid=yes}
+ac_cv_func_sethostname=${ac_cv_func_sethostname=yes}
+ac_cv_func_getloadavg=${ac_cv_func_getloadavg=yes}
+ac_cv_func_chroot=${ac_cv_func_chroot=yes}
+ac_cv_func_getpriority=${ac_cv_func_getpriority=yes}
+ac_cv_func_mkdtemp=${ac_cv_func_mkdtemp=yes}
+ac_cv_func_realpath=${ac_cv_func_realpath=yes}
+ac_cv_func_symlink=${ac_cv_func_symlink=no}
+ac_cv_func_readlink=${ac_cv_func_readlink=no}
+ac_cv_func_lchown=${ac_cv_func_lchown=no}
+ac_cv_func_link=${ac_cv_func_link=no}
+ac_cv_func_mknod=${ac_cv_func_mknod=no}
+ac_cv_func_mkfifo=${ac_cv_func_mkfifo=no}
+
+# The C library's own answers that a run-time test would otherwise ask.
+ac_cv_buggy_getaddrinfo=${ac_cv_buggy_getaddrinfo=no}
+ac_cv_have_long_long_format=${ac_cv_have_long_long_format=yes}
+ac_cv_wchar_t_signed=${ac_cv_wchar_t_signed=yes}
+ac_cv_computed_gotos=${ac_cv_computed_gotos=yes}
+ac_cv_broken_sem_getvalue=${ac_cv_broken_sem_getvalue=no}
+ac_cv_posix_semaphores_enabled=${ac_cv_posix_semaphores_enabled=yes}
+ac_cv_broken_nice=${ac_cv_broken_nice=no}
+ac_cv_broken_poll=${ac_cv_broken_poll=no}
+ac_cv_working_tzset=${ac_cv_working_tzset=yes}
+ac_cv_have_decl_RTLD_NOW=${ac_cv_have_decl_RTLD_NOW=no}
+
+# Modules with no library on this machine. "n/a" is how CPython's
+# configure records a module that is not to be built at all, as opposed
+# to one that failed: bzip2, xz, OpenSSL, Tcl/Tk, dbm and the ones that
+# want a Linux kernel interface this system does not have.
+py_cv_module__bz2=${py_cv_module__bz2=n/a}
+py_cv_module__lzma=${py_cv_module__lzma=n/a}
+py_cv_module__zstd=${py_cv_module__zstd=n/a}
+py_cv_module__ssl=${py_cv_module__ssl=n/a}
+py_cv_module__hashlib=${py_cv_module__hashlib=n/a}
+py_cv_module__tkinter=${py_cv_module__tkinter=n/a}
+py_cv_module__dbm=${py_cv_module__dbm=n/a}
+py_cv_module__gdbm=${py_cv_module__gdbm=n/a}
+py_cv_module__sqlite3=${py_cv_module__sqlite3=n/a}
+py_cv_module__uuid=${py_cv_module__uuid=n/a}
+# ctypes calls a function whose signature it learns at run time, which
+# needs libffi and a way to load a library: neither exists here.
+py_cv_module__ctypes=${py_cv_module__ctypes=n/a}
+py_cv_module__ctypes_test=${py_cv_module__ctypes_test=n/a}
+py_cv_module__testcapi=${py_cv_module__testcapi=n/a}
+py_cv_module__testinternalcapi=${py_cv_module__testinternalcapi=n/a}
+py_cv_module__testbuffer=${py_cv_module__testbuffer=n/a}
+py_cv_module__testimportmultiple=${py_cv_module__testimportmultiple=n/a}
+py_cv_module__testmultiphase=${py_cv_module__testmultiphase=n/a}
+py_cv_module__testexternalinspection=${py_cv_module__testexternalinspection=n/a}
+py_cv_module__xxtestfuzz=${py_cv_module__xxtestfuzz=n/a}
+py_cv_module_xxlimited=${py_cv_module_xxlimited=n/a}
+py_cv_module_xxlimited_35=${py_cv_module_xxlimited_35=n/a}
+py_cv_module_readline=${py_cv_module_readline=n/a}
+py_cv_module_nis=${py_cv_module_nis=n/a}
+py_cv_module_ossaudiodev=${py_cv_module_ossaudiodev=n/a}
+py_cv_module_spwd=${py_cv_module_spwd=n/a}
+py_cv_module_syslog=${py_cv_module_syslog=n/a}
+py_cv_module_grp=${py_cv_module_grp=n/a}
+
+# ncurses here is built --with-termlib, so the terminfo half is a
+# library of its own: a program that calls initscr needs -lncursesw AND
+# -ltinfow. configure only ever tries the first, decides curses is not
+# there, and builds no _curses module.
+ac_cv_search_initscr=${ac_cv_search_initscr='-lncursesw -ltinfow'}
+ac_cv_search_update_panels=${ac_cv_search_update_panels='-lpanelw -lncursesw -ltinfow'}

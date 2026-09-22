@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Jeff Francis
+#
+# Extension modules built INTO the interpreter. There is no dlopen on
+# this machine, so nothing can be loaded at run time: what is not here
+# is not there at all.
+#
+# configure already marks every module static when it finds no dynamic
+# loading; this file is where a module needing a library of ours goes.
+*static*

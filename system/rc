@@ -1,0 +1,23 @@
+# /etc/rc - what the machine does before it hands you a prompt.
+#
+# Run by the shell at startup (kernel/shell.c). One command per line;
+# there are no conditionals here beyond the shell's ; && || because
+# anything that needs more than that belongs in a program.
+
+# The kernel's messages, into /var/log/syslog. It runs in the
+# background for the life of the machine, asleep until the kernel says
+# something -- see system/klogd.c.
+klogd -q &
+
+# The time zone. UTC0 is the default the shell sets, which is the honest
+# answer for a machine that has not been told where it is; uncomment one
+# of these, or write your own POSIX TZ string, and every program's local
+# time follows.
+#
+# export TZ=MST7MDT,M3.2.0,M11.1.0     # Colorado, daylight saving
+# export TZ=CET-1CEST,M3.5.0,M10.5.0/3 # central Europe
+# export TZ=JST-9                      # Japan, no daylight saving
+
+# The network. `ifconfig nvram` takes its settings from the NVRAM (see
+# /bin/nvram), so a machine configured once comes up configured.
+# ifconfig nvram

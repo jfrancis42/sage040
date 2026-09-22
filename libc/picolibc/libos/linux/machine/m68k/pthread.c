@@ -232,14 +232,30 @@ main_thread_init(void)
     }
 }
 
+/*
+ * The last answer. Almost every call comes from the thread that made
+ * the previous one -- a lock taken and dropped in a loop, an errno read
+ * after a system call -- so two compares answer it, and the search runs
+ * only when the thread has actually changed. It is one word, written by
+ * whichever thread looked last, and every value it can hold is a valid
+ * answer for SOME thread: a stale one fails the range test below and is
+ * replaced, which is why it needs no lock.
+ */
+static struct __pthread *self_cache;
+
 pthread_t
 pthread_self(void)
 {
     unsigned long sp = stack_pointer();
+    struct __pthread *c = self_cache;
     int i;
 
+    if (c && c->used && sp >= c->lo && sp < c->hi) {
+        return c;
+    }
     for (i = 1; i < PTHREAD_THREADS_MAX; i++) {
         if (threads[i].used && sp >= threads[i].lo && sp < threads[i].hi) {
+            self_cache = &threads[i];
             return &threads[i];
         }
     }
@@ -1083,6 +1099,9 @@ reap_detached(void)
 
         if (t->used && t->detached && t->tid == 0) {
             t->used = 0;
+            if (self_cache == t) {
+                self_cache = 0;
+            }
             if (t->stack) {
                 munmap(t->stack, t->stacksize);
             }
@@ -1229,6 +1248,9 @@ pthread_join(pthread_t t, void **value)
         *value = t->retval;
     }
     t->used = 0;
+    if (self_cache == t) {
+        self_cache = 0;
+    }
     if (t->stack) {
         munmap(t->stack, t->stacksize);
     }

@@ -39,6 +39,7 @@ srcs_os_linux_machine = [
   'syscall.S',
   'clone.S',
   'pthread.c',
+  'atomic64.c',
   'posix-extra.c',
   'posix-more.c',
   'stdio-ext.c',

@@ -227,6 +227,23 @@ void exception_handler(const u32 *regs, const u16 *frame)
         kputhex32(frame_pc(frame));
         kputln("");
         /*
+         * THE REGISTERS, because a fault address on its own says where
+         * the program died and nothing about why. Which register held
+         * the bad pointer is usually the whole answer -- and a program
+         * that dies in somebody else's library, with no debugger on this
+         * machine, leaves nothing else to go on.
+         */
+        for (i = 0; i < 15; i++) {
+            kputs((i % 4) == 0 ? "    " : "  ");
+            kputs(regnames[i]);
+            kputc('=');
+            kputhex32(regs[i]);
+            if ((i % 4) == 3) {
+                kputc('\n');
+            }
+        }
+        kputc('\n');
+        /*
          * 139 is what a shell reports for a program killed by a
          * segmentation fault: 128 plus the signal number. Nothing
          * catches signals here, but the number a person sees should

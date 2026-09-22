@@ -15,6 +15,7 @@
 #include "console.h"
 #include "vfs.h"
 #include "errno.h"
+#include "klog.h"
 
 static struct chardev *con;
 static struct file confile;
@@ -56,8 +57,15 @@ int console_use(struct chardev *d)
     return 0;
 }
 
+/*
+ * Everything the kernel prints goes two places: the console, where a
+ * person sees it, and the log ring, where a program can read it back
+ * afterwards (klog.c). The ring comes FIRST, so that a message is
+ * recorded even if the console write is what goes wrong.
+ */
 void console_write(const void *buf, u32 len)
 {
+    klog_write(buf, len);
     if (!con || !con->ops->write) {
         return;
     }
@@ -66,6 +74,7 @@ void console_write(const void *buf, u32 len)
 
 void kputc(char c)
 {
+    klog_putc(c);
     if (!con || !con->ops->write) {
         return;
     }
@@ -82,11 +91,12 @@ void kputs(const char *s)
 {
     u32 n = 0;
 
-    if (!con || !con->ops->write) {
-        return;
-    }
     while (s[n]) {
         n++;
+    }
+    klog_write(s, n);
+    if (!con || !con->ops->write) {
+        return;
     }
     con->ops->write(&confile, s, n);
 }

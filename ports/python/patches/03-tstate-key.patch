@@ -1,0 +1,85 @@
+CPython 3.14 keeps the current thread state in a thread-local variable
+and, where the compiler has no storage classifier for one, stops with
+#error "no supported thread-local variable storage classifier". The
+comment beside it says what to do instead -- fall back to a thread key
+-- and this does that.
+
+A platform can have threads and no compiler TLS. m68k has no thread
+register, so __thread compiles into a call to __m68k_read_tp, which only
+a C library keeping an ELF TLS block per thread can answer, and
+SuckOS's keeps thread state in its thread descriptors instead.
+
+The cost is one call where there was a variable: pthread_once is a load
+and a compare after the first time, and pthread_getspecific is an index
+into the calling thread's own array.
+
+diff -ru a/Python/pystate.c b/Python/pystate.c
+--- a/Python/pystate.c	2026-09-22 15:52:05.295897410 -0600
++++ b/Python/pystate.c	2026-09-22 15:52:05.313918541 -0600
+@@ -69,6 +69,36 @@
+ 
+ #ifdef HAVE_THREAD_LOCAL
+ _Py_thread_local PyThreadState *_Py_tss_tstate = NULL;
++#else
++/*
++ * WITHOUT A THREAD-LOCAL STORAGE CLASSIFIER, which is what the #error
++ * this replaces used to say. A platform can have threads and no
++ * compiler TLS: m68k has no thread register, so __thread compiles into
++ * a call the C library can only answer by keeping an ELF TLS block per
++ * thread, and a C library is entitled not to.
++ *
++ * The thread's own key is what the comment above the #error always
++ * suggested. The cost over a thread-local is one call: pthread_once
++ * here is a load and a compare after the first time, and
++ * pthread_getspecific is an index into the calling thread's own array.
++ */
++#include <pthread.h>
++
++static pthread_key_t  _Py_tstate_key;
++static pthread_once_t _Py_tstate_key_once = PTHREAD_ONCE_INIT;
++
++static void
++_Py_make_tstate_key(void)
++{
++    (void)pthread_key_create(&_Py_tstate_key, NULL);
++}
++
++static inline pthread_key_t
++_Py_tstate_get_key(void)
++{
++    pthread_once(&_Py_tstate_key_once, _Py_make_tstate_key);
++    return _Py_tstate_key;
++}
+ #endif
+ 
+ static inline PyThreadState *
+@@ -77,8 +107,7 @@
+ #ifdef HAVE_THREAD_LOCAL
+     return _Py_tss_tstate;
+ #else
+-    // XXX Fall back to the PyThread_tss_*() API.
+-#  error "no supported thread-local variable storage classifier"
++    return (PyThreadState *)pthread_getspecific(_Py_tstate_get_key());
+ #endif
+ }
+ 
+@@ -89,8 +118,7 @@
+ #ifdef HAVE_THREAD_LOCAL
+     _Py_tss_tstate = tstate;
+ #else
+-    // XXX Fall back to the PyThread_tss_*() API.
+-#  error "no supported thread-local variable storage classifier"
++    (void)pthread_setspecific(_Py_tstate_get_key(), tstate);
+ #endif
+ }
+ 
+@@ -100,8 +128,7 @@
+ #ifdef HAVE_THREAD_LOCAL
+     _Py_tss_tstate = NULL;
+ #else
+-    // XXX Fall back to the PyThread_tss_*() API.
+-#  error "no supported thread-local variable storage classifier"
++    (void)pthread_setspecific(_Py_tstate_get_key(), NULL);
+ #endif
+ }
+ 

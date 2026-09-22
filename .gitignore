@@ -97,3 +97,5 @@ ports/sbase/bin/
 ports/sbase/share/
 ports/bash/bash
 libc/test/threadtest
+system/klogd
+system/dmesg

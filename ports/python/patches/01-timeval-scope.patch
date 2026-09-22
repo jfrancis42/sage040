@@ -1,0 +1,32 @@
+CPython 3.14.7: pycore_time.h forward declares `struct timeval` only for
+clang. It declares three functions taking `struct timeval *` without
+including <sys/time.h>, so on a platform where nothing else has already
+defined that type, the struct is declared in PROTOTYPE SCOPE -- a
+distinct, incomplete type -- and Python/pytime.c fails to compile with
+"conflicting types for _PyTime_FromTimeval".
+
+Whether it happens depends on what a platform's other headers drag in.
+It does here, against picolibc.
+
+diff -ru a/Include/internal/pycore_time.h b/Include/internal/pycore_time.h
+--- a/Include/internal/pycore_time.h	2026-09-22 15:25:54.031182373 -0600
++++ b/Include/internal/pycore_time.h	2026-09-22 15:25:54.050846387 -0600
+@@ -59,9 +59,16 @@
+ 
+ #include "pycore_runtime_structs.h" // _PyTimeFraction
+ 
+-#ifdef __clang__
++/*
++ * Forward declared for EVERY compiler, not only clang. This header
++ * declares functions taking `struct timeval *` without including
++ * <sys/time.h>; where nothing else has pulled that type in first, the
++ * struct is declared in PROTOTYPE SCOPE and is therefore a different
++ * type from the real one -- and the definitions in Python/pytime.c then
++ * fail to compile with "conflicting types". Which happens depends
++ * entirely on what the platform's other headers happen to include.
++ */
+ struct timeval;
+-#endif
+ 
+ #define _SIZEOF_PYTIME_T 8
+ 

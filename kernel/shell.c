@@ -2448,9 +2448,9 @@ static void run_command(char *cmdline)
             }
         } else {
             /*
-             * Not a builtin, so look for a program of that name. This is
-             * where a real shell would walk $PATH; there is one directory
-             * on this volume, so the name is the path.
+             * Not a builtin, so look for a program of that name --
+             * along $PATH, in spawn_on_path() above, unless the name
+             * has a slash in it and is therefore already a path.
              */
             int status;
 

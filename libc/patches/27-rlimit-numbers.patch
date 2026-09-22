@@ -1,0 +1,54 @@
+picolibc 1.8.12's RLIMIT_* numbers are its own, and libos/linux passes
+them straight to a Linux kernel, which has different ones: picolibc's
+NOFILE is 5, which Linux reads as RSS, and its AS is 6, which Linux
+reads as NPROC. getrlimit then returns a plausible answer about the
+wrong resource, which nothing notices until something believes it --
+getdtablesize, in picolibc's own libos layer, is one such caller.
+
+This makes them Linux's, adds the ones picolibc lacked, and defines
+RLIM_NLIMITS, which CPython's resource module needs to iterate them.
+
+Not specific to m68k: every libos/linux target has this.
+
+diff -ru a/libc/include/sys/resource.h b/libc/include/sys/resource.h
+--- a/libc/include/sys/resource.h	2026-09-22 15:40:46.725310927 -0600
++++ b/libc/include/sys/resource.h	2026-09-22 15:40:46.741569215 -0600
+@@ -92,13 +92,31 @@
+ #define PRIO_PGRP     1
+ #define PRIO_USER     2
+ 
+-#define RLIMIT_CPU    0 /* Limit on CPU time per process. */
+-#define RLIMIT_FSIZE  1 /* Limit on file size. */
+-#define RLIMIT_DATA   2 /* Limit on data segment size. */
+-#define RLIMIT_STACK  3 /* Limit on stack size. */
+-#define RLIMIT_CORE   4 /* Limit on size of core image. */
+-#define RLIMIT_NOFILE 5 /* Limit on number of open files. */
+-#define RLIMIT_AS     6 /* Limit on address space size. */
++/*
++ * LINUX'S NUMBERS, because the kernel underneath libos/linux is asked
++ * with them. picolibc's own order put NOFILE at 5 and AS at 6, which
++ * are Linux's RSS and NPROC -- so getrlimit(RLIMIT_NOFILE) asked the
++ * kernel about the resident set size and got a plausible wrong answer
++ * rather than an error. Nothing notices until something believes it.
++ */
++#define RLIMIT_CPU        0  /* CPU time per process, seconds          */
++#define RLIMIT_FSIZE      1  /* file size                              */
++#define RLIMIT_DATA       2  /* data segment size                      */
++#define RLIMIT_STACK      3  /* stack size                             */
++#define RLIMIT_CORE       4  /* size of a core image                   */
++#define RLIMIT_RSS        5  /* resident set size                      */
++#define RLIMIT_NPROC      6  /* processes for this user                */
++#define RLIMIT_NOFILE     7  /* open files                             */
++#define RLIMIT_OFILE      RLIMIT_NOFILE /* the BSD name                */
++#define RLIMIT_MEMLOCK    8  /* locked-in-memory address space         */
++#define RLIMIT_AS         9  /* address space size                     */
++#define RLIMIT_LOCKS      10 /* file locks                             */
++#define RLIMIT_SIGPENDING 11 /* pending signals                        */
++#define RLIMIT_MSGQUEUE   12 /* bytes in POSIX message queues          */
++#define RLIMIT_NICE       13 /* nice level that may be raised to       */
++#define RLIMIT_RTPRIO     14 /* realtime priority                      */
++#define RLIMIT_RTTIME     15 /* realtime CPU time, microseconds        */
++#define RLIM_NLIMITS      16 /* how many there are: CPython asks       */
+ 
+ #if __XSI_VISIBLE
+ int getpriority(int, id_t);

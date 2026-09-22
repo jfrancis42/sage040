@@ -39,6 +39,7 @@
 #include "timer.h"
 #include "fb.h"
 #include "memdev.h"
+#include "klog.h"
 #include "fbcon.h"
 #include "tty.h"
 #include "task.h"
@@ -232,6 +233,14 @@ static void start_drivers(void)
     if (memdev_init() < 0) {
         kputs("/dev/null and the other memory devices would not register\n");
     }
+
+    /*
+     * /dev/klog, so that what the kernel has said can be read back.
+     * The RING has been filling since the first message -- klog.c needs
+     * no initialising for that -- and this only makes it reachable by
+     * name, which is why it can happen here rather than first.
+     */
+    klog_init();
 
     status("video");
     err = sm501_init();

@@ -33,8 +33,18 @@ if [ ! -d "$SRC" ]; then
 fi
 
 # Everything rebuilt if picolibc's headers changed since the last build.
+#
+# sbase's own `clean` removes *.o in the top directory and nothing else,
+# so the objects under libutf/ and libutil/ survived it -- and the
+# libraries were re-archived from stale objects. That is invisible until
+# something in the C library changes shape: when errno became a function
+# (threads), every one of those objects still referenced it as a
+# variable, and forty programs failed to link with "undefined reference
+# to errno" while the two libraries rebuilt without a word.
 if ! libc_fresh "$HERE/bin"; then
     make -C "$SRC" clean >/dev/null 2>&1 || true
+    find "$SRC" -name '*.o' -delete
+    rm -f "$SRC"/libutf.a "$SRC"/libutil.a
 fi
 
 # sbase's own feature macros, then this machine's headers.

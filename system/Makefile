@@ -18,10 +18,24 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-PROGS := ifconfig ping netstat shutdown env stty resize fsck host ntpdate swapon swapoff irqs nvram sh
+PROGS := ifconfig ping netstat shutdown env stty resize fsck host ntpdate swapon swapoff irqs nvram klogd dmesg sh
 INSTALL_DIR := /BIN
 
 include $(TOPDIR)/lib/program.mk
+
+# /etc/rc and the /var tree that klogd logs into. The rc file is only
+# written if the disk has none: it is the machine's configuration, and
+# an install must not overwrite what somebody has edited.
+install: install-etc
+install-etc: $(DISK)
+	@mmd -D s -i $(MIMG) ::/etc 2>/dev/null || true
+	@mmd -D s -i $(MIMG) ::/var 2>/dev/null || true
+	@mmd -D s -i $(MIMG) ::/var/log 2>/dev/null || true
+	@if mdir -i $(MIMG) ::/etc/rc >/dev/null 2>&1; then \
+	    echo "/etc/rc is already there, and is yours: not touched"; \
+	else \
+	    mcopy -i $(MIMG) rc ::/etc/rc && echo "installed /etc/rc"; \
+	fi
 
 # sh is the kernel's own shell, built as a program: the shell and line
 # editor sources, the gate's calling side, and the pure helpers they use
