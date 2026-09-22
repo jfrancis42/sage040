@@ -1,0 +1,42 @@
+picolibc 1.8.12: two things ported programs expect of <sys/ioctl.h>.
+
+struct winsize is visible there (glibc and the BSDs put it there; POSIX
+2024 put it in <termios.h>), so a program that includes only
+<sys/ioctl.h> to call TIOCGWINSZ compiles. And FIONREAD exists, which
+libos/linux's ioctl() passes to the kernel as Linux's FIONREAD --
+editors ask it whether a key has been typed ahead. Found porting
+uEmacs/PK. Not specific to m68k, but it needs LINUX_FIONREAD, which
+none of picolibc's generated linux-ioctl.h files has; the m68k backend's
+defines it.
+
+--- a/libc/include/sys/ioctl.h
++++ b/libc/include/sys/ioctl.h
+@@ -38,6 +38,9 @@
+ 
+ #include <sys/cdefs.h>
+ #include <sys/_types.h>
++/* struct winsize, for TIOCGWINSZ: glibc and the BSDs make it visible
++ * here, and programs that ask for the size include only this. */
++#include <sys/termios.h>
+ 
+ _BEGIN_STD_C
+ 
+@@ -46,6 +49,7 @@
+ #define TIOCGWINSZ (('T' << 8) | 1)
+ #define TIOCSWINSZ (('T' << 8) | 2)
+ #define TIOCLINUX  (('T' << 8) | 3)
++#define FIONREAD   (('T' << 8) | 4)   /* bytes waiting to be read: int * */
+ 
+ _END_STD_C
+ 
+--- a/libos/linux/ioctl.c
++++ b/libos/linux/ioctl.c
+@@ -48,6 +48,8 @@
+         return tcsetwinsize(fd, arg);
+     case TIOCLINUX:
+         return syscall(LINUX_SYS_ioctl, fd, LINUX_TIOCLINUX, arg);
++    case FIONREAD:
++        return syscall(LINUX_SYS_ioctl, fd, LINUX_FIONREAD, arg);
+     default:
+         errno = EINVAL;
+         return -1;

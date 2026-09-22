@@ -141,6 +141,7 @@ s32  vfs_getdents64(int fd, u8 *buf, u32 len);
 int  vfs_is_dir_file(struct file *f);
 int  vfs_statfs(struct statfs *s);
 int  vfs_check(int flags, struct fsck_report *r);
+int  vfs_flock(int fd, int op);
 int  vfs_sync(void);
 
 

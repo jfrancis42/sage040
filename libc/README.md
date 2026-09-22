@@ -25,9 +25,10 @@ numbers, the calling convention, the structures. So the port is:
 
 | | |
 |---|---|
-| `picolibc/libos/linux/machine/m68k/` | the m68k backend: Linux/m68k's constants and structure layouts, a `syscall()` in assembly, and the three POSIX calls picolibc's Linux layer lacks everywhere (`pause`, `usleep`, `select`) |
+| `picolibc/libos/linux/machine/m68k/` | the m68k backend: Linux/m68k's constants and structure layouts, a `syscall()` in assembly, and the POSIX calls picolibc's Linux layer lacks everywhere (`pause`, `usleep`, `select`, `flock`) |
 | `patches/` | fixes to picolibc itself, for bugs that are not about m68k |
 | `build.sh` | fetch, verify, lay the backend over the release, apply the patches, build |
+| `termcap/` | termcap with the one terminal compiled in -- a VT102 -- and the size asked of the terminal; BSD-licensed, since it is linked into programs that are not GPL |
 | `crt0.s`, `sage040.ld`, `libc.mk` | how a program starts, is laid out and is built |
 
 and, on the kernel's side, the calls picolibc makes that this system did
@@ -69,11 +70,18 @@ arrays), so they come out the same under m68k's two-byte alignment of
   `_POSIX_MONOTONIC_CLOCK` for RTEMS, so under plain POSIX the constant
   is hidden where glibc shows it.
 - **`statvfs` fails with `ENOSYS`**: the kernel has no `statfs64`.
+- **`ioctl()` knows only `TIOCGWINSZ`, `TIOCSWINSZ`, `TIOCLINUX` and
+  `FIONREAD`**: picolibc translates its own request numbers to Linux's
+  and refuses the rest with `EINVAL`. `FIONREAD`, and `struct winsize`
+  being visible from `<sys/ioctl.h>`, come from `patches/`.
+- **termcap is `-ltermcap` and `<termcap.h>`**, not ncurses: change a
+  program's `#include <curses.h>` and `<term.h>` if it only wanted
+  termcap from them.
 - **One thread per process**, so picolibc is built without thread-local
   storage or locking, and `errno` is an ordinary global.
 
 ## Licence
 
-picolibc is BSD-licensed. Everything under `picolibc/` and `patches/`
+picolibc is BSD-licensed. Everything under `picolibc/`, `patches/` and `termcap/`
 is BSD-3-Clause like the files around it, so it could go upstream as it
 is; the rest of this directory is GPL-3.0-or-later like the project.

@@ -40,4 +40,9 @@
 #define LINUX_TIOCLINUX  0x541c
 #define LINUX_TIOCSPGRP  0x5410
 #define LINUX_TIOCSWINSZ 0x5414
+/* Not in the generated set on any architecture; libc/patches adds the
+ * FIONREAD that uses it. Linux's value, the same everywhere but alpha,
+ * mips, powerpc and sparc. */
+#define LINUX_FIONREAD 0x541B
+
 #endif /* _LINUX_IOCTL_H_ */

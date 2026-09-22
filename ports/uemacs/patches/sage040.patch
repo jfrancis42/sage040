@@ -1,0 +1,277 @@
+uEmacs/PK (torvalds/uemacs 325a8e9) on Sage040, against picolibc.
+
+- tcap.c: termcap from <termcap.h> -- libc/termcap, the one terminal
+  compiled in -- rather than from ncurses' <curses.h> and <term.h>.
+- itoa renamed ue_itoa throughout: picolibc's <stdlib.h> declares an
+  itoa of its own with a different signature.
+- posix.c: OLCUC, XCASE, ECHOCTL, ECHOPRT, ECHOKE, FLUSHO and PENDIN
+  are Linux's and BSD's, not POSIX's, and picolibc does not define
+  them; each is cleared only where it exists.
+
+diff -ru -x .git -x '*.o' -x em uemacs/efunc.h uemacs-sage/efunc.h
+--- a/efunc.h
++++ b/efunc.h
+@@ -335,7 +335,7 @@
+ extern int cmd_set(int f, int n);
+ extern void findvar(char *var, struct variable_description *vd, int size);
+ extern int svar(struct variable_description *var, char *value);
+-extern char *itoa(int i);
++extern char *ue_itoa(int i);
+ extern int token_type(char *token);
+ extern char *getval(char *token, char *result, int size);
+ extern int truth_value(char *val);
+diff -ru -x .git -x '*.o' -x em uemacs/eval.c uemacs-sage/eval.c
+--- a/eval.c
++++ b/eval.c
+@@ -75,17 +75,17 @@
+ 	/* and now evaluate it! */
+ 	switch (fnum) {
+ 	case UFADD:
+-		return itoa(atoi(arg1) + atoi(arg2));
++		return ue_itoa(atoi(arg1) + atoi(arg2));
+ 	case UFSUB:
+-		return itoa(atoi(arg1) - atoi(arg2));
++		return ue_itoa(atoi(arg1) - atoi(arg2));
+ 	case UFTIMES:
+-		return itoa(atoi(arg1) * atoi(arg2));
++		return ue_itoa(atoi(arg1) * atoi(arg2));
+ 	case UFDIV:
+-		return itoa(atoi(arg1) / atoi(arg2));
++		return ue_itoa(atoi(arg1) / atoi(arg2));
+ 	case UFMOD:
+-		return itoa(atoi(arg1) % atoi(arg2));
++		return ue_itoa(atoi(arg1) % atoi(arg2));
+ 	case UFNEG:
+-		return itoa(-atoi(arg1));
++		return ue_itoa(-atoi(arg1));
+ 	case UFCAT:
+ 		strcpy(result, arg1);
+ 		return strcat(result, arg2);
+@@ -116,7 +116,7 @@
+ 	case UFOR:
+ 		return truth_text(truth_value(arg1) || truth_value(arg2));
+ 	case UFLENGTH:
+-		return itoa(strlen(arg1));
++		return ue_itoa(strlen(arg1));
+ 	case UFUPPER:
+ 		return mkupper(arg1, result);
+ 	case UFLOWER:
+@@ -124,7 +124,7 @@
+ 	case UFTRUTH:
+ 		return truth_text(atoi(arg1) == 42);
+ 	case UFASCII:
+-		return itoa((int)arg1[0]);
++		return ue_itoa((int)arg1[0]);
+ 	case UFCHR:
+ 		result[0] = atoi(arg1);
+ 		result[1] = 0;
+@@ -134,11 +134,11 @@
+ 		result[1] = 0;
+ 		return result;
+ 	case UFRND:
+-		return itoa((next_random() % abs(atoi(arg1))) + 1);
++		return ue_itoa((next_random() % abs(atoi(arg1))) + 1);
+ 	case UFABS:
+-		return itoa(abs(atoi(arg1)));
++		return ue_itoa(abs(atoi(arg1)));
+ 	case UFSINDEX:
+-		return itoa(sindex(arg1, arg2));
++		return ue_itoa(sindex(arg1, arg2));
+ 	case UFENV:
+ 		tsp = getenv(arg1);
+ 		return tsp == NULL ? "" : tsp;
+@@ -150,13 +150,13 @@
+ 		tsp = lookup_file(arg1, TRUE);
+ 		return tsp == NULL ? "" : tsp;
+ 	case UFBAND:
+-		return itoa(atoi(arg1) & atoi(arg2));
++		return ue_itoa(atoi(arg1) & atoi(arg2));
+ 	case UFBOR:
+-		return itoa(atoi(arg1) | atoi(arg2));
++		return ue_itoa(atoi(arg1) | atoi(arg2));
+ 	case UFBXOR:
+-		return itoa(atoi(arg1) ^ atoi(arg2));
++		return ue_itoa(atoi(arg1) ^ atoi(arg2));
+ 	case UFBNOT:
+-		return itoa(~atoi(arg1));
++		return ue_itoa(~atoi(arg1));
+ 	case UFXLATE:
+ 		return xlat(arg1, arg2, arg3);
+ 	}
+@@ -215,19 +215,19 @@
+ 	/* otherwise, fetch the appropriate value */
+ 	switch (vnum) {
+ 	case EVFILLCOL:
+-		return itoa(fill_column);
++		return ue_itoa(fill_column);
+ 	case EVPAGELEN:
+-		return itoa(term.t_nrow + 1);
++		return ue_itoa(term.t_nrow + 1);
+ 	case EVCURCOL:
+-		return itoa(getccol(FALSE));
++		return ue_itoa(getccol(FALSE));
+ 	case EVCURLINE:
+-		return itoa(getcline());
++		return ue_itoa(getcline());
+ 	case EVRAM:
+-		return itoa(0);
++		return ue_itoa(0);
+ 	case EVFLICKER:
+ 		return truth_text(FALSE);
+ 	case EVCURWIDTH:
+-		return itoa(term.t_ncol);
++		return ue_itoa(term.t_ncol);
+ 	case EVCBUFNAME:
+ 		return curbp->b_bname;
+ 	case EVCFNAME:
+@@ -241,14 +241,14 @@
+ 	case EVPALETTE:
+ 		return "";
+ 	case EVASAVE:
+-		return itoa(autosave_interval);
++		return ue_itoa(autosave_interval);
+ 	case EVACOUNT:
+-		return itoa(autosave_countdown);
++		return ue_itoa(autosave_countdown);
+ 	case EVLASTKEY:
+-		return itoa(last_key);
++		return ue_itoa(last_key);
+ 	case EVCURCHAR:
+ 		return (curwp->w_dotp->l_used ==
+-			curwp->w_doto ? itoa('\n') : itoa(lgetc(curwp->w_dotp, curwp->w_doto)));
++			curwp->w_doto ? ue_itoa('\n') : ue_itoa(lgetc(curwp->w_dotp, curwp->w_doto)));
+ 	case EVDISCMD:
+ 		return truth_text(display_commands);
+ 	case EVVERSION:
+@@ -256,12 +256,12 @@
+ 	case EVPROGNAME:
+ 		return PROGRAM_NAME_LONG;
+ 	case EVSEED:
+-		return itoa(random_seed);
++		return ue_itoa(random_seed);
+ 	case EVDISINP:
+ 		return truth_text(display_input);
+ 	case EVTARGET:
+ 		saveflag = lastflag;
+-		return itoa(goal_column);
++		return ue_itoa(goal_column);
+ 	case EVSEARCH:
+ 		return search_pattern;
+ 	case EVREPLACE:
+@@ -271,27 +271,27 @@
+ 	case EVKILL:
+ 		return getkill();
+ 	case EVCMODE:
+-		return itoa(curbp->b_mode);
++		return ue_itoa(curbp->b_mode);
+ 	case EVGMODE:
+-		return itoa(global_mode);
++		return ue_itoa(global_mode);
+ 	case EVTPAUSE:
+-		return itoa(term.t_pause);
++		return ue_itoa(term.t_pause);
+ 	case EVPENDING:
+ 		return truth_text(typahead());
+ 	case EVLWIDTH:
+-		return itoa(line_length(curwp->w_dotp));
++		return ue_itoa(line_length(curwp->w_dotp));
+ 	case EVLINE:
+ 		return getctext();
+ 	case EVGFLAGS:
+-		return itoa(global_flags);
++		return ue_itoa(global_flags);
+ 	case EVRVAL:
+-		return itoa(subprocess_status);
++		return ue_itoa(subprocess_status);
+ 	case EVTAB:
+-		return itoa(tabmask + 1);
++		return ue_itoa(tabmask + 1);
+ 	case EVOVERLAP:
+-		return itoa(overlap);
++		return ue_itoa(overlap);
+ 	case EVSCROLLCOUNT:
+-		return itoa(scroll_lines);
++		return ue_itoa(scroll_lines);
+ 	case EVSCROLL:
+ 		return truth_text(0);
+ 	}
+@@ -357,7 +357,7 @@
+ 
+ 	/* get the value for that variable */
+ 	if (f == TRUE)
+-		strcpy(value, itoa(n));
++		strcpy(value, ue_itoa(n));
+ 	else {
+ 		status = ask_string("Value: ", &value[0], NSTRING);
+ 		if (status != TRUE)
+@@ -588,13 +588,13 @@
+ }
+ 
+ /*
+- * itoa:
++ * ue_itoa:
+  *	integer to ascii string.......... This is too
+  *	inconsistant to use the system's
+  *
+  * int i;		integer to translate to a string
+  */
+-char *itoa(int i)
++char *ue_itoa(int i)
+ {
+ 	int digit;				/* current digit being used */
+ 	char *sp;				/* pointer into result */
+diff -ru -x .git -x '*.o' -x em uemacs/posix.c uemacs-sage/posix.c
+--- a/posix.c
++++ b/posix.c
+@@ -51,12 +51,33 @@
+ 	ntermios.c_iflag &= ~(IGNBRK | BRKINT | IGNPAR | PARMRK | INPCK | INLCR | IGNCR | ICRNL);
+ 
+ 	/* raw CR/NR etc output handling */
+-	ntermios.c_oflag &= ~(OPOST | ONLCR | OLCUC | OCRNL | ONOCR | ONLRET);
++	ntermios.c_oflag &= ~(OPOST | ONLCR | OCRNL | ONOCR | ONLRET);
++#ifdef OLCUC
++	ntermios.c_oflag &= ~OLCUC;
++#endif
+ 
+ 	/* No signal handling, no echo etc */
+-	ntermios.c_lflag &= ~(ISIG | ICANON | XCASE | ECHO | ECHOE | ECHOK
+-			      | ECHONL | NOFLSH | TOSTOP | ECHOCTL |
+-			      ECHOPRT | ECHOKE | FLUSHO | PENDIN | IEXTEN);
++#ifdef XCASE
++	ntermios.c_lflag &= ~XCASE;
++#endif
++	ntermios.c_lflag &= ~(ISIG | ICANON | ECHO | ECHOE | ECHOK
++			      | ECHONL | NOFLSH | TOSTOP | IEXTEN);
++	/* Linux's and BSD's, not POSIX's: cleared where they exist. */
++#ifdef ECHOCTL
++	ntermios.c_lflag &= ~ECHOCTL;
++#endif
++#ifdef ECHOPRT
++	ntermios.c_lflag &= ~ECHOPRT;
++#endif
++#ifdef ECHOKE
++	ntermios.c_lflag &= ~ECHOKE;
++#endif
++#ifdef FLUSHO
++	ntermios.c_lflag &= ~FLUSHO;
++#endif
++#ifdef PENDIN
++	ntermios.c_lflag &= ~PENDIN;
++#endif
+ 
+ 	/* one character, no timeout */
+ 	ntermios.c_cc[VMIN] = 1;
+diff -ru -x .git -x '*.o' -x em uemacs/tcap.c uemacs-sage/tcap.c
+--- a/tcap.c
++++ b/tcap.c
+@@ -12,9 +12,8 @@
+  */
+ #define	termdef	1				/* Don't define "term" external. */
+ 
+-#include <curses.h>
++#include <termcap.h>
+ #include <stdio.h>
+-#include <term.h>
+ 
+ #include "estruct.h"
+ #include "globals.h"

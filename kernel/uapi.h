@@ -1077,6 +1077,7 @@ struct sigcontext {
 #define __NR_wait4         114
 #define __NR_clone         120
 #define __NR_fchdir        133
+#define __NR_flock         143
 #define __NR__llseek       140
 #define __NR_msync         144
 #define __NR_mlock         150
@@ -1304,6 +1305,12 @@ struct ucontext {
     u32                  uc_filler[80];
     u32                  uc_sigmask[2];
 };
+
+/* flock operations, Linux's (and BSD's) values. */
+#define LOCK_SH         1
+#define LOCK_EX         2
+#define LOCK_NB         4
+#define LOCK_UN         8
 
 /* getrandom flags: accepted; the pool never blocks. */
 #define GRND_NONBLOCK   0x0001

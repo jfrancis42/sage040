@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: 16 of 23 complete.**
+**Status: 17 of 23 complete.**
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -45,7 +45,7 @@ drive almost all of it:
 | 13 | A C library (picolibc or newlib) | the gate everything real passes through | **done** |
 | 14 | VFAT long file names | 8.3 decides what can be shipped | **done** |
 | 15 | `fsck`, and a clean-unmount flag | the machine cannot check its own disk | **done** |
-| 16 | Build and run uEmacs | the cheapest real editor | todo |
+| 16 | Build and run uEmacs | the cheapest real editor | **done** |
 | 17 | Build and run vi | the other one | todo |
 | 18 | A resolver (DNS), then **NTP** | independent of the editor work; both are UDP clients and NTP wants a name | todo |
 | 19 | TCP: window scaling, timestamps, SACK, keepalives, real `TIME_WAIT` | was "deliberately not doing"; now on the list | todo |
@@ -146,9 +146,9 @@ printing `ok`/`FAIL` per line, counted and named by the script — a new
 check is a line of C. A group is added only once its calls work, so a
 failure there is always a regression.
 
-**696 checks across nine suites now:** 12 device programs, 59 fs, 368
-api, 29 edit, 18 vm, 17 net, 95 vt, 75 libc, 23 fsck. The libc suite
-needs `make libc` first.
+**714 checks across ten suites now:** 12 device programs, 59 fs, 368
+api, 29 edit, 18 vm, 17 net, 95 vt, 84 libc, 23 fsck, 9 uemacs. The libc
+and uEmacs suites need `make libc` first.
 
 ### 1. Grow the user address space — done
 
@@ -974,6 +974,47 @@ A third session kills the emulator and checks the next boot notices.
 checks fail, all of them the host's fsck.fat or the exit statuses. One
 check that should have failed then did not -- "N problems, .* repairs"
 matched "0 repairs" -- and now requires at least one.
+
+### 16. Build and run uEmacs — done
+
+**uEmacs/PK runs**, as `/bin/em` (`ports/uemacs/`) -- Linus Torvalds'
+tree at a pinned commit, fetched and patched by `build.sh` and never
+copied here, because its licence is MicroEMACS's and not the GPL. 120 KB
+of text against picolibc. The patch is three things: termcap from
+`<termcap.h>` rather than ncurses, uEmacs's `itoa` renamed away from
+picolibc's, and Linux-only termios flags cleared only where they exist.
+
+**What porting it added to the system:**
+
+- **`libc/termcap/`**: termcap with one terminal compiled in, the VT102
+  the screen emulates, `li` and `co` asked of the terminal. BSD-licensed
+  because it is linked into uEmacs. Built by `libc/build.sh`.
+- **`flock`** (Linux 143): advisory locks held by open file descriptions,
+  keyed by inode, released at the last close, blocking unless
+  `LOCK_NB` (`vfs.c`); and `flock()` in the m68k backend, since picolibc
+  declares it and implements it nowhere.
+- **A writer while readers have the file open.** uEmacs holds the file
+  open for its lock and then saves over it, and the FAT driver refused
+  that with EBUSY, because each handle carried its own copy of the size
+  and the chain. They are shared now, in `struct fat_node`; a truncate
+  resets every other handle's chain hint.
+- **A second picolibc patch**: `struct winsize` visible from
+  `<sys/ioctl.h>`, and `FIONREAD`, both of which ported programs expect.
+
+**Tests:** `kernel/uemacstest.sh`, a new suite, 9 checks. uEmacs edits a
+file the host made -- a long name, "Notes To Edit.txt" -- by keystrokes
+alone: M-> and a line typed, M-< and a word inserted mid-line, save,
+quit; the host reads the result with mtools. `apps/vcsnap`, run in the
+background, copies `/dev/vcsa` while the editor is up, and the host
+checks the text and the reverse-video mode line were on the screen. The
+terminal's modes must be back afterwards. It passed on its first run.
+libctest gained nine checks for the kernel changes: a reader seeing a
+writer's truncate and new contents, and flock's refusals, dup sharing,
+LOCK_UN and release on close. **Negative control:** with the old EBUSY
+rule back and flock always succeeding, exactly those checks fail.
+
+The screen shot is `ports/uemacs/uemacs.png`, from the test's own
+session.
 
 ## Decisions worth knowing about
 

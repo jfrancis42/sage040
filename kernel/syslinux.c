@@ -455,6 +455,9 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         return err < 0 ? err : -EINVAL;     /* there, and not a link */
     }
 
+    case __NR_flock:
+        return vfs_flock((int)a1, (int)a2);
+
     case __NR_symlinkat:
         return -EPERM;          /* FAT cannot hold one */
 

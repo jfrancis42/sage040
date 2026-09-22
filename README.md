@@ -566,6 +566,11 @@ because a machine is not real until something runs on it.
 
 ![cube](cube/docs/cube1.png)
 
+And an editor somebody else wrote: uEmacs/PK, built against picolibc,
+editing a file on the framebuffer console (`ports/uemacs/`).
+
+![uEmacs](ports/uemacs/uemacs.png)
+
 ---
 
 ## Status

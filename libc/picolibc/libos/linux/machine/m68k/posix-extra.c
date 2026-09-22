@@ -34,7 +34,7 @@
  */
 
 /*
- * pause, usleep and select are not in picolibc's libos/linux (1.8.12)
+ * pause, usleep, select and flock are not in picolibc's libos/linux (1.8.12)
  * on any architecture. They are here, in the m68k backend, only so that
  * the release underneath stays unmodified; nothing in them is specific
  * to m68k, and they belong beside the other calls in libos/linux.
@@ -42,6 +42,7 @@
 
 #include "../../local-linux.h"
 #include <sys/select.h>
+#include <sys/file.h>
 #include <time.h>
 
 int
@@ -86,4 +87,11 @@ select(int n, fd_set *rd, fd_set *wr, fd_set *ex, struct timeval *tv)
         tv->tv_usec = ktv.tv_usec;
     }
     return ret;
+}
+
+/* picolibc declares flock() in <sys/file.h>, with Linux's LOCK_ values. */
+int
+flock(int fd, int op)
+{
+    return syscall(LINUX_SYS_flock, fd, op);
 }

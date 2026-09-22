@@ -69,3 +69,4 @@ libc/test/libctest
 system/fsck
 ports/uemacs/em
 apps/vcsnap
+ports/vi/vi

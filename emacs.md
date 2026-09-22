@@ -17,6 +17,14 @@ interesting finding. GNU Emacs 18 shipped on Sun-3 workstations — 68020,
 4 MB of RAM — which is this machine with a slower CPU. That path is at the
 bottom of this document.
 
+> **Since this was written** (September 2026): every barrier in the
+> verdict below except the size of GNU Emacs itself has gone. The user
+> address space is 256 MB with `brk` and `mmap`; there are signal
+> handlers, `poll` and `select`, pipes and `fork`; picolibc is the C
+> library; long file names are VFAT's. And **uEmacs/PK runs**
+> (`ports/uemacs/`), which this document named the shortest path to a
+> real editor. The analysis below is kept as it was.
+
 ---
 
 ## What was measured

@@ -28,6 +28,8 @@
 #define EBADF            9      /* bad file descriptor                */
 #define ECHILD          10      /* no child processes                 */
 #define EAGAIN          11      /* try again                          */
+#define EWOULDBLOCK     EAGAIN  /* the same number, as on Linux       */
+#define ENOLCK          37      /* no locks available                 */
 #define ENOMEM          12      /* out of memory                      */
 #define EACCES          13      /* permission denied                  */
 #define EFAULT          14      /* bad address                        */

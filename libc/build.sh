@@ -125,4 +125,14 @@ if [ ! -f "$BUILD/build.ninja" ]; then
 fi
 ninja -C "$BUILD"
 ninja -C "$BUILD" install
+
+# termcap, with the one terminal compiled in (termcap/termcap.c), built
+# against what was just installed.
+"$CC" -mcpu=68040 -O2 -Wall -Wextra -nostdinc -nostdlib \
+    -isystem "$PREFIX/include" -isystem "$("$CC" -print-file-name=include)" \
+    -c "$HERE/termcap/termcap.c" -o "$BUILD/termcap.o"
+rm -f "$PREFIX/lib/libtermcap.a"
+"$BIN/m68k-elf-ar" rcs "$PREFIX/lib/libtermcap.a" "$BUILD/termcap.o"
+cp "$HERE/termcap/termcap.h" "$PREFIX/include/termcap.h"
+
 echo "picolibc $VERSION installed in $PREFIX"

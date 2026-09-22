@@ -36,6 +36,7 @@
 #include <sys/wait.h>
 #include <sys/time.h>
 #include <sys/statvfs.h>
+#include <sys/file.h>
 
 /* POSIX has programs declare it themselves; picolibc declares it nowhere. */
 extern char **environ;
@@ -238,6 +239,57 @@ static void test_files(void)
                st.st_size == 5);
         report("  and unlink removes it", unlink(lname) == 0 &&
                                           access(lname, F_OK) < 0);
+    }
+    {
+        /*
+         * One file, two descriptions: a reader open while a writer
+         * truncates and rewrites it sees the new file, as on Linux.
+         * The FAT driver used to refuse the writer outright while
+         * anything had the file open.
+         */
+        int r, w;
+        char b[16];
+
+        f = fopen("/SHARED.TXT", "w");
+        fputs("old contents here\n", f);
+        fclose(f);
+        r = open("/SHARED.TXT", O_RDONLY);
+        w = open("/SHARED.TXT", O_WRONLY | O_TRUNC);
+        report("a file open for reading can be opened to write too",
+               r >= 0 && w >= 0);
+        report("  and after the writer truncated it the reader sees it empty",
+               fstat(r, &st) == 0 && st.st_size == 0 &&
+               read(r, b, sizeof(b)) == 0);
+        write(w, "new\n", 4);
+        lseek(r, 0, SEEK_SET);
+        memset(b, 0, sizeof(b));
+        report("  and then sees what the writer wrote",
+               read(r, b, sizeof(b)) == 4 && strcmp(b, "new\n") == 0);
+        close(w);
+        close(r);
+
+        /* flock: the lock belongs to the open description. */
+        r = open("/SHARED.TXT", O_RDONLY);
+        w = open("/SHARED.TXT", O_RDONLY);
+        report("flock takes an exclusive lock", flock(r, LOCK_EX) == 0);
+        report("  and another open of the file is refused it",
+               flock(w, LOCK_EX | LOCK_NB) < 0 && errno == EWOULDBLOCK);
+        report("  and a shared lock too",
+               flock(w, LOCK_SH | LOCK_NB) < 0 && errno == EWOULDBLOCK);
+        {
+            int d = dup(r);
+
+            report("  but a dup shares the lock, and may take it again",
+                   flock(d, LOCK_EX | LOCK_NB) == 0);
+            close(d);
+        }
+        report("LOCK_UN lets the other have it",
+               flock(r, LOCK_UN) == 0 && flock(w, LOCK_EX | LOCK_NB) == 0);
+        close(w);
+        report("  and closing the holder releases it",
+               flock(r, LOCK_SH | LOCK_NB) == 0);
+        close(r);
+        unlink("/SHARED.TXT");
     }
     report("mkdir and rmdir", mkdir("/LCDIR", 0755) == 0 &&
                               stat("/LCDIR", &st) == 0 && S_ISDIR(st.st_mode) &&

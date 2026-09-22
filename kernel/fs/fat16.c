@@ -1819,20 +1819,52 @@ static int can_write(int flags)
     return (flags & O_ACCMODE) != O_RDONLY;
 }
 
-struct fat_file {
+/*
+ * An open FILE, shared by every descriptor open on it -- what an inode
+ * is to Linux. The size and the chain live here and nowhere else, so a
+ * writer and a reader of the same file see one file. They used to live
+ * in each handle, which is why a file could not be opened for writing
+ * while anything had it open for reading: a truncating writer would
+ * have left the reader holding a size and a chain that no longer
+ * existed. An editor that keeps a file open to lock it, then saves over
+ * it, needs exactly that.
+ */
+struct fat_node {
     u8  used;
-    u8  flags;
     u8  dirty;                  /* directory entry needs rewriting    */
+    int refs;                   /* handles open on it                 */
     struct dir dir;             /* which directory holds its entry    */
     u32 dir_index;
     u32 first;                  /* first cluster, 0 if empty          */
     u32 size;
+};
+
+/* An open handle: a position, and a hint of where in the chain it is. */
+struct fat_file {
+    u8  used;
+    u8  flags;
+    struct fat_node *node;
     u32 pos;
     u32 cur;                    /* cluster holding cur_index          */
     u32 cur_index;              /* its position in the chain          */
 };
 
+static struct fat_node nodes[FAT_MAX_OPEN];
 static struct fat_file files[FAT_MAX_OPEN];
+
+/* Every handle's chain hint for `n` forgotten: the chain has shrunk
+ * under them, and a hint can point at a cluster that is now free. */
+static void node_forget_hints(struct fat_node *n)
+{
+    int i;
+
+    for (i = 0; i < FAT_MAX_OPEN; i++) {
+        if (files[i].used && files[i].node == n) {
+            files[i].cur = 0;
+            files[i].cur_index = 0;
+        }
+    }
+}
 
 static struct fat_file *handle(int fd)
 {
@@ -1846,28 +1878,29 @@ static struct fat_file *handle(int fd)
  * entry. */
 static int file_sync(struct fat_file *f)
 {
+    struct fat_node *n = f->node;
     u8 ent[DIRENT_SIZE];
     u16 date, time;
     int err;
 
-    if (!f->dirty) {
+    if (!n->dirty) {
         return 0;
     }
-    err = dir_read_in(&f->dir, f->dir_index, ent);
+    err = dir_read_in(&n->dir, n->dir_index, ent);
     if (err != 0) {
         return err;
     }
     fs_now(&date, &time);
-    put_le16(&ent[26], (u16)f->first);
-    put_le32(&ent[28], f->size);
+    put_le16(&ent[26], (u16)n->first);
+    put_le32(&ent[28], n->size);
     put_le16(&ent[22], time);
     put_le16(&ent[24], date);
     ent[11] |= ATTR_ARCHIVE;
-    err = dir_write_in(&f->dir, f->dir_index, ent);
+    err = dir_write_in(&n->dir, n->dir_index, ent);
     if (err != 0) {
         return err;
     }
-    f->dirty = 0;
+    n->dirty = 0;
     return fat_flush_all();
 }
 
@@ -1879,7 +1912,9 @@ static int file_sync(struct fat_file *f)
  */
 static int chain_seek(struct fat_file *f, u32 want, int alloc, u32 *out)
 {
-    if (f->first == 0) {
+    struct fat_node *n = f->node;
+
+    if (n->first == 0) {
         u32 c;
         int err;
 
@@ -1890,14 +1925,14 @@ static int chain_seek(struct fat_file *f, u32 want, int alloc, u32 *out)
         if (err != 0) {
             return err;
         }
-        f->first = c;
+        n->first = c;
         f->cur = c;
         f->cur_index = 0;
-        f->dirty = 1;
+        n->dirty = 1;
     }
 
     if (!cluster_valid(f->cur) || want < f->cur_index) {
-        f->cur = f->first;
+        f->cur = n->first;
         f->cur_index = 0;
     }
 
@@ -1938,18 +1973,25 @@ static int chain_seek(struct fat_file *f, u32 want, int alloc, u32 *out)
  * deleted or renamed while something holds it. The directory as well as
  * the slot: it compared the slot alone, so a file open in one directory
  * made every file at the same position in every other directory busy. */
-static int entry_is_open(const struct dir *d, u32 dir_index)
+static struct fat_node *node_of(const struct dir *d, u32 dir_index)
 {
     int i;
 
     for (i = 0; i < FAT_MAX_OPEN; i++) {
-        if (files[i].used && files[i].dir_index == dir_index &&
-            files[i].dir.cluster == d->cluster) {
-            return 1;
+        if (nodes[i].used && nodes[i].dir_index == dir_index &&
+            nodes[i].dir.cluster == d->cluster) {
+            return &nodes[i];
         }
     }
     return 0;
 }
+
+static int entry_is_open(const struct dir *d, u32 dir_index)
+{
+    return node_of(d, dir_index) != 0;
+}
+
+static int fat_handle_close(int fd);
 
 static int fat_handle_open(const char *name, int flags)
 {
@@ -2011,47 +2053,55 @@ static int fat_handle_open(const char *name, int flags)
         if (can_write(flags) && (ent[11] & ATTR_RDONLY)) {
             return -EACCES;
         }
-        /* One writer, or any number of readers -- but not both. */
-        if (can_write(flags) && entry_is_open(&open_dir, (u32)idx)) {
-            return -EBUSY;
+    }
+
+    /* The file's node: the one already open on it, or a new one. */
+    {
+        struct fat_node *n = node_of(&open_dir, (u32)idx);
+        int k;
+
+        if (!n) {
+            for (k = 0; k < FAT_MAX_OPEN && nodes[k].used; k++) {
+            }
+            if (k == FAT_MAX_OPEN) {
+                return -ENFILE;
+            }
+            n = &nodes[k];
+            memset(n, 0, sizeof(*n));
+            n->used = 1;
+            n->dir = open_dir;
+            n->dir_index = (u32)idx;
+            n->first = le16(&ent[26]);
+            n->size = le32(&ent[28]);
+        }
+        n->refs++;
+
+        memset(f, 0, sizeof(*f));
+        f->used = 1;
+        f->flags = (u8)flags;
+        f->node = n;
+        f->cur = n->first;
+        f->cur_index = 0;
+    }
+
+    if ((flags & O_TRUNC) && can_write(flags) && f->node->size != 0) {
+        struct fat_node *n = f->node;
+
+        err = fat_free_chain(n->first);
+        if (err == 0) {
+            n->first = 0;
+            n->size = 0;
+            n->dirty = 1;
+            node_forget_hints(n);
+            err = file_sync(f);
+        }
+        if (err != 0) {
+            fat_handle_close(fd);
+            return err;
         }
     }
 
-    memset(f, 0, sizeof(*f));
-    f->used = 1;
-    f->flags = (u8)flags;
-    /*
-     * AFTER the memset, which is where this has to be -- it was set
-     * before it and silently zeroed, so every file's entry was written
-     * back to the root directory at the subdirectory's index. A file
-     * created in /etc then overwrote whatever happened to be at that
-     * slot in /, which is a spectacular way to lose a program.
-     */
-    f->dir = open_dir;
-    f->dir_index = (u32)idx;
-    f->first = le16(&ent[26]);
-    f->size = le32(&ent[28]);
-    f->cur = f->first;
-    f->cur_index = 0;
-
-    if ((flags & O_TRUNC) && can_write(flags) && f->size != 0) {
-        err = fat_free_chain(f->first);
-        if (err != 0) {
-            f->used = 0;
-            return err;
-        }
-        f->first = 0;
-        f->size = 0;
-        f->cur = 0;
-        f->dirty = 1;
-        err = file_sync(f);
-        if (err != 0) {
-            f->used = 0;
-            return err;
-        }
-    }
-
-    f->pos = (flags & O_APPEND) ? f->size : 0;
+    f->pos = (flags & O_APPEND) ? f->node->size : 0;
     return fd;
 }
 
@@ -2064,6 +2114,9 @@ static int fat_handle_close(int fd)
         return -EBADF;
     }
     err = file_sync(f);
+    if (--f->node->refs <= 0) {
+        f->node->used = 0;
+    }
     f->used = 0;
     if (err != 0) {
         return err;
@@ -2085,7 +2138,7 @@ static s32 fat_handle_read(int fd, void *buf, u32 len)
         return -EACCES;
     }
 
-    while (done < len && f->pos < f->size) {
+    while (done < len && f->pos < f->node->size) {
         u32 cl, lba, off, n, avail;
         int err = chain_seek(f, f->pos / cluster_bytes, 0, &cl);
 
@@ -2106,7 +2159,7 @@ static s32 fat_handle_read(int fd, void *buf, u32 len)
         }
 
         n = bytes_per_sector - off;
-        avail = f->size - f->pos;
+        avail = f->node->size - f->pos;
         if (n > avail) {
             n = avail;
         }
@@ -2134,7 +2187,7 @@ static s32 fat_handle_write(int fd, const void *buf, u32 len)
         return -EACCES;
     }
     if (f->flags & O_APPEND) {
-        f->pos = f->size;
+        f->pos = f->node->size;
     }
 
     while (done < len) {
@@ -2183,14 +2236,14 @@ static s32 fat_handle_write(int fd, const void *buf, u32 len)
 
         f->pos += n;
         done += n;
-        if (f->pos > f->size) {
-            f->size = f->pos;
+        if (f->pos > f->node->size) {
+            f->node->size = f->pos;
         }
-        f->dirty = 1;
+        f->node->dirty = 1;
     }
 
     /* Terminate the chain: chain_seek() may have appended clusters. */
-    if (f->dirty && cluster_valid(f->cur)) {
+    if (f->node->dirty && cluster_valid(f->cur)) {
         u16 next;
         int err = fat_get(f->cur, &next);
 
@@ -2216,7 +2269,7 @@ static s32 fat_handle_seek(int fd, s32 offset, int whence)
     switch (whence) {
     case SEEK_SET: base = 0;            break;
     case SEEK_CUR: base = (s32)f->pos;  break;
-    case SEEK_END: base = (s32)f->size; break;
+    case SEEK_END: base = (s32)f->node->size; break;
     default:       return -EINVAL;
     }
     if (base + offset < 0) {
@@ -3151,11 +3204,12 @@ static int fat_file_fstat(struct file *f, struct stat *st)
         return -EBADF;
     }
     st->st_mode = S_IFREG | S_IRUSR | S_IWUSR;
-    st->st_ino = ((ff->dir.cluster + 1) << 16) | (ff->dir_index & 0xffffUL);
-    st->st_size = ff->size;
+    st->st_ino = ((ff->node->dir.cluster + 1) << 16) |
+                 (ff->node->dir_index & 0xffffUL);
+    st->st_size = ff->node->size;
     st->st_mtime = 0;
     st->st_blocks = cluster_bytes
-                    ? (ff->size + cluster_bytes - 1) / cluster_bytes : 0;
+                    ? (ff->node->size + cluster_bytes - 1) / cluster_bytes : 0;
     return 0;
 }
 

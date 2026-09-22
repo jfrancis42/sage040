@@ -24,6 +24,8 @@
 #include "errno.h"
 #include "task.h"
 #include "string.h"
+#include "wait.h"
+#include "signal.h"
 
 #define DEV_PREFIX     "/dev/"
 #define DEV_PREFIX_LEN 5
@@ -242,6 +244,8 @@ void file_get(struct file *f)
     }
 }
 
+static void flock_release(struct file *f);
+
 void file_put(struct file *f)
 {
     if (!f || !f->used) {
@@ -250,10 +254,131 @@ void file_put(struct file *f)
     if (--f->refs > 0) {
         return;             /* somebody else still has it */
     }
+    flock_release(f);       /* a lock lives exactly as long as this */
     if (f->ops && f->ops->close) {
         f->ops->close(f);
     }
     f->used = 0;
+}
+
+/* ---------------------------------------------------------------- */
+/* flock                                                             */
+/* ---------------------------------------------------------------- */
+
+/*
+ * BSD's advisory locks, as Linux has them: held by an open file
+ * DESCRIPTION -- so a dup shares one, and a second open() of the same
+ * file is a different holder that can be refused -- on the FILE, which
+ * is to say its inode number. Shared locks coexist; an exclusive one
+ * coexists with nothing another description holds. Released by
+ * LOCK_UN or by the last close of the description.
+ *
+ * A file with no inode number, a device, is keyed by what it is instead.
+ * Advisory means exactly that: nothing stops a program that does not
+ * ask from reading or writing.
+ */
+#define FLOCK_MAX 32
+
+static struct {
+    struct file *holder;
+    u32 key;
+    int exclusive;
+} flocks[FLOCK_MAX];
+
+static struct waitq flock_wait;
+
+static u32 flock_key(struct file *f)
+{
+    struct stat st;
+
+    memset(&st, 0, sizeof(st));
+    if (f->ops && f->ops->fstat) {
+        f->ops->fstat(f, &st);
+    }
+    return st.st_ino ? st.st_ino : (u32)f->priv ^ 0x80000000UL;
+}
+
+static void flock_release(struct file *f)
+{
+    int i, any = 0;
+
+    for (i = 0; i < FLOCK_MAX; i++) {
+        if (flocks[i].holder == f) {
+            flocks[i].holder = 0;
+            any = 1;
+        }
+    }
+    if (any) {
+        wake_all(&flock_wait);
+    }
+}
+
+int vfs_flock(int fd, int op)
+{
+    struct file *f = fd_get(fd);
+    int want_ex, i, free_slot;
+    u32 key;
+
+    if (!f) {
+        return -EBADF;
+    }
+    if (op & ~(LOCK_SH | LOCK_EX | LOCK_NB | LOCK_UN)) {
+        return -EINVAL;
+    }
+    if (op & LOCK_UN) {
+        flock_release(f);
+        return 0;
+    }
+    if (!(op & (LOCK_SH | LOCK_EX)) || ((op & LOCK_SH) && (op & LOCK_EX))) {
+        return -EINVAL;
+    }
+    want_ex = (op & LOCK_EX) != 0;
+    key = flock_key(f);
+
+    for (;;) {
+        int conflict = 0;
+
+        free_slot = -1;
+        for (i = 0; i < FLOCK_MAX; i++) {
+            if (!flocks[i].holder) {
+                if (free_slot < 0) {
+                    free_slot = i;
+                }
+                continue;
+            }
+            if (flocks[i].holder == f) {
+                free_slot = i;      /* ours: converted in place */
+                continue;
+            }
+            if (flocks[i].key == key && (want_ex || flocks[i].exclusive)) {
+                conflict = 1;
+            }
+        }
+        if (!conflict) {
+            break;
+        }
+        if (op & LOCK_NB) {
+            return -EWOULDBLOCK;
+        }
+        sleep_on(&flock_wait);
+        if (signal_pending(current)) {
+            return -EINTR;
+        }
+    }
+    if (free_slot < 0) {
+        return -ENOLCK;
+    }
+    /* A holder has one lock per file: drop any other entry for it. */
+    for (i = 0; i < FLOCK_MAX; i++) {
+        if (flocks[i].holder == f && i != free_slot) {
+            flocks[i].holder = 0;
+        }
+    }
+    flocks[free_slot].holder = f;
+    flocks[free_slot].key = key;
+    flocks[free_slot].exclusive = want_ex;
+    wake_all(&flock_wait);      /* a downgrade may let a waiter in */
+    return 0;
 }
 
 /* The lowest free descriptor in the current task, as Unix requires --
