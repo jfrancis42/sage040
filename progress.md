@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: 15 of 23 complete.**
+**Status: 16 of 23 complete.**
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -44,7 +44,7 @@ drive almost all of it:
 | 12 | `TIOCGWINSZ` and `SIGWINCH` | depends on 5 and 11 | **done** |
 | 13 | A C library (picolibc or newlib) | the gate everything real passes through | **done** |
 | 14 | VFAT long file names | 8.3 decides what can be shipped | **done** |
-| 15 | `fsck`, and a clean-unmount flag | the machine cannot check its own disk | todo |
+| 15 | `fsck`, and a clean-unmount flag | the machine cannot check its own disk | **done** |
 | 16 | Build and run uEmacs | the cheapest real editor | todo |
 | 17 | Build and run vi | the other one | todo |
 | 18 | A resolver (DNS), then **NTP** | independent of the editor work; both are UDP clients and NTP wants a name | todo |
@@ -146,9 +146,9 @@ printing `ok`/`FAIL` per line, counted and named by the script — a new
 check is a line of C. A group is added only once its calls work, so a
 failure there is always a regression.
 
-**673 checks across eight suites now:** 12 device programs, 59 fs, 368
-api, 29 edit, 18 vm, 17 net, 95 vt, 75 libc. The libc suite needs
-`make libc` first.
+**696 checks across nine suites now:** 12 device programs, 59 fs, 368
+api, 29 edit, 18 vm, 17 net, 95 vt, 75 libc, 23 fsck. The libc suite
+needs `make libc` first.
 
 ### 1. Grow the user address space — done
 
@@ -932,6 +932,48 @@ picolibc's readdir, stat and unlink. The first run failed six, four of
 them the test reading the wrong line of output; the real ones were
 `readme.txt` getting `README~1` where Windows and Linux use `README`,
 and the dropped high bytes.
+
+### 15. `fsck`, and a clean-unmount flag — done
+
+**The flag** is bit 0 of boot-sector byte 0x25 (Linux's, and what
+`fsck.fat` reads): set at mount, cleared at unmount. Windows 95's, the
+top bit of `FAT[1]`, is read and set but never cleared -- **the first
+version cleared it, and mtools then refused the FAT ("Error reading
+FAT")**, which failed nine checks in apitest and libctest that read the
+guest's files on the host. fscktest now checks mtools can read a volume
+left dirty. `halt`,
+`shutdown` and `reboot` now unmount, through a new `vfs_shutdown()`
+that does not refuse because the console has descriptors open --
+`vfs_umount()` would have, every time.
+
+**At boot**, a volume found not cleanly unmounted is checked and
+repaired before anything uses it, and the boot banner says so ("fsck :
+not cleanly unmounted; checked N files in M directories: ...").
+
+**The check** is `fat_check()` in `fs/fat16.c`, reached from programs
+by a private call, `fsctl` (1003), and from the new `/bin/fsck`
+(`-y` to repair; exit 0 clean, 1 repaired, 4 not repaired, 8 could not
+check). It compares the FAT copies straight off the disk, walks every
+chain from the root marking what it reaches, cuts a chain at the first
+link that is out of range, free, bad or already claimed, fits sizes to
+chains, fixes `.` and `..`, frees orphaned long-name runs and lost
+clusters, and copies FAT 1 over FAT 2 -- fsck.fat's repairs, so host and
+guest agree on what repaired means. Repair is refused while a file is
+open.
+
+**Tests:** `kernel/fscktest.sh`, a new suite, 22 checks.
+`kernel/fatdamage.py` damages an image seven ways (lost clusters, a
+cross-link, a chain into a free cluster, an oversized file, an orphaned
+long name, a wrong `..`, disagreeing FAT copies) plus the dirty flags.
+The host's `fsck.fat` is asked first -- it must object, or the test is
+testing nothing -- then the guest repairs (at boot in one session, with
+`fsck -y` in another), then `fsck.fat` must be satisfied, the flags
+must read clean, and files nobody damaged must be byte for byte intact.
+A third session kills the emulator and checks the next boot notices.
+**Negative control:** with repair switched off inside `fat_check`, four
+checks fail, all of them the host's fsck.fat or the exit statuses. One
+check that should have failed then did not -- "N problems, .* repairs"
+matched "0 repairs" -- and now requires at least one.
 
 ## Decisions worth knowing about
 

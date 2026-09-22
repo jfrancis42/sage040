@@ -290,6 +290,9 @@ static int itimer_set(int which, const struct itimerval *in)
 static void do_reboot(int cmd)
 {
     vfs_sync();
+    /* Unmounting is what marks the volume clean; a machine stopped
+     * without it is checked at the next boot. */
+    vfs_shutdown();
 
     /*
      * RB_HALT_SYSTEM stops the CPU and leaves the machine sitting there,
@@ -1693,6 +1696,20 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
 
     case __NR_netctl:
         return do_netctl((int)a1, a2, a3);
+
+    case __NR_fsctl: {
+        struct fsck_report r;
+        int err;
+
+        if (a1 != FSCTL_CHECK) {
+            return -EINVAL;
+        }
+        err = vfs_check((int)a2, &r);
+        if (err < 0) {
+            return err;
+        }
+        return a3 ? store(a3, &r, sizeof(r)) : 0;
+    }
 
     case __NR_socket:
         return sock_create((int)a1, (int)a2, (int)a3);

@@ -65,6 +65,9 @@ struct fs_type {
     int (*readdir_in)(u32 ino, int index, struct dirent *d);
     int (*dir_ino)(const char *path, u32 *ino);
 
+    /* Check the volume, and with FSCK_REPAIR put it right. */
+    int (*check)(int flags, struct fsck_report *r);
+
     struct fs_type *next;
 };
 
@@ -74,6 +77,7 @@ struct fs_type *vfs_find(const char *name);
 /* Mount `fsname` from `devname` at "/". Returns 0 or -errno. */
 int vfs_mount(const char *fsname, const char *devname);
 int vfs_umount(void);
+void vfs_shutdown(void);
 int vfs_mounted(void);
 const char *vfs_fs_name(void);
 const char *vfs_dev_name(void);
@@ -136,6 +140,7 @@ int  vfs_readdir(int index, struct dirent *d);
 s32  vfs_getdents64(int fd, u8 *buf, u32 len);
 int  vfs_is_dir_file(struct file *f);
 int  vfs_statfs(struct statfs *s);
+int  vfs_check(int flags, struct fsck_report *r);
 int  vfs_sync(void);
 
 

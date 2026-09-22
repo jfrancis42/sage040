@@ -398,6 +398,42 @@ static void mount_root(void)
         kputs(" byte clusters");
     }
     kputc('\n');
+
+    /*
+     * A volume that was not put away properly -- the machine was reset,
+     * or the emulator killed -- is checked, and repaired, before anything
+     * uses it: what a Linux distribution does with fsck -p at boot.
+     */
+    {
+        struct fsck_report r;
+
+        err = vfs_check(FSCK_REPAIR | FSCK_IF_DIRTY, &r);
+        if (err < 0) {
+            status("fsck");
+            kputs("could not check the volume: ");
+            kputs(strerror(err));
+            kputc('\n');
+        } else if (r.was_dirty) {
+            u32 found = r.fat_mismatch + r.bad_chains + r.cross_linked +
+                        r.size_fixed + r.dot_entries + r.orphan_lfn +
+                        r.lost_clusters;
+
+            status("fsck");
+            kputs("not cleanly unmounted; checked ");
+            kputdec(r.files);
+            kputs(" files in ");
+            kputdec(r.dirs + 1);
+            kputs(" directories: ");
+            if (found == 0) {
+                kputs("clean\n");
+            } else {
+                kputdec(found);
+                kputs(" problems, ");
+                kputdec(r.fixed);
+                kputs(" repairs\n");
+            }
+        }
+    }
 }
 
 void kmain(void)

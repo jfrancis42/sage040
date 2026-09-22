@@ -733,6 +733,35 @@ struct msghdr {
 #define __NR_spawn     1000
 #define __NR_jobctl    1001
 #define __NR_netctl    1002
+#define __NR_fsctl     1003     /* fsctl(cmd, arg, struct *): see below */
+
+/*
+ * fsctl(FSCTL_CHECK, flags, &report): check the mounted volume -- the
+ * guts of /bin/fsck, which lives in the filesystem driver because that
+ * is where the knowledge of chains, directories and long names already
+ * is. FSCK_REPAIR puts right what it finds, and is refused with EBUSY
+ * while any file on the volume is open. FSCK_IF_DIRTY does nothing
+ * unless the volume was not cleanly unmounted -- what the boot uses.
+ */
+#define FSCTL_CHECK    1
+#define FSCK_REPAIR    0x01
+#define FSCK_IF_DIRTY  0x02
+
+struct fsck_report {
+    u32 was_dirty;              /* not cleanly unmounted last time    */
+    u32 files, dirs;
+    u32 clusters_used, clusters_free, cluster_bytes;
+    /* What was wrong. */
+    u32 fat_mismatch;           /* FAT sectors the copies disagree on */
+    u32 bad_chains;             /* a link out of range, free or bad   */
+    u32 cross_linked;           /* two chains, or a loop, sharing one */
+    u32 size_fixed;             /* a size and its chain disagreeing   */
+    u32 dot_entries;            /* "." or ".." pointing wrong         */
+    u32 orphan_lfn;             /* long-name entries with no owner    */
+    u32 lost_clusters;          /* allocated and reachable from nothing */
+    u32 too_deep;               /* directories below the depth limit  */
+    u32 fixed;                  /* repairs made                       */
+};
 
 /*
  * What spawn() returns when the program was stopped by ctrl-Z rather

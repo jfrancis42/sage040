@@ -1092,6 +1092,13 @@ a C library is. `read` on one is `EISDIR`, as on Linux. lib/ulib's older
 `getdents(index, &dirent)` walks the working directory by index and
 returns `-ENOENT` when there are no more.
 
+**Shut the machine down, or it checks the disk next time.** Mounting
+marks the volume in use and unmounting -- `halt`, `shutdown`, `reboot`
+-- marks it clean; a machine reset or an emulator killed leaves it
+marked, and the next boot runs the check and repairs what it finds.
+`fsck` checks on demand, `fsck -y` repairs; repair is refused while a
+file is open.
+
 **Inode numbers are made up**, because FAT has none: a directory is its
 first cluster, a file is where its entry sits. They are nonzero, stable,
 and the same from `stat` and `readdir` -- but renaming a file moves its

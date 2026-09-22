@@ -207,6 +207,7 @@ catch a byte-order error, because both directions swap.
 | **TCP/IP (§8)** — ARP, IP, ICMP, UDP, DHCP, TCP, sockets | ✅ done — `kernel/net/` |
 | Filesystem (§9) — subdirectories, cwd, `mkdir`/`rmdir`/`chdir` | ✅ done |
 | Long file names — VFAT, UTF-8 | ✅ done — task 14 |
+| `fsck`, clean-unmount flag, check at boot | ✅ done — task 15 |
 | `mmap`/`brk` | ✅ done — `vm.c`, `mmap.c` |
 | Pipes and redirection, paging, shared libraries | ✗ open — §11 |
 
@@ -1142,6 +1143,39 @@ interoperability that makes the current workflow work. Worth a discussion
 before anyone starts, not a decision to make in passing.
 
 ### fsck, and crash consistency
+
+**Done (task 15).** The volume carries a **clean-unmount flag**: bit 0
+of boot-sector byte 0x25, Linux's, and the one `fsck.fat` checks.
+Mounting sets it and unmounting -- which `halt`, `shutdown` and `reboot`
+now do -- clears it. Windows 95's flag, the top bit of `FAT[1]`, is read
+(a volume Windows left dirty is checked) and set when clean, but never
+cleared: mtools refuses a FAT whose second entry is not an end-of-chain
+value, and the first version, which cleared it, locked the host's tools
+out of every disk the machine had been running on. A volume found not cleanly unmounted **is checked and
+repaired at boot**, before anything uses it, and the boot says so.
+`/bin/fsck` checks on demand (`-y` to repair), with fsck's exit codes.
+
+The checking is in `fs/fat16.c` (`fat_check`), reached by a private
+call, `fsctl` (1003), because that is where chains, directories and
+long names are already understood. It checks the FAT copies against
+each other straight off the disk; walks every chain from the root,
+cutting one at the first link that is out of range, free, bad or
+already claimed (a cross-link, or a loop); fits sizes to chains (a size
+beyond the chain is cut to it, a chain beyond the size is cut to it);
+fixes `.` and `..`; frees long-name runs with no 8.3 entry after them;
+frees lost clusters; and copies the first FAT over the second. The
+repairs are fsck.fat's own choices, so the host and the guest agree
+about what "repaired" means -- `kernel/fscktest.sh` damages an image in
+seven ways, checks that `fsck.fat` objects, lets the guest repair it,
+and checks that `fsck.fat` is then satisfied. Repair is refused while
+any file on the volume is open.
+
+Still not done: **ordering**. A repair, or any write, interrupted
+halfway can still leave damage for the next check to find; there is no
+journal. The check at boot is what makes that recoverable rather than
+silent.
+
+What follows is the analysis as it stood before.
 
 There is no `fsck` on the machine. The host has one — `fsck.fat`, which
 the test suites run after every session precisely because a filesystem

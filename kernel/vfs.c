@@ -135,6 +135,26 @@ int vfs_umount(void)
     return 0;
 }
 
+/*
+ * The machine is stopping: write everything out and unmount whatever is
+ * still open. There is nobody left to use a descriptor afterwards, and
+ * unmounting is what marks the volume clean for the next boot.
+ */
+void vfs_shutdown(void)
+{
+    if (!mounted_fs) {
+        return;
+    }
+    if (mounted_fs->sync) {
+        mounted_fs->sync();
+    }
+    if (mounted_fs->umount) {
+        mounted_fs->umount();
+    }
+    mounted_fs = 0;
+    mounted_dev = 0;
+}
+
 int vfs_mounted(void)
 {
     return mounted_fs != 0;
@@ -817,6 +837,17 @@ int vfs_stat(const char *path, struct stat *st)
         return -ENOSYS;
     }
     return mounted_fs->stat(path, st);
+}
+
+int vfs_check(int flags, struct fsck_report *r)
+{
+    if (!mounted_fs) {
+        return -ENODEV;
+    }
+    if (!mounted_fs->check) {
+        return -ENOSYS;
+    }
+    return mounted_fs->check(flags, r);
 }
 
 int vfs_readdir(int index, struct dirent *d)

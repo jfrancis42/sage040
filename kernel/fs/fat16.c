@@ -1554,6 +1554,75 @@ static int dir_extend(const struct dir *d)
     return 0;
 }
 
+/*
+ * The clean-unmount flag.
+ *
+ * Byte 0x25 of the boot sector, reserved in the original BPB, is where
+ * Linux keeps a "dirty" bit, and it is the one fsck.fat reads. That is
+ * the one this kernel sets while the volume is mounted and clears when
+ * it is unmounted.
+ *
+ * FAT[1]'s top bit is Windows 95's version of the same thing, and it is
+ * READ -- a volume Windows left dirty is checked -- and SET when the
+ * volume is clean, but never cleared. Clearing it makes FAT[1] stop
+ * looking like an end-of-chain value, and mtools then refuses the whole
+ * FAT ("Error reading FAT"), which would lock the host's tools out of
+ * the disk for as long as the machine ran and after every crash. That
+ * is exactly what the first version of this did.
+ */
+#define FAT1_CLEAN      0x8000u
+#define BOOT_DIRTY_OFF  0x25
+#define BOOT_DIRTY      0x01
+
+static int volume_was_dirty;
+
+static int boot_flag_get(u8 *flag)
+{
+    u8 bpb[SECTOR_SIZE];
+
+    if (dev->read(dev, part_lba, 1, bpb) != 0) {
+        return -EIO;
+    }
+    *flag = bpb[BOOT_DIRTY_OFF];
+    return 0;
+}
+
+static int set_clean(int clean)
+{
+    u8 bpb[SECTOR_SIZE];
+    u16 f1;
+    int err;
+
+    if (clean) {
+        err = fat_get(1, &f1);
+        if (err != 0) {
+            return err;
+        }
+        if (!(f1 & FAT1_CLEAN)) {
+            err = fat_set(1, (u16)(f1 | FAT1_CLEAN));
+            if (err != 0) {
+                return err;
+            }
+            err = fb_flush();
+            if (err != 0) {
+                return err;
+            }
+        }
+    }
+    if (dev->read(dev, part_lba, 1, bpb) != 0) {
+        return -EIO;
+    }
+    if (clean) {
+        bpb[BOOT_DIRTY_OFF] &= (u8)~BOOT_DIRTY;
+    } else {
+        bpb[BOOT_DIRTY_OFF] |= BOOT_DIRTY;
+    }
+    if (dev->write(dev, part_lba, 1, bpb) != 0) {
+        return -EIO;
+    }
+    return 0;
+}
+
 /* ---------------------------------------------------------------- */
 /* Mounting                                                          */
 /* ---------------------------------------------------------------- */
@@ -1680,6 +1749,18 @@ static int fat_mount_dev(void)
 
     mounted = 1;
     read_label();
+
+    /* Was it put away properly last time? Then say it is in use now, so
+     * that a crash from here on is noticed at the next mount. */
+    {
+        u16 f1 = FAT1_CLEAN;
+        u8 bf = 0;
+
+        if (fat_get(1, &f1) == 0 && boot_flag_get(&bf) == 0) {
+            volume_was_dirty = !(f1 & FAT1_CLEAN) || (bf & BOOT_DIRTY);
+            set_clean(0);
+        }
+    }
     return 0;
 }
 
@@ -2582,6 +2663,435 @@ static int fat_dir_ino(const char *path, u32 *ino)
 }
 
 /* ---------------------------------------------------------------- */
+/* Checking the volume                                               */
+/* ---------------------------------------------------------------- */
+
+/*
+ * The check. Everything reachable from the root is walked, every cluster
+ * it reaches is marked, and then everything else is looked at:
+ *
+ *   - both FAT copies say the same thing;
+ *   - every chain runs through valid, allocated clusters and ends;
+ *   - no cluster belongs to two chains, and no chain loops;
+ *   - a file's size and its chain agree;
+ *   - a directory's "." and ".." point where they should;
+ *   - every long-name run belongs to the 8.3 entry after it;
+ *   - no cluster is allocated that nothing reaches.
+ *
+ * With `repair`, each is put right the way fsck.fat puts it right:
+ * chains cut at the first bad link (or where they meet another), sizes
+ * made to fit the chain, orphaned long names and lost clusters freed,
+ * the first FAT copied over the second.
+ */
+static u8 seen[65536 / 8];
+
+static int seen_test(u32 c)
+{
+    return (seen[c >> 3] >> (c & 7)) & 1;
+}
+
+static void seen_set(u32 c)
+{
+    seen[c >> 3] |= (u8)(1 << (c & 7));
+}
+
+struct walk_dir {
+    u32 cluster;
+    u32 parent;
+};
+
+#define FSCK_DEPTH 64
+
+/*
+ * Walk one chain from `first`, marking what it reaches. Returns its
+ * length in clusters. A cluster is bad if it is out of range, already
+ * reached (a cross-link, or a loop back into the chain itself), free,
+ * or marked bad; the chain is cut at the cluster before it -- or, if
+ * the very first is bad, *cut_first says so and the entry has to lose
+ * its chain altogether.
+ */
+static int fsck_chain(u32 first, int repair, struct fsck_report *r,
+                      int *cut_first)
+{
+    u32 c = first, prev = 0;
+    int len = 0;
+
+    *cut_first = 0;
+    for (;;) {
+        u16 v = 0;
+        int bad = !cluster_valid(c);
+
+        if (!bad && seen_test(c)) {
+            r->cross_linked++;
+            bad = 2;
+        }
+        if (!bad) {
+            if (fat_get(c, &v) != 0) {
+                return -EIO;
+            }
+            if (v == 0 || v == FAT_BAD) {
+                bad = 1;
+            }
+        }
+        if (bad) {
+            if (bad == 1) {
+                r->bad_chains++;
+            }
+            if (!prev) {
+                *cut_first = 1;
+            } else if (repair) {
+                fat_set(prev, 0xffff);
+            }
+            if (repair) {
+                r->fixed++;
+            }
+            return len;
+        }
+        seen_set(c);
+        len++;
+        if (v >= FAT_EOC) {
+            return len;
+        }
+        prev = c;
+        c = v;
+    }
+}
+
+/* Unmark a chain cut off a file, so the lost-cluster pass frees it. */
+static void unmark_chain(u32 c)
+{
+    while (cluster_valid(c) && seen_test(c)) {
+        u16 next;
+
+        seen[c >> 3] &= (u8)~(1 << (c & 7));
+        if (fat_get(c, &next) != 0) {
+            return;
+        }
+        c = next;
+    }
+}
+
+static int fsck_dir(const struct walk_dir *w, struct walk_dir *stack,
+                    int *top, int repair, struct fsck_report *r)
+{
+    struct dir d;
+    u32 i, n, run_first = 0, run_len = 0, owner_first = 0;
+    u8 ent[DIRENT_SIZE];
+    int err;
+
+    d.cluster = w->cluster;
+    n = dir_entries(&d);
+    scan_acc.active = 0;
+
+    for (i = 0; i < n; i++) {
+        err = dir_read_in(&d, i, ent);
+        if (err != 0) {
+            return err;
+        }
+        if (ent[0] == 0x00) {
+            break;
+        }
+        if ((ent[11] & ATTR_LFN) == ATTR_LFN && ent[0] != 0xe5) {
+            if (run_len == 0 || (ent[0] & 0x40)) {
+                if (run_len) {
+                    goto orphan;    /* a new run began: the old one lost */
+                }
+                run_first = i;
+                run_len = 0;
+            }
+            run_len++;
+            lfn_feed(&scan_acc, ent, i);
+            continue;
+        }
+        if (run_len && (ent[0] == 0xe5 || !dir_entry_is_file(ent) ||
+                        !lfn_name(&scan_acc, ent, scan_long, 0))) {
+            /* A long-name run with no owner after it. */
+orphan:
+            r->orphan_lfn += run_len;
+            if (repair) {
+                u32 k;
+                u8 e[DIRENT_SIZE];
+
+                for (k = run_first; k < run_first + run_len; k++) {
+                    if (dir_read_in(&d, k, e) == 0) {
+                        e[0] = 0xe5;
+                        dir_write_in(&d, k, e);
+                    }
+                }
+                r->fixed++;
+            }
+            run_len = 0;
+            scan_acc.active = 0;
+            if ((ent[11] & ATTR_LFN) == ATTR_LFN && ent[0] != 0xe5) {
+                run_first = i;      /* the entry that began a new run */
+                run_len = 1;
+                lfn_feed(&scan_acc, ent, i);
+                continue;
+            }
+        }
+        owner_first = run_len ? run_first : i;  /* its own run, if any */
+        run_len = 0;
+        scan_acc.active = 0;
+        if (!dir_entry_is_file(ent)) {
+            continue;
+        }
+
+        if (ent[0] == '.' && ent[1] == ' ') {           /* "." */
+            if (d.cluster && le16(&ent[26]) != d.cluster) {
+                r->dot_entries++;
+                if (repair) {
+                    put_le16(&ent[26], (u16)d.cluster);
+                    dir_write_in(&d, i, ent);
+                    r->fixed++;
+                }
+            }
+            continue;
+        }
+        if (ent[0] == '.' && ent[1] == '.' && ent[2] == ' ') { /* ".." */
+            if (d.cluster && le16(&ent[26]) != w->parent) {
+                r->dot_entries++;
+                if (repair) {
+                    put_le16(&ent[26], (u16)w->parent);
+                    dir_write_in(&d, i, ent);
+                    r->fixed++;
+                }
+            }
+            continue;
+        }
+
+        {
+            u32 first = le16(&ent[26]);
+            u32 size = le32(&ent[28]);
+            int cut = 0, len = 0;
+
+            if (first) {
+                len = fsck_chain(first, repair, r, &cut);
+                if (len < 0) {
+                    return len;
+                }
+            }
+            if (ent[11] & ATTR_DIR) {
+                r->dirs++;
+                if (!first || cut) {
+                    /* A directory with no clusters of its own cannot be
+                     * entered; nothing can be saved from it. */
+                    r->bad_chains++;
+                    if (repair) {
+                        lfn_delete(&d, owner_first, i);
+                        ent[0] = 0xe5;
+                        dir_write_in(&d, i, ent);
+                        r->fixed++;
+                    }
+                    continue;
+                }
+                if (*top < FSCK_DEPTH) {
+                    stack[*top].cluster = first;
+                    stack[*top].parent = d.cluster;
+                    (*top)++;
+                } else {
+                    r->too_deep++;
+                }
+                continue;
+            }
+
+            r->files++;
+            {
+                u32 have, need;
+                int changed = 0;
+
+                if (cut) {
+                    len = 0;
+                    if (repair) {
+                        put_le16(&ent[26], 0);
+                        first = 0;
+                        changed = 1;
+                    }
+                }
+                have = (u32)len * cluster_bytes;
+                need = (size + cluster_bytes - 1) / cluster_bytes;
+
+                /*
+                 * The size has to fit the chain. Claiming more than the
+                 * chain holds: the size is cut to what is there, which
+                 * keeps every byte that really exists (fsck.fat's rule).
+                 * A chain longer than the size needs: the extra clusters
+                 * are cut off and freed.
+                 */
+                if (size > have) {
+                    r->size_fixed++;
+                    if (repair) {
+                        size = have;
+                        changed = 1;
+                    }
+                } else if ((u32)len > need) {
+                    r->size_fixed++;
+                    if (repair) {
+                        if (need == 0) {
+                            unmark_chain(first);
+                            put_le16(&ent[26], 0);
+                        } else {
+                            u32 c = first, k;
+                            u16 next = 0;
+
+                            for (k = 1; k < need; k++) {
+                                fat_get(c, &next);
+                                c = next;
+                            }
+                            fat_get(c, &next);
+                            fat_set(c, 0xffff);
+                            unmark_chain(next);
+                        }
+                        changed = 1;
+                    }
+                }
+                if (changed) {
+                    put_le32(&ent[28], size);
+                    dir_write_in(&d, i, ent);
+                    r->fixed++;
+                }
+            }
+        }
+    }
+    if (run_len) {
+        r->orphan_lfn += run_len;   /* a run at the very end */
+        if (repair) {
+            u32 k;
+            u8 e[DIRENT_SIZE];
+
+            for (k = run_first; k < run_first + run_len; k++) {
+                if (dir_read_in(&d, k, e) == 0) {
+                    e[0] = 0xe5;
+                    dir_write_in(&d, k, e);
+                }
+            }
+            r->fixed++;
+        }
+    }
+    return 0;
+}
+
+static int fat_check(int flags, struct fsck_report *r)
+{
+    struct walk_dir stack[FSCK_DEPTH];
+    int top = 0, err, repair = flags & FSCK_REPAIR, i;
+    u32 c, s;
+
+    memset(r, 0, sizeof(*r));
+    if (!mounted) {
+        return -ENODEV;
+    }
+    r->was_dirty = volume_was_dirty;
+    if ((flags & FSCK_IF_DIRTY) && !volume_was_dirty) {
+        return 0;
+    }
+    /* Repairing a file under something that has it open would pull its
+     * chain out from under the handle. */
+    if (repair) {
+        for (i = 0; i < FAT_MAX_OPEN; i++) {
+            if (files[i].used) {
+                return -EBUSY;
+            }
+        }
+    }
+    err = fat_flush_all();
+    if (err != 0) {
+        return err;
+    }
+    memset(seen, 0, sizeof(seen));
+    r->cluster_bytes = cluster_bytes;
+
+    /* The FAT copies, straight off the disk. */
+    if (num_fats > 1) {
+        static u8 a[SECTOR_SIZE], b[SECTOR_SIZE];
+
+        for (s = 0; s < sectors_per_fat; s++) {
+            if (dev->read(dev, fat_start + s, 1, a) != 0 ||
+                dev->read(dev, fat_start + sectors_per_fat + s, 1, b) != 0) {
+                return -EIO;
+            }
+            /* FAT[1]'s clean bit is not a disagreement worth reporting:
+             * the copies are written together, but compare the rest. */
+            if (s == 0) {
+                b[3] = a[3];
+            }
+            if (memcmp(a, b, SECTOR_SIZE) != 0) {
+                r->fat_mismatch++;
+            }
+        }
+    }
+
+    stack[top].cluster = 0;
+    stack[top].parent = 0;
+    top++;
+    while (top > 0) {
+        struct walk_dir w = stack[--top];
+
+        err = fsck_dir(&w, stack, &top, repair, r);
+        if (err != 0) {
+            return err;
+        }
+    }
+
+    for (c = 2; c < total_clusters + 2; c++) {
+        u16 v;
+
+        if (fat_get(c, &v) != 0) {
+            return -EIO;
+        }
+        if (v != 0 && v != FAT_BAD && !seen_test(c)) {
+            r->lost_clusters++;
+            if (repair) {
+                fat_set(c, 0);
+                v = 0;
+            }
+        }
+        if (v == 0) {
+            r->clusters_free++;
+        } else if (v != FAT_BAD) {
+            r->clusters_used++;
+        }
+    }
+    if (repair && r->lost_clusters) {
+        r->fixed++;
+    }
+
+    err = fat_flush_all();
+    if (err != 0) {
+        return err;
+    }
+
+    /* The second copy made the same as the first, which fb_flush has
+     * kept every write the check made in step with. */
+    if (repair && r->fat_mismatch && num_fats > 1) {
+        static u8 a[SECTOR_SIZE];
+
+        for (s = 0; s < sectors_per_fat; s++) {
+            if (dev->read(dev, fat_start + s, 1, a) != 0 ||
+                dev->write(dev, fat_start + sectors_per_fat + s, 1, a) != 0) {
+                return -EIO;
+            }
+        }
+        r->fixed++;
+        fb.valid = 0;
+    }
+    if (repair) {
+        volume_was_dirty = 0;
+        /* Checked and put right: clean as far as Windows' flag goes. The
+         * boot-sector flag stays set until unmount -- the volume is in
+         * use. */
+        {
+            u16 f1;
+
+            if (fat_get(1, &f1) == 0 && !(f1 & FAT1_CLEAN)) {
+                fat_set(1, (u16)(f1 | FAT1_CLEAN));
+                fat_flush_all();
+            }
+        }
+    }
+    return 0;
+}
+
+/* ---------------------------------------------------------------- */
 /* The filesystem as the VFS sees it                                 */
 /*                                                                    */
 /* Below this line nothing is FAT-specific in shape: the same five    */
@@ -2692,6 +3202,11 @@ static int fat_mount(struct blockdev *b)
 
 static int fat_umount(void)
 {
+    if (mounted) {
+        /* Everything out, then the flags that say it all got there. */
+        fat_flush_all();
+        set_clean(1);
+    }
     mounted = 0;
     dev = 0;
     return 0;
@@ -2905,6 +3420,7 @@ static struct fs_type fat16_type = {
     fat_getcwd,
     fat_readdir_in,
     fat_dir_ino,
+    fat_check,
     0
 };
 
