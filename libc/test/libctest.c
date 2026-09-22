@@ -214,6 +214,31 @@ static void test_files(void)
            fopen("/NOSUCH.TXT", "r") == 0 && errno == ENOENT);
     report("  and strerror says why",
            strstr(strerror(ENOENT), "No such file") != 0);
+    {
+        const char *lname = "/A longer name, with Case.txt";
+        FILE *lf = fopen(lname, "w");
+        DIR *dd;
+        struct dirent *de;
+        int seen = 0;
+
+        report("a long file name can be created",
+               lf && fputs("long\n", lf) >= 0 && fclose(lf) == 0);
+        dd = opendir("/");
+        while (dd && (de = readdir(dd)) != 0) {
+            if (strcmp(de->d_name, lname + 1) == 0) {
+                seen = 1;
+            }
+        }
+        if (dd) {
+            closedir(dd);
+        }
+        report("  and readdir gives it back, case and all", seen);
+        report("  and stat finds it by another case",
+               stat("/a LONGER name, with case.TXT", &st) == 0 &&
+               st.st_size == 5);
+        report("  and unlink removes it", unlink(lname) == 0 &&
+                                          access(lname, F_OK) < 0);
+    }
     report("mkdir and rmdir", mkdir("/LCDIR", 0755) == 0 &&
                               stat("/LCDIR", &st) == 0 && S_ISDIR(st.st_mode) &&
                               rmdir("/LCDIR") == 0);

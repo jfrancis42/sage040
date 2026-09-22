@@ -603,24 +603,35 @@ static void cmd_ls(int argc, char **args)
         int n;
 
         if (long_form) {
+            /* The name last, as Unix has it: with long names there is
+             * no width a column of them can be padded to. */
             print_mode(de.d_mode);
-            out_puts("  ");
-            for (n = (int)strlen(de.d_name); n < 13; n++) {
-                out_putc(' ');
-            }
-            out_puts(de.d_name);
             out_putdec_pad(de.d_size, 10);
             out_puts("  ");
             print_stamp(de.d_mtime);
+            out_puts("  ");
+            out_puts(de.d_name);
             out_putc('\n');
         } else {
-            out_puts(de.d_name);
-            for (n = (int)strlen(de.d_name); n < 14; n++) {
-                out_putc(' ');
-            }
-            if (++col == 5) {
+            /* Five columns of fourteen; a longer name takes a line of
+             * its own rather than pushing the grid out of shape. */
+            n = (int)strlen(de.d_name);
+            if (n >= 14 && col != 0) {
                 out_putc('\n');
                 col = 0;
+            }
+            out_puts(de.d_name);
+            if (n >= 14) {
+                out_putc('\n');
+                col = 0;
+            } else {
+                for (; n < 14; n++) {
+                    out_putc(' ');
+                }
+                if (++col == 5) {
+                    out_putc('\n');
+                    col = 0;
+                }
             }
         }
         bytes += de.d_size;

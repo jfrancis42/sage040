@@ -962,14 +962,12 @@ reads it from there. A directory made without them cannot be left. The
 parent of a directory in the root is written as cluster 0, which is how
 FAT spells "the root".
 
-**8.3 names still apply.** `rc.local` is not a valid name here -- five
-characters of extension -- which is why the startup script is `/etc/rc`.
+**Long names are VFAT's, in UTF-8** (task 14). The startup script is
+`/etc/rc` because `rc.local` was not a legal 8.3 name when it was
+chosen; it would be now.
 
-**There is one working directory, not one per task.** `cwd` is a static
-in `fs/fat16.c`, which was right when the shell was the only thing that
-could run. It is the obvious next thing to move into `struct task`: as
-it stands, a `chdir()` from any task is a `chdir()` for all of them,
-including the shell whose prompt shows it.
+**The working directory belongs to the task** (`struct task`, reached
+through `vfs_cwd_*()`), so a `chdir()` moves only the task that made it.
 
 ## The filesystem
 
@@ -978,15 +976,15 @@ FAT16, read and write, registered as the type `fat16` and mounted on
 file on it with `mcopy` and the kernel reads it, and anything the kernel
 writes comes back off the image without the kernel running.
 
-Limits, none of which change a single call: 8.3 names, FAT16 alone.
+Limits, none of which change a single call: FAT16 alone, no
+permissions or links.
 "The root directory only" was one of them and is not any more — see
-**Directories** above. Long-name entries the host wrote are skipped on a
-scan rather than misread, so a file created with one is still visible by
-its short name and is not damaged; writing one is not implemented, so
-every name this kernel creates goes through `name_to_83()` and a name
-that will not fit is refused with `-EINVAL` rather than silently
-truncated into a different file. FAT12 and FAT32 are refused at mount
-rather than misread as FAT16.
+**Directories** above. Long names are read and written (the "long
+names" section of `fs/fat16.c`): `dir_find` looks a name up by its long
+form or its 8.3 one, `dir_create_named` writes a long-name run and an
+alias when a name needs them, and `lfn_delete` frees a run with its
+file. FAT12 and FAT32 are refused at mount rather than misread as
+FAT16.
 
 Two things to know before editing `fs/fat16.c`:
 

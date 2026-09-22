@@ -402,6 +402,80 @@ static int name_to_83(const char *in, char out[11])
     return 0;
 }
 
+static void name_from_83(const u8 raw[11], char out[NAME_MAX + 1]);
+
+/*
+ * The short name as a program sees it. Byte 12 of an entry has two bits
+ * Windows NT added and Linux honours: the base, or the extension, was
+ * all lower case when the file was made, and is shown that way -- so a
+ * file another system called "readme.txt" without needing a long name
+ * does not come back as README.TXT.
+ */
+/*
+ * A short name's bytes above 127 are in the volume's OEM code page,
+ * which on a PC is 437 -- Linux's vfat default, and the code page of the
+ * font this machine's screen draws with. As UTF-8, like every other name.
+ */
+static const u16 cp437_high[128] = {
+    0x00c7, 0x00fc, 0x00e9, 0x00e2, 0x00e4, 0x00e0, 0x00e5, 0x00e7,
+    0x00ea, 0x00eb, 0x00e8, 0x00ef, 0x00ee, 0x00ec, 0x00c4, 0x00c5,
+    0x00c9, 0x00e6, 0x00c6, 0x00f4, 0x00f6, 0x00f2, 0x00fb, 0x00f9,
+    0x00ff, 0x00d6, 0x00dc, 0x00a2, 0x00a3, 0x00a5, 0x20a7, 0x0192,
+    0x00e1, 0x00ed, 0x00f3, 0x00fa, 0x00f1, 0x00d1, 0x00aa, 0x00ba,
+    0x00bf, 0x2310, 0x00ac, 0x00bd, 0x00bc, 0x00a1, 0x00ab, 0x00bb,
+    0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556,
+    0x2555, 0x2563, 0x2551, 0x2557, 0x255d, 0x255c, 0x255b, 0x2510,
+    0x2514, 0x2534, 0x252c, 0x251c, 0x2500, 0x253c, 0x255e, 0x255f,
+    0x255a, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256c, 0x2567,
+    0x2568, 0x2564, 0x2565, 0x2559, 0x2558, 0x2552, 0x2553, 0x256b,
+    0x256a, 0x2518, 0x250c, 0x2588, 0x2584, 0x258c, 0x2590, 0x2580,
+    0x03b1, 0x00df, 0x0393, 0x03c0, 0x03a3, 0x03c3, 0x00b5, 0x03c4,
+    0x03a6, 0x0398, 0x03a9, 0x03b4, 0x221e, 0x03c6, 0x03b5, 0x2229,
+    0x2261, 0x00b1, 0x2265, 0x2264, 0x2320, 0x2321, 0x00f7, 0x2248,
+    0x00b0, 0x2219, 0x00b7, 0x221a, 0x207f, 0x00b2, 0x25a0, 0x00a0,
+};
+
+static int utf16_to_utf8(const u16 *in, int n, char *out, int size);
+
+static void short_name(const u8 *ent, char out[NAME_MAX + 1])
+{
+    char *dot;
+    char *c;
+
+    name_from_83(ent, out);
+    dot = 0;
+    for (c = out; *c; c++) {
+        if (*c == '.') {
+            dot = c;
+        }
+    }
+    for (c = out; *c; c++) {
+        int in_ext = dot && c > dot;
+
+        if (((ent[12] & 0x08) && !in_ext && c != dot) ||
+            ((ent[12] & 0x10) && in_ext)) {
+            if (*c >= 'A' && *c <= 'Z') {
+                *c = (char)(*c - 'A' + 'a');
+            }
+        }
+    }
+
+    /* Then the OEM bytes, if there are any, to UTF-8. */
+    for (c = out; *c; c++) {
+        if ((u8)*c >= 0x80) {
+            u16 units[13];
+            int n = 0;
+
+            for (c = out; *c && n < 12; c++) {
+                units[n++] = ((u8)*c >= 0x80) ? cp437_high[(u8)*c - 0x80]
+                                              : (u16)(u8)*c;
+            }
+            utf16_to_utf8(units, n, out, NAME_MAX + 1);
+            break;
+        }
+    }
+}
+
 static void name_from_83(const u8 raw[11], char out[NAME_MAX + 1])
 {
     int i, n = 0;
@@ -613,6 +687,547 @@ static int dir_lookup_in(const struct dir *d, const char name83[11],
 }
 
 
+/* --- long names ------------------------------------------------------ */
+
+/*
+ * VFAT long names.
+ *
+ * A long name is a run of extra directory entries in front of an
+ * ordinary 8.3 entry, each carrying 13 UTF-16 code units, marked with
+ * the attribute byte 0x0F that no real file can have -- which is how
+ * DOS came to ignore them. They are stored last piece first: the entry
+ * furthest from the 8.3 one has the highest sequence number and the
+ * 0x40 "last" bit, and each carries a checksum of the 8.3 name so that
+ * a run left behind by something that knew nothing of long names is
+ * recognisable as stale.
+ *
+ * Names cross the system call boundary as bytes, and those bytes are
+ * taken to be UTF-8, which is what Linux does with vfat's utf8 option
+ * and what a name made anywhere else will survive a round trip in.
+ *
+ * Comparison ignores case in ASCII only. Windows folds the whole of
+ * the BMP through a table on the volume; ASCII is where nearly every
+ * name actually differs only in case.
+ */
+#define LFN_UNITS_MAX   255
+#define LFN_SLOTS_MAX   20              /* 20 * 13 = 260 >= 255 */
+
+static u8 lfn_checksum(const u8 *n83)
+{
+    u8 sum = 0;
+    int i;
+
+    for (i = 0; i < 11; i++) {
+        sum = (u8)(((sum & 1) ? 0x80 : 0) + (sum >> 1) + n83[i]);
+    }
+    return sum;
+}
+
+/* The byte offsets of an LFN entry's 13 code units. */
+static const u8 lfn_off[13] = { 1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30 };
+
+/*
+ * UTF-8 to UTF-16. A byte that does not start a valid sequence is taken
+ * as the Latin-1 character of the same value, so no name is refused
+ * for its encoding and none is silently changed into another. Returns
+ * the number of units, or -ENAMETOOLONG.
+ */
+static int utf8_to_utf16(const char *in, u16 *out, int max)
+{
+    const u8 *p = (const u8 *)in;
+    int n = 0;
+
+    while (*p) {
+        u32 c = *p;
+        int more = 0;
+
+        if (c >= 0xf0 && c < 0xf8) { more = 3; c &= 0x07; }
+        else if (c >= 0xe0)        { more = 2; c &= 0x0f; }
+        else if (c >= 0xc0)        { more = 1; c &= 0x1f; }
+        if (more && c < 0xf8) {
+            int k;
+
+            for (k = 1; k <= more; k++) {
+                if ((p[k] & 0xc0) != 0x80) {
+                    break;
+                }
+            }
+            if (k > more) {
+                for (k = 1; k <= more; k++) {
+                    c = (c << 6) | (p[k] & 0x3f);
+                }
+                p += more + 1;
+            } else {
+                c = *p++;           /* not UTF-8: take it as Latin-1 */
+            }
+        } else {
+            p++;
+        }
+        if (c >= 0x10000) {
+            if (n + 2 > max) {
+                return -ENAMETOOLONG;
+            }
+            c -= 0x10000;
+            out[n++] = (u16)(0xd800 | (c >> 10));
+            out[n++] = (u16)(0xdc00 | (c & 0x3ff));
+        } else {
+            if (n + 1 > max) {
+                return -ENAMETOOLONG;
+            }
+            out[n++] = (u16)c;
+        }
+    }
+    return n;
+}
+
+/* UTF-16 to UTF-8. Returns the length, or -1 if it would not fit. */
+static int utf16_to_utf8(const u16 *in, int n, char *out, int size)
+{
+    int i, o = 0;
+
+    for (i = 0; i < n; i++) {
+        u32 c = in[i];
+
+        if (c >= 0xd800 && c < 0xdc00 && i + 1 < n &&
+            in[i + 1] >= 0xdc00 && in[i + 1] < 0xe000) {
+            c = 0x10000 + ((c - 0xd800) << 10) + (in[i + 1] - 0xdc00);
+            i++;
+        }
+        if (c < 0x80) {
+            if (o + 1 >= size) return -1;
+            out[o++] = (char)c;
+        } else if (c < 0x800) {
+            if (o + 2 >= size) return -1;
+            out[o++] = (char)(0xc0 | (c >> 6));
+            out[o++] = (char)(0x80 | (c & 0x3f));
+        } else if (c < 0x10000) {
+            if (o + 3 >= size) return -1;
+            out[o++] = (char)(0xe0 | (c >> 12));
+            out[o++] = (char)(0x80 | ((c >> 6) & 0x3f));
+            out[o++] = (char)(0x80 | (c & 0x3f));
+        } else {
+            if (o + 4 >= size) return -1;
+            out[o++] = (char)(0xf0 | (c >> 18));
+            out[o++] = (char)(0x80 | ((c >> 12) & 0x3f));
+            out[o++] = (char)(0x80 | ((c >> 6) & 0x3f));
+            out[o++] = (char)(0x80 | (c & 0x3f));
+        }
+    }
+    out[o] = '\0';
+    return o;
+}
+
+/*
+ * Collects a long name while a directory is scanned. Fed every entry in
+ * order; after an 8.3 entry, lfn_name() says whether the run in front
+ * of it was a complete, matching long name, and what it spelled.
+ */
+struct lfn_acc {
+    int active;
+    int next;                   /* the sequence number expected next  */
+    int slots;                  /* how many the run said it would be  */
+    u8  sum;
+    u32 first;                  /* index of the run's first entry     */
+    u16 units[LFN_SLOTS_MAX * 13];
+};
+
+static void lfn_feed(struct lfn_acc *a, const u8 *ent, u32 index)
+{
+    int seq = ent[0] & 0x1f, k;
+
+    if (ent[0] == 0xe5 || ent[0] == 0x00) {
+        a->active = 0;
+        return;
+    }
+    if (ent[0] & 0x40) {
+        if (seq < 1 || seq > LFN_SLOTS_MAX) {
+            a->active = 0;
+            return;
+        }
+        a->active = 1;
+        a->slots = seq;
+        a->sum = ent[13];
+        a->first = index;
+    } else if (!a->active || seq != a->next || ent[13] != a->sum) {
+        a->active = 0;
+        return;
+    }
+    for (k = 0; k < 13; k++) {
+        a->units[(seq - 1) * 13 + k] = le16(&ent[lfn_off[k]]);
+    }
+    a->next = seq - 1;
+}
+
+/*
+ * After the 8.3 entry `ent`: its long name, in UTF-8, if a complete run
+ * with the right checksum preceded it. Returns 1 and sets *first to the
+ * run's first slot; 0 if there is none (or it would not fit in a
+ * name, in which case the 8.3 name stands in).
+ */
+static int lfn_name(struct lfn_acc *a, const u8 *ent, char *out,
+                    u32 *first)
+{
+    int n;
+
+    if (!a->active || a->next != 0 || a->sum != lfn_checksum(ent)) {
+        a->active = 0;
+        return 0;
+    }
+    a->active = 0;
+    for (n = 0; n < a->slots * 13; n++) {
+        if (a->units[n] == 0x0000) {
+            break;
+        }
+    }
+    if (utf16_to_utf8(a->units, n, out, NAME_MAX + 1) < 0) {
+        return 0;
+    }
+    if (first) {
+        *first = a->first;
+    }
+    return 1;
+}
+
+static int name_eq(const char *a, const char *b)
+{
+    for (; *a && *b; a++, b++) {
+        char x = upcase(*a), y = upcase(*b);
+
+        if (x != y) {
+            return 0;
+        }
+    }
+    return *a == *b;
+}
+
+/* Scratch for the scans below: bigger than belongs on a kernel stack,
+ * and the filesystem is not reentrant anyway (sb, fb). */
+static struct lfn_acc scan_acc;
+static char scan_long[NAME_MAX + 1];
+static char scan_short[NAME_MAX + 1];
+
+/*
+ * Find `name` in `d`, by its long name or its 8.3 name, ignoring case.
+ * Returns the index of the 8.3 entry, and in *first the index of the
+ * first entry belonging to the file -- its long-name run, or the 8.3
+ * entry itself if it has none.
+ */
+static int dir_find(const struct dir *d, const char *name, u8 *ent_out,
+                    u32 *first)
+{
+    u32 i, n = dir_entries(d);
+    u8 ent[DIRENT_SIZE];
+
+    scan_acc.active = 0;
+    for (i = 0; i < n; i++) {
+        u32 lfirst = i;
+        int err = dir_read_in(d, i, ent);
+
+        if (err != 0) {
+            return err;
+        }
+        if (ent[0] == 0x00) {
+            break;
+        }
+        if ((ent[11] & ATTR_LFN) == ATTR_LFN) {
+            lfn_feed(&scan_acc, ent, i);
+            continue;
+        }
+        if (!dir_entry_is_file(ent)) {
+            scan_acc.active = 0;
+            continue;
+        }
+        /* lfirst becomes the run's first slot if there is a run, and
+         * stays i if not -- whichever of the two names matches, the
+         * run belongs to the file. */
+        if (lfn_name(&scan_acc, ent, scan_long, &lfirst) &&
+            name_eq(scan_long, name)) {
+            goto found;
+        }
+        short_name(ent, scan_short);
+        if (name_eq(scan_short, name)) {
+            goto found;
+        }
+        continue;
+found:
+        if (ent_out) {
+            memcpy(ent_out, ent, DIRENT_SIZE);
+        }
+        if (first) {
+            *first = lfirst;
+        }
+        return (int)i;
+    }
+    return -ENOENT;
+}
+
+/*
+ * A name that is ALREADY an upper-case 8.3 name, in ASCII, gets an 8.3
+ * entry and nothing more -- the way it always did, and what DOS and
+ * every earlier image expect. Anything else keeps its spelling in a
+ * long name.
+ */
+static int name_is_plain_83(const char *name, char n83[11])
+{
+    const char *p;
+
+    if (name_to_83(name, n83) != 0) {
+        return 0;
+    }
+    for (p = name; *p; p++) {
+        if ((u8)*p >= 0x80 || (*p >= 'a' && *p <= 'z')) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int lfn_char_ok(char c)
+{
+    if ((u8)c < 0x20) {
+        return 0;
+    }
+    switch (c) {
+    case '"': case '*': case '/': case ':': case '<': case '>':
+    case '?': case '\\': case '|':
+        return 0;
+    default:
+        return 1;
+    }
+}
+
+/*
+ * An 8.3 alias for a long name, unique in `d`: the first six usable
+ * characters, upper-cased, then ~1, ~2 and so on, and the first three
+ * of the extension -- the scheme Windows uses, so that DOS, and anything
+ * reading only 8.3 names, sees something recognisable.
+ */
+static int make_alias(const struct dir *d, const char *name, char n83[11])
+{
+    char base[9], ext[4];
+    const char *dot = 0, *p;
+    int nb = 0, ne = 0;
+    u32 num;
+
+    /*
+     * A name that would be a legal 8.3 name but for its case --
+     * "readme.txt" -- has itself, upper-cased, as its alias, with no ~1,
+     * if that is free. Windows and Linux both do this, and it is what
+     * DOS then sees.
+     */
+    for (p = name; *p && (u8)*p < 0x80; p++) {
+    }
+    if (!*p && name_to_83(name, n83) == 0 &&
+        dir_lookup_in(d, n83, 0) == -ENOENT) {
+        return 0;
+    }
+
+    for (p = name; *p; p++) {
+        if (*p == '.' && p != name) {
+            dot = p;
+        }
+    }
+    for (p = name; *p && p != dot && nb < 8; p++) {
+        u8 c = (u8)*p;
+
+        if (c == ' ' || c == '.' || (c >= 0x80 && c < 0xc0)) {
+            continue;               /* spaces, dots, UTF-8 tails: dropped */
+        }
+        base[nb++] = (c >= 0x80 || !name_char_ok((char)c)) ? '_' : upcase((char)c);
+    }
+    if (nb == 0) {
+        base[nb++] = '_';
+    }
+    for (p = dot ? dot + 1 : ""; *p && ne < 3; p++) {
+        u8 c = (u8)*p;
+
+        if (c == ' ' || c == '.' || (c >= 0x80 && c < 0xc0)) {
+            continue;
+        }
+        ext[ne++] = (c >= 0x80 || !name_char_ok((char)c)) ? '_' : upcase((char)c);
+    }
+
+    for (num = 1; num < 1000000; num++) {
+        char digits[8];
+        int nd = 0, keep, i;
+        u32 v = num;
+
+        while (v) {
+            digits[nd++] = (char)('0' + v % 10);
+            v /= 10;
+        }
+        keep = 8 - 1 - nd;
+        if (keep > nb) {
+            keep = nb;
+        }
+        memset(n83, ' ', 11);
+        for (i = 0; i < keep; i++) {
+            n83[i] = base[i];
+        }
+        n83[i++] = '~';
+        while (nd) {
+            n83[i++] = digits[--nd];
+        }
+        for (i = 0; i < ne; i++) {
+            n83[8 + i] = ext[i];
+        }
+        if (dir_lookup_in(d, n83, 0) == -ENOENT) {
+            return 0;
+        }
+    }
+    return -EEXIST;
+}
+
+static int dir_extend(const struct dir *d);
+static int dir_create_in(const struct dir *d, const char name83[11], u8 attr);
+
+/*
+ * `count` consecutive free slots in `d`, growing a subdirectory if it
+ * has to. Returns the first one's index.
+ */
+static int dir_find_free_run(const struct dir *d, u32 count)
+{
+    for (;;) {
+        u32 i, n = dir_entries(d), run = 0, start = 0;
+        u8 ent[DIRENT_SIZE];
+        int err;
+
+        for (i = 0; i < n; i++) {
+            err = dir_read_in(d, i, ent);
+            if (err != 0) {
+                return err;
+            }
+            if (ent[0] == 0x00 || ent[0] == 0xe5) {
+                if (run == 0) {
+                    start = i;
+                }
+                if (++run == count) {
+                    return (int)start;
+                }
+            } else {
+                run = 0;
+            }
+        }
+        err = dir_extend(d);
+        if (err != 0) {
+            return err;
+        }
+    }
+}
+
+/*
+ * Make an entry called `name` in `d`: 8.3 alone if the name is one,
+ * otherwise a long-name run and an alias. Returns the index of the 8.3
+ * entry, which is what everything else addresses a file by.
+ */
+static int dir_create_named(const struct dir *d, const char *name, u8 attr)
+{
+    static u16 units[LFN_UNITS_MAX + 1];
+    char n83[11];
+    u8 ent[DIRENT_SIZE];
+    u16 date, time;
+    const char *p;
+    int nu, k, start, j, err;
+    u8 sum;
+
+    if (name_is_plain_83(name, n83)) {
+        return dir_create_in(d, n83, attr);
+    }
+    for (p = name; *p; p++) {
+        if (!lfn_char_ok(*p)) {
+            return -EINVAL;
+        }
+    }
+    nu = utf8_to_utf16(name, units, LFN_UNITS_MAX);
+    if (nu < 0) {
+        return nu;
+    }
+    if (nu == 0) {
+        return -EINVAL;
+    }
+    err = make_alias(d, name, n83);
+    if (err != 0) {
+        return err;
+    }
+    sum = lfn_checksum((const u8 *)n83);
+    k = (nu + 12) / 13;
+    start = dir_find_free_run(d, (u32)k + 1);
+    if (start < 0) {
+        return start;
+    }
+
+    for (j = 0; j < k; j++) {
+        int seq = k - j, c;
+
+        memset(ent, 0, DIRENT_SIZE);
+        ent[0] = (u8)(seq | (j == 0 ? 0x40 : 0));
+        ent[11] = ATTR_LFN;
+        ent[13] = sum;
+        for (c = 0; c < 13; c++) {
+            int u = (seq - 1) * 13 + c;
+            u16 v = (u < nu) ? units[u] : (u == nu ? 0x0000 : 0xffff);
+
+            put_le16(&ent[lfn_off[c]], v);
+        }
+        err = dir_write_in(d, (u32)(start + j), ent);
+        if (err != 0) {
+            return err;
+        }
+    }
+
+    memset(ent, 0, DIRENT_SIZE);
+    memcpy(ent, n83, 11);
+    ent[11] = attr;
+    fs_now(&date, &time);
+    put_le16(&ent[14], time);
+    put_le16(&ent[16], date);
+    put_le16(&ent[18], date);
+    put_le16(&ent[22], time);
+    put_le16(&ent[24], date);
+    err = dir_write_in(d, (u32)(start + k), ent);
+    if (err != 0) {
+        return err;
+    }
+    return start + k;
+}
+
+/* Mark a file's long-name run, from `first` up to its 8.3 entry, free. */
+static int lfn_delete(const struct dir *d, u32 first, u32 idx)
+{
+    u8 ent[DIRENT_SIZE];
+    u32 i;
+    int err;
+
+    for (i = first; i < idx; i++) {
+        err = dir_read_in(d, i, ent);
+        if (err != 0) {
+            return err;
+        }
+        ent[0] = 0xe5;
+        err = dir_write_in(d, i, ent);
+        if (err != 0) {
+            return err;
+        }
+    }
+    return 0;
+}
+
+/*
+ * Trailing dots and spaces are not part of a name on a FAT volume --
+ * Windows drops them and so does Linux's vfat -- except in "." and "..".
+ */
+static void name_trim(char *name)
+{
+    int n = (int)strlen(name);
+
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+        return;
+    }
+    while (n > 0 && (name[n - 1] == '.' || name[n - 1] == ' ')) {
+        name[--n] = '\0';
+    }
+}
+
 /* --- paths ----------------------------------------------------------- */
 
 /*
@@ -630,7 +1245,7 @@ static int dir_lookup_in(const struct dir *d, const char name83[11],
  * is what every Unix does and what stops a path escaping the volume.
  */
 static int path_walk(const struct dir *start, const char *path,
-                     struct dir *out_dir, char out_name[11], int *out_last_is_dir)
+                     struct dir *out_dir, char *out_name, int *out_last_is_dir)
 {
     struct dir d = *start;
     const char *p = path;
@@ -638,7 +1253,7 @@ static int path_walk(const struct dir *start, const char *path,
     if (out_last_is_dir) {
         *out_last_is_dir = 0;
     }
-    memset(out_name, ' ', 11);
+    out_name[0] = '\0';
 
     if (*p == '/') {
         d = ROOT_DIR;
@@ -648,11 +1263,10 @@ static int path_walk(const struct dir *start, const char *path,
     }
 
     for (;;) {
-        char comp[64];
+        char comp[NAME_MAX + 1];
         const char *slash = p;
         u32 n = 0;
         u8 ent[DIRENT_SIZE];
-        char n83[11];
         int idx;
 
         while (*slash && *slash != '/') {
@@ -672,10 +1286,12 @@ static int path_walk(const struct dir *start, const char *path,
         }
         memcpy(comp, p, n);
         comp[n] = '\0';
+        name_trim(comp);
+        if (!comp[0]) {
+            return -ENOENT;     /* nothing but dots and spaces */
+        }
 
         if (!*slash) {
-            int err;
-
             /*
              * "." and ".." are directories even as the last component,
              * and they are not 8.3 names -- name_to_83 rejects them,
@@ -708,12 +1324,10 @@ static int path_walk(const struct dir *start, const char *path,
                 return 0;
             }
 
-            /* The last component: this is the name the caller wants. */
-            err = name_to_83(comp, n83);
-            if (err != 0) {
-                return err;
-            }
-            memcpy(out_name, n83, 11);
+            /* The last component: this is the name the caller wants,
+             * long or short -- dir_find and dir_create_named decide
+             * which it is. */
+            strcpy(out_name, comp);
             *out_dir = d;
             return 0;
         }
@@ -738,12 +1352,7 @@ static int path_walk(const struct dir *start, const char *path,
             }
             /* ".." in the root is the root. */
         } else {
-            int err = name_to_83(comp, n83);
-
-            if (err != 0) {
-                return err;
-            }
-            idx = dir_lookup_in(&d, n83, ent);
+            idx = dir_find(&d, comp, ent, 0);
             if (idx < 0) {
                 return -ENOENT;
             }
@@ -786,7 +1395,7 @@ static int fat_chdir(const char *path)
     struct dir cwd = cwd_of_current();
     char cwd_path[PATH_MAX];
     struct dir d;
-    char name[11];
+    char name[NAME_MAX + 1];
     int last_is_dir;
     int err;
     u8 ent[DIRENT_SIZE];
@@ -802,7 +1411,7 @@ static int fat_chdir(const char *path)
     if (last_is_dir) {
         cwd = d;
     } else {
-        idx = dir_lookup_in(&d, name, ent);
+        idx = dir_find(&d, name, ent, 0);
         if (idx < 0) {
             return -ENOENT;
         }
@@ -898,38 +1507,51 @@ static int dir_create_in(const struct dir *d, const char name83[11], u8 attr)
         return (int)i;
     }
 
-    /*
-     * Full. A chained directory can be extended; the root cannot.
-     */
-    if (d->cluster) {
-        u32 last = d->cluster, add;
-        u16 next;
-        int err;
+    /* Full. The first slot of a new cluster is the one we wanted. */
+    {
+        int err = dir_extend(d);
 
-        while (cluster_valid(last)) {
-            if (fat_get(last, &next) != 0) {
-                return -EIO;
-            }
-            if (!cluster_valid(next)) {
-                break;
-            }
-            last = next;
-        }
-        err = fat_alloc(&add);
         if (err != 0) {
             return err;
         }
-        err = zero_cluster(add);
-        if (err != 0) {
-            return err;
-        }
-        if (fat_set(last, (u16)add) != 0) {
+    }
+    return dir_create_in(d, name83, attr);
+}
+
+/*
+ * Another cluster on the end of a directory, zeroed so that every entry
+ * in it is free. A chained directory can grow; the root cannot.
+ */
+static int dir_extend(const struct dir *d)
+{
+    u32 last = d->cluster, add;
+    u16 next;
+    int err;
+
+    if (!d->cluster) {
+        return -ENOSPC;
+    }
+    while (cluster_valid(last)) {
+        if (fat_get(last, &next) != 0) {
             return -EIO;
         }
-        /* The first slot of the new cluster is the one we wanted. */
-        return dir_create_in(d, name83, attr);
+        if (!cluster_valid(next)) {
+            break;
+        }
+        last = next;
     }
-    return -ENOSPC;
+    err = fat_alloc(&add);
+    if (err != 0) {
+        return err;
+    }
+    err = zero_cluster(add);
+    if (err != 0) {
+        return err;
+    }
+    if (fat_set(last, (u16)add) != 0) {
+        return -EIO;
+    }
+    return 0;
 }
 
 /* ---------------------------------------------------------------- */
@@ -1251,7 +1873,7 @@ static int entry_is_open(const struct dir *d, u32 dir_index)
 static int fat_handle_open(const char *name, int flags)
 {
     struct dir cwd = cwd_of_current();
-    char n83[11];
+    char nm[NAME_MAX + 1];
     u8 ent[DIRENT_SIZE];
     struct fat_file *f;
     struct dir open_dir;
@@ -1264,7 +1886,7 @@ static int fat_handle_open(const char *name, int flags)
         struct dir d;
         int last_is_dir;
 
-        err = path_walk(&cwd, name, &d, n83, &last_is_dir);
+        err = path_walk(&cwd, name, &d, nm, &last_is_dir);
         if (err != 0) {
             return err;
         }
@@ -1283,7 +1905,7 @@ static int fat_handle_open(const char *name, int flags)
     }
     f = &files[fd];
 
-    idx = dir_lookup_in(&open_dir, n83, ent);
+    idx = dir_find(&open_dir, nm, ent, 0);
     if (idx == -ENOENT) {
         if (!(flags & O_CREAT)) {
             return -ENOENT;
@@ -1291,7 +1913,7 @@ static int fat_handle_open(const char *name, int flags)
         if (!can_write(flags)) {
             return -EACCES;
         }
-        idx = dir_create_in(&open_dir, n83, ATTR_ARCHIVE);
+        idx = dir_create_named(&open_dir, nm, ATTR_ARCHIVE);
         if (idx < 0) {
             return idx;
         }
@@ -1565,21 +2187,22 @@ static int fat_unlink(const char *name)
 {
     struct dir cwd = cwd_of_current();
     struct dir target;
-    char n83[11];
+    char nm[NAME_MAX + 1];
     u8 ent[DIRENT_SIZE];
+    u32 first;
     int idx, err, last_is_dir;
 
     if (!mounted) {
         return -ENODEV;
     }
-    err = path_walk(&cwd, name, &target, n83, &last_is_dir);
+    err = path_walk(&cwd, name, &target, nm, &last_is_dir);
     if (err != 0) {
         return err;
     }
     if (last_is_dir) {
         return -EISDIR;
     }
-    idx = dir_lookup_in(&target, n83, ent);
+    idx = dir_find(&target, nm, ent, &first);
     if (idx < 0) {
         return idx;
     }
@@ -1591,6 +2214,10 @@ static int fat_unlink(const char *name)
     }
     if (ent[11] & ATTR_RDONLY) {
         return -EACCES;
+    }
+    err = lfn_delete(&target, first, (u32)idx);
+    if (err != 0) {
+        return err;
     }
     err = delete_entry(&target, idx, ent);
     if (err != 0) {
@@ -1644,21 +2271,22 @@ static int fat_rename(const char *from, const char *to)
 {
     struct dir cwd = cwd_of_current();
     struct dir fdir, tdir;
-    char f83[11], t83[11];
+    char fname[NAME_MAX + 1], tname[NAME_MAX + 1];
     u8 ent[DIRENT_SIZE], tent[DIRENT_SIZE];
+    u32 ffirst, tfirst;
     int idx, tidx, err, last;
 
     if (!mounted) {
         return -ENODEV;
     }
-    err = path_walk(&cwd, from, &fdir, f83, &last);
+    err = path_walk(&cwd, from, &fdir, fname, &last);
     if (err != 0) {
         return err;
     }
     if (last) {
         return -EBUSY;          /* "/" or "dir/": not something to move */
     }
-    err = path_walk(&cwd, to, &tdir, t83, &last);
+    err = path_walk(&cwd, to, &tdir, tname, &last);
     if (err != 0) {
         return err;
     }
@@ -1666,11 +2294,11 @@ static int fat_rename(const char *from, const char *to)
         return -EISDIR;
     }
 
-    idx = dir_lookup_in(&fdir, f83, ent);
+    idx = dir_find(&fdir, fname, ent, &ffirst);
     if (idx < 0) {
         return idx;
     }
-    if (fdir.cluster == tdir.cluster && memcmp(f83, t83, 11) == 0) {
+    if (fdir.cluster == tdir.cluster && strcmp(fname, tname) == 0) {
         return 0;               /* renaming something to itself */
     }
     if (entry_is_open(&fdir, (u32)idx)) {
@@ -1680,8 +2308,13 @@ static int fat_rename(const char *from, const char *to)
         return -EINVAL;
     }
 
-    tidx = dir_lookup_in(&tdir, t83, tent);
-    if (tidx >= 0) {
+    /*
+     * Something already there -- unless it IS the source, found again
+     * because only the case differs ("readme" to "README"), which is a
+     * rename like any other.
+     */
+    tidx = dir_find(&tdir, tname, tent, &tfirst);
+    if (tidx >= 0 && !(tdir.cluster == fdir.cluster && tidx == idx)) {
         if (tent[11] & ATTR_DIR) {
             return (ent[11] & ATTR_DIR) ? -EEXIST : -EISDIR;
         }
@@ -1694,33 +2327,55 @@ static int fat_rename(const char *from, const char *to)
         if (tent[11] & ATTR_RDONLY) {
             return -EACCES;
         }
-        err = delete_entry(&tdir, tidx, tent);
+        err = lfn_delete(&tdir, tfirst, (u32)tidx);
+        if (err == 0) {
+            err = delete_entry(&tdir, tidx, tent);
+        }
         if (err != 0) {
             return err;
         }
     }
 
-    if (fdir.cluster == tdir.cluster) {
-        /* The name is the only thing that changes; cluster chain and
-         * size stay exactly where they are. */
-        memcpy(ent, t83, 11);
-        err = dir_write_in(&fdir, (u32)idx, ent);
-        if (err != 0) {
-            return err;
+    /*
+     * The quick case: same directory, an 8.3 name with no long name
+     * going to another plain 8.3 name. Only the eleven bytes change,
+     * and the entry keeps its slot.
+     */
+    {
+        char t83[11];
+
+        if (fdir.cluster == tdir.cluster && ffirst == (u32)idx &&
+            name_is_plain_83(tname, t83)) {
+            memcpy(ent, t83, 11);
+            err = dir_write_in(&fdir, (u32)idx, ent);
+            if (err != 0) {
+                return err;
+            }
+            return fat_flush_all();
         }
-        return fat_flush_all();
     }
 
-    /* A move: the same entry under the new name in the new directory,
-     * then the old slot freed -- without freeing the chain it pointed
-     * at, which now belongs to the new entry. */
-    tidx = dir_create_in(&tdir, t83, ent[11]);
+    /*
+     * Everything else: a new entry, with a long name if it needs one,
+     * holding the same cluster chain, size and times; then the old
+     * entry and its long name freed -- without freeing the chain, which
+     * belongs to the new one now. New first, so that running out of
+     * room loses nothing.
+     */
+    tidx = dir_create_named(&tdir, tname, ent[11]);
     if (tidx < 0) {
         return tidx;
     }
-    memcpy(tent, ent, DIRENT_SIZE);
-    memcpy(tent, t83, 11);
+    err = dir_read_in(&tdir, (u32)tidx, tent);
+    if (err != 0) {
+        return err;
+    }
+    memcpy(tent + 11, ent + 11, DIRENT_SIZE - 11);  /* all but the name */
     err = dir_write_in(&tdir, (u32)tidx, tent);
+    if (err != 0) {
+        return err;
+    }
+    err = lfn_delete(&fdir, ffirst, (u32)idx);
     if (err != 0) {
         return err;
     }
@@ -1729,7 +2384,7 @@ static int fat_rename(const char *from, const char *to)
     if (err != 0) {
         return err;
     }
-    if (tent[11] & ATTR_DIR) {
+    if ((tent[11] & ATTR_DIR) && fdir.cluster != tdir.cluster) {
         struct dir self;
         u8 dd[DIRENT_SIZE];
 
@@ -1771,7 +2426,7 @@ static void fill_dirent(const u8 *ent, struct dirent *out)
 {
     struct tm t;
 
-    name_from_83(ent, out->d_name);
+    short_name(ent, out->d_name);
     out->d_size = le32(&ent[28]);
     out->d_mode = (ent[11] & ATTR_DIR) ? S_IFDIR : S_IFREG;
     out->d_mode |= S_IRUSR;
@@ -1786,7 +2441,7 @@ static int fat_lookup_dirent(const char *name, struct dirent *out)
 {
     struct dir cwd = cwd_of_current();
     struct dir d;
-    char n83[11];
+    char nm[NAME_MAX + 1];
     u8 ent[DIRENT_SIZE];
     int idx, err, last_is_dir;
 
@@ -1799,7 +2454,7 @@ static int fat_lookup_dirent(const char *name, struct dirent *out)
      * as often as about "notes.txt", and looking only in the current
      * directory made every absolute path report that it did not exist.
      */
-    err = path_walk(&cwd, name, &d, n83, &last_is_dir);
+    err = path_walk(&cwd, name, &d, nm, &last_is_dir);
     if (err != 0) {
         return err;
     }
@@ -1812,7 +2467,7 @@ static int fat_lookup_dirent(const char *name, struct dirent *out)
         return 0;
     }
 
-    idx = dir_lookup_in(&d, n83, ent);
+    idx = dir_find(&d, nm, ent, 0);
     if (idx < 0) {
         return idx;
     }
@@ -1858,6 +2513,7 @@ static int fat_readdir_in(u32 ino, int index, struct dirent *out)
         return -EINVAL;
     }
     d.cluster = ino;
+    scan_acc.active = 0;
 
     for (i = 0; i < dir_entries(&d); i++) {
         int err = dir_read_in(&d, i, ent);
@@ -1868,14 +2524,23 @@ static int fat_readdir_in(u32 ino, int index, struct dirent *out)
         if (ent[0] == 0x00) {
             break;
         }
+        if ((ent[11] & ATTR_LFN) == ATTR_LFN) {
+            lfn_feed(&scan_acc, ent, i);
+            continue;
+        }
         if (!dir_entry_is_file(ent)) {
+            scan_acc.active = 0;
             continue;
         }
         if (seen == index) {
             fill_dirent(ent, out);
+            if (lfn_name(&scan_acc, ent, scan_long, 0)) {
+                strcpy(out->d_name, scan_long);
+            }
             out->d_ino = ino_for(&d, i, ent);
             return 0;
         }
+        scan_acc.active = 0;
         seen++;
     }
     return -ENOENT;
@@ -1891,7 +2556,7 @@ static int fat_dir_ino(const char *path, u32 *ino)
 {
     struct dir cwd = cwd_of_current();
     struct dir d;
-    char name[11];
+    char name[NAME_MAX + 1];
     u8 ent[DIRENT_SIZE];
     int last_is_dir, idx, err;
 
@@ -1903,7 +2568,7 @@ static int fat_dir_ino(const char *path, u32 *ino)
         return err;
     }
     if (!last_is_dir) {
-        idx = dir_lookup_in(&d, name, ent);
+        idx = dir_find(&d, name, ent, 0);
         if (idx < 0) {
             return idx;
         }
@@ -2049,7 +2714,7 @@ static int fat_mkdir(const char *path)
 {
     struct dir cwd = cwd_of_current();
     struct dir parent, self;
-    char n83[11];
+    char nm[NAME_MAX + 1];
     u8 ent[DIRENT_SIZE];
     u32 cl;
     u16 date, time;
@@ -2058,11 +2723,12 @@ static int fat_mkdir(const char *path)
     if (!mounted) {
         return -ENODEV;
     }
-    err = path_walk(&cwd, path, &parent, n83, 0);
+    err = path_walk(&cwd, path, &parent, nm, 0);
     if (err != 0) {
         return err;
     }
-    if (dir_lookup_in(&parent, n83, 0) >= 0) {
+    if (!nm[0] || strcmp(nm, ".") == 0 || strcmp(nm, "..") == 0 ||
+        dir_find(&parent, nm, 0, 0) >= 0) {
         return -EEXIST;
     }
 
@@ -2075,7 +2741,7 @@ static int fat_mkdir(const char *path)
         return err;
     }
 
-    idx = dir_create_in(&parent, n83, ATTR_DIR);
+    idx = dir_create_named(&parent, nm, ATTR_DIR);
     if (idx < 0) {
         fat_free_chain(cl);
         return idx;
@@ -2135,19 +2801,19 @@ static int fat_rmdir(const char *path)
 {
     struct dir cwd = cwd_of_current();
     struct dir parent, self;
-    char n83[11];
+    char nm[NAME_MAX + 1];
     u8 ent[DIRENT_SIZE];
-    u32 i, n;
+    u32 i, n, first;
     int idx, err;
 
     if (!mounted) {
         return -ENODEV;
     }
-    err = path_walk(&cwd, path, &parent, n83, 0);
+    err = path_walk(&cwd, path, &parent, nm, 0);
     if (err != 0) {
         return err;
     }
-    idx = dir_lookup_in(&parent, n83, ent);
+    idx = dir_find(&parent, nm, ent, &first);
     if (idx < 0) {
         return idx;
     }
@@ -2180,6 +2846,10 @@ static int fat_rmdir(const char *path)
     }
 
     fat_free_chain(self.cluster);
+    err = lfn_delete(&parent, first, (u32)idx);
+    if (err != 0) {
+        return err;
+    }
     ent[0] = 0xe5;
     put_le16(&ent[26], 0);
     err = dir_write_in(&parent, (u32)idx, ent);

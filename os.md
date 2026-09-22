@@ -392,7 +392,7 @@ as a broken context switch for a surprisingly long time.
 ### FAT16
 
 `fs/fat16.c`, about 2,000 lines, and the only filesystem. Read and write,
-create and delete, subdirectories, 8.3 names, one partition.
+create and delete, subdirectories, VFAT long names in UTF-8, one partition.
 
 FAT16 was chosen so the host can read and write the disk image with
 `mtools` — no loop device, no root — which is what makes `make write` a
@@ -412,10 +412,9 @@ directory entry says nothing about where it lives, so `mkdir` must write
 both or the directory cannot be left. The parent of a directory in the root
 is recorded as cluster 0.
 
-`rc.local` is not a valid 8.3 name — a five-character extension — which is
-why the startup script is `/etc/rc`. The filesystem is the constraint, not
-a preference, and `name_to_83` returns EINVAL rather than silently
-truncating.
+The startup script is `/etc/rc` because `rc.local` was not a valid 8.3
+name when it was chosen -- a five-character extension. Long names have
+made it legal since (task 14); the name stayed.
 
 ---
 

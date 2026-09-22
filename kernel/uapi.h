@@ -22,8 +22,9 @@
  */
 #include "types.h"
 
-#define NAME_MAX      12        /* "12345678.123" without the NUL     */
-#define PATH_MAX      64
+#define NAME_MAX      255       /* bytes of UTF-8: a VFAT long name   */
+#define PATH_MAX      256       /* Linux's is 4096; paths are copied
+                                 * onto a kernel stack of 8 KB        */
 #define OPEN_MAX      32        /* file descriptors per TASK           */
 
 /*

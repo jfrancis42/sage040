@@ -1075,7 +1075,9 @@ close(fd);
 the way POSIX has it, so **`O_RDONLY` is zero** and testing for it with
 `&` does not work — use `(flags & O_ACCMODE)`.
 
-The volume is FAT16 with subdirectories, 8.3 names, case-insensitive.
+The volume is FAT16 with subdirectories and **VFAT long names** -- up to
+255 characters, stored as UTF-16 and handed to programs as UTF-8, case
+preserved and looked up case-insensitively (in ASCII).
 `chdir`, `getcwd`, `mkdir` and `rmdir` all work, a path may be absolute
 or relative, and the working directory belongs to the task.
 
@@ -1095,7 +1097,10 @@ first cluster, a file is where its entry sits. They are nonzero, stable,
 and the same from `stat` and `readdir` -- but renaming a file moves its
 entry and so changes its number.
 
-The hard limit is names: 8.3, not a convention.
+A name that is already an upper-case 8.3 name is stored as one alone;
+anything else also gets an 8.3 alias for DOS -- itself upper-cased if
+that is free (`readme.txt` is `README.TXT`), otherwise `NAME~1`.
+Trailing dots and spaces are dropped, as Windows and Linux's vfat do.
 
 ### The terminal
 
@@ -1462,7 +1467,6 @@ older copy should know which way round it is now.
 - **Map the framebuffer.** `mmap` exists, but `/dev/fb0` does not
   support it yet, so drawing goes through the `FBIO_*` ioctls rather
   than through the memory itself.
-- **Use long file names.** 8.3 only.
 - **Resolve a name.** Addresses are numeric; there is no DNS.
 
 `design.md` §11 is the open-items list, and `emacs.md` costs the whole

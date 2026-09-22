@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: 14 of 23 complete.**
+**Status: 15 of 23 complete.**
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -43,7 +43,7 @@ drive almost all of it:
 | 11 | **VT102** emulation in `fbcon.c` | a full-screen program needs cursor addressing | **done** |
 | 12 | `TIOCGWINSZ` and `SIGWINCH` | depends on 5 and 11 | **done** |
 | 13 | A C library (picolibc or newlib) | the gate everything real passes through | **done** |
-| 14 | VFAT long file names | 8.3 decides what can be shipped | todo |
+| 14 | VFAT long file names | 8.3 decides what can be shipped | **done** |
 | 15 | `fsck`, and a clean-unmount flag | the machine cannot check its own disk | todo |
 | 16 | Build and run uEmacs | the cheapest real editor | todo |
 | 17 | Build and run vi | the other one | todo |
@@ -146,8 +146,8 @@ printing `ok`/`FAIL` per line, counted and named by the script — a new
 check is a line of C. A group is added only once its calls work, so a
 failure there is always a regression.
 
-**657 checks across eight suites now:** 12 device programs, 47 fs, 368
-api, 29 edit, 18 vm, 17 net, 95 vt, 71 libc. The libc suite needs
+**673 checks across eight suites now:** 12 device programs, 59 fs, 368
+api, 29 edit, 18 vm, 17 net, 95 vt, 75 libc. The libc suite needs
 `make libc` first.
 
 ### 1. Grow the user address space — done
@@ -890,6 +890,48 @@ failed ten, and each was a real fault: no constructors and no atexit
 `.fini_array_onexit`), `si_signo`, `isatty` (`TCGETS2`), and unlink by
 path. apitest's `sigtest` replaced its two "refused" checks with eleven
 for `SA_SIGINFO`, the kernel's trampoline and the `rt_` calls.
+
+### 14. VFAT long file names — done
+
+**Long names in UTF-8**, up to 255 UTF-16 units, in `fs/fat16.c`'s new
+"long names" section:
+
+- `dir_find` looks a name up by its long name or its 8.3 name, ignoring
+  case (ASCII), assembling long-name runs as it scans and trusting one
+  only if it is complete and its checksum matches its 8.3 entry.
+  `path_walk` hands back the last component as a name rather than
+  eleven 8.3 bytes, and every caller -- open, stat, unlink, rename,
+  mkdir, rmdir, chdir -- goes through `dir_find`.
+- `dir_create_named` writes 8.3 alone for a name that already is an
+  upper-case 8.3 name, as before; otherwise a long-name run and an
+  alias: the upper-cased name itself if it is a free 8.3 name, else
+  Windows' `NAME~N`. Runs need consecutive free slots, and a
+  subdirectory grows to find them.
+- Deletion frees the run (`lfn_delete`). Rename re-creates the entries,
+  so a name can gain or lose a long form, and a change of case alone is
+  a rename rather than a collision with itself.
+- Short names honour the NT lower-case bits, and their bytes above 127
+  are decoded as code page 437 (Linux's default, and the screen font's).
+- Trailing dots and spaces are dropped, as Windows and Linux vfat do.
+- `NAME_MAX` 12 → 255, `PATH_MAX` 64 → 256.
+
+**Found on the way:** the line editor and the tty dropped every byte
+above 126, so an accented name could not be typed at all. Both pass
+0x80-0xFF now. `ls -l` puts the name last, since long names do not fit
+a padded column.
+
+**Tests:** fstest gained twelve long-name checks, all read back with the
+host's mtools in a UTF-8 locale: a long name made, renamed and found in
+another case; case kept; host-made long names in ASCII and UTF-8 found
+by the guest; a guest-made UTF-8 name is Unicode to the host; a long
+directory with a long-named file, reached by cd; distinct `~N` aliases;
+deletion; `ls`. `fsck.fat` runs over the result. **Negative control:**
+with `lfn_delete` left out of unlink, fsck reports "Orphaned long file
+name part" for each deleted file. libctest gained four through
+picolibc's readdir, stat and unlink. The first run failed six, four of
+them the test reading the wrong line of output; the real ones were
+`readme.txt` getting `README~1` where Windows and Linux use `README`,
+and the dropped high bytes.
 
 ## Decisions worth knowing about
 

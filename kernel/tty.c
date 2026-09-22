@@ -505,8 +505,9 @@ static s32 tty_read_canon(u8 *out, u32 len)
             return (s32)n;
         }
 
-        if (c < 32 || c > 126) {
-            continue;                   /* other controls are not input */
+        if (c < 32 || c == 127) {
+            continue;                   /* other controls are not input;
+                                         * bytes above 127 are UTF-8 */
         }
 
         if (n < len) {

@@ -206,7 +206,7 @@ catch a byte-order error, because both directions swap.
 | Ethernet driver — `struct netdev`, registered as `eth0` | ✅ done, and exercised end to end |
 | **TCP/IP (§8)** — ARP, IP, ICMP, UDP, DHCP, TCP, sockets | ✅ done — `kernel/net/` |
 | Filesystem (§9) — subdirectories, cwd, `mkdir`/`rmdir`/`chdir` | ✅ done |
-| Long file names | ✗ open — §11 |
+| Long file names — VFAT, UTF-8 | ✅ done — task 14 |
 | `mmap`/`brk` | ✅ done — `vm.c`, `mmap.c` |
 | Pipes and redirection, paging, shared libraries | ✗ open — §11 |
 
@@ -395,13 +395,6 @@ kernel can read would prove nothing.
 
 ### What is not, yet
 
-- **Long file names.** 8.3 only. Long-name entries the host wrote are
-  skipped on a scan rather than misread, so a file created with one is
-  still visible by its short name and is not damaged. This is
-  period-correct, and it is also **the filesystem's single biggest
-  practical limitation**: 43% of GNU Emacs's Lisp files cannot be named
-  on this volume at all (measured — `emacs.md`). VFAT long-name entries
-  are the answer and are costed in §11.
 - **Permissions, ownership, and links.** FAT has nowhere to put any of
   them. `ls -l` shows a mode because `stat` synthesises one.
 - **Timestamps before the clock is set.** Stamps come from the M48T59, which
@@ -1108,6 +1101,23 @@ one), `SA_SIGINFO`-style ancillary data, and `getaddrinfo`, which needs
 **a resolver** (`progress.md` task 18).
 
 ### Long file names
+
+**Done (task 14): VFAT long names, in UTF-8.** Up to 255 UTF-16 units,
+stored as the standard run of `0x0F` entries with the checksum of an 8.3
+alias; names cross the system call boundary as UTF-8 bytes, as with
+Linux's vfat `utf8` option. A name that is already an upper-case 8.3
+name gets a short entry only, as before; anything else keeps its
+spelling in a long name, with the upper-cased name itself as its alias
+if that is a free 8.3 name (`readme.txt` → `README.TXT`) and Windows'
+`NAME~N` scheme otherwise. Lookup ignores case (ASCII only). Short names
+carrying the NT lower-case bits are shown in lower case, and their bytes
+above 127 are decoded as code page 437, Linux's default. `rename`
+re-creates the entries, so a name can gain or lose a long form; deleting
+frees the run. `fsck.fat` checks all of it in `fstest.sh`, and finds the
+orphaned runs if deletion leaves them. `NAME_MAX` is 255 and `PATH_MAX`
+256.
+
+What follows is the case as it was made before.
 
 FAT16's 8.3 names are the single biggest practical limitation of the
 filesystem, and the cost is not abstract: **43% of GNU Emacs's Lisp files

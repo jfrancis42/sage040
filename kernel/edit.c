@@ -524,7 +524,7 @@ static int search(struct line *l, const char *prompt, int backwards)
             continue;
         }
 
-        if (key >= 32 && key < 127) {
+        if ((key >= 32 && key < 127) || (key >= 0x80 && key < 0x100)) {
             int i;
 
             if (plen < (int)sizeof(pattern) - 1) {
@@ -789,7 +789,14 @@ int edit_readline(const char *prompt, char *buf, int max)
             break;              /* an escape sequence with no meaning */
 
         default:
-            if (key >= 32 && key < 127) {
+            /* Bytes above 127 are kept: they are UTF-8, and a name
+             * typed with an accent in it has to arrive with it. Each
+             * byte counts as a column, which is right on the screen
+             * (whose font is CP437, a glyph a byte) and over-counts on
+             * a UTF-8 terminal -- editing in the middle of a line of
+             * accented letters there can leave the display off by one
+             * until the next redraw. */
+            if ((key >= 32 && key < 127) || (key >= 0x80 && key < 0x100)) {
                 insert(&l, (char)key);
             }
             /* Anything else is a control character with no binding.

@@ -97,6 +97,16 @@ mcopy -o -i "$MIMG" "$SCRATCH/big.tmp" ::/BIG.TXT
 # A program, to check that the ELF loader runs one and that its exit
 # status comes back. No extension: the kernel decides what is executable
 # from the file's first four bytes, not from its name.
+# Long names made by the HOST, which the guest has to find by them: one
+# in plain ASCII, one in UTF-8. mtools needs a UTF-8 locale to write
+# the second as Unicode rather than as underscores.
+echo "made on the host" > "$SCRATCH/lfn.tmp"
+LC_ALL=C.UTF-8 mcopy -o -i "$MIMG" "$SCRATCH/lfn.tmp" "::/Host Long Name.txt"
+# Too long for 8.3, so it has to be a long name -- mtools writes a name
+# that fits as a short one with its accent in the OEM code page.
+echo "naive, with a diaeresis" > "$SCRATCH/lfn.tmp"
+LC_ALL=C.UTF-8 mcopy -o -i "$MIMG" "$SCRATCH/lfn.tmp" $'::/na\xc3\xafve r\xc3\xa9sum\xc3\xa9.txt'
+
 mcopy -o -i "$MIMG" ../apps/hello ::/HELLO
 mcopy -o -i "$MIMG" ../apps/fbtest ::/FBTEST
 
@@ -167,6 +177,28 @@ printf '%s\n' \
   'cd /' \
   'mkdir mvdir' \
   'mv mvdir /tmp/mvdir' \
+  'echo long > "A Long File Name.txt"' \
+  'echo mixed > MixedCase.c' \
+  'echo LFN-CASE' \
+  'cat "a long file NAME.txt"' \
+  'echo LFN-HOST' \
+  'cat "Host Long Name.txt"' \
+  $'cat "na\xc3\xafve r\xc3\xa9sum\xc3\xa9.txt"' \
+  'mv "A Long File Name.txt" "Renamed Long Name.text"' \
+  'mkdir "Long Directory"' \
+  'echo inside > "Long Directory/file in it.txt"' \
+  'cd "Long Directory"' \
+  'echo LFN-PWD' \
+  'pwd' \
+  'cat "file in it.txt"' \
+  'cd /' \
+  'echo one > longprefix1.txt' \
+  'echo two > longprefix2.txt' \
+  'echo three > longprefix3.txt' \
+  'rm longprefix2.txt' \
+  $'echo utf > "caf\xc3\xa9.txt"' \
+  'echo LFN-LS' \
+  'ls' \
   'cd /tmp/mvdir' \
   'echo LS-DOTDOT' \
   'ls ..' \
@@ -379,8 +411,56 @@ check "mv moved a directory into another" $?
 
 # From inside /tmp/mvdir, `ls ..` lists /tmp, which holds MVDIR. Had the
 # ".." still named the root, it would list ETC and TMP and no MVDIR.
-tr -d '\r' < "$LOG" | grep -A2 '^LS-DOTDOT$' | grep -q 'MVDIR'
+tr -d '\r' < "$LOG" | grep -A2 '^LS-DOTDOT$' | grep -qi 'MVDIR'
 check "  and its .. now leads to its new parent" $?
+
+echo "=== checks: long names ==="
+
+# Everything here is read back with the host's mtools, in a UTF-8
+# locale, so what counts is what Windows or Linux would see.
+LC_ALL=C.UTF-8 mdir -i "$MIMG" ::/ > "$SCRATCH/lfn-dir.tmp" 2>&1
+tr -d '\r' < "$LOG" > "$SCRATCH/lfn-log.tmp"
+
+grep -q "Renamed Long Name.text" "$SCRATCH/lfn-dir.tmp" &&
+    ! grep -q "A Long File Name.txt" "$SCRATCH/lfn-dir.tmp"
+check "a long name the guest made, then renamed, is what the host sees" $?
+
+LC_ALL=C.UTF-8 mtype -i "$MIMG" "::/Renamed Long Name.text" 2>/dev/null | grep -qx long
+check "  holding what the guest wrote" $?
+
+grep -q " MixedCase.c$" "$SCRATCH/lfn-dir.tmp"
+check "a mixed-case name keeps its case" $?
+
+grep -A2 '^LFN-CASE$' "$SCRATCH/lfn-log.tmp" | grep -qx long
+check "a long name is found whatever the case it is asked for in" $?
+
+grep -A2 '^LFN-HOST$' "$SCRATCH/lfn-log.tmp" | grep -qx "made on the host"
+check "a long name the host made is found by it" $?
+
+grep -qx "naive, with a diaeresis" "$SCRATCH/lfn-log.tmp"
+check "  and one in UTF-8" $?
+
+grep -q $'caf\xc3\xa9.txt' "$SCRATCH/lfn-dir.tmp"
+check "a UTF-8 name the guest made is Unicode to the host" $?
+
+LC_ALL=C.UTF-8 mdir -i "$MIMG" "::/Long Directory" 2>&1 | grep -q "file in it.txt" &&
+    LC_ALL=C.UTF-8 mtype -i "$MIMG" "::/Long Directory/file in it.txt" 2>/dev/null |
+        grep -qx inside
+check "a directory with a long name, and a long-named file in it" $?
+
+grep -A2 '^LFN-PWD$' "$SCRATCH/lfn-log.tmp" | grep -qx "/Long Directory" &&
+    grep -qx inside "$SCRATCH/lfn-log.tmp"
+check "  which cd, pwd and a relative name all work in" $?
+
+grep -q "LONGPR~1 TXT.*longprefix1.txt" "$SCRATCH/lfn-dir.tmp" &&
+    grep -q "LONGPR~3 TXT.*longprefix3.txt" "$SCRATCH/lfn-dir.tmp"
+check "names alike in their first six letters get distinct ~N aliases" $?
+
+! grep -q "longprefix2" "$SCRATCH/lfn-dir.tmp"
+check "rm of a long name removes it" $?
+
+awk '/^LFN-LS$/ { f = 1; next } f' "$SCRATCH/lfn-log.tmp" | grep -q "Renamed Long Name.text"
+check "ls shows long names" $?
 
 # fsck.fat has no idea what mtools' @@offset means, so hand it the
 # partition on its own.
@@ -393,6 +473,7 @@ echo
 echo "  passed: $pass"
 echo "  failed: $fail"
 
+rm -f "$SCRATCH/lfn.tmp" "$SCRATCH/lfn-dir.tmp" "$SCRATCH/lfn-log.tmp"
 rm -f "$SCRATCH/hostfile.tmp" "$SCRATCH/big.tmp" "$SCRATCH/session.tmp" "$SCRATCH/dir.tmp" guest.tmp renamed.tmp \
       fsck.tmp "$SCRATCH/part.tmp"
 
