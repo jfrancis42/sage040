@@ -43,7 +43,7 @@ LDFLAGS  := $(CPUFLAGS) -ffreestanding -nostdlib -T $(LIB)/user.ld \
 # renumbering the socket calls left every program calling the wrong ones
 # until something happened to touch its source.
 COMMON := $(LIB)/crt0.s $(LIB)/ulib.c $(LIB)/ulib.h $(LIB)/malloc.c \
-          $(LIB)/malloc.h $(LIB)/user.ld \
+          $(LIB)/malloc.h $(LIB)/resolv.c $(LIB)/user.ld \
           $(TOPDIR)/kernel/uapi.h $(TOPDIR)/types.h
 
 .PHONY: all install list clean
@@ -53,7 +53,7 @@ all: $(PROGS)
 %: %.c $(COMMON)
 	$(CC) $(CFLAGS) $(LDFLAGS) \
 	    -x assembler-with-cpp $(LIB)/crt0.s \
-	    -x c $(LIB)/ulib.c $(LIB)/malloc.c $< -o $@
+	    -x c $(LIB)/ulib.c $(LIB)/malloc.c $(LIB)/resolv.c $< -o $@
 	@$(SIZE) $@
 
 install: $(PROGS) $(DISK)

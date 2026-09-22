@@ -1092,6 +1092,14 @@ a C library is. `read` on one is `EISDIR`, as on Linux. lib/ulib's older
 `getdents(index, &dirent)` walks the working directory by index and
 returns `-ENOENT` when there are no more.
 
+**Names** resolve with `resolve_host(name, &addr)` in lib/ulib: a dotted
+quad, `/etc/hosts`, `localhost`, then DNS to each `nameserver` in
+`/etc/resolv.conf` (`ADDRESS` or `ADDRESS#PORT`), or to the server DHCP
+handed out if the file names none. It returns 0, `-ENOENT` for a name
+that does not exist, `-ETIMEDOUT` when nobody answers. `host NAME` is
+the command-line way to ask; `ntpdate [-q] [-p PORT] SERVER` sets the
+clock over SNTP.
+
 `ftruncate` and `truncate` cut a file or extend it with zeroes; `flock`
 takes BSD advisory locks, shared or exclusive, held by the open file
 description and released at its last close. A file can be open for

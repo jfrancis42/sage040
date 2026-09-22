@@ -36,6 +36,10 @@ static void show(void)
     put_ip(ni.netmask);
     puts("  gateway ");
     put_ip(ni.gateway);
+    if (ni.dns) {
+        puts("  dns ");
+        put_ip(ni.dns);
+    }
     puts("\n");
 
     puts("      RX ");

@@ -1184,6 +1184,7 @@ static int do_netctl(int cmd, u32 arg, u32 p)
         out.tx_packets = n->tx_packets;
         out.rx_dropped = n->rx_dropped;
         out.tx_errors = n->tx_errors;
+        out.dns = dhcp_dns();
         return store(p, &out, sizeof(out));
     }
 

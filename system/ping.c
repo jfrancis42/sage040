@@ -16,15 +16,19 @@ int main(int argc, char **argv)
     int count = 4, sent = 0, ok = 0, i, err;
 
     if (argc < 2) {
-        eputs("usage: ping ADDR [COUNT]\n");
+        eputs("usage: ping HOST [COUNT]\n");
         return 1;
     }
-    ip = inet_addr(argv[1]);
-    if (ip == INADDR_NONE || !ip) {
-        eputs("ping: not an address: ");
-        eputs(argv[1]);
-        eputs("\n  (there is no resolver yet -- use a number)\n");
-        return 1;
+    {
+        struct in_addr a;
+
+        if (resolve_host(argv[1], &a) < 0 || !a.s_addr) {
+            eputs("ping: cannot resolve ");
+            eputs(argv[1]);
+            eputs("\n");
+            return 1;
+        }
+        ip = a.s_addr;
     }
     if (argc > 2) {
         count = 0;

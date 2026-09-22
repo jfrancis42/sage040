@@ -302,9 +302,9 @@ that a peer works perfectly well without.
   one most likely to matter — a quickly reused port can in principle
   accept a stale segment from a previous connection.
 
-And above it, **there is no resolver**: addresses are numeric everywhere.
-DNS over UDP is a few hundred lines on a UDP layer that is already done,
-and it is in §11.
+And above it, **a resolver** (task 18, `lib/resolv.c`): `/etc/hosts`,
+`localhost`, then DNS over UDP to the servers in `/etc/resolv.conf` or
+the one DHCP gave. `host`, `ping`, `fetch` and `ntpdate` take names.
 
 ## 9. Filesystem
 
@@ -742,8 +742,18 @@ program, and everything it needs that is not here.
    sleeps on a wait queue with a timeout rather than spinning — so it is
    now a tidiness item rather than a correctness one.
 
-2. **A resolver, and NTP.** Two UDP clients that want doing together,
-   because the second wants the first.
+2. **A resolver, and NTP -- done (task 18)**, mostly as planned below.
+   Where it differs: the resolver is `resolve_host()` in lib/ulib, not
+   `gethostbyname`/`getaddrinfo` -- picolibc has no socket layer for them
+   to sit in -- and it **does not cache**; each lookup asks. `ntpdate`
+   steps the clock; it does not slew, and there is no daemon. The clock
+   it sets IS the M48T59's, so the time survives a reboot without the
+   NVRAM. The 2036 NTP era is handled (unsigned arithmetic, to 2106),
+   and doing so found that the kernel refused every date after January
+   2038: `clock_set` rejected a "negative" `tv_sec`. It is read as the
+   unsigned time it is now.
+
+   The plan, as it was:
 
    **DNS** first: addresses are numeric everywhere, which is the single
    most visible way this machine is not finished. A stub resolver over

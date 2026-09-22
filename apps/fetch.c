@@ -11,7 +11,7 @@
  * and an orderly close: every part of the state machine is exercised by
  * one fetch.
  *
- *   fetch ADDR [PORT] [PATH]
+ *   fetch HOST [PORT] [PATH]
  *
  * No DNS, so the address is numeric. That is the next thing missing
  * rather than an oversight -- a resolver is UDP and a packet format,
@@ -54,7 +54,7 @@ int main(int argc, char **argv)
     s32 got;
 
     if (argc < 2) {
-        eputs("usage: fetch ADDR [PORT] [PATH]\n");
+        eputs("usage: fetch HOST [PORT] [PATH]\n");
         return 1;
     }
     if (argc > 2) {
@@ -73,10 +73,10 @@ int main(int argc, char **argv)
     for (i = 0; i < 8; i++) {
         sa.sin_zero[i] = 0;
     }
-    if (!inet_aton(argv[1], &sa.sin_addr)) {
-        eputs("fetch: not an address: ");
+    if (resolve_host(argv[1], &sa.sin_addr) < 0) {
+        eputs("fetch: cannot resolve ");
         eputs(argv[1]);
-        eputs("\n  (there is no resolver yet -- use a number)\n");
+        eputs("\n");
         return 1;
     }
 

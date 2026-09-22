@@ -21,7 +21,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: all boot run test tests fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest libc cube programs clean distclean
+.PHONY: all boot run test tests fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest libc cube programs clean distclean
 
 all:
 	$(MAKE) -C bootrom
@@ -55,7 +55,7 @@ programs:
 run:
 	$(MAKE) -C kernel run
 
-test: tests fstest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest
+test: tests fstest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest
 
 tests:
 	$(MAKE) -C tests run
@@ -86,6 +86,9 @@ uemacstest:
 
 vitest:
 	cd kernel && ./vitest.sh
+
+dnstest:
+	cd kernel && ./dnstest.sh
 
 # picolibc, built and installed outside the tree (libc/README.md). Once.
 libc:

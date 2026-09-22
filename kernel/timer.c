@@ -85,7 +85,15 @@ int clock_set(const struct timeval *tv)
     struct rtcdev *r = dev_rtc();
     int err;
 
-    if (tv->tv_sec < 0 || tv->tv_usec < 0 || tv->tv_usec >= 1000000) {
+    /*
+     * tv_sec is a signed field in Linux's struct timeval, but this is a
+     * TIME, and time here is an unsigned 32-bit count (time_t in types.h)
+     * that runs to 2106. Refusing a "negative" one refused every date
+     * after January 2038 -- found by ntpdate against a server set to
+     * 2040. A negative DURATION is still refused, where durations are
+     * taken (tv_to_ticks, select).
+     */
+    if (tv->tv_usec < 0 || tv->tv_usec >= 1000000) {
         return -EINVAL;
     }
     if (!r) {

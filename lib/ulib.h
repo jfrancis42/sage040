@@ -198,6 +198,14 @@ u32    inet_addr(const char *s);         /* or INADDR_NONE */
 int    inet_aton(const char *s, struct in_addr *out);
 char  *inet_ntoa(struct in_addr in);
 
+/*
+ * A name to an address: a dotted quad, /etc/hosts, "localhost", then DNS
+ * to the servers in /etc/resolv.conf or the one DHCP gave (resolv.c).
+ * 0, or -ENOENT (no such name), -ETIMEDOUT (no answer), -ENETUNREACH
+ * (nobody to ask).
+ */
+int    resolve_host(const char *name, struct in_addr *out);
+
 /* Output helpers, all of them eventually write(). */
 void   putch(char c);
 void   puts(const char *s);          /* no newline appended */

@@ -319,7 +319,7 @@ The short version of the gotchas:
 | `bootrom/` | a boot ROM that finds `KERNEL.ROM` on the disk and runs it |
 | `kernel/` | the kernel: system calls, drivers, VFS, FAT16, shell |
 | `lib/` | what a program links against — `crt0.s`, `ulib.c`, `user.ld` |
-| `system/` | the system's own programs, installed into `/BIN` — `ifconfig`, `ping`, `netstat`, `shutdown`, `env`, `stty`, `resize`, `fsck`, `sh` |
+| `system/` | the system's own programs, installed into `/BIN` — `ifconfig`, `ping`, `netstat`, `shutdown`, `env`, `stty`, `resize`, `fsck`, `host`, `ntpdate`, `sh` |
 | `apps/` | everything else, installed at the disk root — `cube`, `hello`, `fbtest`, `fetch`, `httpd`, `spin`, `faulter` |
 | `tools/` | `qemu-net.sh`, which decides how the guest reaches the network |
 | `scratch/` | everything the test suites write; `make clean` removes it |
@@ -625,8 +625,7 @@ bridge at all.
 A program has a 256 MB address space with `brk`, `sbrk`, `mmap`,
 `munmap`, `mprotect` and a stand-in `malloc`. Pipes, redirection and
 pipelines work, and programs can be built against picolibc (`libc/`).
-Long file names are VFAT's, in UTF-8. What is not there yet: a name
-resolver, so addresses are numeric. Input is
+Long file names are VFAT's, in UTF-8. There is a DNS resolver and an SNTP client. What is not there yet:, so addresses are numeric. Input is
 still polled, though both the keyboard and the serial port have
 interrupt lines wired to the MFP; it sleeps on a wait queue rather than
 spinning, so this is now tidiness rather than cost.

@@ -822,6 +822,7 @@ struct netinfo {
     u32  tx_packets;
     u32  rx_dropped;
     u32  tx_errors;
+    u32  dns;                   /* DHCP's name server, 0 if none      */
 };
 
 struct netaddr {

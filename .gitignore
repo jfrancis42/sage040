@@ -70,3 +70,5 @@ system/fsck
 ports/uemacs/em
 apps/vcsnap
 ports/vi/vi
+system/host
+system/ntpdate

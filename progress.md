@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: 18 of 23 complete.**
+**Status: 19 of 23 complete.**
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -47,7 +47,7 @@ drive almost all of it:
 | 15 | `fsck`, and a clean-unmount flag | the machine cannot check its own disk | **done** |
 | 16 | Build and run uEmacs | the cheapest real editor | **done** |
 | 17 | Build and run vi | the other one | **done** |
-| 18 | A resolver (DNS), then **NTP** | independent of the editor work; both are UDP clients and NTP wants a name | todo |
+| 18 | A resolver (DNS), then **NTP** | independent of the editor work; both are UDP clients and NTP wants a name | **done** |
 | 19 | TCP: window scaling, timestamps, SACK, keepalives, real `TIME_WAIT` | was "deliberately not doing"; now on the list | todo |
 | 20 | Shared libraries | downstream of `mmap` and the libc | todo |
 | 21 | Paging and swapping | downstream of `mmap` | todo |
@@ -146,9 +146,9 @@ printing `ok`/`FAIL` per line, counted and named by the script — a new
 check is a line of C. A group is added only once its calls work, so a
 failure there is always a regression.
 
-**729 checks across eleven suites now:** 12 device programs, 59 fs, 368
-api, 29 edit, 18 vm, 17 net, 95 vt, 90 libc, 23 fsck, 9 uemacs, 9 vi.
-The libc, uEmacs and vi suites need `make libc` first.
+**747 checks across twelve suites now:** 12 device programs, 59 fs, 368
+api, 29 edit, 18 vm, 17 net, 95 vt, 90 libc, 23 fsck, 9 uemacs, 9 vi,
+18 dns. The libc, uEmacs and vi suites need `make libc` first.
 
 ### 1. Grow the user address space — done
 
@@ -1051,6 +1051,46 @@ vcsnap's copy of the screen; the terminal's modes afterwards. It passed
 on its first run. libctest gained a check of `ioctl(TIOCGWINSZ)` itself,
 added while working out where neatvi's extra row came from.
 
+### 18. A resolver, then NTP — done
+
+**The resolver** is `resolve_host()` in lib/ulib (`lib/resolv.c`): a
+dotted quad; `/etc/hosts`; `localhost`; then an A query over UDP to each
+`nameserver` in `/etc/resolv.conf`, or to the server DHCP handed out if
+the file names none (the kernel now reports it: `netinfo.dns`, shown by
+`ifconfig`). Two tries of two seconds per server, a random ID each
+time, and a reply believed only if its source, ID and question are the
+ones asked. CNAMEs need nothing special: a recursive server puts the A
+records they lead to in the same answer. `ADDRESS#PORT` names a port
+other than 53, as dnsmasq and unbound spell it. **No cache**, and no
+`gethostbyname`/`getaddrinfo` -- picolibc has no socket layer for them
+to sit in; that is a note for later.
+
+**New programs:** `host NAME`, and `ntpdate [-q] [-p PORT] SERVER` --
+SNTP (RFC 4330), offset `((T2-T1)+(T3-T4))/2` from four timestamps, the
+clock stepped with `settimeofday`, which writes the M48T59, so it
+survives a reboot. `ping` and `fetch` take names.
+
+**Found on the way:** the kernel refused every date after January 2038.
+`clock_set` rejected a negative `tv_sec`, and a timeval's tv_sec is
+signed although this kernel's time is an unsigned count to 2106.
+ntpdate against a server set to 2040 said "cannot set the clock". Only
+the absolute-time path changed; negative durations are still refused.
+
+**Tests:** `kernel/dnstest.sh`, a new suite, 18 checks, against
+`kernel/netservers.py` -- a DNS server and two SNTP servers on
+unprivileged host ports, reached at 10.0.2.2 through QEMU's user-mode
+network, so nothing needs the internet. An A record, a CNAME chain two
+deep, a name in another case, NXDOMAIN and its exit status, `/etc/hosts`
+by an alias, localhost, a dotted quad, a server that never answers (and
+was asked exactly twice), a **forged reply with the wrong ID sent ahead
+of the real one**, ping by name, a dead name server; `ntpdate -q`
+reporting without setting, `ntpdate` setting 2031, and a server past
+NTP's 2036 wrap giving 2040. **Negative controls:** one try instead of
+two fails the "asked twice" check; accepting any ID believes the forged
+6.6.6.6. The 2040 check failed first because the test's own timestamp
+was mistyped -- 2213937000 for 2214109800 -- and then because of the
+2038 bug above.
+
 ## Decisions worth knowing about
 
 - **RAM 64 MB, disk 512 MB**, single-sourced in `machine.conf`. The
@@ -1081,3 +1121,9 @@ added while working out where neatvi's extra row came from.
   for pages *not* owned so `vm_destroy` never hands VRAM to the
   allocator. Three documents still give missing `mmap` as the reason. Not
   on the editor's path.
+- **The shell has no `;`, `&&` or `||`.** Pipelines and redirection
+  work; command lists do not, so `a; b` passes `; b` to `a`.
+- **Names for picolibc programs**: `getaddrinfo`/`gethostbyname`, which
+  need a socket layer in picolibc first (`<sys/socket.h>`,
+  `<netinet/in.h>`, wrappers onto the calls the kernel already has).
+  The resolver is lib/ulib's only. It also has no cache.

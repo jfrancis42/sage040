@@ -18,7 +18,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-PROGS := ifconfig ping netstat shutdown env stty resize fsck sh
+PROGS := ifconfig ping netstat shutdown env stty resize fsck host ntpdate sh
 INSTALL_DIR := /BIN
 
 include $(TOPDIR)/lib/program.mk
