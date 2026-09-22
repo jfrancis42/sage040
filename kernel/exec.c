@@ -659,6 +659,15 @@ int exec_spawn(const char *path, int argc, char **argv, char **envp)
     fd_inherit(t, current);
 
     /*
+     * And its working directory and umask, as a forked child does. This
+     * was missing from the start: every program the shell ran began in
+     * the root whatever `cd` had said, and nothing noticed, because
+     * every test ran its programs from the root or named files in full.
+     * awk was the first program to open a relative name after a `cd`.
+     */
+    task_cwd_inherit(t, current);
+
+    /*
      * The new task joins its spawner's process group, as a forked one
      * does. A shell moves each job into a group of its own; a program
      * that starts a helper keeps it in its own group, so the ctrl-C

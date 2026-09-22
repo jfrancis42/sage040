@@ -85,5 +85,9 @@ system/irqs
 apps/fsstress
 system/nvram
 libc/test/inettest
+libc/test/posixtest
 apps/fbmap
 apps/udpwait
+ports/awk/awk
+ports/sed/sed
+ports/grep/grep

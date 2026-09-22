@@ -1,0 +1,36 @@
+picolibc 1.8.12: declares neither getprogname()/setprogname() (the BSDs'
+and Solaris', in <stdlib.h>) nor glibc's program_invocation_name and
+program_invocation_short_name (in <errno.h>, under _GNU_SOURCE). gnulib
+looks for these to know a program's name, and without any of them fell
+through to Windows' __argv, which does not link. Declared here; this
+system's backend defines them, set from argv[0] by crt0 before main.
+Not specific to m68k except where they are defined.
+
+diff -ru a/libc/include/errno.h b/libc/include/errno.h
+--- a/libc/include/errno.h	2026-09-22 09:07:43.598557410 -0600
++++ b/libc/include/errno.h	2026-09-22 09:07:43.617941774 -0600
+@@ -70,6 +70,12 @@
+ 
+ #include <sys/errno.h>
+ 
++#if __GNU_VISIBLE
++/* argv[0] and its last component, as glibc has them here. */
++extern char *program_invocation_name;
++extern char *program_invocation_short_name;
++#endif
++
+ _END_STD_C
+ 
+ #endif /* !__ERRNO_H__ */
+diff -ru a/libc/include/stdlib.h b/libc/include/stdlib.h
+--- a/libc/include/stdlib.h	2026-09-22 09:07:43.594603888 -0600
++++ b/libc/include/stdlib.h	2026-09-22 09:07:43.617825675 -0600
+@@ -107,6 +107,8 @@
+ __malloc_like __alloc_align(1) __alloc_size(2) __warn_unused_result __nothrow __picolibc_export;
+ #endif
+ #if __BSD_VISIBLE
++const char *getprogname(void) __picolibc_export;
++void        setprogname(const char *) __picolibc_export;
+ __uint32_t arc4random(void) __picolibc_export;
+ __uint32_t arc4random_uniform(__uint32_t) __picolibc_export;
+ void       arc4random_buf(void *, size_t) __picolibc_export;

@@ -1,0 +1,15 @@
+picolibc 1.8.12: <sys/wait.h> declares wait3 but not wait4, which BSD
+and Linux both have and bash's configure looks for. Declared here; the
+definition is in this system's backend (machine/m68k/posix-more.c),
+since libos/linux has none.
+
+--- a/libc/include/sys/wait.h	2026-09-22 08:27:07.917374744 -0600
++++ b/libc/include/sys/wait.h	2026-09-22 08:27:15.183310242 -0600
+@@ -40,6 +40,7 @@
+ pid_t wait(int *);
+ pid_t waitpid(pid_t, int *, int);
+ pid_t wait3(int *, int, struct rusage *);
++pid_t wait4(pid_t, int *, int, struct rusage *);
+ 
+ _END_STD_C
+ 

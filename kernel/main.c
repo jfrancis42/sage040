@@ -38,6 +38,7 @@
 #include "time.h"
 #include "timer.h"
 #include "fb.h"
+#include "memdev.h"
 #include "fbcon.h"
 #include "tty.h"
 #include "task.h"
@@ -225,6 +226,11 @@ static void start_drivers(void)
     if (dev_timer()) {
         ns16550_irq_on();
         ata_irq_on();
+    }
+
+    /* Not hardware, so nothing to probe for: /dev/null and friends. */
+    if (memdev_init() < 0) {
+        kputs("/dev/null, /dev/zero and /dev/full would not register\n");
     }
 
     status("video");

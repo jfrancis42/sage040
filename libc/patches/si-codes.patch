@@ -1,0 +1,50 @@
+picolibc 1.8.12: <signal.h> defines the SI_ codes but none of the
+per-signal si_code values POSIX requires with SA_SIGINFO -- ILL_, FPE_,
+SEGV_, BUS_, TRAP_, CLD_. The one true awk's SIGFPE handler names all
+eight FPE_ codes and did not compile. Added with Linux's numbers, since
+libos/linux passes the kernel's si_code through unchanged. Not specific
+to m68k.
+
+--- a/libc/include/signal.h	2026-09-22 08:34:34.955389441 -0600
++++ b/libc/include/signal.h	2026-09-22 08:34:34.972992937 -0600
+@@ -81,6 +81,40 @@
+ #define SI_ASYNCIO 4 /* Indicates completion of asycnhronous IO */
+ #define SI_MESGQ   5 /* Indicates arrival of a message at an empty queue */
+ 
++/*
++ * The per-signal si_code values POSIX defines, with Linux's numbers:
++ * libos/linux copies si_code from the kernel's siginfo unchanged.
++ */
++#define ILL_ILLOPC  1 /* illegal opcode */
++#define ILL_ILLOPN  2 /* illegal operand */
++#define ILL_ILLADR  3 /* illegal addressing mode */
++#define ILL_ILLTRP  4 /* illegal trap */
++#define ILL_PRVOPC  5 /* privileged opcode */
++#define ILL_PRVREG  6 /* privileged register */
++#define ILL_COPROC  7 /* coprocessor error */
++#define ILL_BADSTK  8 /* internal stack error */
++#define FPE_INTDIV  1 /* integer divide by zero */
++#define FPE_INTOVF  2 /* integer overflow */
++#define FPE_FLTDIV  3 /* floating-point divide by zero */
++#define FPE_FLTOVF  4 /* floating-point overflow */
++#define FPE_FLTUND  5 /* floating-point underflow */
++#define FPE_FLTRES  6 /* floating-point inexact result */
++#define FPE_FLTINV  7 /* invalid floating-point operation */
++#define FPE_FLTSUB  8 /* subscript out of range */
++#define SEGV_MAPERR 1 /* address not mapped */
++#define SEGV_ACCERR 2 /* invalid permissions for mapped object */
++#define BUS_ADRALN  1 /* invalid address alignment */
++#define BUS_ADRERR  2 /* nonexistent physical address */
++#define BUS_OBJERR  3 /* object-specific hardware error */
++#define TRAP_BRKPT  1 /* process breakpoint */
++#define TRAP_TRACE  2 /* process trace trap */
++#define CLD_EXITED    1 /* child has exited */
++#define CLD_KILLED    2 /* child has terminated abnormally, no core */
++#define CLD_DUMPED    3 /* child has terminated abnormally, core */
++#define CLD_TRAPPED   4 /* traced child has trapped */
++#define CLD_STOPPED   5 /* child has stopped */
++#define CLD_CONTINUED 6 /* stopped child has continued */
++
+ typedef struct {
+     int          si_signo;  /* Signal number */
+     int          si_code;   /* Cause of the signal */

@@ -775,6 +775,8 @@ int task_wait(int pid, int *status, int options)
                     *status = t->signalled ? t->signalled
                                            : (t->exit_status & 0xff) << 8;
                 }
+                current->waited_utime = t->utime + t->cutime;
+                current->waited_stime = t->stime + t->cstime;
                 task_reap(t);
                 return got;
             }

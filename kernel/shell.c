@@ -2196,6 +2196,10 @@ static void run_pipeline(char *line)
         /* A stage's own redirections win over the pipe, as in sh. */
         if (redirect(&r[i]) != 0) {
             redirect_end();
+            if (i == n - 1) {
+                status = 1;             /* as for a single command */
+                missing_last = 1;
+            }
             goto close_pipes;
         }
         if (i == 0) {
@@ -2399,8 +2403,12 @@ static void run_command(char *cmdline)
             return;
         }
 
+        /* A redirection that cannot be made means the command is not
+         * run, and its status is 1, as in every POSIX shell -- it was
+         * left at whatever the last command set. */
         if (redirect(&redir) != 0) {
             redirect_end();
+            last_status = 1;
             return;
         }
 
@@ -2515,21 +2523,64 @@ static void run_command(char *cmdline)
  * A script is a file of commands, and the only things it needs beyond
  * that are comments and a way to ask a question.
  *
- * WHY THE WHOLE FILE IS READ FIRST. A script can start a program that
- * reads from the terminal, and a shell reading its script through the
- * same descriptor would find the program had eaten the rest of it. The
- * file is small, the memory is there, and the alternative is a class of
- * bug with no good symptom.
+ * THE FILE IS READ A BUFFER AT A TIME, on a descriptor of the shell's own
+ * that is close-on-exec -- so a program the script starts can neither
+ * read the rest of the script nor move the shell's place in it. It used
+ * to be read whole into 4 KB and anything after that was silently not
+ * run; a script is now as long as the file, and nesting (source) is
+ * safe because each level has its own reader.
  *
  * The conditional is line-structured -- `if`, `then`, `else`, `fi` each
  * on their own line -- because that needs a stack of flags rather than a
  * parser, and because the thing a startup script actually needs to say
  * is "if this exists, do that".
  */
-#define SCRIPT_MAX    4096
 #define IF_DEPTH      8
 
-static char script_buf[SCRIPT_MAX];
+struct script_reader {
+    int  fd;
+    int  pos, len;
+    char buf[256];
+};
+
+/*
+ * The next line into `out`, without its newline. Returns its length, or
+ * -1 at the end of the file. A line longer than `max` - 1 is consumed
+ * whole and reported with *too_long, never run cut short.
+ */
+static int script_getline(struct script_reader *r, char *out, u32 max,
+                          int *too_long)
+{
+    u32 n = 0;
+    int any = 0;
+
+    *too_long = 0;
+    for (;;) {
+        char c;
+
+        if (r->pos >= r->len) {
+            s32 got = sys_read(r->fd, r->buf, sizeof(r->buf));
+
+            if (got <= 0) {
+                break;
+            }
+            r->pos = 0;
+            r->len = (int)got;
+        }
+        c = r->buf[r->pos++];
+        any = 1;
+        if (c == '\n') {
+            break;
+        }
+        if (n + 1 < max) {
+            out[n++] = c;
+        } else {
+            *too_long = 1;
+        }
+    }
+    out[n] = '\0';
+    return any ? (int)n : -1;
+}
 
 static int script_line_is(const char *line, const char *word)
 {
@@ -2581,37 +2632,26 @@ static int run_script(const char *path)
     int executing[IF_DEPTH];
     int taken[IF_DEPTH];
     int depth = 0;
-    int fd, i;
-    s32 got, total = 0;
+    int too_long;
+    struct script_reader rd;
+    char line[LINE_MAX];
 
-    fd = sys_open(path, O_RDONLY);
-    if (fd < 0) {
-        return fd;
+    rd.fd = sys_open(path, O_RDONLY | O_CLOEXEC);
+    if (rd.fd < 0) {
+        return rd.fd;
     }
-    while (total < (s32)sizeof(script_buf) - 1) {
-        got = sys_read(fd, script_buf + total,
-                       (u32)(sizeof(script_buf) - 1 - (u32)total));
-        if (got <= 0) {
-            break;
-        }
-        total += got;
-    }
-    sys_close(fd);
-    script_buf[total] = '\0';
+    rd.pos = rd.len = 0;
 
     executing[0] = 1;
     taken[0] = 1;
 
-    i = 0;
-    while (i < total) {
-        char *line = &script_buf[i];
-        int end = i;
-
-        while (end < total && script_buf[end] != '\n') {
-            end++;
+    while (script_getline(&rd, line, sizeof(line), &too_long) >= 0) {
+        if (too_long) {
+            err_puts(path);
+            err_puts(": a line longer than the shell takes, not run\n");
+            last_status = 2;
+            continue;
         }
-        script_buf[end] = '\0';
-        i = end + 1;
 
         /* Strip a trailing carriage return, so a script written on the
          * host with DOS line endings works. */
@@ -2662,6 +2702,7 @@ static int run_script(const char *path)
 
                 if (depth + 1 >= IF_DEPTH) {
                     err_puts("script: if nested too deeply\n");
+                    sys_close(rd.fd);
                     return -E2BIG;
                 }
                 if (executing[depth]) {
@@ -2709,6 +2750,7 @@ static int run_script(const char *path)
         }
     }
 
+    sys_close(rd.fd);
     return 0;
 }
 

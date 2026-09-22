@@ -1,0 +1,59 @@
+picolibc 1.8.12: setlocale(category, "") looks up a locale named "",
+where POSIX says "" means the environment -- LC_ALL, then the variable
+named after the category, then LANG, and "C" if none is set. With it,
+no program could be given a UTF-8 locale by the shell: awk's Unicode
+tests, run with LANG=C.UTF-8, counted bytes. Not specific to m68k.
+
+--- a/libc/locale/setlocale.c	2026-09-22 08:51:55.219473986 -0600
++++ b/libc/locale/setlocale.c	2026-09-22 08:51:55.242323223 -0600
+@@ -35,9 +35,40 @@
+ 
+ #define _DEFAULT_SOURCE
+ #include "locale_private.h"
++#include <stdlib.h>
+ #include "../ctype/ctype_.h"
+ #include "../stdlib/local.h"
+ 
++/*
++ * setlocale(cat, ""): POSIX says the name comes from the environment --
++ * LC_ALL, then the variable named after the category, then LANG -- and
++ * "C" if none is set or they are empty.
++ */
++static const char *
++locale_from_environment(int category)
++{
++    static const char *const names[] = {
++        [LC_COLLATE] = "LC_COLLATE", [LC_CTYPE] = "LC_CTYPE",
++        [LC_MONETARY] = "LC_MONETARY", [LC_NUMERIC] = "LC_NUMERIC",
++        [LC_TIME] = "LC_TIME", [LC_MESSAGES] = "LC_MESSAGES",
++    };
++    const char *v = getenv("LC_ALL");
++
++    if (!v || !*v) {
++        /* For LC_ALL itself, LC_CTYPE: the one category this library
++         * keeps per locale. */
++        int c = category == LC_ALL ? LC_CTYPE : category;
++
++        v = (c >= 0 && c < (int)(sizeof(names) / sizeof(names[0])) && names[c])
++                ? getenv(names[c]) : NULL;
++    }
++    if (!v || !*v)
++        v = getenv("LANG");
++    if (!v || !*v)
++        v = "C";
++    return v;
++}
++
+ char *
+ setlocale(int category, const char *name)
+ {
+@@ -52,6 +83,9 @@
+     if (name == NULL)
+         return (char *)__locale_name(__global_locale);
+ 
++    if (name[0] == '\0')
++        name = locale_from_environment(category);
++
+     /* Set the global locale */
+     locale = __find_locale(name);
+     if (locale == locale_INVALID)

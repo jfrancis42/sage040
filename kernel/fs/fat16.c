@@ -2685,6 +2685,91 @@ static int fat_readdir(int index, struct dirent *out)
     return fat_readdir_in(vfs_cwd_ino(), index, out);
 }
 
+/*
+ * The absolute path of the directory whose identity is `ino`, worked out
+ * now rather than remembered: every directory but the root holds ".."
+ * as its second entry, naming its parent's cluster, and the parent holds
+ * the one entry whose first cluster is this directory -- which gives
+ * its name. Repeat to the root. It is the classic Unix getcwd, and it
+ * is what makes a directory descriptor follow its directory through a
+ * rename, as Linux's does. -ENOENT if the directory has been removed.
+ */
+static int fat_dir_path(u32 ino, char *out, u32 size)
+{
+    char buf[PATH_MAX];
+    u32 pos = sizeof(buf) - 1;
+    u32 cur = ino;
+    int depth = 0;
+
+    if (!mounted) {
+        return -ENODEV;
+    }
+    buf[pos] = '\0';
+    while (cur != 0) {
+        struct dir d, parent;
+        u8 ent[DIRENT_SIZE];
+        char name[NAME_MAX + 1];
+        u32 i, n;
+        int found = 0, err;
+
+        if (++depth > PATH_MAX / 2) {
+            return -ELOOP;          /* a corrupt volume, not a deep one */
+        }
+        d.cluster = cur;
+        err = dir_read_in(&d, 1, ent);
+        if (err != 0) {
+            return err;
+        }
+        if (memcmp(ent, "..         ", 11) != 0 || !(ent[11] & ATTR_DIR)) {
+            return -EIO;
+        }
+        parent.cluster = le16(&ent[26]);
+
+        scan_acc.active = 0;
+        for (i = 0; i < dir_entries(&parent); i++) {
+            err = dir_read_in(&parent, i, ent);
+            if (err != 0) {
+                return err;
+            }
+            if (ent[0] == 0x00) {
+                break;
+            }
+            if ((ent[11] & ATTR_LFN) == ATTR_LFN) {
+                lfn_feed(&scan_acc, ent, i);
+                continue;
+            }
+            if (dir_entry_is_file(ent) && (ent[11] & ATTR_DIR) &&
+                ent[0] != '.' && le16(&ent[26]) == cur) {
+                if (!lfn_name(&scan_acc, ent, name, 0)) {
+                    short_name(ent, name);
+                }
+                found = 1;
+                break;
+            }
+            scan_acc.active = 0;
+        }
+        if (!found) {
+            return -ENOENT;
+        }
+        n = (u32)strlen(name);
+        if (n + 1 > pos) {
+            return -ENAMETOOLONG;
+        }
+        pos -= n;
+        memcpy(buf + pos, name, n);
+        buf[--pos] = '/';
+        cur = parent.cluster;
+    }
+    if (buf[pos] == '\0') {
+        buf[--pos] = '/';
+    }
+    if (sizeof(buf) - 1 - pos + 1 > size) {
+        return -ENAMETOOLONG;
+    }
+    strcpy(out, buf + pos);
+    return 0;
+}
+
 /* The identity of the directory `path` names, for fat_readdir_in. */
 static int fat_dir_ino(const char *path, u32 *ino)
 {
@@ -3617,6 +3702,7 @@ static struct fs_type fat16_type = {
     fat_getcwd,
     fat_readdir_in,
     fat_dir_ino,
+    fat_dir_path,
     fat_check,
     fat_bmap,
     0

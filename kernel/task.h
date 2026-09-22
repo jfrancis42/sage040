@@ -172,6 +172,9 @@ struct task {
      */
     u32   utime, stime;
     u32   cutime, cstime;
+    /* The user and system ticks of the child the last wait reaped,
+     * its own children's included -- what wait4 reports as its rusage. */
+    u32   waited_utime, waited_stime;
 
     /*
      * Interval timers. The real one is a deadline in jiffies, because it

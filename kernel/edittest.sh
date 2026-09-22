@@ -101,6 +101,21 @@ mcopy -o -i "$MIMG" ../apps/spin ::/SPIN
 mcopy -o -i "$MIMG" ../apps/hello ::/HELLO
 mcopy -o -i "$MIMG" ../system/shutdown ::/SHUTDOWN
 mcopy -o -i "$MIMG" ../apps/napper ::/NAPPER
+# A script far past the 4 KB the shell once read -- its last line must
+# run -- and one with a line longer than the shell takes, which must be
+# reported rather than run cut short.
+{
+    i=1
+    while [ $i -le 300 ]; do echo "echo long-script-line-$i"; i=$((i + 1)); done
+} > "$SCRATCH/long.tmp"
+{
+    printf 'echo %0200d\n' 0
+    echo "echo after-the-long-line"
+} > "$SCRATCH/wide.tmp"
+mmd -i "$MIMG" ::/BIN 2>/dev/null || true
+mcopy -o -i "$MIMG" ../system/sh ::/BIN/SH
+mcopy -o -i "$MIMG" "$SCRATCH/long.tmp" ::/LONG.SH
+mcopy -o -i "$MIMG" "$SCRATCH/wide.tmp" ::/WIDE.SH
 
 #
 # The session.
@@ -259,6 +274,18 @@ feed() {
     sleep 0.5
     printf "echo 'list-quoted;not-split' ; echo \"list-q && kept\"\r"
     sleep 0.5
+    # A redirection that cannot be made: the command does not run, and
+    # the status is 1 -- in a pipeline too -- not the last command's.
+    printf 'echo redir-must-not-print > /NODIR/x; echo REDIR=$?\r'
+    sleep 1
+    printf 'echo a | cat > /NODIR/y; echo PREDIR=$?\r'
+    sleep 1
+    printf 'echo into-the-void > /dev/null; echo NULL=$?\r'
+    sleep 1
+    printf 'sh /LONG.SH\r'
+    sleep 6
+    printf 'sh /WIDE.SH; echo WIDE=$?\r'
+    sleep 1
     printf 'napper 1 & echo list-after-amp\r'
     sleep 2
 
@@ -443,6 +470,18 @@ check "a builtin that fails sets \$? (it never did)" $?
 grep -qx "list-quoted;not-split" "$SCRATCH/clean.tmp" &&
     grep -qx "list-q && kept" "$SCRATCH/clean.tmp"
 check "a ; or && inside quotes separates nothing" $?
+grep -qx "REDIR=1" "$SCRATCH/clean.tmp" && ! grep -qx "redir-must-not-print" "$SCRATCH/clean.tmp"
+check "a failed redirection runs nothing and sets \$? to 1" $?
+grep -qx "PREDIR=1" "$SCRATCH/clean.tmp"
+check "  and so does one on the last stage of a pipeline" $?
+grep -qx "NULL=0" "$SCRATCH/clean.tmp" && ! grep -qx "into-the-void" "$SCRATCH/clean.tmp"
+check "> /dev/null swallows output and succeeds" $?
+grep -qx "long-script-line-300" "$SCRATCH/clean.tmp" && grep -qx "long-script-line-1" "$SCRATCH/clean.tmp"
+r=$?   # before the $(...) below, which would set $? itself
+check "a script of $(wc -c < "$SCRATCH/long.tmp") bytes runs to its last line" $r
+grep -q "a line longer than the shell takes, not run" "$SCRATCH/clean.tmp" &&
+    ! grep -q "^0000000000" "$SCRATCH/clean.tmp" && grep -qx "after-the-long-line" "$SCRATCH/clean.tmp"
+check "  a line too long for the shell is reported, not run cut short, and the rest runs" $?
 grep -qx "list-after-amp" "$SCRATCH/clean.tmp"
 check "a & b: a in the background, and b at once" $?
 

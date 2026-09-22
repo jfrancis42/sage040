@@ -19,10 +19,9 @@
  *   - Nothing is ever paged out, so mlock and friends succeed, and
  *     madvise and msync have nothing to do.
  *
- * The *at calls understand AT_FDCWD and absolute paths. A path relative
- * to some other open directory is refused with EOPNOTSUPP: a directory
- * descriptor here knows WHICH directory, not where it is, and the
- * filesystem's walk starts from the working directory.
+ * The *at calls take AT_FDCWD, absolute paths, and paths relative to
+ * an open directory, which is resolved to where that directory is at
+ * the time of the call (at_path).
  */
 #include "swap.h"
 #include "sysint.h"
@@ -60,30 +59,46 @@ _Static_assert(sizeof(struct termios2) == 44, "struct termios2");
 /* ---------------------------------------------------------------- */
 
 /*
- * Fetch a path for an *at call. Returns 0, or -errno. `dirfd` may be
- * AT_FDCWD; any other directory is accepted only if the path does not
- * depend on it.
+ * Fetch a path for an *at call, as an absolute path or one relative to
+ * the working directory. Returns 0, or -errno. A path relative to some
+ * other open directory is joined onto where that directory is NOW
+ * (vfs_dir_path), so a descriptor follows its directory through a
+ * rename -- which is what gnulib's fts, and so `grep -r`, rely on.
  */
 static int at_path(int dirfd, u32 upath, char *path)
 {
-    int err = fetch_str(path, upath, PATH_MAX);
+    char rel[PATH_MAX];
+    struct file *f;
+    u32 n;
+    int err = fetch_str(rel, upath, PATH_MAX);
 
     if (err < 0) {
         return err;
     }
-    if (!path[0]) {
+    if (!rel[0]) {
         return -ENOENT;
     }
-    if (dirfd == AT_FDCWD || path[0] == '/') {
+    if (dirfd == AT_FDCWD || rel[0] == '/') {
+        strcpy(path, rel);
         return 0;
     }
-    if (!fd_get(dirfd)) {
+    f = fd_get(dirfd);
+    if (!f) {
         return -EBADF;
     }
-    if (!vfs_is_dir_file(fd_get(dirfd))) {
-        return -ENOTDIR;
+    err = vfs_dir_path(f, path, PATH_MAX);
+    if (err < 0) {
+        return err;             /* -ENOTDIR for a descriptor not a directory */
     }
-    return -EOPNOTSUPP;
+    n = (u32)strlen(path);
+    if (n + 1 + strlen(rel) + 1 > PATH_MAX) {
+        return -ENAMETOOLONG;
+    }
+    if (n > 1) {
+        path[n++] = '/';
+    }
+    strcpy(path + n, rel);
+    return 0;
 }
 
 /* ---------------------------------------------------------------- */
@@ -239,6 +254,21 @@ static s32 do_clock_gettime(int id, u32 uts)
         return -EINVAL;
     }
     return store(uts, &ts, sizeof(ts));
+}
+
+/* ---------------------------------------------------------------- */
+/* Resource usage                                                    */
+/* ---------------------------------------------------------------- */
+
+/* Ticks into a struct rusage: the times, and nothing else, because
+ * nothing else is counted. */
+static void rusage_of(struct rusage *ru, u32 uticks, u32 sticks)
+{
+    memset(ru, 0, sizeof(*ru));
+    ru->ru_utime.tv_sec = uticks / HZ;
+    ru->ru_utime.tv_usec = (uticks % HZ) * (1000000 / HZ);
+    ru->ru_stime.tv_sec = sticks / HZ;
+    ru->ru_stime.tv_usec = (sticks % HZ) * (1000000 / HZ);
 }
 
 /* ---------------------------------------------------------------- */
@@ -440,6 +470,77 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         return err < 0 ? err : vfs_stat(path, &st);
     }
 
+    /* An open directory as the working directory. */
+    case __NR_fchdir:
+        return vfs_fchdir((int)a1);
+
+    /* No permissions to change, as chmod: the descriptor must be open. */
+    case __NR_fchmod: {
+        struct stat st;
+
+        return vfs_fstat((int)a1, &st);
+    }
+
+    /*
+     * Owners. Everything belongs to root, and there is only root, so
+     * "change it to root" -- or to -1, "leave it" -- succeeds and anything
+     * else cannot be recorded: EPERM, as a Linux FAT mount answers.
+     */
+    case __NR_chown:  case __NR_chown32:
+    case __NR_lchown: case __NR_lchown32:
+    case __NR_fchownat:
+    case __NR_fchown: case __NR_fchown32: {
+        struct stat st;
+        u32 uid = (nr == __NR_fchownat) ? a3 : a2;
+        u32 gid = (nr == __NR_fchownat) ? a4 : a3;
+
+        if (nr == __NR_fchown || nr == __NR_fchown32) {
+            err = vfs_fstat((int)a1, &st);
+        } else {
+            if (nr == __NR_fchownat) {
+                err = at_path((int)a1, a2, path);
+            } else {
+                err = fetch_str(path, a1, sizeof(path));
+            }
+            if (err >= 0) {
+                err = vfs_stat(path, &st);
+            }
+        }
+        if (err < 0) {
+            return err;
+        }
+        /* chown's own ids are 16 bits wide; the 32 calls' are 32. */
+        if (nr == __NR_chown || nr == __NR_lchown || nr == __NR_fchown) {
+            uid = (uid & 0xffff) == 0xffff ? 0xffffffffUL : (uid & 0xffff);
+            gid = (gid & 0xffff) == 0xffff ? 0xffffffffUL : (gid & 0xffff);
+        }
+        if ((uid != 0 && uid != 0xffffffffUL) ||
+            (gid != 0 && gid != 0xffffffffUL)) {
+            return -EPERM;
+        }
+        return 0;
+    }
+
+    /* FAT has no hard links and no device nodes or FIFOs on disk. */
+    case __NR_link:
+    case __NR_linkat:
+    case __NR_mknod:
+    case __NR_mknodat:
+        return -EPERM;
+
+    case __NR_getrusage: {
+        struct rusage ru;
+
+        if ((s32)a1 == RUSAGE_SELF) {
+            rusage_of(&ru, current->utime, current->stime);
+        } else if ((s32)a1 == RUSAGE_CHILDREN) {
+            rusage_of(&ru, current->cutime, current->cstime);
+        } else {
+            return -EINVAL;
+        }
+        return store(a2, &ru, sizeof(ru));
+    }
+
     case __NR_readlink:
     case __NR_readlinkat: {
         struct stat st;
@@ -600,7 +701,11 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         if (a4) {
             struct rusage ru;
 
-            memset(&ru, 0, sizeof(ru));
+            /* The reaped child's times; a stopped child has used time
+             * but not finished using it, so reports none, as Linux's
+             * wait4 does for a child it does not reap. */
+            rusage_of(&ru, current->waited_utime, current->waited_stime);
+            current->waited_utime = current->waited_stime = 0;
             err = store(a4, &ru, sizeof(ru));
             if (err < 0) {
                 return err;

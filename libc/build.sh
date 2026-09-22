@@ -101,6 +101,10 @@ EOF
 #   io-long-long          %lld in printf, which real programs use
 #   stdio-exit-flush      stdout flushed at exit, as everyone expects
 #   fstat-bufsiz          stdio buffers sized from st_blksize
+#   mb-capable            multibyte locales, so a program can ask for
+#                         C.UTF-8 (LANG, setlocale) -- names here are
+#                         UTF-8 bytes. The default is still "C", as on
+#                         Linux with no LANG set.
 if [ ! -f "$BUILD/build.ninja" ]; then
     meson setup "$BUILD" "$SRC" \
         --cross-file "$BUILD/cross-sage040.txt" \
@@ -117,6 +121,7 @@ if [ ! -f "$BUILD/build.ninja" ]; then
         -Dthread-local-storage=false \
         -Dsingle-thread=true \
         -Dio-long-long=true \
+        -Dmb-capable=true \
         -Dstdio-exit-flush=true \
         -Dfstat-bufsiz=true \
         -Dspecsdir=none \
@@ -140,6 +145,10 @@ cp "$HERE/termcap/termcap.h" "$PREFIX/include/termcap.h"
 # picolibc's (its arpa/inet.h has the byte-order macros and nothing
 # else; ours has those and the rest), then into libc.a.
 cp -r "$HERE/net/include/." "$PREFIX/include/"
+# And the headers the m68k backend adds that meson does not know to
+# install (the overlay puts them where the build finds them).
+cp "$HERE/picolibc/libc/include/sys/utsname.h" "$PREFIX/include/sys/"
+cp "$HERE/picolibc/libc/include/stdio_ext.h" "$PREFIX/include/"
 NET_OBJS=
 for src in "$HERE"/net/src/*.c; do
     obj="$BUILD/net-$(basename "$src" .c).o"
@@ -181,6 +190,7 @@ if [ ! -f "$BUILD_PIC/build.ninja" ]; then
         -Dthread-local-storage=false \
         -Dsingle-thread=true \
         -Dio-long-long=true \
+        -Dmb-capable=true \
         -Dstdio-exit-flush=true \
         -Dfstat-bufsiz=true \
         -Dspecsdir=none \

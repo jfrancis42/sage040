@@ -51,6 +51,7 @@ const char *strerror(int err)
     case ENAMETOOLONG:    return "file name too long";
     case ENOSYS:          return "function not implemented";
     case ENOTEMPTY:       return "directory not empty";
+    case ELOOP:           return "too many levels of symbolic links";
     case EPIPE:           return "broken pipe";
     case ENOTSOCK:        return "socket operation on non-socket";
     case EDESTADDRREQ:    return "destination address required";

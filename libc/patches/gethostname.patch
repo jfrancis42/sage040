@@ -1,0 +1,37 @@
+picolibc 1.8.12: libos/linux/gethostname.c makes the uname system call
+with (name, size), as if uname were gethostname. Linux has no
+gethostname call; uname fills a whole struct utsname through the first
+argument whatever `size` says, overrunning any buffer shorter than it,
+and the host name is not at the start of it anyway. Now it asks uname()
+and copies nodename, refusing with ENAMETOOLONG a buffer too short.
+Found reading it before building bash, which calls it for its prompt.
+Not specific to m68k. uname() itself is not in libos/linux; this
+system's backend provides it (machine/m68k/posix-more.c).
+
+--- a/libos/linux/gethostname.c	2026-09-22 08:26:04.658800105 -0600
++++ b/libos/linux/gethostname.c	2026-09-22 08:26:04.675463652 -0600
+@@ -34,10 +34,23 @@
+  */
+ 
+ #include "local-linux.h"
++#include <string.h>
++#include <sys/utsname.h>
+ #include <unistd.h>
+ 
+ int
+ gethostname(char *name, size_t size)
+ {
+-    return syscall(LINUX_SYS_uname, name, size);
++    struct utsname u;
++    size_t         n;
++
++    if (uname(&u) < 0)
++        return -1;
++    n = strlen(u.nodename);
++    if (n + 1 > size) {
++        errno = ENAMETOOLONG;
++        return -1;
++    }
++    memcpy(name, u.nodename, n + 1);
++    return 0;
+ }

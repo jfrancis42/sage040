@@ -64,6 +64,9 @@ struct fs_type {
      */
     int (*readdir_in)(u32 ino, int index, struct dirent *d);
     int (*dir_ino)(const char *path, u32 *ino);
+    /* And back again: the absolute path of directory `ino`, as it is
+     * NOW -- what an *at call and fchdir resolve an open directory by. */
+    int (*dir_path)(u32 ino, char *out, u32 size);
 
     /* Check the volume, and with FSCK_REPAIR put it right. */
     int (*check)(int flags, struct fsck_report *r);
@@ -147,6 +150,8 @@ int  vfs_access(const char *path, int mode);
 int  vfs_readdir(int index, struct dirent *d);
 s32  vfs_getdents64(int fd, u8 *buf, u32 len);
 int  vfs_is_dir_file(struct file *f);
+int  vfs_dir_path(struct file *f, char *out, u32 size);
+int  vfs_fchdir(int fd);
 int  vfs_statfs(struct statfs *s);
 int  vfs_check(int flags, struct fsck_report *r);
 int  vfs_flock(int fd, int op);

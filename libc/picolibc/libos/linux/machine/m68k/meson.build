@@ -38,6 +38,8 @@ srcs_os_linux_machine = [
   'sa-restore.S',
   'syscall.S',
   'posix-extra.c',
+  'posix-more.c',
+  'stdio-ext.c',
 ]
 
 src_os_linux_machine = files(srcs_os_linux_machine)

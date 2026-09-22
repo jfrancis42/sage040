@@ -64,6 +64,7 @@ mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
     $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
 mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
 mcopy -o -i "$MIMG" ../libc/test/libctest ::/LIBCTEST
+mcopy -o -i "$MIMG" ../libc/test/posixtest ::/POSIXTST
 mmd -i "$MIMG" ::/BIN
 
 rm -f "$SCRATCH/in.fifo"
@@ -94,6 +95,13 @@ wait_for "libctest: done"
 sleep 0.5
 printf 'libctest > /LCOUT.TXT\r' >&3
 sleep 8
+# From a directory other than the root: a program starts where the
+# shell is standing (spawn did not pass the working directory on).
+printf 'mkdir /PTSTART\r' >&3
+printf 'cd /PTSTART\r' >&3
+printf '/POSIXTST\r' >&3
+wait_for "posixtest: done"
+sleep 0.3
 printf 'echo LIBC-FINISHED\r' >&3
 wait_for "LIBC-FINISHED"
 sleep 0.3
@@ -115,9 +123,9 @@ while IFS= read -r line; do
         "  ok   "*)   check "${line#  ok   }" 0 ;;
         "  FAIL "*)   check "${line#  FAIL }" 1 ;;
     esac
-done < <(grep -E '^  (ok  |FAIL) ' "$SCRATCH/clean.tmp")
+done < <(sed '/^posixtest:/,$d' "$SCRATCH/clean.tmp" | grep -E '^  (ok  |FAIL) ')
 
-test "$(grep -cE '^  ok   ' "$SCRATCH/clean.tmp")" -ge 60
+test "$(sed '/^posixtest:/,$d' "$SCRATCH/clean.tmp" | grep -cE '^  ok   ')" -ge 60
 check "libctest ran all of its checks" $?
 
 grep -qx "libctest: 0 failed" "$SCRATCH/clean.tmp"
@@ -143,6 +151,18 @@ check "  exactly once: fork did not duplicate unflushed output" $?
 
 grep -qx "LIBC-FINISHED" "$SCRATCH/clean.tmp"
 check "the shell is still there afterwards" $?
+
+echo "=== checks: the POSIX calls the standard tools need (posixtest) ==="
+while IFS= read -r line; do
+    case "$line" in
+        "  ok   "*)   check "${line#  ok   }" 0 ;;
+        "  FAIL "*)   check "${line#  FAIL }" 1 ;;
+    esac
+done < <(sed -n '/^posixtest: the calls/,/^posixtest: done/p' "$SCRATCH/clean.tmp" | grep -E '^  (ok  |FAIL) ')
+grep -qx "posixtest: 0 failed" "$SCRATCH/clean.tmp"
+check "posixtest ran to the end" $?
+grep -qx "posixtest: started in /PTSTART" "$SCRATCH/clean.tmp"
+check "a program starts in the shell's working directory, not the root" $?
 
 echo
 echo "  passed: $pass"

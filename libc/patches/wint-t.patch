@@ -1,0 +1,30 @@
+picolibc 1.8.12: <sys/_types.h> gets wint_t from <stddef.h> with
+__need_wint_t. gnulib's replacement <stddef.h> -- generated whenever GCC
+defines __STDC_VERSION_STDDEF_H__ on a partial include (GCC bug 114870),
+which gcc 15 does -- turns that request into a full include, which does
+not provide wint_t, and every header after it fails. GNU grep did not
+build. picolibc already works around the Arm Compiler's <stddef.h> the
+same way; now also GCC's, when _WINT_T (GCC's own marker) is not set.
+Not specific to m68k.
+
+diff -ru a/libc/include/sys/_types.h b/libc/include/sys/_types.h
+--- a/libc/include/sys/_types.h	2026-09-22 09:27:35.735977049 -0600
++++ b/libc/include/sys/_types.h	2026-09-22 09:27:35.755646647 -0600
+@@ -54,10 +54,15 @@
+ #include <machine/_types.h>
+ 
+ /* The Arm Compiler doesn't define wint_t as part of stddef.h so
+- * define it here.
++ * define it here. Nor does <stddef.h> when something wraps it -- gnulib's
++ * replacement turns the __need_wint_t request into a full include, which
++ * does not provide wint_t -- so with GCC, if it did not appear (GCC marks
++ * its own with _WINT_T), define it here too.
+  */
+-#if defined(__ARMCC_VERSION) && (__ARMCC_VERSION >= 6100100)
++#if (defined(__ARMCC_VERSION) && (__ARMCC_VERSION >= 6100100)) || \
++    (defined(__GNUC__) && defined(__WINT_TYPE__) && !defined(_WINT_T))
+ typedef __WINT_TYPE__ wint_t;
++#define _WINT_T
+ #endif
+ 
+ #ifndef __machine_blkcnt_t_defined

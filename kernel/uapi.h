@@ -1179,7 +1179,20 @@ struct sigcontext {
 /* lib/ulib, which keeps this system's simpler calls above.           */
 /* ---------------------------------------------------------------- */
 
+#define __NR_link            9
+#define __NR_mknod          14
 #define __NR_chmod          15
+#define __NR_chown          16
+#define __NR_getrusage      77
+#define __NR_fchmod         94
+#define __NR_fchown         95
+#define __NR_lchown        182
+#define __NR_chown32       198
+#define __NR_fchown32      207
+#define __NR_lchown32      212
+#define __NR_mknodat       290
+#define __NR_fchownat      291
+#define __NR_linkat        296
 #define __NR_truncate       92
 #define __NR_ftruncate      93
 #define __NR_setuid         23
@@ -1348,6 +1361,9 @@ struct rlimit64 {
 #define RLIM_NLIMITS    16
 
 /* wait4's resource usage, 72 bytes. Only the times are filled in. */
+#define RUSAGE_SELF      0
+#define RUSAGE_CHILDREN  (-1)
+
 struct rusage {
     struct timeval ru_utime;
     struct timeval ru_stime;

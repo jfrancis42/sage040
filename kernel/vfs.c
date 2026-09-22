@@ -598,6 +598,41 @@ int vfs_is_dir_file(struct file *f)
     return f && f->ops == &dir_ops;
 }
 
+/* Where an open directory is now -- worked out, not remembered, so it
+ * follows the directory through a rename. */
+int vfs_dir_path(struct file *f, char *out, u32 size)
+{
+    int r;
+
+    if (!vfs_is_dir_file(f)) {
+        return -ENOTDIR;
+    }
+    if (!mounted_fs || !mounted_fs->dir_path) {
+        return -ENOSYS;
+    }
+    fs_lock();
+    r = mounted_fs->dir_path(dir_ino_of(f), out, size);
+    fs_unlock();
+    return r;
+}
+
+int vfs_fchdir(int fd)
+{
+    struct file *f = fd_get(fd);
+    char path[PATH_MAX];
+    int r;
+
+    if (!f) {
+        return -EBADF;
+    }
+    r = vfs_dir_path(f, path, sizeof(path));
+    if (r < 0) {
+        return r;
+    }
+    vfs_cwd_set(dir_ino_of(f), path);
+    return 0;
+}
+
 /*
  * Fill `buf` with as many linux_dirent64 records as fit, from where the
  * descriptor has got to. Returns the bytes used, 0 at the end, or

@@ -1,0 +1,20 @@
+picolibc 1.8.12: <stdio.h> defines getchar_unlocked(f) and
+putchar_unlocked(c, f) as macros taking one argument more than the
+functions POSIX specifies, getchar_unlocked(void) and
+putchar_unlocked(int) -- so every correct call is a preprocessor error.
+GNU sed's debug.c did not compile. Not specific to m68k.
+
+--- a/libc/include/stdio.h	2026-09-22 09:00:46.598275514 -0600
++++ b/libc/include/stdio.h	2026-09-22 09:00:46.602324047 -0600
+@@ -553,9 +553,9 @@
+ int putchar_unlocked(int) __picolibc_export;
+ #ifndef __STDIO_LOCKING
+ #define getc_unlocked(f)       getc(f)
+-#define getchar_unlocked(f)    getc(stdin)
++#define getchar_unlocked()     getc(stdin)
+ #define putc_unlocked(c, f)    putc(c, f)
+-#define putchar_unlocked(c, f) putc(c, stdout)
++#define putchar_unlocked(c)    putc(c, stdout)
+ #endif
+ #endif
+ 

@@ -52,6 +52,7 @@
 #define ENAMETOOLONG    36      /* file name too long                 */
 #define ENOSYS          38      /* function not implemented           */
 #define ENOTEMPTY       39      /* directory not empty                */
+#define ELOOP           40      /* too many levels of links, or a loop */
 #define EPIPE           32      /* broken pipe                        */
 #define ENOTSOCK        88      /* socket operation on non-socket     */
 #define EDESTADDRREQ    89      /* destination address required       */

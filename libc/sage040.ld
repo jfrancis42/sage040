@@ -43,7 +43,13 @@ SECTIONS {
     } > USER
     .fini_array : {
         PROVIDE_HIDDEN(__fini_array_start = .);
-        KEEP(*(SORT_BY_INIT_PRIORITY(.fini_array.*)))
+        /* .dtors.*: this gcc puts a destructor WITH A PRIORITY there,
+         * not in .fini_array.* -- picolibc's stdout flush at exit is
+         * one, and without this it was discarded and never ran. Line
+         * buffering hid it until stdout was fully buffered into files:
+         * only output with no final newline was ever lost. */
+        KEEP(*(SORT_BY_INIT_PRIORITY(.fini_array.*)
+               SORT_BY_INIT_PRIORITY(.dtors.*)))
         KEEP(*(.fini_array .dtors))
         /* .fini_array_onexit: picolibc's pointer to the function that
          * runs atexit() handlers. exit() only walks this array, so

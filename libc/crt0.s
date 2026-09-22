@@ -24,6 +24,10 @@
         .type   _start,@function
 _start:
         move.l  12(%sp),environ         | picolibc's own, from stdlib
+        move.l  8(%sp),%a0              | argv[0], for program_invocation_name
+        move.l  (%a0),-(%sp)            |   and getprogname (posix-more.c)
+        jsr     __sage040_progname
+        addq.l  #4,%sp
         jsr     __libc_init_array
         move.l  12(%sp),-(%sp)          | envp
         move.l  12(%sp),-(%sp)          | argv (the stack moved by 4)

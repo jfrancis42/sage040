@@ -1,0 +1,37 @@
+picolibc 1.8.12: ungetc() holds one character, which is all C promises,
+and refuses a second. glibc and the BSDs give more for a buffered stream
+by stepping back over bytes still in the buffer, and programs rely on
+it: the one true awk pushes back a partly-matched multibyte record
+separator a byte at a time and dies with "unable to ungetc". Now a
+buffered stream pushing back the byte it has just read steps back in
+its buffer; anything else still uses the one-character slot. Not
+specific to m68k.
+
+--- a/libc/stdio/ungetc.c	2026-09-22 08:55:53.035967881 -0600
++++ b/libc/stdio/ungetc.c	2026-09-22 08:55:53.053789845 -0600
+@@ -46,6 +46,25 @@
+     if ((stream->flags & __SRD) == 0 || c == EOF)
+         return EOF;
+ 
++    /*
++     * A buffered stream pushed back the byte it has just read: step back
++     * over it in the buffer, where it still is. That is how glibc and
++     * the BSDs give more than the one character of pushback C promises,
++     * and programs rely on it -- the one true awk pushes back a whole
++     * partly-matched multibyte record separator. Only while nothing is
++     * in the one-character slot, which would otherwise come out first.
++     */
++    if ((stream->flags & __SBUF) && stream->unget == 0) {
++        struct __file_bufio *bf = (struct __file_bufio *)stream;
++
++        if (bf->dir == __SRD && bf->off > 0 &&
++            (unsigned char)bf->buf[bf->off - 1] == (unsigned char)c) {
++            bf->off--;
++            stream->flags &= ~__SEOF;
++            return (unsigned char)c;
++        }
++    }
++
+     if (!__atomic_compare_exchange_ungetc(&stream->unget, 0, (__ungetc_t)(unsigned char)c + 1))
+         return EOF;
+ 

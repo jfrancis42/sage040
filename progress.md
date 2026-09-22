@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: 23 of 23 complete** -- 23 being "regression tests throughout", which is never finished.
+**Status: 27 of 31 complete** -- 23 being "regression tests throughout", which is never finished; 24-31 (the standard tools, the POSIX gaps, then Python) are in progress.
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -53,6 +53,14 @@ drive almost all of it:
 | 21 | Paging and swapping | downstream of `mmap` | **done** |
 | 22 | Interrupt-driven input **and disk**, the NVRAM, the static limits | cleanup, any time | **done** |
 | 23 | Regression tests throughout | every task ships with its tests | ongoing |
+| 24 | The libc and kernel gaps the standard tools need | one step shared by 25-28 | **done** |
+| 25 | awk (the one true awk) | smallest, no configure: proves the build path | **done** |
+| 26 | GNU sed | gnulib, a cross configure | **done** |
+| 27 | GNU grep | the same, and gnulib's own regex | **done** |
+| 28 | bash | the most demanding: signals, job control | |
+| 29 | The small utilities: sort, wc, find, xargs, head, tail, cut, tr, uniq... | sbase (suckless): ~100 POSIX tools, MIT, one Makefile | |
+| 30 | The POSIX gaps found along the way -- all of them, not only what 24-29 need | see the list under 30; Python will need most | |
+| 31 | Python (CPython) | the largest port yet; 30 prepares for it | |
 
 Tasks 16 and 17 are the point of the exercise. Everything before them is
 what they need.
@@ -1550,6 +1558,130 @@ Found by a full-suite run, and both in the test, not the kernel:
   so the two never overlapped. The processes now touch half, meet
   through a pair of pipes, and touch the rest -- past the meeting both
   cannot finish -- and 8 runs in 8 killed one of them.
+
+### 24-29. The standard tools: awk, sed, grep, bash, the utilities — planned
+
+Measured before starting (2026-09-22), against the built libc
+(`libc.a` + `liblinux.a`) and the kernel's dispatch tables:
+
+- **Present already**: `fork`/`vfork`/`execve`, `waitpid`/`wait4`,
+  `pipe2`, `dup3`, `fcntl`, `sigaction`/`sigprocmask`/`sigsuspend`,
+  `setpgid`/`getpgrp`, `TIOCGPGRP`/`TIOCSPGRP`, termios, `regcomp`,
+  `fnmatch`, `getopt_long`, `setlocale`/`mbrtowc`/`wcwidth`, `mmap`,
+  copy-on-write fork. 256 arguments and 256 environment strings.
+- **Missing from the libc** (task 24): `glob`, `sigsetjmp`/`siglongjmp`,
+  `realpath`, `uname`, `getrusage`, `fchmod`, `fchdir`, `link`,
+  `utime`/`utimes`, `mkfifo`/`mknod`, the `chown` family, `openat`/
+  `fstatat`/`unlinkat`/`faccessat`, `posix_spawn`, `getdtablesize`.
+  Most are wrappers: the kernel has `uname`, `wait4`, `openat`,
+  `unlinkat`, `faccessat`, `getrlimit`.
+- **Missing from the kernel** (task 24): `getrusage`, `fchdir`,
+  `fchmod`, `utimensat`, `mknod`, `chown`, `link`, `sigaltstack`. On
+  FAT `link`, `chown` and `mknod` can only fail honestly or do nothing.
+
+**Plan.** awk first -- Kernighan's, not gawk: plain C, no configure,
+and it proves the build path. Then GNU sed and grep through a cross
+`./configure --host=m68k-elf` with a cache of answers; gnulib fills
+most gaps itself. bash last: `sigsetjmp` everywhere, `wait3`/`wait4`,
+`getrlimit` for `ulimit`, `getrusage` for `times`; process substitution
+configured out at first (no `/dev/fd`, no FIFOs). Linked dynamically
+against `/lib/libc.so`. bash installs as `/bin/bash` beside the
+existing shell, not in place of it. Each is fetched at a pinned
+version and patched by a build script, as uEmacs is -- sources are not
+copied into the tree. bash's own test suite doubles as a kernel
+regression test.
+
+**Task 29, added 2026-09-22: the small utilities** -- sort, wc, find,
+xargs, head, tail, cut, tr, uniq, tee, cmp, comm, od and the rest.
+From **sbase** (suckless.org): about a hundred POSIX tools, each small,
+plain C99 and POSIX, MIT-licensed, built by one Makefile -- rather than
+GNU coreutils (gnulib and a cross configure for every one) or BusyBox
+(one GPL-2 multicall binary with its own configuration). Where one
+duplicates a shell builtin (`ls`, `cp`, `rm`, `echo`), the builtin still
+runs from the prompt; the program is what scripts, `xargs`, `find -exec`
+and awk's `system()` reach. Needed already: awk's own `space` test pipes
+into `sort`.
+
+### 30. POSIX gaps found along the way — to do
+
+Found while porting awk, sed, grep and sbase. Those marked (29) are being
+done as part of task 29, because sbase's utilities need them. The rest
+are to be done too, whether or not anything needs them yet: task 31
+(Python) will need most of them, and anything done now makes it easier.
+
+**Kernel**
+- (29) Setting file times: `utimensat`/`futimens`. FAT keeps a
+  modification time; `touch` and any `make` need to set it.
+- (29) Sessions: `setsid`, `getsid`. Process groups exist; sessions and
+  a controlling terminal do not.
+- (29) A settable host name: `sethostname`, and `uname`'s node name from
+  it (now fixed at "sage040" in the C library).
+- Scheduling priorities: `getpriority`/`setpriority`, so `nice` and
+  `renice` mean something. The scheduler is plain round robin.
+- `sigaltstack` (`SA_ONSTACK` is refused).
+- `/dev/random` and `/dev/urandom` need a cryptographic generator;
+  `random.c` is xorshift, which is why neither device exists.
+- `PATH_MAX` is 256 in the kernel and 1024 in picolibc's headers: a
+  program sizing buffers from PATH_MAX is fine, one trusting it gets
+  ENAMETOOLONG past 256. Raise the kernel's, or make them agree.
+- `execve` takes at most 256 arguments, a limit POSIX cannot express
+  (ARG_MAX is bytes); `xargs` builds command lines by bytes.
+- FIFOs, device nodes and links cannot live on FAT: `mkfifo`, `mknod`,
+  `link` and `symlink` fail with EPERM. Named pipes could be kept in
+  memory by the VFS instead.
+- `chroot`: there is one mounted filesystem and no reason yet.
+- `/dev/fd` (or FIFOs) for bash's process substitution `<(...)`.
+
+**C library (picolibc)**
+- (29) `fdopendir`, `fchownat`, `fchmodat`, `linkat`, `symlinkat`,
+  `sync`, `confstr`, `clock_settime`, `mkdtemp`, `utime`/`utimes`.
+- (29) Headers: `NZERO` in `<limits.h>`, `UTIME_NOW`/`UTIME_OMIT` in
+  `<sys/stat.h>`, `<sys/sysmacros.h>` (`major`/`minor`/`makedev`).
+- `glob()`, `posix_spawn()`.
+- `struct tm` has no `tm_gmtoff` or `tm_zone`; sbase's `touch` uses
+  them for a trailing `Z` (UTC).
+- `SI_USER` is 1 in picolibc and 0 on Linux, and si_code is passed
+  through from the kernel, so a handler testing for SI_USER misjudges
+  a kill().
+- `sysconf` has no `_SC_NPROCESSORS_*` or `_SC_PHYS_PAGES`: picolibc's
+  `<unistd.h>` does not define the names.
+- `cfsetspeed` is defined but not declared in `<termios.h>`.
+- No `<syslog.h>` and no syslog daemon: sbase's `logger` and `cron`
+  are not built.
+- Time zones: not checked whether `localtime` honours `TZ`.
+
+**Tools and tests**
+- grep has no `-P` (no PCRE).
+- sed's and grep's own test suites are shell scripts over a POSIX shell
+  and coreutils: run them once bash and sbase are in (28, 29).
+- awk's `space` and `system-status` tests are skipped until `sort`, a
+  POSIX `kill -SIGNAME`, `$$` and `VAR=value cmd` exist (28, 29).
+- sbase's `nice`, `renice`, `logger`, `cron` and `chroot` are not built
+  (above).
+
+### 31. Python — to do
+
+CPython, cross-built against picolibc. What it is known to lean on --
+an assessment from CPython's configure and module list, not yet measured
+here -- beyond what task 30 lists:
+
+- `dlopen`/`dlsym` for extension modules (ld.so loads DT_NEEDED
+  libraries; whether a program can load one at run time is to check),
+  or every module linked in statically (`Setup.local`), which is how
+  cross builds usually start.
+- A build Python on the host of the same version, for the cross build.
+- Threads: `_thread` needs pthreads, which there are none of. CPython
+  can be configured without threads only in old versions; recent ones
+  require them -- so either a pthread layer (one kernel thread per task
+  as a start, or real threads via clone), or an older Python.
+- `sigaltstack` (faulthandler), `getrusage`, `wait4`, `posix_spawn`,
+  `sysconf` names, `/dev/urandom` or `getrandom` of cryptographic
+  quality (`os.urandom`, hashing seeds), `select`/`poll`, `mmap`,
+  termios, sockets, `getaddrinfo`, `localtime` with time zones.
+- Memory: CPython's heap and a stdlib on disk -- the 512 MB disk is
+  fine; 64 MB of RAM with swap should be.
+- Floating point: `float` formatting and `repr` round-tripping lean on
+  `strtod`/`printf` being exact; picolibc's are, but it is to test.
 
 ## Decisions worth knowing about
 

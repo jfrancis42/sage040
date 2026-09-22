@@ -1,0 +1,5 @@
+Each T.args is a grep command line, run in this directory as
+    grep ARGS > T.OUT 2>&1; echo status $? >> T.OUT
+on the machine and with grep built for the host. Where a T.sort file
+exists, both outputs are sorted before they are compared: -r lists files
+in the order the directory holds them, which is the filesystem's.

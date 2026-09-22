@@ -1,0 +1,41 @@
+picolibc 1.8.12, libos/linux: stdout is set up line buffered and stays
+so whatever it is connected to. POSIX requires it fully buffered when it
+is not an interactive device, and every other C library does that: with
+stdout a file and stderr the same file, output interleaved differently
+from everywhere else (found by awk's tests), and a program writing to a
+pipe made one write() per line. Decided once, before main, by isatty(1).
+Not specific to m68k.
+
+--- a/libos/linux/iob_stdout.c	2026-09-22 08:46:16.692254217 -0600
++++ b/libos/linux/iob_stdout.c	2026-09-22 08:46:16.715318418 -0600
+@@ -35,6 +35,7 @@
+ 
+ #define _DEFAULT_SOURCE
+ #include <stdio-posix.h>
++#include <unistd.h>
+ 
+ static char                write_buf[BUFSIZ];
+ 
+@@ -45,6 +46,22 @@
+ __weak_reference(__linux_stdout, stdout);
+ 
+ /*
++ * POSIX: standard output is fully buffered if and only if it can be
++ * determined not to refer to an interactive device. It is set up line
++ * buffered above, which is right for a terminal and wrong for a file or
++ * a pipe -- output then interleaves with stderr differently from every
++ * other system, and a program writing to a pipe makes a system call per
++ * line. So it is decided here, once, before main, as glibc decides at
++ * the first write.
++ */
++__attribute__((constructor(101))) static void
++linux_stdout_buffering(void)
++{
++    if (!isatty(1))
++        __stdout.bflags &= ~__BLBF;
++}
++
++/*
+  * Add a destructor function to get stdout flushed on
+  * exit
+  */
