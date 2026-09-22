@@ -263,13 +263,13 @@ static int sock_close(struct file *f)
 
 
 /*
- * A character device has no size and no meaningful time; what a caller
- * actually wants from this is S_ISCHR, which is how isatty() is built.
+ * A socket is S_IFSOCK. It said S_IFCHR once, back when isatty() was
+ * built on S_ISCHR -- which made every socket a terminal.
  */
 static int sock_fstat(struct file *f, struct stat *st)
 {
     (void)f;
-    st->st_mode = S_IFCHR;
+    st->st_mode = S_IFSOCK;
     st->st_size = 0;
     st->st_mtime = 0;
     st->st_blocks = 0;

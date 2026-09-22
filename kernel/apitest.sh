@@ -77,6 +77,7 @@ mcopy -o -i "$MIMG" ../apps/sigtest ::/SIGTEST
 mcopy -o -i "$MIMG" ../apps/fptest ::/FPTEST
 mcopy -o -i "$MIMG" ../apps/polltest ::/POLLTEST
 mcopy -o -i "$MIMG" ../apps/timetest ::/TIMETEST
+mcopy -o -i "$MIMG" ../apps/pipetest ::/PIPETEST
 mcopy -o -i "$MIMG" ../apps/spin ::/SPIN
 mmd -i "$MIMG" ::/ETC
 mmd -i "$MIMG" ::/BIN
@@ -106,6 +107,22 @@ mcopy -o -i "$MIMG" "$SCRATCH/rc.tmp" ::/ETC/RC
     printf 'polltest\r';                sleep 4
     printf 'timetest\r';                sleep 8
     printf 'timetest alarm\r';          sleep 2
+
+    # --- pipes, redirection, pipelines ---
+    printf 'pipetest\r';                            sleep 3
+    printf 'hello > /OUT.TXT\r';                    sleep 1
+    printf 'hello again >> /OUT.TXT\r';             sleep 1
+    printf 'pipetest out redirected-line >/RED.TXT\r'; sleep 1
+    printf 'pipetest err to-stderr 2> /ERR.TXT\r';  sleep 1
+    printf 'pipetest err both 2>&1 > /BOTH.TXT\r';  sleep 1
+    printf 'cat /ETC/RC > /CAT.TXT\r';              sleep 1
+    printf 'pipetest cat < /ETC/RC\r';              sleep 1
+    printf 'pipetest out hi | pipetest count\r';    sleep 2
+    printf 'cat /ETC/RC | pipetest count\r';        sleep 2
+    printf 'pipetest gen 100000 | pipetest cat | pipetest check 100000\r'; sleep 6
+    printf 'pipetest out x | nosuchcmd\r';          sleep 2
+    printf 'pipetest gen 100000 | pipetest out reader-gone\r'; sleep 2
+    printf 'echo AFTER-PIPELINES\r';                sleep 1
     printf 'sigtest badstack\r';        sleep 1.5
     printf 'sigtest forge\r';           sleep 1.5
     printf 'kill 2\r';                  sleep 1
@@ -171,6 +188,27 @@ sleep 1
 printf 'sigtest spincatch\r' >&3
 send_after "sigtest: computing until ctrl-C" '\003'
 sleep 1
+# ctrl-C reaches every stage of a pipeline: they share a group.
+printf 'pipetest sleepy | pipetest sleepy\r' >&3
+send_after "pipetest: sleepy" '\003'
+sleep 1
+printf 'echo PS-AFTER-PIPE-INTERRUPT\r' >&3
+sleep 0.5
+printf 'ps\r' >&3
+sleep 1
+# A background reader is stopped by SIGTTIN, not given the keys; after
+# fg, it reads as if nothing had happened.
+printf 'pipetest readtty &\r' >&3
+sleep 1.5
+printf 'echo JOBS-TTIN\r' >&3
+sleep 0.5
+printf 'jobs\r' >&3
+sleep 1
+printf 'fg\r' >&3
+sleep 1.5
+printf 'typed-after-fg\r' >&3
+send_after "pipetest: read typed-after-fg" ''
+sleep 0.5
 printf 'polltest tty\r' >&3
 send_after "polltest: press a key for poll" 'k\r'
 send_after "polltest: press a key for select" 'x\r'
@@ -242,6 +280,9 @@ check "polltest ran to the end" $?
 
 grep -q "timetest: done" "$C"
 check "timetest ran to the end" $?
+
+grep -q "pipetest: done" "$C"
+check "pipetest ran to the end" $?
 
 grep -q "polltest: tty done" "$C"
 check "polltest waited for keys with poll and select" $?
@@ -362,6 +403,49 @@ grep -q "timetest: waiting for an alarm nobody catches" "$C" &&
     grep -q "^timetest: alarm clock" "$C" &&
     ! grep -q "ALARM DID NOT END THE PROGRAM" "$C"
 check "SIGALRM's default action is to terminate, and the shell says why" $?
+
+echo "=== checks: redirection, read back on the host ==="
+
+# Read with mtools after the machine has stopped: the kernel's writes
+# are checked by something other than the code that made them.
+host_file() {
+    mtype -i "$MIMG" "::/$1" 2>/dev/null | tr -d '\r'
+}
+[ "$(host_file OUT.TXT | grep -c 'hello from a program')" -eq 2 ]
+check "a program's output went to a file with >, and >> appended" $?
+[ "$(host_file RED.TXT)" = "redirected-line" ]
+check "  and >FILE with no space works" $?
+[ "$(host_file ERR.TXT)" = "to-stderr" ]
+check "2> caught what a program wrote to stderr" $?
+[ "$(host_file BOTH.TXT)" = "both" ]
+check "2>&1 sent stderr where stdout went" $?
+[ "$(host_file CAT.TXT)" = "$(host_file ETC/RC)" ]
+check "a builtin's output was redirected" $?
+grep -q "^echo rc-ran" "$C"
+check "< fed a file to a program's stdin" $?
+
+echo "=== checks: pipelines ==="
+
+grep -q "pipetest: counted 3 bytes" "$C"
+check "program | program" $?
+grep -q "pipetest: counted $(mtype -i "$MIMG" ::/ETC/RC | wc -c) bytes" "$C"
+check "builtin | program" $?
+grep -q "pipetest: check passed, 100000 bytes" "$C"
+check "100000 bytes through three stages, every one in order" $?
+grep -q "^nosuchcmd: command not found" "$C"
+check "a stage that does not exist is reported" $?
+grep -q "^reader-gone" "$C" && grep -q "^AFTER-PIPELINES" "$C"
+check "a writer whose reader has gone does not hang the pipeline" $?
+
+awk '/^PS-AFTER-PIPE-INTERRUPT$/ { f = 1 } f && /pipetest sleepy/ { bad = 1 }
+     f && /^\/\$ pipetest readtty/ { exit } END { exit bad }' "$C"
+check "ctrl-C ended both stages of a pipeline" $?
+
+awk '/^JOBS-TTIN$/ { f = 1 } f && /stop/ && /pipetest readtty/ { ok = 1 }
+     f && /^\/\$ fg/ { exit } END { exit !ok }' "$C"
+check "a background reader was stopped instead of taking the keys" $?
+grep -q "pipetest: read typed-after-fg" "$C"
+check "  and after fg it read the line typed to it" $?
 
 echo "=== checks: stopping, and killing what is stopped ==="
 

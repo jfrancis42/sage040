@@ -145,6 +145,34 @@ int getpid(void)
     return (int)sc1(__NR_getpid, 0);
 }
 
+int getppid(void)
+{
+    return (int)sc1(__NR_getppid, 0);
+}
+
+int getpgrp(void)
+{
+    return (int)sc1(__NR_getpgrp, 0);
+}
+
+int setpgid(int pid, int pgid)
+{
+    return (int)sc2(__NR_setpgid, (u32)pid, (u32)pgid);
+}
+
+int tcgetpgrp(int fd)
+{
+    int pg;
+    int err = ioctl(fd, TIOCGPGRP, (u32)&pg);
+
+    return err < 0 ? err : pg;
+}
+
+int tcsetpgrp(int fd, int pgrp)
+{
+    return ioctl(fd, TIOCSPGRP, (u32)&pgrp);
+}
+
 int kill(int pid, int sig)
 {
     return (int)sc2(__NR_kill, (u32)pid, (u32)sig);
@@ -535,6 +563,28 @@ void *memcpy(void *dst, const void *src, u32 n)
     return dst;
 }
 
+int memcmp(const void *a, const void *b, u32 n)
+{
+    const u8 *x = a, *y = b;
+
+    for (; n; n--, x++, y++) {
+        if (*x != *y) {
+            return *x < *y ? -1 : 1;
+        }
+    }
+    return 0;
+}
+
+int pipe(int fds[2])
+{
+    return (int)sc1(__NR_pipe, (u32)fds);
+}
+
+int fcntl(int fd, int cmd, u32 arg)
+{
+    return (int)sc3(__NR_fcntl, (u32)fd, (u32)cmd, arg);
+}
+
 void putch(char c)
 {
     write(STDOUT_FILENO, &c, 1);
@@ -676,12 +726,14 @@ void *sbrk(s32 incr)
     return (void *)old;
 }
 
+/*
+ * A terminal is what answers TCGETS, which is how Linux's libc decides.
+ * It used to be "fstat says character device" -- and a socket, a pipe
+ * end and the framebuffer all said that too.
+ */
 int isatty(int fd)
 {
-    struct stat st;
+    struct termios t;
 
-    if (fstat(fd, &st) < 0) {
-        return 0;
-    }
-    return S_ISCHR(st.st_mode) ? 1 : 0;
+    return ioctl(fd, TCGETS, (u32)&t) == 0 ? 1 : 0;
 }

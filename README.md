@@ -616,7 +616,7 @@ bridge at all.
 A program has a 256 MB address space with `brk`, `sbrk`, `mmap`,
 `munmap`, `mprotect` and a stand-in `malloc`. What is not there yet:
 no C library beyond a thin
-syscall wrapper. No pipes and no redirection. No long file names: 8.3
+syscall wrapper. Pipes, redirection and pipelines work. No long file names: 8.3
 only. Signal handlers work, but not `SA_SIGINFO`. No name resolver, so addresses are numeric. Input is
 still polled, though both the keyboard and the serial port have
 interrupt lines wired to the MFP; it sleeps on a wait queue rather than

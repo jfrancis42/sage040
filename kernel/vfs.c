@@ -49,7 +49,7 @@ static struct blockdev *mounted_dev;
  * Reference counted, because two tasks can hold the same open file and
  * the last one to let go is the one that closes it.
  */
-#define FILE_MAX  (OPEN_MAX * 2)
+#define FILE_MAX  128           /* open files, the whole machine */
 
 static struct file files[FILE_MAX];
 
@@ -264,12 +264,13 @@ int fd_bind(int fd, const struct file_ops *ops, void *priv, int flags)
     }
     f->ops = ops;
     f->priv = priv;
-    f->flags = flags;
+    f->flags = flags & ~O_CLOEXEC;
 
     if (current->fds[fd]) {
         file_put(current->fds[fd]);
     }
     current->fds[fd] = f;
+    current->fd_flags[fd] = (flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
     return fd;
 }
 
@@ -287,8 +288,9 @@ int fd_install(const struct file_ops *ops, void *priv, int flags)
     }
     f->ops = ops;
     f->priv = priv;
-    f->flags = flags;
+    f->flags = flags & ~O_CLOEXEC;
     current->fds[fd] = f;
+    current->fd_flags[fd] = (flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
     return fd;
 }
 
@@ -329,13 +331,14 @@ int fd_open(const char *path, int flags)
         if (!f) {
             return -ENFILE;
         }
-        f->flags = flags;
-        err = mounted_fs->open(path, flags, f);
+        f->flags = flags & ~O_CLOEXEC;
+        err = mounted_fs->open(path, flags & ~O_CLOEXEC, f);
         if (err < 0) {
             f->used = 0;
             return err;
         }
         current->fds[fd] = f;
+        current->fd_flags[fd] = (flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
     }
     return fd;
 }
@@ -348,11 +351,16 @@ int fd_close(int fd)
         return -EBADF;
     }
     current->fds[fd] = 0;
+    current->fd_flags[fd] = 0;
     file_put(f);
     return 0;
 }
 
-int fd_dup(int fd)
+/* The lowest free descriptor at or above `min`, pointing at what `fd`
+ * does. A duplicate never inherits FD_CLOEXEC: that is the flag's
+ * definition, and what makes `dup` the way to keep something open
+ * across a spawn. */
+static int dup_from(int fd, int min)
 {
     struct file *f = fd_get(fd);
     int n;
@@ -360,13 +368,51 @@ int fd_dup(int fd)
     if (!f) {
         return -EBADF;
     }
-    n = fd_alloc();
-    if (n < 0) {
-        return n;
+    if (min < 0 || min >= OPEN_MAX) {
+        return -EINVAL;
+    }
+    for (n = min; n < OPEN_MAX && current->fds[n]; n++) {
+    }
+    if (n == OPEN_MAX) {
+        return -EMFILE;
     }
     file_get(f);
     current->fds[n] = f;
+    current->fd_flags[n] = 0;
     return n;
+}
+
+int fd_dup(int fd)
+{
+    return dup_from(fd, 0);
+}
+
+int fd_fcntl(int fd, int cmd, u32 arg)
+{
+    struct file *f = fd_get(fd);
+
+    if (!f) {
+        return -EBADF;
+    }
+    switch (cmd) {
+    case F_DUPFD:
+        return dup_from(fd, (int)arg);
+    case F_GETFD:
+        return current->fd_flags[fd];
+    case F_SETFD:
+        current->fd_flags[fd] = (u8)(arg & FD_CLOEXEC);
+        return 0;
+    case F_GETFL:
+        return f->flags;
+    case F_SETFL:
+        /* The access mode was fixed at open; only these two may change,
+         * which is POSIX's rule as well as Linux's. */
+        f->flags = (f->flags & ~(O_NONBLOCK | O_APPEND)) |
+                   ((int)arg & (O_NONBLOCK | O_APPEND));
+        return 0;
+    default:
+        return -EINVAL;
+    }
 }
 
 int fd_dup2(int oldfd, int newfd)
@@ -387,6 +433,7 @@ int fd_dup2(int oldfd, int newfd)
     }
     file_get(f);
     current->fds[newfd] = f;
+    current->fd_flags[newfd] = 0;
     return newfd;
 }
 
@@ -402,7 +449,13 @@ void fd_inherit(struct task *child, struct task *parent)
 {
     int i;
 
+    /* spawn is fork and exec in one, so a close-on-exec descriptor is
+     * one the child never gets. */
     for (i = 0; i < OPEN_MAX; i++) {
+        if (parent->fd_flags[i] & FD_CLOEXEC) {
+            child->fds[i] = 0;
+            continue;
+        }
         child->fds[i] = parent->fds[i];
         file_get(child->fds[i]);
     }
@@ -417,6 +470,7 @@ void fd_close_all(struct task *t)
             file_put(t->fds[i]);
             t->fds[i] = 0;
         }
+        t->fd_flags[i] = 0;
     }
 }
 

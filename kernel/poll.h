@@ -25,6 +25,9 @@ int  poll_files(struct pollfd *fds, u32 n, s32 timeout_ms, s32 *left_ms);
 int  poll_select(u32 nfds, u32 *in, u32 *out, u32 *ex, s32 timeout_ms,
                  s32 *left_ms);
 
+/* POLL* bits for one descriptor of the current task, now. */
+int  poll_fd(int fd);
+
 /* Something may have become ready: anyone polling should look again. */
 void poll_wake(void);
 

@@ -35,6 +35,10 @@ struct task;
 int  signal_send(struct task *t, int sig);
 int  signal_kill(int pid, int sig);
 
+/* To every user task in process group `pgid`. -ESRCH if there are none;
+ * signal 0 only asks whether there are. */
+int  signal_group(int pgid, int sig);
+
 /*
  * Act on anything pending for the current task, which is about to
  * return to user mode with the registers in `regs`.

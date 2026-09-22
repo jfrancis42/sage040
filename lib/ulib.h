@@ -39,6 +39,12 @@ int    access(const char *path, int mode);
 int    dup(int fd);
 int    dup2(int oldfd, int newfd);
 
+/* Pipes and descriptor flags, with Linux's meanings. fcntl takes
+ * F_DUPFD, F_GETFD/F_SETFD (FD_CLOEXEC) and F_GETFL/F_SETFL, where only
+ * O_NONBLOCK and O_APPEND can change. */
+int    pipe(int fds[2]);
+int    fcntl(int fd, int cmd, u32 arg);
+
 /*
  * The heap. brk() sets the break and returns 0, or -ENOMEM with the
  * break unchanged; sbrk() moves it by `incr` and returns where it WAS,
@@ -65,7 +71,12 @@ int    mprotect(void *addr, u32 len, int prot);
  * pid without waiting; it is not fork().
  */
 int    getpid(void);
-int    kill(int pid, int sig);
+int    kill(int pid, int sig);     /* 0: my group; -N: group N; -1: all */
+int    getppid(void);
+int    getpgrp(void);
+int    setpgid(int pid, int pgid);
+int    tcgetpgrp(int fd);
+int    tcsetpgrp(int fd, int pgrp);
 int    raise(int sig);
 int    waitpid(int pid, int *status, int options);
 int    spawn(const char *path, int argc, char **argv, char **envp);
@@ -181,5 +192,6 @@ u32    strlen(const char *s);
 int    strcmp(const char *a, const char *b);
 void  *memset(void *dst, int c, u32 n);
 void  *memcpy(void *dst, const void *src, u32 n);
+int    memcmp(const void *a, const void *b, u32 n);
 
 #endif /* ULIB_H */

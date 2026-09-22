@@ -31,6 +31,7 @@
 #include "vm.h"
 #include "mmap.h"
 #include "poll.h"
+#include "pipe.h"
 #include "ptregs.h"
 #include "net.h"
 #include "tcp.h"
@@ -205,6 +206,16 @@ static s32 rw_user(int fd, u32 ubuf, u32 len, int writing)
         }
         ubuf += n;
         len -= n;
+        /*
+         * A read that has something must not then wait for more. The
+         * buffer is handed over a page at a time, and a read spanning
+         * two pages used to ask the file a second time -- which, for a
+         * pipe or a terminal that had given all it had, meant sleeping
+         * with data already in hand.
+         */
+        if (!writing && len > 0 && !(poll_fd(fd) & POLLIN)) {
+            break;
+        }
     }
     return total;
 }
@@ -393,6 +404,8 @@ static const struct {
     { TCSETSF,      sizeof(struct termios),       IO_IN  },
     { TIOCGCONS,    sizeof(struct console_info),  IO_IN | IO_OUT },
     { TIOCSCONS,    sizeof(struct console_set),   IO_IN  },
+    { TIOCGPGRP,    sizeof(int),                  IO_OUT },
+    { TIOCSPGRP,    sizeof(int),                  IO_IN  },
     { FBIO_GETINFO, sizeof(struct fb_info),       IO_OUT },
     { FBIO_SETMODE, sizeof(struct fb_mode),       IO_IN  },
     { FBIO_POINT,   sizeof(struct fb_point),      IO_IN  },
@@ -763,6 +776,60 @@ static struct task *nth_child(int n)
     return 0;
 }
 
+/*
+ * setpgid(), with POSIX's rules as far as this system has the things
+ * they talk about (there are no sessions): a task may move itself or a
+ * child of its own, into a group of its own number or into a group that
+ * already exists.
+ */
+static int do_setpgid(int pid, int pgid)
+{
+    struct task *t = pid ? task_find(pid) : current;
+    struct task *m;
+    int i;
+
+    if (!t || (t != current && t->parent != current)) {
+        return -ESRCH;
+    }
+    if (pgid < 0) {
+        return -EINVAL;
+    }
+    if (pgid == 0) {
+        pgid = t->pid;
+    }
+    if (pgid != t->pid) {
+        for (i = 0; (m = task_nth(i)) != 0; i++) {
+            if (m->pgid == pgid && m->state != TASK_ZOMBIE) {
+                break;
+            }
+        }
+        if (!m) {
+            return -EPERM;
+        }
+    }
+    t->pgid = pgid;
+    return 0;
+}
+
+/*
+ * SIGCONT to the members of a group that are actually STOPPED, and to
+ * nobody else. Sending it to a task that is merely being brought to the
+ * foreground leaves a signal pending on it -- and anything that checks
+ * for one before blocking, which the whole network stack does, then
+ * returns immediately. Every program's first packet was lost that way.
+ */
+static void continue_group(int pgid)
+{
+    struct task *t;
+    int i;
+
+    for (i = 0; (t = task_nth(i)) != 0; i++) {
+        if (t->pgid == pgid && t->state == TASK_STOPPED) {
+            signal_send(t, SIGCONT);
+        }
+    }
+}
+
 static int do_jobctl(int cmd, int arg, u32 p)
 {
     struct task *t;
@@ -802,7 +869,7 @@ static int do_jobctl(int cmd, int arg, u32 p)
          * finished.
          */
         if (arg == 0) {
-            tty_set_foreground(current->pid);
+            tty_set_foreground(current->pgid);
             return 0;
         }
         t = task_find(arg);
@@ -810,18 +877,10 @@ static int do_jobctl(int cmd, int arg, u32 p)
             return -ECHILD;
         }
         t->background = 0;
-        tty_set_foreground(t->pid);
-        /*
-         * Only if it was actually stopped. Sending SIGCONT to a task
-         * that is merely being brought to the foreground leaves a
-         * signal pending on it -- and anything that checks for one
-         * before blocking, which the whole network stack does, then
-         * returns immediately. Every program's first packet was lost
-         * that way.
-         */
-        if (t->state == TASK_STOPPED) {
-            signal_send(t, SIGCONT);
-        }
+        /* The job's whole GROUP gets the terminal: every command of a
+         * pipeline, and anything those started. */
+        tty_set_foreground(t->pgid);
+        continue_group(t->pgid);
         return 0;
 
     case JOBCTL_BG:
@@ -832,10 +891,8 @@ static int do_jobctl(int cmd, int arg, u32 p)
         t->background = 1;
         /* The terminal goes back to whoever asked, because a background
          * job is precisely one that does not have it. */
-        tty_set_foreground(current->pid);
-        if (t->state == TASK_STOPPED) {
-            signal_send(t, SIGCONT);
-        }
+        tty_set_foreground(current->pgid);
+        continue_group(t->pgid);
         return 0;
 
     case JOBCTL_REAP: {
@@ -988,6 +1045,24 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         }
         return vfs_access(path, (int)a2);
     }
+
+    case __NR_pipe: {
+        int fds[2];
+        int err = pipe_create(fds, 0);
+
+        if (err < 0) {
+            return err;
+        }
+        err = store(a1, fds, sizeof(fds));
+        if (err < 0) {
+            fd_close(fds[0]);
+            fd_close(fds[1]);
+        }
+        return err;
+    }
+
+    case __NR_fcntl:
+        return fd_fcntl((int)a1, (int)a2, a3);
 
     case __NR_dup:
         return fd_dup((int)a1);
@@ -1321,6 +1396,21 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
     case __NR_getpid:
         return current->pid;
 
+    case __NR_getppid:
+        return current->parent ? current->parent->pid : 0;
+
+    case __NR_getpgrp:
+        return current->pgid;
+
+    case __NR_getpgid: {
+        struct task *t = a1 ? task_find((int)a1) : current;
+
+        return t ? t->pgid : -ESRCH;
+    }
+
+    case __NR_setpgid:
+        return do_setpgid((int)a1, (int)a2);
+
     case __NR_brk:
         /* Never negative: every user address is below 0x80000000, so a
          * break can not be mistaken for an errno on the way back. */
@@ -1605,6 +1695,31 @@ int sys_kill(int pid, int sig)
 int sys_getpid(void)
 {
     return (int)syscall0(__NR_getpid);
+}
+
+int sys_setpgid(int pid, int pgid)
+{
+    return (int)syscall2(__NR_setpgid, (u32)pid, (u32)pgid);
+}
+
+int sys_pipe(int fds[2])
+{
+    return (int)syscall1(__NR_pipe, (u32)fds);
+}
+
+int sys_dup(int fd)
+{
+    return (int)syscall1(__NR_dup, (u32)fd);
+}
+
+int sys_dup2(int oldfd, int newfd)
+{
+    return (int)syscall2(__NR_dup2, (u32)oldfd, (u32)newfd);
+}
+
+int sys_fcntl(int fd, int cmd, u32 arg)
+{
+    return (int)syscall3(__NR_fcntl, (u32)fd, (u32)cmd, arg);
 }
 
 void sys_yield(void)

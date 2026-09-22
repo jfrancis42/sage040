@@ -533,16 +533,19 @@ int exec_spawn(const char *path, int argc, char **argv, char **envp)
     fd_inherit(t, current);
 
     /*
-     * The terminal is handed over HERE, not by the shell after this
-     * returns. Loading an image takes long enough to read a disk, and a
-     * ctrl-C arriving in that window went to a foreground task that did
-     * not exist yet and was simply lost -- which looked exactly like
-     * ctrl-C not working.
+     * The new task joins its spawner's process group, as a forked one
+     * does. A shell moves each job into a group of its own; a program
+     * that starts a helper keeps it in its own group, so the ctrl-C
+     * that ends the program ends the helper too.
      *
-     * A background job gives it straight back; that is the shell's
-     * decision and it makes it as soon as it knows.
+     * The terminal is NOT handed over here any more. It was, so that a
+     * ctrl-C typed while the image loaded would not be lost -- but that
+     * gave every program that spawned a helper's terminal to the helper,
+     * and deciding who has the terminal is the shell's business. The
+     * price is that a ctrl-C typed during the load, a few milliseconds,
+     * goes to the shell's group and nowhere.
      */
-    tty_set_foreground(t->pid);
+    t->pgid = current->pgid;
 
     return t->pid;
 }

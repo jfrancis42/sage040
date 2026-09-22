@@ -18,10 +18,11 @@
  * be, and DOS command names would buy familiarity with a system nobody
  * has used in thirty years.
  *
- * Output redirection with > and >> is real, which is why there is no
- * "write a file" command: `cat > notes.txt` is how a Unix user would
- * already do it. Errors go to descriptor 2 even when output is
- * redirected, which is the distinction stderr exists to make.
+ * Redirection (<, >, >>, 2>, 2>>, 2>&1) and pipelines are real, for
+ * builtins and programs alike, which is why there is no "write a file"
+ * command: `cat > notes.txt` is how a Unix user would already do it.
+ * Errors go to descriptor 2 even when output is redirected, which is the
+ * distinction stderr exists to make.
  */
 #include "syscall.h"
 #include "errno.h"
@@ -152,7 +153,6 @@ static u8 iobuf[IOBUF_SIZE];
 /* terminal visibly slow and there is nothing to be gained from it.   */
 /* ---------------------------------------------------------------- */
 
-static int out_fd = STDOUT_FILENO;
 static u8  outbuf[OUTBUF_SIZE];
 static u32 outlen;
 static int out_error;
@@ -160,7 +160,7 @@ static int out_error;
 static void out_flush(void)
 {
     if (outlen > 0) {
-        if (sys_write(out_fd, outbuf, outlen) < 0) {
+        if (sys_write(STDOUT_FILENO, outbuf, outlen) < 0) {
             out_error = 1;
         }
         outlen = 0;
@@ -268,83 +268,114 @@ static void err_usage(const char *usage)
 /* ---------------------------------------------------------------- */
 
 /*
- * Split the line in place, pulling out a trailing > or >> redirection.
- * Returns the argument count, or -1 if the redirection has no target.
+ * What a command's descriptors are to be pointed at. Each is a file
+ * name, or null for "leave it alone".
  */
+struct redirs {
+    const char *in;             /* < file                             */
+    const char *out;            /* > file, or >> file with out_append */
+    int out_append;
+    const char *err;            /* 2> file, or 2>> file               */
+    int err_append;
+    int err_to_out;             /* 2>&1                               */
+};
+
+/* The next word of `*s`, NUL-terminated in place, or null if none. */
+static char *next_word(char **s)
+{
+    char *w;
+
+    while (**s == ' ' || **s == '\t') {
+        (*s)++;
+    }
+    if (**s == '\0') {
+        return 0;
+    }
+    w = *s;
+    while (**s && **s != ' ' && **s != '\t') {
+        (*s)++;
+    }
+    if (**s) {
+        *(*s)++ = '\0';
+    }
+    return w;
+}
+
 /*
- * Returns -1 for a malformed redirection and -2 for more arguments than
- * fit. Truncating instead would silently drop the tail of a command --
- * `echo` with too many words printed some of them and looked like it had
- * worked, which is a worse failure than refusing.
+ * Split one command in place into `av`, pulling out its redirections.
+ *
+ * <, >, >>, 2>, 2>> each take a file name, attached (">out") or as the
+ * next word ("> out"); 2>&1 sends stderr wherever stdout goes. All the
+ * descriptors are pointed where they go before the command runs, stdout
+ * first, so `2>&1` means stdout's destination whatever order they were
+ * written in -- simpler than sh, which applies them left to right, and
+ * the same in every case anyone writes on purpose.
+ *
+ * Returns the argument count, -1 for a redirection with no file name,
+ * or -2 for more arguments than fit. Truncating instead would silently
+ * drop the tail of a command -- `echo` with too many words printed some
+ * of them and looked like it had worked, which is a worse failure than
+ * refusing.
  */
-static int split(char *s, const char **redir, int *append, int *background)
+static int split(char *s, char **av, struct redirs *r, int *background)
 {
     int argc = 0;
+    char *tok;
 
-    *redir = 0;
-    *append = 0;
+    memset(r, 0, sizeof(*r));
     *background = 0;
 
-    while (*s) {
-        char *tok;
-
-        while (*s == ' ' || *s == '\t') {
-            *s++ = '\0';
-        }
-        if (*s == '\0') {
-            break;
-        }
-
-        tok = s;
-        while (*s && *s != ' ' && *s != '\t') {
-            s++;
-        }
-        if (*s) {
-            *s++ = '\0';
-        }
+    while ((tok = next_word(&s)) != 0) {
+        const char **target = 0;
+        int *append = 0;
+        char *rest = 0;
 
         /*
-         * A trailing & asks for the background. Only a whole token and
-         * only at the end: `a&b` is a file name on this system, not two
-         * commands, because there is nothing to run two commands with.
+         * A trailing & asks for the background. Only a whole token:
+         * `a&b` is a file name on this system, not two commands.
          */
         if (tok[0] == '&' && tok[1] == '\0') {
             *background = 1;
             continue;
         }
-
-        if (tok[0] == '>') {
-            const char *name = tok + 1;
-
-            *append = 0;
-            if (*name == '>') {
-                *append = 1;
-                name++;
-            }
-            if (*name == '\0') {
-                /* "> file" rather than ">file" */
-                while (*s == ' ' || *s == '\t') {
-                    s++;
+        if (strcmp(tok, "2>&1") == 0) {
+            r->err_to_out = 1;
+            continue;
+        }
+        if (tok[0] == '2' && tok[1] == '>') {
+            target = &r->err;
+            append = &r->err_append;
+            rest = tok + 2;
+        } else if (tok[0] == '>') {
+            target = &r->out;
+            append = &r->out_append;
+            rest = tok + 1;
+        } else if (tok[0] == '<') {
+            target = &r->in;
+            rest = tok + 1;
+        }
+        if (target) {
+            if (append) {
+                *append = 0;
+                if (*rest == '>') {
+                    *append = 1;
+                    rest++;
                 }
-                if (*s == '\0') {
+            }
+            if (*rest == '\0') {
+                rest = next_word(&s);
+                if (!rest) {
                     return -1;
                 }
-                name = s;
-                while (*s && *s != ' ' && *s != '\t') {
-                    s++;
-                }
-                if (*s) {
-                    *s++ = '\0';
-                }
             }
-            *redir = name;
+            *target = rest;
             continue;
         }
 
         if (argc == MAX_ARGS) {
             return -2;
         }
-        argv[argc++] = tok;
+        av[argc++] = tok;
     }
     return argc;
 }
@@ -426,7 +457,9 @@ static void cmd_help(void)
         "the processor.\n"
         "\n"
         "> FILE and >> FILE redirect output, so `cat > notes.txt` writes\n"
-        "a file and `echo more >> notes.txt` adds to it.\n"
+        "a file and `echo more >> notes.txt` adds to it. < FILE is input,\n"
+        "2> FILE is errors, and 2>&1 sends errors where output goes.\n"
+        "a | b | c is a pipeline; a builtin may be only its first command.\n"
         "\n"
         "EDITING, the way bash does it:\n"
         "  ctrl-A / ctrl-E    start and end of the line   (also Home, End)\n"
@@ -1203,32 +1236,99 @@ static int need(int argc, int want, const char *usage)
     return 1;
 }
 
-static int redirect(const char *name, int append)
-{
-    int flags = O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC);
-    int fd = sys_open(name, flags);
+/*
+ * REDIRECTION IS DONE TO THE SHELL'S OWN DESCRIPTORS.
+ *
+ * For the length of one command, descriptors 0, 1 and 2 are pointed at
+ * the files, and afterwards put back from saved copies -- which is what
+ * any shell does for a builtin. A program then needs nothing special at
+ * all: spawn gives it the shell's descriptors, so it simply has them.
+ *
+ * This replaced a private output descriptor the shell wrote its own
+ * output through. A program never saw that, so `hello > file` printed
+ * on the screen and left an empty file -- redirection that looked as if
+ * it had worked.
+ */
+static int saved_std[3] = { -1, -1, -1 };
 
-    if (fd < 0) {
-        err_report(name, fd);
-        return -1;
+/* Point standard descriptor `fd` at whatever `target` refers to. */
+static int std_to(int fd, int target)
+{
+    if (saved_std[fd] < 0) {
+        saved_std[fd] = sys_dup(fd);
+        if (saved_std[fd] < 0) {
+            return saved_std[fd];
+        }
+        /* The copy must not be given to a program: it would hold the
+         * terminal -- or, worse, a pipe's write end -- open behind it. */
+        sys_fcntl(saved_std[fd], F_SETFD, FD_CLOEXEC);
     }
-    out_fd = fd;
-    outlen = 0;
-    out_error = 0;
+    return sys_dup2(target, fd);
+}
+
+/* Open `name` and put it on standard descriptor `fd`. */
+static int std_open(int fd, const char *name, int flags)
+{
+    int f = sys_open(name, flags);
+
+    if (f < 0) {
+        err_report(name, f);
+        return f;
+    }
+    if (f != fd) {
+        int err = std_to(fd, f);
+
+        sys_close(f);
+        if (err < 0) {
+            err_report(name, err);
+            return err;
+        }
+    }
     return 0;
 }
 
+static int redirect(const struct redirs *r)
+{
+    int w = O_WRONLY | O_CREAT;
+
+    out_flush();
+    outlen = 0;
+    out_error = 0;
+    if (r->in && std_open(STDIN_FILENO, r->in, O_RDONLY) < 0) {
+        return -1;
+    }
+    if (r->out && std_open(STDOUT_FILENO, r->out,
+                           w | (r->out_append ? O_APPEND : O_TRUNC)) < 0) {
+        return -1;
+    }
+    if (r->err && std_open(STDERR_FILENO, r->err,
+                           w | (r->err_append ? O_APPEND : O_TRUNC)) < 0) {
+        return -1;
+    }
+    if (r->err_to_out && std_to(STDERR_FILENO, STDOUT_FILENO) < 0) {
+        return -1;
+    }
+    return 0;
+}
+
+/* Put 0, 1 and 2 back as they were. Safe to call when nothing moved. */
 static void redirect_end(void)
 {
+    int fd, failed;
+
     out_flush();
-    if (out_fd == STDOUT_FILENO) {
-        return;
+    failed = out_error;
+    out_error = 0;
+    for (fd = 0; fd < 3; fd++) {
+        if (saved_std[fd] >= 0) {
+            sys_dup2(saved_std[fd], fd);
+            sys_close(saved_std[fd]);
+            saved_std[fd] = -1;
+        }
     }
-    if (out_error) {
+    if (failed) {
         err_puts("write failed\n");
     }
-    sys_close(out_fd);
-    out_fd = STDOUT_FILENO;
 }
 
 /*
@@ -1487,20 +1587,521 @@ static void expand(char *line, u32 max)
     line[max - 1] = '\0';
 }
 
-static void run_command(char *cmdline)
+/*
+ * Run argv[0] if it is a builtin. Returns 1 if it was, 0 if it is not
+ * one and should be looked for as a program.
+ *
+ * Its own function, where it used to be the body of run_command, so that
+ * a builtin can be one stage of a pipeline: the first stage of `ls |
+ * prog` is the shell itself, writing into the pipe.
+ */
+static int run_builtin(int argc)
 {
-    const char *redir;
-    int append;
-    int background;
-    int argc;
     int err;
     int i;
 
+    if (strcmp(argv[0], "help") == 0) {
+        cmd_help();
+
+    } else if (strcmp(argv[0], "ls") == 0) {
+        cmd_ls(argc, argv);
+
+    } else if (strcmp(argv[0], "cat") == 0) {
+        cmd_cat(argc, argv);
+
+    } else if (strcmp(argv[0], "hd") == 0) {
+        if (need(argc, 2, "hd FILE")) {
+            cmd_hexdump(argv[1]);
+        }
+
+    } else if (strcmp(argv[0], "cp") == 0) {
+        if (need(argc, 3, "cp SRC DST")) {
+            cmd_cp(argv[1], argv[2]);
+        }
+
+    } else if (strcmp(argv[0], "mv") == 0) {
+        if (need(argc, 3, "mv SRC DST")) {
+            err = sys_rename(argv[1], argv[2]);
+            if (err < 0) {
+                err_report(argv[1], err);
+            }
+        }
+
+    } else if (strcmp(argv[0], "rm") == 0) {
+        if (need(argc, 2, "rm FILE...")) {
+            for (i = 1; i < argc; i++) {
+                err = sys_unlink(argv[i]);
+                if (err < 0) {
+                    err_report(argv[i], err);
+                }
+            }
+        }
+
+    } else if (strcmp(argv[0], "stat") == 0) {
+        if (need(argc, 2, "stat FILE")) {
+            cmd_stat(argv[1]);
+        }
+
+    } else if (strcmp(argv[0], "df") == 0) {
+        cmd_df();
+
+    } else if (strcmp(argv[0], "echo") == 0) {
+        for (i = 1; i < argc; i++) {
+            if (i > 1) {
+                out_putc(' ');
+            }
+            out_puts(argv[i]);
+        }
+        out_putc('\n');
+
+    } else if (strcmp(argv[0], "date") == 0) {
+        cmd_date(argc, argv);
+
+    } else if (strcmp(argv[0], "uname") == 0) {
+        cmd_uname(argc, argv);
+
+    } else if (strcmp(argv[0], "console") == 0) {
+        cmd_console(argc, argv);
+
+    } else if (strcmp(argv[0], "free") == 0) {
+        struct sysinfo si;
+
+        err = sys_sysinfo(&si);
+        if (err < 0) {
+            err_report("free", err);
+        } else {
+            u32 kb = si.mem_unit / 1024;
+
+            out_puts("           pages       KB\n");
+            out_puts("total  ");
+            out_putdec_pad(si.totalram, 10);
+            out_putdec_pad(si.totalram * kb, 9);
+            out_putc('\n');
+            out_puts("used   ");
+            out_putdec_pad(si.totalram - si.freeram, 10);
+            out_putdec_pad((si.totalram - si.freeram) * kb, 9);
+            out_putc('\n');
+            out_puts("free   ");
+            out_putdec_pad(si.freeram, 10);
+            out_putdec_pad(si.freeram * kb, 9);
+            out_putc('\n');
+            out_puts("\npage size ");
+            out_putdec(si.mem_unit);
+            out_puts(" bytes, ");
+            out_putdec(si.procs);
+            out_puts(" job(s)\n");
+        }
+
+    } else if (strcmp(argv[0], "uptime") == 0) {
+        u32 t = sys_times();
+        u32 secs = t / HZ;
+
+        out_putdec(secs / 3600);
+        out_putc(':');
+        out_put2((secs / 60) % 60);
+        out_putc(':');
+        out_put2(secs % 60);
+        out_puts("  (");
+        out_putdec(t);
+        out_puts(" ticks at ");
+        out_putdec(HZ);
+        out_puts(" Hz)\n");
+
+    } else if (strcmp(argv[0], "sync") == 0) {
+        err = sys_sync();
+        if (err < 0) {
+            err_report("sync", err);
+        }
+
+    } else if (strcmp(argv[0], "halt") == 0) {
+        redirect_end();
+        out_puts("halting.\n");
+        out_flush();
+        sys_reboot(RB_HALT_SYSTEM);
+
+    } else if (strcmp(argv[0], "clear") == 0) {
+        /*
+         * Home, then erase. Both sinks understand it: the serial
+         * terminal because it is a terminal, and the framebuffer
+         * console because fbcon.c was taught these two sequences.
+         */
+        out_puts("\033[H\033[2J");
+
+    } else if (strcmp(argv[0], "test") == 0 ||
+               strcmp(argv[0], "[") == 0) {
+        /*
+         * Enough of test(1) for a script to ask whether something
+         * is there. The exit status IS the answer, which is what
+         * makes `if test -f X` work without any other machinery.
+         */
+        int r = 1;
+
+        if (strcmp(argv[argc - 1], "]") == 0) {
+            argc--;                 /* the closing bracket */
+        }
+        if (argc == 2) {
+            r = argv[1][0] ? 0 : 1;             /* test STRING */
+        } else if (argc == 3 && argv[1][0] == '-') {
+            struct stat st;
+
+            switch (argv[1][1]) {
+            case 'f':
+                r = (sys_stat(argv[2], &st) == 0 &&
+                     !(st.st_mode & S_IFDIR)) ? 0 : 1;
+                break;
+            case 'd':
+                r = (sys_stat(argv[2], &st) == 0 &&
+                     (st.st_mode & S_IFDIR)) ? 0 : 1;
+                break;
+            case 'e':
+                r = sys_stat(argv[2], &st) == 0 ? 0 : 1;
+                break;
+            case 'n':
+                r = argv[2][0] ? 0 : 1;
+                break;
+            case 'z':
+                r = argv[2][0] ? 1 : 0;
+                break;
+            default:
+                err_puts("test: unknown test\n");
+                break;
+            }
+        } else if (argc == 4 && strcmp(argv[2], "=") == 0) {
+            r = strcmp(argv[1], argv[3]) == 0 ? 0 : 1;
+        } else if (argc == 4 && strcmp(argv[2], "!=") == 0) {
+            r = strcmp(argv[1], argv[3]) != 0 ? 0 : 1;
+        }
+        last_status = r;
+        return 1;
+
+    } else if (strcmp(argv[0], "source") == 0 ||
+               strcmp(argv[0], ".") == 0) {
+        if (need(argc, 2, "source FILE")) {
+            err = run_script(argv[1]);
+            if (err < 0) {
+                err_report(argv[1], err);
+            }
+        }
+
+    } else if (strcmp(argv[0], "set") == 0) {
+        /*
+         * `set` is the builtin and `env` deliberately is NOT: env is
+         * a program, and running it proves the environment actually
+         * crossed into another address space rather than merely
+         * existing in this one.
+         */
+        for (i = 0; i < env_count; i++) {
+            out_puts(env_store[i]);
+            out_putc('\n');
+        }
+
+    } else if (strcmp(argv[0], "export") == 0) {
+        /*
+         * `export NAME=VALUE`, and `export NAME` to clear it. There
+         * is no distinction between a shell variable and an
+         * exported one here: everything the shell holds is the
+         * environment, because with no shell functions there is
+         * nothing a private variable would be private from.
+         */
+        if (need(argc, 2, "export NAME=VALUE")) {
+            for (i = 1; i < argc; i++) {
+                char *eq = strchr(argv[i], '=');
+
+                if (eq) {
+                    *eq = '\0';
+                    err = env_set(argv[i], eq + 1);
+                    *eq = '=';
+                } else {
+                    err = env_set(argv[i], "");
+                }
+                if (err < 0) {
+                    err_report(argv[i], err);
+                }
+            }
+        }
+
+    } else if (strcmp(argv[0], "unset") == 0) {
+        if (need(argc, 2, "unset NAME...")) {
+            for (i = 1; i < argc; i++) {
+                env_unset(argv[i]);
+            }
+        }
+
+    } else if (strcmp(argv[0], "cd") == 0) {
+        /* Bare `cd` goes to the root, which is this machine's home
+         * directory -- there is no user to have one of their own. */
+        err = sys_chdir(argc > 1 ? argv[1] : "/");
+        if (err < 0) {
+            err_report(argc > 1 ? argv[1] : "/", err);
+        }
+
+    } else if (strcmp(argv[0], "pwd") == 0) {
+        char cwd[PATH_MAX];
+
+        if (sys_getcwd(cwd, sizeof(cwd)) < 0) {
+            err_puts("pwd: cannot tell\n");
+        } else {
+            out_puts(cwd);
+            out_putc('\n');
+        }
+
+    } else if (strcmp(argv[0], "mkdir") == 0) {
+        if (need(argc, 2, "mkdir DIR...")) {
+            for (i = 1; i < argc; i++) {
+                err = sys_mkdir(argv[i]);
+                if (err < 0) {
+                    err_report(argv[i], err);
+                }
+            }
+        }
+
+    } else if (strcmp(argv[0], "rmdir") == 0) {
+        if (need(argc, 2, "rmdir DIR...")) {
+            for (i = 1; i < argc; i++) {
+                err = sys_rmdir(argv[i]);
+                if (err < 0) {
+                    err_report(argv[i], err);
+                }
+            }
+        }
+
+    } else if (strcmp(argv[0], "ps") == 0) {
+        cmd_ps();
+
+    } else if (strcmp(argv[0], "kill") == 0) {
+        if (need(argc, 2, "kill [-SIG] PID")) {
+            cmd_kill(argc, argv);
+        }
+
+    } else if (strcmp(argv[0], "jobs") == 0) {
+        cmd_jobs();
+
+    } else if (strcmp(argv[0], "fg") == 0) {
+        cmd_fg(argc, argv);
+
+    } else if (strcmp(argv[0], "bg") == 0) {
+        cmd_bg(argc, argv);
+
+    } else if (strcmp(argv[0], "history") == 0) {
+        for (i = 0; i < edit_history_count(); i++) {
+            out_putdec_pad((u32)i + 1, 4);
+            out_puts("  ");
+            out_puts(edit_history_nth(i));
+            out_putc('\n');
+        }
+    } else {
+        return 0;
+    }
+    return 1;
+}
+
+/* ---------------------------------------------------------------- */
+/* Pipelines                                                         */
+/* ---------------------------------------------------------------- */
+
+#define MAX_STAGES  8
+
+/* Builtins read the global argv; a pipeline stage's arguments go there. */
+static void argv_from(char **av, int ac)
+{
+    int i;
+
+    for (i = 0; i < ac; i++) {
+        argv[i] = av[i];
+    }
+}
+
+static const char *strchr_(const char *s, char c)
+{
+    for (; *s; s++) {
+        if (*s == c) {
+            return s;
+        }
+    }
+    return 0;
+}
+
+/*
+ * a | b | c
+ *
+ * Every pipe is made first, close-on-exec, so no program is handed an
+ * end it was not meant to have -- a stray copy of a write end held by
+ * the wrong program is a reader that never sees end of file. Then each
+ * program is started with its ends moved onto 0 and 1 (dup2 clears
+ * close-on-exec on the copy), all of them in the first one's process
+ * group, which gets the terminal: ctrl-C reaches every stage.
+ *
+ * A BUILTIN may be the first stage, and nowhere else. It is the shell
+ * itself writing into the pipe, so it runs after the programs that read
+ * from it have started; a builtin reading from a pipe would need the
+ * shell to be two things at once. The pipeline's status is the last
+ * stage's, as in sh.
+ */
+static void run_pipeline(char *line)
+{
+    char *stage_text[MAX_STAGES];
+    char *av[MAX_STAGES][MAX_ARGS];
+    struct redirs r[MAX_STAGES];
+    int ac[MAX_STAGES], pid[MAX_STAGES];
+    int rd[MAX_STAGES], wr[MAX_STAGES];
+    int n = 0, i, background = 0, leader = 0, status = 0, stopped = 0;
+    char *p = line;
+
+    /* Cut it at the bars. */
+    stage_text[n++] = p;
+    for (; *p; p++) {
+        if (*p == '|') {
+            *p = '\0';
+            if (n == MAX_STAGES) {
+                err_puts("too many commands in one pipeline\n");
+                return;
+            }
+            stage_text[n++] = p + 1;
+        }
+    }
+    for (i = 0; i < n; i++) {
+        int bg;
+
+        ac[i] = split(stage_text[i], av[i], &r[i], &bg);
+        if (ac[i] == -1) {
+            err_puts("syntax error: a redirection needs a file name\n");
+            return;
+        }
+        if (ac[i] == -2) {
+            err_puts("too many arguments\n");
+            return;
+        }
+        if (ac[i] == 0) {
+            err_puts("syntax error: an empty command in a pipeline\n");
+            return;
+        }
+        if (bg && i != n - 1) {
+            err_puts("syntax error: & belongs at the end\n");
+            return;
+        }
+        background = bg;
+        pid[i] = 0;
+        rd[i] = wr[i] = -1;
+    }
+
+    for (i = 0; i < n - 1; i++) {
+        int fds[2];
+
+        if (sys_pipe(fds) < 0) {
+            err_puts("pipe: cannot make one\n");
+            goto close_pipes;
+        }
+        rd[i] = fds[0];
+        wr[i] = fds[1];
+        sys_fcntl(rd[i], F_SETFD, FD_CLOEXEC);
+        sys_fcntl(wr[i], F_SETFD, FD_CLOEXEC);
+    }
+
+    /*
+     * The programs, last first, so that each has its reader running
+     * before anything can write to it. Stage 0 is tried as a builtin
+     * after these; only if it is not one is it started as a program.
+     */
+    for (i = n - 1; i >= 0; i--) {
+        int got;
+
+        if (i > 0 && std_to(STDIN_FILENO, rd[i - 1]) < 0) {
+            redirect_end();
+            goto close_pipes;
+        }
+        if (i < n - 1 && std_to(STDOUT_FILENO, wr[i]) < 0) {
+            redirect_end();
+            goto close_pipes;
+        }
+        /* A stage's own redirections win over the pipe, as in sh. */
+        if (redirect(&r[i]) != 0) {
+            redirect_end();
+            goto close_pipes;
+        }
+        if (i == 0) {
+            argv_from(av[0], ac[0]);
+            if (run_builtin(ac[0])) {
+                redirect_end();
+                break;
+            }
+        }
+        got = spawn_on_path(av[i][0], ac[i], av[i]);
+        redirect_end();
+        if (got < 0) {
+            err_puts(av[i][0]);
+            err_puts(got == -ENOENT || got == -EINVAL ?
+                     ": command not found\n" : ": cannot run\n");
+            continue;
+        }
+        pid[i] = got;
+        /* The group is led by the first program started -- the last
+         * stage -- and every other stage joins it. */
+        if (!leader) {
+            leader = got;
+        }
+        sys_setpgid(got, leader);
+    }
+
+close_pipes:
+    /* The shell's own ends, so that the readers see end of file when
+     * the last WRITER among the stages finishes. */
+    for (i = 0; i < n - 1; i++) {
+        if (rd[i] >= 0) {
+            sys_close(rd[i]);
+        }
+        if (wr[i] >= 0) {
+            sys_close(wr[i]);
+        }
+    }
+    if (!leader) {
+        return;
+    }
+
+    if (background) {
+        sys_jobctl(JOBCTL_BG, leader, 0);
+        out_putc('[');
+        out_putdec((u32)leader);
+        out_puts("]  ");
+        out_puts(cmdline_saved);
+        out_putc('\n');
+        return;
+    }
+
+    /* The whole group has the terminal while the shell waits for each. */
+    for (i = 0; i < n; i++) {
+        if (pid[i] > 0) {
+            int st = wait_for(pid[i], av[i][0]);
+
+            if (st == SPAWN_STOPPED) {
+                stopped = 1;
+            } else if (i == n - 1) {
+                status = st;
+            }
+        }
+    }
+    if (!stopped) {
+        last_status = status;
+        report_status(av[n - 1][0], status);
+    }
+    sys_jobctl(JOBCTL_REAP, 0, 0);
+}
+
+static void run_command(char *cmdline)
+{
+    struct redirs redir;
+    int background;
+    int argc;
+    int err;
+
     {
         expand(cmdline, LINE_MAX);
-        argc = split(cmdline, &redir, &append, &background);
+        if (strchr_(cmdline, '|')) {
+            run_pipeline(cmdline);
+            return;
+        }
+        argc = split(cmdline, argv, &redir, &background);
         if (argc == -1) {
-            err_puts("syntax error: > needs a file name\n");
+            err_puts("syntax error: a redirection needs a file name\n");
             return;
         }
         if (argc == -2) {
@@ -1511,302 +2112,12 @@ static void run_command(char *cmdline)
             return;
         }
 
-        if (redir && redirect(redir, append) != 0) {
+        if (redirect(&redir) != 0) {
+            redirect_end();
             return;
         }
 
-        if (strcmp(argv[0], "help") == 0) {
-            cmd_help();
-
-        } else if (strcmp(argv[0], "ls") == 0) {
-            cmd_ls(argc, argv);
-
-        } else if (strcmp(argv[0], "cat") == 0) {
-            cmd_cat(argc, argv);
-
-        } else if (strcmp(argv[0], "hd") == 0) {
-            if (need(argc, 2, "hd FILE")) {
-                cmd_hexdump(argv[1]);
-            }
-
-        } else if (strcmp(argv[0], "cp") == 0) {
-            if (need(argc, 3, "cp SRC DST")) {
-                cmd_cp(argv[1], argv[2]);
-            }
-
-        } else if (strcmp(argv[0], "mv") == 0) {
-            if (need(argc, 3, "mv SRC DST")) {
-                err = sys_rename(argv[1], argv[2]);
-                if (err < 0) {
-                    err_report(argv[1], err);
-                }
-            }
-
-        } else if (strcmp(argv[0], "rm") == 0) {
-            if (need(argc, 2, "rm FILE...")) {
-                for (i = 1; i < argc; i++) {
-                    err = sys_unlink(argv[i]);
-                    if (err < 0) {
-                        err_report(argv[i], err);
-                    }
-                }
-            }
-
-        } else if (strcmp(argv[0], "stat") == 0) {
-            if (need(argc, 2, "stat FILE")) {
-                cmd_stat(argv[1]);
-            }
-
-        } else if (strcmp(argv[0], "df") == 0) {
-            cmd_df();
-
-        } else if (strcmp(argv[0], "echo") == 0) {
-            for (i = 1; i < argc; i++) {
-                if (i > 1) {
-                    out_putc(' ');
-                }
-                out_puts(argv[i]);
-            }
-            out_putc('\n');
-
-        } else if (strcmp(argv[0], "date") == 0) {
-            cmd_date(argc, argv);
-
-        } else if (strcmp(argv[0], "uname") == 0) {
-            cmd_uname(argc, argv);
-
-        } else if (strcmp(argv[0], "console") == 0) {
-            cmd_console(argc, argv);
-
-        } else if (strcmp(argv[0], "free") == 0) {
-            struct sysinfo si;
-
-            err = sys_sysinfo(&si);
-            if (err < 0) {
-                err_report("free", err);
-            } else {
-                u32 kb = si.mem_unit / 1024;
-
-                out_puts("           pages       KB\n");
-                out_puts("total  ");
-                out_putdec_pad(si.totalram, 10);
-                out_putdec_pad(si.totalram * kb, 9);
-                out_putc('\n');
-                out_puts("used   ");
-                out_putdec_pad(si.totalram - si.freeram, 10);
-                out_putdec_pad((si.totalram - si.freeram) * kb, 9);
-                out_putc('\n');
-                out_puts("free   ");
-                out_putdec_pad(si.freeram, 10);
-                out_putdec_pad(si.freeram * kb, 9);
-                out_putc('\n');
-                out_puts("\npage size ");
-                out_putdec(si.mem_unit);
-                out_puts(" bytes, ");
-                out_putdec(si.procs);
-                out_puts(" job(s)\n");
-            }
-
-        } else if (strcmp(argv[0], "uptime") == 0) {
-            u32 t = sys_times();
-            u32 secs = t / HZ;
-
-            out_putdec(secs / 3600);
-            out_putc(':');
-            out_put2((secs / 60) % 60);
-            out_putc(':');
-            out_put2(secs % 60);
-            out_puts("  (");
-            out_putdec(t);
-            out_puts(" ticks at ");
-            out_putdec(HZ);
-            out_puts(" Hz)\n");
-
-        } else if (strcmp(argv[0], "sync") == 0) {
-            err = sys_sync();
-            if (err < 0) {
-                err_report("sync", err);
-            }
-
-        } else if (strcmp(argv[0], "halt") == 0) {
-            redirect_end();
-            out_puts("halting.\n");
-            out_flush();
-            sys_reboot(RB_HALT_SYSTEM);
-
-        } else if (strcmp(argv[0], "clear") == 0) {
-            /*
-             * Home, then erase. Both sinks understand it: the serial
-             * terminal because it is a terminal, and the framebuffer
-             * console because fbcon.c was taught these two sequences.
-             */
-            out_puts("\033[H\033[2J");
-
-        } else if (strcmp(argv[0], "test") == 0 ||
-                   strcmp(argv[0], "[") == 0) {
-            /*
-             * Enough of test(1) for a script to ask whether something
-             * is there. The exit status IS the answer, which is what
-             * makes `if test -f X` work without any other machinery.
-             */
-            int r = 1;
-
-            if (strcmp(argv[argc - 1], "]") == 0) {
-                argc--;                 /* the closing bracket */
-            }
-            if (argc == 2) {
-                r = argv[1][0] ? 0 : 1;             /* test STRING */
-            } else if (argc == 3 && argv[1][0] == '-') {
-                struct stat st;
-
-                switch (argv[1][1]) {
-                case 'f':
-                    r = (sys_stat(argv[2], &st) == 0 &&
-                         !(st.st_mode & S_IFDIR)) ? 0 : 1;
-                    break;
-                case 'd':
-                    r = (sys_stat(argv[2], &st) == 0 &&
-                         (st.st_mode & S_IFDIR)) ? 0 : 1;
-                    break;
-                case 'e':
-                    r = sys_stat(argv[2], &st) == 0 ? 0 : 1;
-                    break;
-                case 'n':
-                    r = argv[2][0] ? 0 : 1;
-                    break;
-                case 'z':
-                    r = argv[2][0] ? 1 : 0;
-                    break;
-                default:
-                    err_puts("test: unknown test\n");
-                    break;
-                }
-            } else if (argc == 4 && strcmp(argv[2], "=") == 0) {
-                r = strcmp(argv[1], argv[3]) == 0 ? 0 : 1;
-            } else if (argc == 4 && strcmp(argv[2], "!=") == 0) {
-                r = strcmp(argv[1], argv[3]) != 0 ? 0 : 1;
-            }
-            last_status = r;
-            redirect_end();
-            return;
-
-        } else if (strcmp(argv[0], "source") == 0 ||
-                   strcmp(argv[0], ".") == 0) {
-            if (need(argc, 2, "source FILE")) {
-                err = run_script(argv[1]);
-                if (err < 0) {
-                    err_report(argv[1], err);
-                }
-            }
-
-        } else if (strcmp(argv[0], "set") == 0) {
-            /*
-             * `set` is the builtin and `env` deliberately is NOT: env is
-             * a program, and running it proves the environment actually
-             * crossed into another address space rather than merely
-             * existing in this one.
-             */
-            for (i = 0; i < env_count; i++) {
-                out_puts(env_store[i]);
-                out_putc('\n');
-            }
-
-        } else if (strcmp(argv[0], "export") == 0) {
-            /*
-             * `export NAME=VALUE`, and `export NAME` to clear it. There
-             * is no distinction between a shell variable and an
-             * exported one here: everything the shell holds is the
-             * environment, because with no shell functions there is
-             * nothing a private variable would be private from.
-             */
-            if (need(argc, 2, "export NAME=VALUE")) {
-                for (i = 1; i < argc; i++) {
-                    char *eq = strchr(argv[i], '=');
-
-                    if (eq) {
-                        *eq = '\0';
-                        err = env_set(argv[i], eq + 1);
-                        *eq = '=';
-                    } else {
-                        err = env_set(argv[i], "");
-                    }
-                    if (err < 0) {
-                        err_report(argv[i], err);
-                    }
-                }
-            }
-
-        } else if (strcmp(argv[0], "unset") == 0) {
-            if (need(argc, 2, "unset NAME...")) {
-                for (i = 1; i < argc; i++) {
-                    env_unset(argv[i]);
-                }
-            }
-
-        } else if (strcmp(argv[0], "cd") == 0) {
-            /* Bare `cd` goes to the root, which is this machine's home
-             * directory -- there is no user to have one of their own. */
-            err = sys_chdir(argc > 1 ? argv[1] : "/");
-            if (err < 0) {
-                err_report(argc > 1 ? argv[1] : "/", err);
-            }
-
-        } else if (strcmp(argv[0], "pwd") == 0) {
-            char cwd[PATH_MAX];
-
-            if (sys_getcwd(cwd, sizeof(cwd)) < 0) {
-                err_puts("pwd: cannot tell\n");
-            } else {
-                out_puts(cwd);
-                out_putc('\n');
-            }
-
-        } else if (strcmp(argv[0], "mkdir") == 0) {
-            if (need(argc, 2, "mkdir DIR...")) {
-                for (i = 1; i < argc; i++) {
-                    err = sys_mkdir(argv[i]);
-                    if (err < 0) {
-                        err_report(argv[i], err);
-                    }
-                }
-            }
-
-        } else if (strcmp(argv[0], "rmdir") == 0) {
-            if (need(argc, 2, "rmdir DIR...")) {
-                for (i = 1; i < argc; i++) {
-                    err = sys_rmdir(argv[i]);
-                    if (err < 0) {
-                        err_report(argv[i], err);
-                    }
-                }
-            }
-
-        } else if (strcmp(argv[0], "ps") == 0) {
-            cmd_ps();
-
-        } else if (strcmp(argv[0], "kill") == 0) {
-            if (need(argc, 2, "kill [-SIG] PID")) {
-                cmd_kill(argc, argv);
-            }
-
-        } else if (strcmp(argv[0], "jobs") == 0) {
-            cmd_jobs();
-
-        } else if (strcmp(argv[0], "fg") == 0) {
-            cmd_fg(argc, argv);
-
-        } else if (strcmp(argv[0], "bg") == 0) {
-            cmd_bg(argc, argv);
-
-        } else if (strcmp(argv[0], "history") == 0) {
-            for (i = 0; i < edit_history_count(); i++) {
-                out_putdec_pad((u32)i + 1, 4);
-                out_puts("  ");
-                out_puts(edit_history_nth(i));
-                out_putc('\n');
-            }
-
-        } else {
+        if (!run_builtin(argc)) {
             /*
              * Not a builtin, so look for a program of that name. This is
              * where a real shell would walk $PATH; there is one directory
@@ -1827,6 +2138,20 @@ static void run_command(char *cmdline)
             if (status > 0) {
                 int pid = status;
 
+                /*
+                 * A job is a process group of its own, as in any shell
+                 * with job control. That is what lets the terminal be
+                 * handed to it -- ctrl-C reaches it and anything it
+                 * starts -- and what keeps the key away from jobs in the
+                 * background.
+                 */
+                sys_setpgid(pid, pid);
+
+                /* The program has its own copies of the descriptors
+                 * now; the shell's go back to the terminal, where its
+                 * own messages about the job belong. */
+                redirect_end();
+
                 if (background) {
                     sys_jobctl(JOBCTL_BG, pid, 0);
                     out_putc('[');
@@ -1834,7 +2159,6 @@ static void run_command(char *cmdline)
                     out_puts("]  ");
                     out_puts(cmdline_saved);
                     out_putc('\n');
-                    redirect_end();
                     return;
                 }
                 status = wait_for(pid, argv[0]);
@@ -1883,7 +2207,6 @@ static void run_command(char *cmdline)
                 sys_jobctl(JOBCTL_REAP, 0, 0);
             }
         }
-
         redirect_end();
     }
 }

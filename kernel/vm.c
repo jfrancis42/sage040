@@ -355,7 +355,7 @@ int vm_enabled(void)
  * rules differ per level and one size removes the question.
  */
 #define AS_SLOT         512
-#define MAX_SPACES      8
+#define MAX_SPACES      32      /* one per task: TASK_MAX in task.h */
 
 static struct addrspace spaces[MAX_SPACES];
 

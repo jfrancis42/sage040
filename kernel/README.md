@@ -1146,7 +1146,8 @@ bg [%N]              run one in the background
 history              the lines remembered so far
 halt                 stop the processor
 
-> FILE and >> FILE redirect output
+< > >> 2> 2>> 2>&1   redirection, for programs and builtins
+A | B | C            a pipeline (a builtin only as the first command)
 CMD &                run a job in the background
 $NAME                expands to what `export` put there
 
@@ -1170,6 +1171,11 @@ the same `source` the user can call.
 `cat > notes.txt` is how you write a file, because that is how a Unix
 user would already do it — which is why there is no "write a file"
 command. Errors go to descriptor 2 even when output is redirected.
+
+Redirection is done to the shell's own descriptors 0–2, for the length
+of the command, and put back afterwards: a builtin writes through them,
+and a program inherits them. Each job is a process group of its own,
+and the terminal is handed to that group while the shell waits.
 
 ## What is here
 

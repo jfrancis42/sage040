@@ -182,6 +182,7 @@ struct task *task_create(const char *name, void (*entry)(void))
         t->state = TASK_UNUSED;
         return 0;
     }
+    t->pgid = t->pid;           /* a kernel task leads its own group */
 
     /* A kernel task: supervisor mode, and its "user" stack pointer is
      * never used because it never goes there. */
@@ -650,5 +651,6 @@ void task_init(void)
      * working directory for every task the machine ever runs. */
     current->cwd_ino = 0;
     strcpy(current->cwd_path, "/");
+    current->pgid = current->pid;
     idle = current;
 }

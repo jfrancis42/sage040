@@ -103,6 +103,7 @@ void file_get(struct file *f);
 void file_put(struct file *f);
 
 int  fd_dup(int fd);
+int  fd_fcntl(int fd, int cmd, u32 arg);
 int  fd_dup2(int oldfd, int newfd);
 
 struct task;

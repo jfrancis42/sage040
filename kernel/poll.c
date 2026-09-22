@@ -59,6 +59,13 @@ static int file_ready(int fd, int *is_socketish)
     return POLLIN | POLLOUT;
 }
 
+int poll_fd(int fd)
+{
+    int ignored = 0;
+
+    return file_ready(fd, &ignored);
+}
+
 s32 poll_ms_to_ticks(s32 ms)
 {
     /* Rounded up: a wait of 1 ms must not be a wait of nothing. */

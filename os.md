@@ -656,14 +656,14 @@ access-fault frame cannot be redirected to a handler in place.
 `malloc`/`free`/`calloc`/`realloc` in `lib/malloc.c`, a stand-in until
 there is a C library.
 
-**No pipes and no `fcntl` yet.** So no shell pipelines, and no input
-redirection. `dup2`, `select` and `poll` exist.
-
-Output redirection with `>` and `>>` is real but **only for builtins**:
-the shell swaps its own output descriptor, which a spawned program
-never sees. `hello > file` prints to the terminal and leaves an empty
-file, which is worse than not having it. Redirecting a program's output
-needs `dup2` on the child's descriptor table before it runs.
+**Pipes, `fcntl`, redirection and pipelines work**, for programs and
+builtins alike. The shell points its own descriptors 0–2 at the files
+for the length of a command and puts them back afterwards, which is
+what any shell does for a builtin, and a spawned program inherits them.
+A pipeline's programs share a process group, and the terminal's
+foreground is a group, so ctrl-C reaches every stage. A background
+program that reads the terminal is stopped with SIGTTIN rather than
+given keys meant for somebody else.
 
 **No users, no permissions, no `chmod` or `chown`.** FAT16 has nowhere to
 put them.

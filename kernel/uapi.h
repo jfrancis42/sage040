@@ -24,7 +24,7 @@
 
 #define NAME_MAX      12        /* "12345678.123" without the NUL     */
 #define PATH_MAX      64
-#define OPEN_MAX      8         /* file descriptors per TASK           */
+#define OPEN_MAX      32        /* file descriptors per TASK           */
 
 /*
  * open() flags. The access mode is the low two bits, the way POSIX has
@@ -38,6 +38,9 @@
 #define O_CREAT       0x0040
 #define O_TRUNC       0x0200
 #define O_APPEND      0x0400
+#define O_NONBLOCK    0x0800    /* reads and writes that would wait fail
+                                 * with EAGAIN instead                    */
+#define O_CLOEXEC     0x80000   /* the new descriptor is FD_CLOEXEC       */
 
 /*
  * ioctl requests. FIONREAD is Linux's, with Linux's number, and it is
@@ -214,12 +217,16 @@ struct fb_palette {
 #define S_IFDIR       0040000
 #define S_IFCHR       0020000
 #define S_IFBLK       0060000
+#define S_IFIFO       0010000
+#define S_IFSOCK      0140000
 #define S_IRUSR       0000400
 #define S_IWUSR       0000200
 
 #define S_ISREG(m)    (((m) & S_IFMT) == S_IFREG)
 #define S_ISDIR(m)    (((m) & S_IFMT) == S_IFDIR)
 #define S_ISCHR(m)    (((m) & S_IFMT) == S_IFCHR)
+#define S_ISFIFO(m)   (((m) & S_IFMT) == S_IFIFO)
+#define S_ISSOCK(m)   (((m) & S_IFMT) == S_IFSOCK)
 
 /* access() modes, Linux's values. */
 #define F_OK          0
@@ -292,6 +299,42 @@ struct statfs {
  * it is. The library's brk() and sbrk() turn that into -1 and ENOMEM.
  */
 #define __NR_brk        45
+
+/*
+ * Pipes, descriptors and process groups. Linux's numbers.
+ *
+ * pipe() fills in two descriptors, [0] to read and [1] to write. A pipe
+ * holds PIPE_SIZE bytes; a write of up to PIPE_BUF bytes is not split
+ * up by other writers' data. Reading an empty pipe with no writers left
+ * is end of file; writing one with no readers left raises SIGPIPE and
+ * fails with EPIPE.
+ *
+ * A PROCESS GROUP is what a terminal's ctrl-C is aimed at: every task in
+ * the foreground group gets it, which is how it reaches every command
+ * in a pipeline. A task starts in its parent's group; setpgid() moves
+ * it. A task that reads the terminal while not in the foreground group
+ * is sent SIGTTIN, which stops it until `fg` -- the read then carries
+ * on, restarted, as if nothing had happened.
+ */
+#define __NR_pipe           42
+#define __NR_fcntl          55
+#define __NR_setpgid        57
+#define __NR_getppid        64
+#define __NR_getpgrp        65
+#define __NR_getpgid       132
+
+#define PIPE_SIZE       4096
+#define PIPE_BUF        4096
+
+#define F_DUPFD         0       /* lowest free descriptor >= arg      */
+#define F_GETFD         1
+#define F_SETFD         2
+#define F_GETFL         3
+#define F_SETFL         4       /* only O_NONBLOCK and O_APPEND change */
+#define FD_CLOEXEC      1       /* not given to a program spawn()ed    */
+
+#define TIOCGPGRP       0x540F  /* the terminal's foreground group     */
+#define TIOCSPGRP       0x5410
 
 /*
  * Waiting on several descriptors. Linux/m68k's numbers and shapes:

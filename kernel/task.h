@@ -51,7 +51,7 @@
 struct addrspace;
 struct file;
 
-#define TASK_MAX        8
+#define TASK_MAX        32
 #define TASK_NAME_MAX   24
 
 /* How long a task runs before the tick offers the processor elsewhere.
@@ -77,10 +77,13 @@ struct task {
 
     struct addrspace *as;       /* null for a kernel task              */
     struct file *fds[OPEN_MAX]; /* its own descriptors                 */
+    u8    fd_flags[OPEN_MAX];   /* FD_CLOEXEC: per descriptor, not per
+                                 * open file -- see fcntl() in vfs.c    */
 
     int   exit_status;
     int   signalled;            /* the signal that ended it, or 0      */
     struct task *parent;
+    int   pgid;                 /* process group: what ctrl-C reaches  */
 
     /*
      * Signals. A bitmask each, signal N in bit N-1 (SIGMASK), because

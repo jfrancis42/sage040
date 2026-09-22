@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: 8 of 23 complete.**
+**Status: 9 of 23 complete.**
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -37,7 +37,7 @@ drive almost all of it:
 | 5 | Signals: `sigaction`, handlers, `sigreturn` | the largest kernel item; editors need it | **done** |
 | 6 | `select`/`poll` | the other half of an event loop | **done** |
 | 7 | Interval timers | depends on 5 | **done** |
-| 8 | Pipes, `dup2`, real redirection | see the note below — `>` is broken today | todo |
+| 8 | Pipes, `dup2`, real redirection | see the note below — `>` is broken today | **done** |
 | 9 | Subprocesses: `fork`/`execve`/`waitpid` | `:!` and `:make` in an editor | todo |
 | 10 | The rest of the socket API, and the signatures | before a libc is written against the old ones | todo |
 | 11 | **VT102** emulation in `fbcon.c` | a full-screen program needs cursor addressing | todo |
@@ -207,7 +207,7 @@ It grows one group per task, and a group is only added once its calls
 work — so a failure there is always a regression, never a thing not
 written yet.
 
-**345 checks across six suites now:** 12 device programs, 41 fs, 228
+**387 checks across six suites now:** 12 device programs, 41 fs, 270
 api, 29 edit, 18 vm, 17 net.
 
 ### 1. Grow the user address space — done
@@ -749,6 +749,87 @@ the shell names it. The first `burn()` loop made a system call every
 few microseconds and **the system-time check caught it**, which is the
 check doing its job on the test's own mistake.
 
+### 8. Pipes, `dup2`, real redirection — done
+
+**Kernel:** `pipe` (42) and `fcntl` (55), with Linux's meanings. A pipe
+is a page-sized ring with its ends as ordinary open files, so `read`,
+`write`, `poll`, `dup2` and `close` need nothing special. Reading an
+empty pipe with no writers is end of file. Writing one with no readers
+raises SIGPIPE and fails with `EPIPE`. A write of up to `PIPE_BUF` goes
+in whole or not at all. Ends are counted per open file, so a `dup`ed or
+inherited end stays open until its last reference closes. `fcntl`
+supports `F_DUPFD`, `F_GETFD`/`F_SETFD` (`FD_CLOEXEC`) and
+`F_GETFL`/`F_SETFL`, where only `O_NONBLOCK` and `O_APPEND` can change.
+`FD_CLOEXEC` is a new per-descriptor flag, not per open file, as POSIX
+has it. `spawn` does not hand a close-on-exec descriptor to the child,
+and a `dup` never inherits the flag.
+
+**Process groups,** which the pipelines made necessary: ctrl-C to a
+pipeline must reach every stage, and it used to go to one foreground
+pid. `setpgid` (57), `getpgid` (132), `getpgrp` (65), `getppid` (64),
+and the terminal's `TIOCGPGRP`/`TIOCSPGRP`. The terminal's foreground
+is a **group** now. `kill` has Linux's 0, −N and −1 forms. A spawned task
+joins its spawner's group, and the shell moves each job into a group of
+its own. **A background task that reads the terminal is sent
+SIGTTIN**, which stops it; after `fg` its read is restarted by task 5's
+rules and it reads normally. the working notes said a background reader "gets
+nothing". In fact nothing enforced that, and whichever task was blocked
+in `read` first got the key.
+
+**`exec_spawn` no longer gives the terminal to every child** (the task
+9 note, done here). That was a shell's decision in the kernel, and it
+gave a helper-spawning program's terminal to its helper. The cost is
+that a ctrl-C typed during the few milliseconds of an image load goes
+nowhere, which is documented in `exec.c`.
+
+**The shell:** redirection works by pointing **its own descriptors 0–2**
+at the files for the length of a command and restoring them afterwards,
+as any shell does for a builtin. A program inherits them, and the old
+private output descriptor is gone. `<`, `>`, `>>`, `2>`, `2>>`, `2>&1`
+and `|` all work, and the pipeline's status is the last stage's. The
+builtins had to come out of `run_command` into `run_builtin()` so that
+a builtin can be the first stage of a pipeline, where the shell itself
+writes into the pipe after starting the readers. A builtin cannot be a
+later stage, which would need the shell to be two things at once. The
+shell's pipe ends are `FD_CLOEXEC`, and **the negative control shows why**:
+without it every stage inherits stray write ends, no reader ever sees
+end of file, and the first pipeline hangs the whole suite.
+
+*Simplification, documented in the shell:* redirections are applied
+stdout first, so `2>&1` means stdout's destination whichever order they
+were written in. `sh` applies them left to right. The two differ only
+for `2>&1 >file`, which nobody writes on purpose.
+
+**Also fixed on the way:**
+- **Static limits raised.** 8 descriptors per task, 16 open files in
+  the whole machine, 8 tasks and 8 address spaces became 32, 128, 32
+  and 32. One pipeline in a shell with a background job hit several of
+  them. That is part of task 22, done early because this task needed it.
+- **`isatty()` said yes to sockets.** It was built on "fstat says
+  character device", which every socket, pipe end and the framebuffer
+  also said. It asks `TCGETS` now, as Linux's does, and sockets report
+  `S_IFSOCK`.
+- **A read that already had data could still sleep.** `rw_user` hands a
+  buffer over a page at a time, and a read spanning two pages asked the
+  file a second time, which for a pipe or terminal that had given
+  everything meant sleeping with data in hand. It now continues only if
+  the file is still readable.
+
+**Tests:** `apps/pipetest`, 27 in-process checks. They cover making a
+pipe (not a terminal; a FIFO), data through it, readiness,
+`PIPE_SIZE`, `EAGAIN` with `O_NONBLOCK`, a full pipe unwritable, end of
+file and `POLLHUP`, SIGPIPE then `EPIPE`, every `fcntl` command,
+`dup2` clearing close-on-exec, 32 descriptors, the process group the
+shell made, the terminal's foreground group, `setpgid` refusals, a
+helper joining its parent's group, and `kill(0, …)` reaching it.
+`pipetest` also provides small tools to build pipelines from.
+`apitest.sh` checks every redirection form **by reading the files back
+on the host with `mtools`**, plus pipelines: program to program, builtin
+to program, 100,000 bytes through three stages with every byte
+checked, an unknown stage, a writer whose reader left early, ctrl-C
+ending both stages of a pipeline, and a background reader stopped
+rather than stealing keys that then reads its line after `fg`.
+
 ---
 
 ## Decisions worth knowing about
@@ -766,11 +847,10 @@ check doing its job on the test's own mistake.
 
 ## Notes for later
 
-- **Task 9 must take the terminal out of `exec_spawn`**, which today
-  hands the foreground to every child it starts: a shell's decision
-  built into the kernel. And it must **reap orphans**. A program that
-  exits without waiting for its children leaves them as zombies holding
-  task slots for ever; Linux reparents them to init.
+- **Task 9 must reap orphans.** A program that exits without waiting
+  for its children leaves them as zombies holding task slots for ever;
+  Linux reparents them to init. (The other half of this note, taking
+  the terminal out of `exec_spawn`, was done in task 8.)
 - **Kernel stack use is unmeasured.** `do_syscall`'s frame is 1,840
   bytes because `do_spawn` is inlined into it, against an 8 KB stack.
   It is fine today. A stack high-water mark, painting the stack and
@@ -783,6 +863,3 @@ check doing its job on the test's own mistake.
   owned, so that `vm_destroy` never hands VRAM to the page allocator.
   Not on the editor's path, so not done under task 3.
 
-- `hello > /OUT.TXT` must work by the end of task 8, and there must be a
-  regression test for it. It is the clearest example in the tree of a
-  feature that looks present and is not.

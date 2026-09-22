@@ -101,23 +101,49 @@ static struct termios tio = {
 static int pushback = -1;
 
 /*
- * Who ctrl-C and ctrl-Z are aimed at.
+ * Who ctrl-C and ctrl-Z are aimed at: the foreground PROCESS GROUP.
  *
- * The foreground task: the one the shell is waiting for, or the shell
- * itself when it is not waiting for anything. A background task does not
- * get them, which is the whole difference between running something with
- * & and without.
+ * A group, not a task, because a pipeline is several programs and the
+ * key has to reach all of them. The shell puts each job in a group of
+ * its own and hands the terminal to that group while it waits. A job in
+ * the background is in a group that does not have the terminal, which
+ * is the whole difference between running something with & and without
+ * -- and a background task that tries to READ is sent SIGTTIN, so it
+ * stops instead of taking keystrokes meant for somebody else.
  */
-static int fg_pid;
+static int fg_pgrp;
 
-void tty_set_foreground(int pid)
+void tty_set_foreground(int pgrp)
 {
-    fg_pid = pid;
+    fg_pgrp = pgrp;
 }
 
 int tty_foreground(void)
 {
-    return fg_pid;
+    return fg_pgrp;
+}
+
+/*
+ * May the current task read the terminal? 0 if so. A task outside the
+ * foreground group is sent SIGTTIN, whose default is to stop it; the
+ * read returns -EINTR, and when `fg` continues it the read is restarted
+ * as if nothing had happened (see signal.c). A task that ignores or
+ * blocks SIGTTIN would never be stopped, so it gets EIO instead --
+ * POSIX's rule, and what stops such a task spinning on the signal.
+ */
+static int may_read(void)
+{
+    struct task *t = current;
+
+    if (!t || !t->as || t->pgid == fg_pgrp) {
+        return 0;
+    }
+    if ((t->sig_blocked & SIGMASK(SIGTTIN)) ||
+        t->sigact[SIGTTIN].sa_handler == SIG_IGN) {
+        return -EIO;
+    }
+    signal_group(t->pgid, SIGTTIN);
+    return -EINTR;
 }
 
 /*
@@ -378,13 +404,7 @@ static int signal_char(int c)
      * that matters -- and that is the entire semantic difference between
      * a job started with & and one without.
      */
-    {
-        struct task *t = task_find(fg_pid);
-
-        if (t) {
-            signal_send(t, sig);
-        }
-    }
+    signal_group(fg_pgrp, sig);
     return sig;
 }
 
@@ -502,9 +522,15 @@ static s32 tty_read_canon(u8 *out, u32 len)
 
 static s32 tty_read(struct file *f, void *buf, u32 len)
 {
+    int err;
+
     (void)f;
     if (len == 0) {
         return 0;
+    }
+    err = may_read();
+    if (err < 0) {
+        return err;
     }
     if (tio.c_lflag & ICANON) {
         return tty_read_canon(buf, len);
@@ -576,6 +602,29 @@ static int tty_ioctl(struct file *f, u32 request, u32 arg)
      * where its output goes should be asking the terminal, not reaching
      * into the kernel for a list it happens to be able to see.
      */
+    /*
+     * The foreground group, as tcgetpgrp() and tcsetpgrp() see it. A
+     * group must have a member to be given the terminal; handing it to
+     * nobody would leave ctrl-C going nowhere.
+     */
+    case TIOCGPGRP:
+        *(int *)arg = fg_pgrp;
+        return 0;
+
+    case TIOCSPGRP: {
+        int pg = *(int *)arg;
+        struct task *t;
+        int i;
+
+        for (i = 0; (t = task_nth(i)) != 0; i++) {
+            if (t->pgid == pg && t->state != TASK_ZOMBIE) {
+                fg_pgrp = pg;
+                return 0;
+            }
+        }
+        return -EPERM;
+    }
+
     case TIOCGCONS: {
         struct console_info *ci = (struct console_info *)arg;
         struct chardev *d;

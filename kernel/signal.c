@@ -156,9 +156,55 @@ int signal_send(struct task *t, int sig)
     return 0;
 }
 
+int signal_group(int pgid, int sig)
+{
+    struct task *t;
+    int i, found = 0;
+
+    for (i = 0; (t = task_nth(i)) != 0; i++) {
+        if (t->pgid == pgid && t->as && t->state != TASK_ZOMBIE) {
+            found = 1;
+            if (sig) {
+                signal_send(t, sig);
+            }
+        }
+    }
+    return found ? 0 : -ESRCH;
+}
+
 int signal_kill(int pid, int sig)
 {
-    struct task *t = task_find(pid);
+    struct task *t;
+
+    if (sig < 0 || sig >= NSIG) {
+        return -EINVAL;
+    }
+    /*
+     * Linux's forms: 0 is the caller's own group, -N is group N, and -1
+     * is every task the caller may signal -- here, every user task but
+     * itself.
+     */
+    if (pid == 0) {
+        return signal_group(current->pgid, sig);
+    }
+    if (pid == -1) {
+        int i, found = 0;
+
+        for (i = 0; (t = task_nth(i)) != 0; i++) {
+            if (t != current && t->as && t->state != TASK_ZOMBIE) {
+                found = 1;
+                if (sig) {
+                    signal_send(t, sig);
+                }
+            }
+        }
+        return found ? 0 : -ESRCH;
+    }
+    if (pid < 0) {
+        return signal_group(-pid, sig);
+    }
+
+    t = task_find(pid);
 
     if (t && !t->as && t->state != TASK_ZOMBIE) {
         return -EPERM;          /* see signal_send: it would do nothing */

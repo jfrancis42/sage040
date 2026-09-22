@@ -1332,6 +1332,17 @@ older copy should know which way round it is now.
 - **Open a network socket.** `socket`, `connect`, `bind`, `listen`,
   `accept`, `sendto` and `recvfrom` all work, and a socket is a
   descriptor, so `read()` and `write()` work on one.
+- **Use pipes and redirection.** `pipe`, `dup`, `dup2` and `fcntl`
+  (`O_NONBLOCK`, `FD_CLOEXEC`, `F_DUPFD`), with Linux's meanings: end of
+  file when the last writer closes, SIGPIPE and `EPIPE` when the last
+  reader has gone, and writes of up to `PIPE_BUF` never interleaved.
+  The shell's `<`, `>`, `>>`, `2>`, `2>&1` and `|` reach a program's
+  descriptors. Start a child with its ends on 0 and 1 by `dup2`ing them
+  there before `spawn` and closing your own copies; mark the ones it
+  must not have `FD_CLOEXEC`.
+- **Belong to a process group.** `getpgrp`, `setpgid`, `tcgetpgrp` and
+  `kill(0, ...)` / `kill(-pgid, ...)`. The shell gives each job a group
+  of its own, and a helper you `spawn` joins yours.
 - **Wait on several descriptors** with `poll()` or `select()`: the
   terminal, sockets and files. A terminal in canonical mode is readable
   when a character is waiting, not when a whole line is. Put it in raw
@@ -1350,13 +1361,6 @@ older copy should know which way round it is now.
 - **Map the framebuffer.** `mmap` exists, but `/dev/fb0` does not
   support it yet, so drawing goes through the `FBIO_*` ioctls rather
   than through the memory itself.
-- **Use a pipe.** No `pipe`, `dup2` or `fcntl`, so no shell pipelines
-  and no input redirection. Output redirection with `>` works for the
-  shell's own builtins and **silently does nothing for a program** --
-  the shell swaps its own output descriptor and a spawned program never
-  sees it.
-- **Start a child and talk to it.** `spawn` creates a task, but without
-  pipes there is no way to communicate with one.
 - **Use long file names.** 8.3 only.
 - **Resolve a name.** Addresses are numeric; there is no DNS.
 
