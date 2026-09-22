@@ -54,6 +54,7 @@ const char *strerror(int err)
     case EDESTADDRREQ:    return "destination address required";
     case EPROTONOSUPPORT: return "protocol not supported";
     case EOPNOTSUPP:      return "operation not supported";
+    case EOVERFLOW:       return "value too large for defined data type";
     case EAFNOSUPPORT:    return "address family not supported";
     case ENOBUFS:         return "no buffer space available";
     case EISCONN:         return "transport endpoint is already connected";

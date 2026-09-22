@@ -65,3 +65,4 @@ apps/vtcheck
 system/stty
 system/resize
 apps/winsize
+libc/test/libctest

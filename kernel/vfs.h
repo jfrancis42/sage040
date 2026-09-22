@@ -55,6 +55,16 @@ struct fs_type {
     int (*chdir)(const char *path);
     const char *(*getcwd)(void);
 
+    /*
+     * Any directory, not just the working one: what an open directory
+     * descriptor -- and so getdents64, and so readdir() in a C library
+     * -- is built on. dir_ino names the directory `path` refers to by
+     * the same u32 a working directory is kept as; readdir_in reads
+     * entry `index` of it.
+     */
+    int (*readdir_in)(u32 ino, int index, struct dirent *d);
+    int (*dir_ino)(const char *path, u32 *ino);
+
     struct fs_type *next;
 };
 
@@ -123,6 +133,8 @@ int  vfs_stat(const char *path, struct stat *st);
 int  vfs_fstat(int fd, struct stat *st);
 int  vfs_access(const char *path, int mode);
 int  vfs_readdir(int index, struct dirent *d);
+s32  vfs_getdents64(int fd, u8 *buf, u32 len);
+int  vfs_is_dir_file(struct file *f);
 int  vfs_statfs(struct statfs *s);
 int  vfs_sync(void);
 

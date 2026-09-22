@@ -612,10 +612,6 @@ static int dir_lookup_in(const struct dir *d, const char name83[11],
     return -ENOENT;
 }
 
-static int dir_lookup(const char name83[11], u8 *ent_out)
-{
-    return dir_lookup_in(&ROOT_DIR, name83, ent_out);
-}
 
 /* --- paths ----------------------------------------------------------- */
 
@@ -1236,13 +1232,16 @@ static int chain_seek(struct fat_file *f, u32 want, int alloc, u32 *out)
 }
 
 /* Is this directory entry already open?  Used to keep a file from being
- * deleted or renamed while something holds it. */
-static int entry_is_open(u32 dir_index)
+ * deleted or renamed while something holds it. The directory as well as
+ * the slot: it compared the slot alone, so a file open in one directory
+ * made every file at the same position in every other directory busy. */
+static int entry_is_open(const struct dir *d, u32 dir_index)
 {
     int i;
 
     for (i = 0; i < FAT_MAX_OPEN; i++) {
-        if (files[i].used && files[i].dir_index == dir_index) {
+        if (files[i].used && files[i].dir_index == dir_index &&
+            files[i].dir.cluster == d->cluster) {
             return 1;
         }
     }
@@ -1310,7 +1309,7 @@ static int fat_handle_open(const char *name, int flags)
             return -EACCES;
         }
         /* One writer, or any number of readers -- but not both. */
-        if (can_write(flags) && entry_is_open((u32)idx)) {
+        if (can_write(flags) && entry_is_open(&open_dir, (u32)idx)) {
             return -EBUSY;
         }
     }
@@ -1530,33 +1529,12 @@ static s32 fat_handle_seek(int fd, s32 offset, int whence)
 /* Directory operations                                              */
 /* ---------------------------------------------------------------- */
 
-static int fat_unlink(const char *name)
+/* Delete the file at slot `idx` of `d`, whose entry is `ent`. */
+static int delete_entry(const struct dir *d, int idx, u8 *ent)
 {
-    struct dir target;
-    char n83[11];
-    u8 ent[DIRENT_SIZE];
-    int idx, err;
-    u32 first;
+    u32 first = le16(&ent[26]);
+    int err;
 
-    if (!mounted) {
-        return -ENODEV;
-    }
-    err = name_to_83(name, n83);
-    if (err != 0) {
-        return err;
-    }
-    idx = dir_lookup(n83, ent);
-    if (idx < 0) {
-        return idx;
-    }
-    if (entry_is_open((u32)idx)) {
-        return -EBUSY;
-    }
-    if (ent[11] & ATTR_RDONLY) {
-        return -EACCES;
-    }
-
-    first = le16(&ent[26]);
     if (first != 0) {
         err = fat_free_chain(first);
         if (err != 0) {
@@ -1572,56 +1550,221 @@ static int fat_unlink(const char *name)
      */
     ent[0] = 0xe5;
     put_le16(&ent[26], 0);
-    err = dir_write_in(&target, (u32)idx, ent);
+    return dir_write_in(d, (u32)idx, ent);
+}
+
+/*
+ * Through path_walk, like everything else. It used to take the name
+ * with name_to_83 and look it up in the ROOT -- so a path with a slash
+ * in it could not be unlinked, and a relative name in a subdirectory
+ * found the root's file of that name -- and then write the deletion
+ * through a struct dir that was never initialised, into whichever
+ * directory the stack happened to name.
+ */
+static int fat_unlink(const char *name)
+{
+    struct dir cwd = cwd_of_current();
+    struct dir target;
+    char n83[11];
+    u8 ent[DIRENT_SIZE];
+    int idx, err, last_is_dir;
+
+    if (!mounted) {
+        return -ENODEV;
+    }
+    err = path_walk(&cwd, name, &target, n83, &last_is_dir);
+    if (err != 0) {
+        return err;
+    }
+    if (last_is_dir) {
+        return -EISDIR;
+    }
+    idx = dir_lookup_in(&target, n83, ent);
+    if (idx < 0) {
+        return idx;
+    }
+    if (ent[11] & ATTR_DIR) {
+        return -EISDIR;         /* rmdir is for those, as on Linux */
+    }
+    if (entry_is_open(&target, (u32)idx)) {
+        return -EBUSY;
+    }
+    if (ent[11] & ATTR_RDONLY) {
+        return -EACCES;
+    }
+    err = delete_entry(&target, idx, ent);
     if (err != 0) {
         return err;
     }
     return fat_flush_all();
 }
 
+/*
+ * Is directory `c` the directory `anc`, or somewhere below it? Walks up
+ * from `c` through the ".." entries. Moving a directory into itself or
+ * into one of its own children would cut it off from the tree.
+ */
+static int dir_is_within(u32 c, u32 anc)
+{
+    int depth;
+
+    for (depth = 0; depth < 64; depth++) {
+        struct dir d;
+        u8 e[DIRENT_SIZE];
+
+        if (c == anc) {
+            return 1;
+        }
+        if (c == 0) {
+            return 0;
+        }
+        d.cluster = c;
+        if (dir_read_in(&d, 1, e) != 0 || e[0] != '.' || e[1] != '.') {
+            return 0;           /* no ".." where it should be: stop */
+        }
+        c = le16(&e[26]);
+    }
+    return 1;                   /* deeper than anything real: refuse */
+}
+
+/*
+ * POSIX's rename, which an editor saving a file depends on: it writes
+ * the new text to a temporary and renames it over the old. So:
+ *
+ *   - An existing file at the destination is REPLACED, not refused.
+ *   - A move between directories really moves: a new entry in the
+ *     destination, the old one deleted. A directory that moves has its
+ *     ".." rewritten to its new parent.
+ *
+ * It used to look both names up in the root whatever the paths said,
+ * write the new name into the source's directory at the slot the root
+ * lookup found, and refuse any destination that existed.
+ */
 static int fat_rename(const char *from, const char *to)
 {
     struct dir cwd = cwd_of_current();
     struct dir fdir, tdir;
     char f83[11], t83[11];
-    u8 ent[DIRENT_SIZE];
-    int idx, err;
+    u8 ent[DIRENT_SIZE], tent[DIRENT_SIZE];
+    int idx, tidx, err, last;
 
     if (!mounted) {
         return -ENODEV;
     }
-    err = path_walk(&cwd, from, &fdir, f83, 0);
+    err = path_walk(&cwd, from, &fdir, f83, &last);
     if (err != 0) {
         return err;
     }
-    err = path_walk(&cwd, to, &tdir, t83, 0);
+    if (last) {
+        return -EBUSY;          /* "/" or "dir/": not something to move */
+    }
+    err = path_walk(&cwd, to, &tdir, t83, &last);
     if (err != 0) {
         return err;
     }
-    if (memcmp(f83, t83, 11) == 0) {
-        return 0;
+    if (last) {
+        return -EISDIR;
     }
 
-    if (dir_lookup(t83, 0) >= 0) {
-        return -EEXIST;
-    }
-
-    idx = dir_lookup(f83, ent);
+    idx = dir_lookup_in(&fdir, f83, ent);
     if (idx < 0) {
         return idx;
     }
-    if (entry_is_open((u32)idx)) {
+    if (fdir.cluster == tdir.cluster && memcmp(f83, t83, 11) == 0) {
+        return 0;               /* renaming something to itself */
+    }
+    if (entry_is_open(&fdir, (u32)idx)) {
         return -EBUSY;
     }
+    if ((ent[11] & ATTR_DIR) && dir_is_within(tdir.cluster, le16(&ent[26]))) {
+        return -EINVAL;
+    }
 
-    /* The name is the only thing that moves; cluster chain and size stay
-     * exactly where they are. */
-    memcpy(ent, t83, 11);
+    tidx = dir_lookup_in(&tdir, t83, tent);
+    if (tidx >= 0) {
+        if (tent[11] & ATTR_DIR) {
+            return (ent[11] & ATTR_DIR) ? -EEXIST : -EISDIR;
+        }
+        if (ent[11] & ATTR_DIR) {
+            return -ENOTDIR;
+        }
+        if (entry_is_open(&tdir, (u32)tidx)) {
+            return -EBUSY;
+        }
+        if (tent[11] & ATTR_RDONLY) {
+            return -EACCES;
+        }
+        err = delete_entry(&tdir, tidx, tent);
+        if (err != 0) {
+            return err;
+        }
+    }
+
+    if (fdir.cluster == tdir.cluster) {
+        /* The name is the only thing that changes; cluster chain and
+         * size stay exactly where they are. */
+        memcpy(ent, t83, 11);
+        err = dir_write_in(&fdir, (u32)idx, ent);
+        if (err != 0) {
+            return err;
+        }
+        return fat_flush_all();
+    }
+
+    /* A move: the same entry under the new name in the new directory,
+     * then the old slot freed -- without freeing the chain it pointed
+     * at, which now belongs to the new entry. */
+    tidx = dir_create_in(&tdir, t83, ent[11]);
+    if (tidx < 0) {
+        return tidx;
+    }
+    memcpy(tent, ent, DIRENT_SIZE);
+    memcpy(tent, t83, 11);
+    err = dir_write_in(&tdir, (u32)tidx, tent);
+    if (err != 0) {
+        return err;
+    }
+    ent[0] = 0xe5;
     err = dir_write_in(&fdir, (u32)idx, ent);
     if (err != 0) {
         return err;
     }
+    if (tent[11] & ATTR_DIR) {
+        struct dir self;
+        u8 dd[DIRENT_SIZE];
+
+        self.cluster = le16(&tent[26]);
+        if (dir_read_in(&self, 1, dd) == 0 && dd[0] == '.' && dd[1] == '.') {
+            put_le16(&dd[26], (u16)tdir.cluster);
+            err = dir_write_in(&self, 1, dd);
+            if (err != 0) {
+                return err;
+            }
+        }
+    }
     return fat_flush_all();
+}
+
+/*
+ * An inode number for an entry. FAT has none, and some programs --
+ * anything that asks whether two names are the same file, and every
+ * readdir that skips a zero d_ino as a deleted slot -- need one that is
+ * nonzero, stable, and the same from stat() as from readdir().
+ *
+ * A directory is its first cluster, which it keeps for life (the root,
+ * which has no cluster, is 1). A file is where its entry sits: the
+ * directory's cluster, plus one, above the slot number. Clusters stop
+ * below 65,525 and slots below 65,536, so the two ranges never meet --
+ * though renaming a file moves its entry, and so changes its number.
+ */
+static u32 ino_for(const struct dir *parent, u32 idx, const u8 *ent)
+{
+    if (ent[11] & ATTR_DIR) {
+        u32 c = le16(&ent[26]);
+
+        return c ? c : 1;
+    }
+    return ((parent->cluster + 1) << 16) | (idx & 0xffffUL);
 }
 
 static void fill_dirent(const u8 *ent, struct dirent *out)
@@ -1665,6 +1808,7 @@ static int fat_lookup_dirent(const char *name, struct dirent *out)
          * there is no entry anywhere describing the root. */
         memset(out, 0, sizeof(*out));
         out->d_mode = S_IFDIR | 0755;
+        out->d_ino = d.cluster ? d.cluster : 1;
         return 0;
     }
 
@@ -1673,6 +1817,7 @@ static int fat_lookup_dirent(const char *name, struct dirent *out)
         return idx;
     }
     fill_dirent(ent, out);
+    out->d_ino = ino_for(&d, (u32)idx, ent);
     return 0;
 }
 
@@ -1687,14 +1832,21 @@ static int fat_stat(const char *name, struct stat *st)
     st->st_mode = de.d_mode;
     st->st_size = de.d_size;
     st->st_mtime = de.d_mtime;
+    st->st_ino = de.d_ino;
     st->st_blocks = cluster_bytes ?
                     (de.d_size + cluster_bytes - 1) / cluster_bytes : 0;
     return 0;
 }
 
-static int fat_readdir(int index, struct dirent *out)
+/*
+ * Entry `index` of the directory whose identity is `ino` -- its first
+ * cluster, 0 for the root, the same u32 the VFS keeps for a working
+ * directory. Counting from the start each time is quadratic in the
+ * size of a directory, and FAT directories are small.
+ */
+static int fat_readdir_in(u32 ino, int index, struct dirent *out)
 {
-    struct dir cwd = cwd_of_current();
+    struct dir d;
     u32 i;
     int seen = 0;
     u8 ent[DIRENT_SIZE];
@@ -1705,9 +1857,10 @@ static int fat_readdir(int index, struct dirent *out)
     if (index < 0) {
         return -EINVAL;
     }
+    d.cluster = ino;
 
-    for (i = 0; i < dir_entries(&cwd); i++) {
-        int err = dir_read_in(&cwd, i, ent);
+    for (i = 0; i < dir_entries(&d); i++) {
+        int err = dir_read_in(&d, i, ent);
 
         if (err != 0) {
             return err;
@@ -1720,11 +1873,47 @@ static int fat_readdir(int index, struct dirent *out)
         }
         if (seen == index) {
             fill_dirent(ent, out);
+            out->d_ino = ino_for(&d, i, ent);
             return 0;
         }
         seen++;
     }
     return -ENOENT;
+}
+
+static int fat_readdir(int index, struct dirent *out)
+{
+    return fat_readdir_in(vfs_cwd_ino(), index, out);
+}
+
+/* The identity of the directory `path` names, for fat_readdir_in. */
+static int fat_dir_ino(const char *path, u32 *ino)
+{
+    struct dir cwd = cwd_of_current();
+    struct dir d;
+    char name[11];
+    u8 ent[DIRENT_SIZE];
+    int last_is_dir, idx, err;
+
+    if (!mounted) {
+        return -ENODEV;
+    }
+    err = path_walk(&cwd, path, &d, name, &last_is_dir);
+    if (err != 0) {
+        return err;
+    }
+    if (!last_is_dir) {
+        idx = dir_lookup_in(&d, name, ent);
+        if (idx < 0) {
+            return idx;
+        }
+        if (!(ent[11] & ATTR_DIR)) {
+            return -ENOTDIR;
+        }
+        d.cluster = le16(&ent[26]);
+    }
+    *ino = d.cluster;
+    return 0;
 }
 
 /* ---------------------------------------------------------------- */
@@ -1774,12 +1963,20 @@ static int fat_file_close(struct file *f)
  */
 static int fat_file_fstat(struct file *f, struct stat *st)
 {
-    struct fat_file *ff = f->priv;
+    /*
+     * Through handle(), like every other file operation. This used to
+     * read f->priv as a pointer to the handle, when it is the handle's
+     * NUMBER plus one -- so fstat read its "size" out of the vector
+     * table, which is never zero, and the only test asked for a size
+     * greater than zero.
+     */
+    struct fat_file *ff = handle(priv_to_handle(f));
 
-    if (!ff || !ff->used) {
+    if (!ff) {
         return -EBADF;
     }
-    st->st_mode = S_IFREG;
+    st->st_mode = S_IFREG | S_IRUSR | S_IWUSR;
+    st->st_ino = ((ff->dir.cluster + 1) << 16) | (ff->dir_index & 0xffffUL);
     st->st_size = ff->size;
     st->st_mtime = 0;
     st->st_blocks = cluster_bytes
@@ -2036,6 +2233,8 @@ static struct fs_type fat16_type = {
     fat_rmdir,
     fat_chdir,
     fat_getcwd,
+    fat_readdir_in,
+    fat_dir_ino,
     0
 };
 

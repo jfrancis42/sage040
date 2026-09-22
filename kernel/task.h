@@ -126,6 +126,7 @@ struct task {
      */
     u32   cwd_ino;
     char  cwd_path[PATH_MAX];
+    u32   umask;                /* kept and reported; FAT has no modes  */
 
     char  name[TASK_NAME_MAX];
     char  cmd[JOB_CMD_MAX];     /* the command line, for `jobs`        */

@@ -38,8 +38,13 @@ CFLAGS   := $(CPUFLAGS) -ffreestanding -nostdlib -nostdinc -O2 \
 LDFLAGS  := $(CPUFLAGS) -ffreestanding -nostdlib -T $(LIB)/user.ld \
             -Wl,--build-id=none -Wl,--no-warn-rwx-segments -Wl,--gc-sections
 
+# uapi.h and types.h too: they ARE the ABI, and a program built against
+# an old copy keeps the old system call numbers -- which is exactly how
+# renumbering the socket calls left every program calling the wrong ones
+# until something happened to touch its source.
 COMMON := $(LIB)/crt0.s $(LIB)/ulib.c $(LIB)/ulib.h $(LIB)/malloc.c \
-          $(LIB)/malloc.h $(LIB)/user.ld
+          $(LIB)/malloc.h $(LIB)/user.ld \
+          $(TOPDIR)/kernel/uapi.h $(TOPDIR)/types.h
 
 .PHONY: all install list clean
 

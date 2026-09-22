@@ -37,7 +37,18 @@ int main(int argc, char **argv)
     report("isatty() on a file says no", isatty(fd) == 0);
     report("fstat on an open file works", fstat(fd, &st) == 0);
     report("  and reports a regular file", S_ISREG(st.st_mode));
-    report("  with a size", st.st_size > 0);
+    {
+        struct stat byname;
+
+        /* The same size stat() gives by name, and the same as seeking to
+         * the end -- not merely "more than zero", which a read of any
+         * nonzero memory passed. */
+        report("  with its real size",
+               stat(path, &byname) == 0 && st.st_size == byname.st_size &&
+               st.st_size > 0 &&
+               lseek(fd, 0, SEEK_END) == (s32)st.st_size);
+        lseek(fd, 0, SEEK_SET);
+    }
 
     /* dup shares the position: reading through one moves the other. */
     fd2 = dup(fd);

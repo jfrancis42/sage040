@@ -48,7 +48,7 @@ LDFLAGS := $(CPUFLAGS) -ffreestanding -nostdlib -T kernel.ld \
 # The kernel proper, then the drivers, then the filesystems. Nothing in
 # the first group names a chip; everything in the second does, and only
 # there.
-SRCS := main.c version.c console.c trap.c syscall.c sysuser.c vfs.c dev.c \
+SRCS := main.c version.c console.c trap.c syscall.c syslinux.c sysuser.c vfs.c dev.c \
  time.c timer.c errno.c string.c exec.c tty.c edit.c \
  pmm.c vm.c mmap.c poll.c pipe.c uaccess.c task.c wait.c signal.c random.c fb.c fbcon.c \
  font8x16.c \
@@ -59,9 +59,10 @@ SRCS := main.c version.c console.c trap.c syscall.c sysuser.c vfs.c dev.c \
  net/net.c net/arp.c net/ip.c net/icmp.c net/udp.c net/dhcp.c net/tcp.c net/socket.c \
  fs/fat16.c
 
-HDRS := kernel.h uapi.h dev.h vfs.h syscall.h console.h errno.h exec.h \
- time.h timer.h tty.h fb.h fbcon.h font.h string.h \
- drivers/drivers.h drivers/rtc.h \
+# Every header, by wildcard. The list used to be written out and had
+# fallen well behind -- task.h, signal.h and most of the rest were not
+# on it, so a change to one alone rebuilt nothing.
+HDRS := $(wildcard *.h drivers/*.h fs/*.h net/*.h) ../types.h \
  $(SUP)/sage040.h
 
 .PHONY: all run install boot disasm syms clean distclean
@@ -74,8 +75,13 @@ ASMS := start.s memprobe.s taskasm.s
 # for. shell.c and edit.c are programs: they reach the system through
 # trap #0 and may not include a kernel header that lets them go round it.
 # See layercheck.sh for what is allowed and why.
-kernel.elf: $(ASMS) $(SRCS) $(HDRS) kernel.ld layercheck.sh
+#
+# So is the ABI: every system call number Linux/m68k has must be Linux's
+# number (abicheck.sh, against linux-m68k-syscalls.txt).
+kernel.elf: $(ASMS) $(SRCS) $(HDRS) kernel.ld layercheck.sh abicheck.sh \
+            linux-m68k-syscalls.txt
 	@./layercheck.sh
+	@./abicheck.sh
 	$(CC) $(CFLAGS) $(LDFLAGS) \
 	 -x assembler-with-cpp $(ASMS) \
 	 -x c $(SRCS) -o $@

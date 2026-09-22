@@ -614,10 +614,9 @@ QEMU's user-mode NAT otherwise — which is what a laptop gets, because an
 bridge at all.
 
 A program has a 256 MB address space with `brk`, `sbrk`, `mmap`,
-`munmap`, `mprotect` and a stand-in `malloc`. What is not there yet:
-no C library beyond a thin
-syscall wrapper. Pipes, redirection and pipelines work. No long file names: 8.3
-only. Signal handlers work, but not `SA_SIGINFO`. No name resolver, so addresses are numeric. Input is
+`munmap`, `mprotect` and a stand-in `malloc`. Pipes, redirection and
+pipelines work, and programs can be built against picolibc (`libc/`).
+What is not there yet: long file names (8.3 only). No name resolver, so addresses are numeric. Input is
 still polled, though both the keyboard and the serial port have
 interrupt lines wired to the MFP; it sleeps on a wait queue rather than
 spinning, so this is now tidiness rather than cost.

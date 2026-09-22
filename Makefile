@@ -9,6 +9,7 @@
 #   make            build the boot ROM and the kernel
 #   make boot       put the kernel and programs on the disk, and boot
 #   make test       device tests, then the kernel filesystem test
+#   make libc       build picolibc for programs (needed by libctest)
 #   make disk       create the disk image if it is not there
 #   make disk-ls    partition table and directory listing
 #   make disk-fsck  check the filesystem with the host's tools
@@ -20,7 +21,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: all boot run test tests fstest edittest vmtest nettest apitest vttest cube programs clean distclean
+.PHONY: all boot run test tests fstest edittest vmtest nettest apitest vttest libctest libc cube programs clean distclean
 
 all:
 	$(MAKE) -C bootrom
@@ -54,7 +55,7 @@ programs:
 run:
 	$(MAKE) -C kernel run
 
-test: tests fstest apitest edittest vmtest nettest vttest
+test: tests fstest apitest edittest vmtest nettest vttest libctest
 
 tests:
 	$(MAKE) -C tests run
@@ -73,6 +74,13 @@ nettest:
 
 vttest:
 	cd kernel && ./vttest.sh
+
+libctest:
+	cd kernel && ./libctest.sh
+
+# picolibc, built and installed outside the tree (libc/README.md). Once.
+libc:
+	libc/build.sh
 
 # The system call surface a ported program expects. Grows with the
 # porting work; see progress.md.

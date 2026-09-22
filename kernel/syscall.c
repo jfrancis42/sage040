@@ -17,6 +17,7 @@
  * this is where the work goes.
  */
 #include "syscall.h"
+#include "sysint.h"
 #include "vfs.h"
 #include "exec.h"
 #include "task.h"
@@ -62,12 +63,12 @@ static struct waitq sleep_waitq;
 /* user side and these helpers become copy_from_user and friends.     */
 /* ---------------------------------------------------------------- */
 
-static int from_program(void)
+int from_program(void)
 {
     return uaccess_current() != 0;
 }
 
-static int fetch(void *dst, u32 p, u32 len)
+int fetch(void *dst, u32 p, u32 len)
 {
     if (!p) {
         return -EFAULT;
@@ -79,7 +80,7 @@ static int fetch(void *dst, u32 p, u32 len)
     return copy_from_user(dst, p, len);
 }
 
-static int store(u32 p, const void *src, u32 len)
+int store(u32 p, const void *src, u32 len)
 {
     if (!p) {
         return -EFAULT;
@@ -92,7 +93,7 @@ static int store(u32 p, const void *src, u32 len)
 }
 
 /* Returns the length, or -errno. */
-static int fetch_str(char *dst, u32 p, u32 max)
+int fetch_str(char *dst, u32 p, u32 max)
 {
     if (!p) {
         return -EFAULT;
@@ -343,6 +344,10 @@ static const struct {
     { TCSETS,       sizeof(struct termios),       IO_IN  },
     { TCSETSW,      sizeof(struct termios),       IO_IN  },
     { TCSETSF,      sizeof(struct termios),       IO_IN  },
+    { TCGETS2,      sizeof(struct termios2),      IO_OUT },
+    { TCSETS2,      sizeof(struct termios2),      IO_IN  },
+    { TCSETSW2,     sizeof(struct termios2),      IO_IN  },
+    { TCSETSF2,     sizeof(struct termios2),      IO_IN  },
     { TIOCGCONS,    sizeof(struct console_info),  IO_IN | IO_OUT },
     { TIOCSCONS,    sizeof(struct console_set),   IO_IN  },
     { TIOCGPGRP,    sizeof(int),                  IO_OUT },
@@ -2012,7 +2017,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
     }
 
     default:
-        return -ENOSYS;
+        return syscall_linux(nr, a1, a2, a3, a4, a5, a6, regs);
     }
 }
 

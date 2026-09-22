@@ -840,25 +840,38 @@ d0 = result, or a negated errno
 ```
 
 That is not an imitation. Linux picked the obvious convention for this
-architecture and there is nothing to improve on. The numbers are Linux's
-i386 numbers, so `__NR_write` is 4, and the error values are Linux's, so
-`-ENOENT` is `-2`.
+architecture and there is nothing to improve on. The numbers are
+**Linux/m68k's**, from `arch/m68k/kernel/syscalls/syscall.tbl`, so
+`__NR_write` is 4, and the error values are Linux's, so `-ENOENT` is
+`-2`. `kernel/abicheck.sh` checks every number in `uapi.h` against that
+table on each build -- the socket calls were i386's, all three too high,
+until a C library built on the real table called the wrong ones.
 
-Forty of them.
+The calls this system has always had:
 
 | | |
 |---|---|
 | `exit` 1, `read` 3, `write` 4, `open` 5, `close` 6 | the usual |
 | `unlink` 10, `rename` 38, `stat` 106, `getdents` 141 | files |
-| `lseek` 19, `fsync` 118, `sync` 166, `statfs` 99 | more files |
+| `lseek` 19, `fsync` 118, `sync` 36, `statfs` 99 | more files |
 | `mkdir` 39, `rmdir` 40, `chdir` 12, `getcwd` 183 | directories |
 | `time` 13, `stime` 25, `times` 43, `nanosleep` 162 | time |
 | `getpid` 20, `kill` 37, `waitpid` 7, `sched_yield` 158 | tasks |
-| `socket` 359 … `shutdown` 373 | sockets, all of Linux/i386's range: `socketpair`, `accept4`, the socket options, names, `sendmsg`/`recvmsg` |
+| `socket` 356 … `shutdown` 370 | sockets: `socketpair`, `accept4`, the socket options, names, `sendmsg`/`recvmsg` |
 | `ioctl` 54, `uname` 122, `sysinfo` 116, `reboot` 88 | the rest |
-| `spawn` 400, `jobctl` 401, `netctl` 402 | **not Linux** — see below |
+| `spawn` 1000, `jobctl` 1001, `netctl` 1002 | **not Linux** — see below |
 
-The three above 400 are local because Linux has nothing to match.
+Beside them are the rest of Linux's interface, the calls a C library
+makes -- `statx`, `getdents64`, `openat` and the other `*at` calls,
+`rt_sigaction` with `SA_SIGINFO`, `pipe2`, `dup3`, `wait4`,
+`clock_gettime`, `_llseek`, `prlimit64`, `getrandom` and the uid calls
+-- in `kernel/syslinux.c`. `stat` (106), `fstat` (108) and `getdents`
+(141) have Linux's numbers and this system's own simpler structures;
+`statx` and `getdents64` are the Linux-shaped ones.
+
+The three at 1000 are local because Linux has nothing to match. They
+were at 400-402 until it turned out Linux/m68k gives those to `msgsnd`,
+`msgrcv` and `msgctl`.
 `spawn` takes a path and an argument vector and creates a task directly,
 the cheap alternative to `fork` + `execve`: `fork` works, but copies the
 whole address space, because there is no copy-on-write yet. `jobctl` is what `fg`, `bg`,
@@ -870,12 +883,33 @@ There is **no global `errno`**: a call returns a non-negative result or
 the negated error. A global would only start making sense once there are
 threads to get it wrong.
 
-`spawn` is numbered well above Linux's range because Linux has no such
+`spawn` is numbered clear of Linux's range because Linux has no such
 call. `fork` (2), `execve` (11) and `waitpid` (7) are the real ones, and
 `waitpid`'s status is Linux's encoding: use `WIFEXITED`, `WEXITSTATUS`,
 `WIFSIGNALED`, `WTERMSIG`, `WIFSTOPPED` from `uapi.h`. To run a command
 the way `system()` does, `fork`, then `execvp("sh", {"sh", "-c", cmd})`,
 then `waitpid`.
+
+### Two ways to write one
+
+**Against picolibc**, a real C library, for anything written the way
+programs are written elsewhere: `<stdio.h>`, `printf`, `malloc`,
+`fork`, `opendir`, `sigaction`. `make libc` once, then a Makefile of
+
+```make
+TOPDIR := ..
+PROGS  := myprog
+include $(TOPDIR)/libc/libc.mk
+```
+
+`libc/test/` is the example, and `libc/README.md` lists what differs
+from glibc -- mostly that `environ` must be declared by the program and
+`CLOCK_MONOTONIC` wants `_GNU_SOURCE`.
+
+**Against `lib/ulib`**, this system's own few hundred lines of wrappers,
+for the programs in `apps/` and `system/`: small, no stdio, and the
+system's own calls such as `spawn`. The rest of this section is about
+that one.
 
 ### What a program includes
 
@@ -1035,25 +1069,33 @@ write(fd, "hello\n", 6);
 close(fd);
 ```
 
-`O_RDONLY`, `O_WRONLY`, `O_RDWR`, `O_CREAT`, `O_TRUNC`, `O_APPEND`, and
-`lseek` with `SEEK_SET`/`SEEK_CUR`/`SEEK_END`. The access mode is the low
-two bits the way POSIX has it, so **`O_RDONLY` is zero** and testing for
-it with `&` does not work — use `(flags & O_ACCMODE)`.
+`O_RDONLY`, `O_WRONLY`, `O_RDWR`, `O_CREAT`, `O_EXCL`, `O_TRUNC`,
+`O_APPEND`, `O_CLOEXEC`, `O_NONBLOCK`, `O_DIRECTORY`, and `lseek` with
+`SEEK_SET`/`SEEK_CUR`/`SEEK_END`. The access mode is the low two bits
+the way POSIX has it, so **`O_RDONLY` is zero** and testing for it with
+`&` does not work — use `(flags & O_ACCMODE)`.
 
 The volume is FAT16 with subdirectories, 8.3 names, case-insensitive.
-`chdir`, `getcwd`, `mkdir` and `rmdir` all work, and a path may be
-absolute or relative.
+`chdir`, `getcwd`, `mkdir` and `rmdir` all work, a path may be absolute
+or relative, and the working directory belongs to the task.
 
-**The working directory is global, not per task.** `fs/fat16.c` keeps one
-`cwd`, so a `chdir` in one program moves every other program's idea of
-where it is, including the shell's. That is wrong -- a working directory
-belongs to a task the same way descriptors do -- and it has not bitten
-yet only because nothing in the tree calls `chdir` except the shell.
-Assume it will be fixed; do not rely on it either way.
+**`rename` is POSIX's**: it replaces a file that is already at the
+destination -- which is how an editor saves, writing a temporary and
+renaming it over the original -- and it moves between directories,
+directories included. It refuses to move a directory into itself.
 
-The other hard limit is names: 8.3, not a convention.
-`getdents(index, &dirent)` walks it by index and returns `-ENOENT` when
-there are no more.
+**A directory can be opened** read-only, and read with `getdents64`
+(Linux's records, `.` and `..` included), which is what `readdir()` in
+a C library is. `read` on one is `EISDIR`, as on Linux. lib/ulib's older
+`getdents(index, &dirent)` walks the working directory by index and
+returns `-ENOENT` when there are no more.
+
+**Inode numbers are made up**, because FAT has none: a directory is its
+first cluster, a file is where its entry sits. They are nonzero, stable,
+and the same from `stat` and `readdir` -- but renaming a file moves its
+entry and so changes its number.
+
+The hard limit is names: 8.3, not a convention.
 
 ### The terminal
 
@@ -1413,11 +1455,10 @@ older copy should know which way round it is now.
 
 ### What a program cannot do yet
 
-- **Take a three-argument handler, or an alternate stack.** `SA_SIGINFO`
-  and `SA_ONSTACK` are refused with `EINVAL`. Nor can a program catch the
-  signal from its own access fault: that one still ends it.
-- **Use a C library.** `ulib` is a syscall wrapper plus a handful of
-  string helpers. No `stdio`, no `printf`, no `setjmp`, no math.
+- **Use an alternate signal stack.** `SA_ONSTACK` is refused with
+  `EINVAL`. Nor can a program catch the signal from its own access
+  fault: that one still ends it. (`SA_SIGINFO` handlers work, with
+  Linux/m68k's `siginfo` and `ucontext`.)
 - **Map the framebuffer.** `mmap` exists, but `/dev/fb0` does not
   support it yet, so drawing goes through the `FBIO_*` ioctls rather
   than through the memory itself.
@@ -1452,7 +1493,7 @@ MFP clock    2.4576 MHz, prescalers 4/10/16/50/64/100/200
 MFP tick     timer D, /200, reload 123 -> 99.9 Hz (the kernel's HZ=100)
 
 syscalls     d0 = number, d1-d5 = args, trap #0, d0 = result or -errno
-             Linux/m68k convention, Linux i386 numbers, Linux errnos
+             Linux/m68k convention, numbers and errnos (abicheck.sh)
 devices      /dev/console /dev/tty  the terminal (sources + sinks)
              /dev/ttyS0   the serial port, raw
              /dev/kbd0    the 8042 keyboard, an input source

@@ -54,6 +54,7 @@
 #define EDESTADDRREQ    89      /* destination address required       */
 #define EPROTONOSUPPORT 93      /* protocol not supported             */
 #define EOPNOTSUPP      95      /* operation not supported            */
+#define EOVERFLOW       75      /* value too large for defined type   */
 #define EAFNOSUPPORT    97      /* address family not supported       */
 #define EADDRINUSE      98      /* address already in use             */
 #define EMSGSIZE        90      /* message too long                   */

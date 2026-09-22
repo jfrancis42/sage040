@@ -151,6 +151,26 @@ printf '%s\n' \
   'mkdir etc' \
   'rmdir bin' \
   'rmdir etc' \
+  'mkdir tmp' \
+  'echo in tmp > /tmp/moved.txt' \
+  'mv /tmp/moved.txt /etc/moved.txt' \
+  'echo target > /etc/over.txt' \
+  'echo source > /etc/src.txt' \
+  'mv /etc/src.txt /etc/over.txt' \
+  'echo root copy > /rootf.txt' \
+  'echo doomed > /etc/gone.txt' \
+  'cd etc' \
+  'echo etc copy > rootf.txt' \
+  'rm rootf.txt' \
+  'cd /tmp' \
+  'rm /etc/gone.txt' \
+  'cd /' \
+  'mkdir mvdir' \
+  'mv mvdir /tmp/mvdir' \
+  'cd /tmp/mvdir' \
+  'echo LS-DOTDOT' \
+  'ls ..' \
+  'cd /' \
   'sync' \
   'halt' \
   >> "$SCRATCH/session.tmp"
@@ -333,6 +353,34 @@ check "the kernel wrote LF line endings, not CRLF" $?
 mtype -i "$MIMG" ::/RENAMED.TXT > renamed.tmp 2>/dev/null
 cmp -s renamed.tmp "$SCRATCH/big.tmp"
 check "the kernel's copy is byte-identical to the original" $?
+
+# unlink and rename used to look every name up in the ROOT, whatever
+# the path said, and unlink wrote its deletion through a directory
+# pointer it never set. Everything above ran in the root, so none of it
+# showed. These are the cases that would have.
+mtype -i "$MIMG" ::/ETC/MOVED.TXT 2>/dev/null | grep -qx "in tmp" &&
+    ! mdir -i "$MIMG" ::/TMP 2>&1 | grep -q "MOVED    TXT"
+check "mv between directories moved the file" $?
+
+mtype -i "$MIMG" ::/ETC/OVER.TXT 2>/dev/null | grep -qx "source" &&
+    ! mdir -i "$MIMG" ::/ETC 2>&1 | grep -q "SRC      TXT"
+check "mv onto an existing file replaced it, as POSIX says" $?
+
+mtype -i "$MIMG" ::/ROOTF.TXT 2>/dev/null | grep -qx "root copy" &&
+    ! mdir -i "$MIMG" ::/ETC 2>&1 | grep -q "ROOTF    TXT"
+check "rm of a relative name in a subdirectory removed that one, not the root's" $?
+
+! mdir -i "$MIMG" ::/ETC 2>&1 | grep -q "GONE     TXT"
+check "rm of an absolute path from another directory" $?
+
+mdir -i "$MIMG" ::/TMP 2>&1 | grep -q "MVDIR" &&
+    ! mdir -i "$MIMG" ::/ 2>&1 | grep -q "MVDIR"
+check "mv moved a directory into another" $?
+
+# From inside /tmp/mvdir, `ls ..` lists /tmp, which holds MVDIR. Had the
+# ".." still named the root, it would list ETC and TMP and no MVDIR.
+tr -d '\r' < "$LOG" | grep -A2 '^LS-DOTDOT$' | grep -q 'MVDIR'
+check "  and its .. now leads to its new parent" $?
 
 # fsck.fat has no idea what mtools' @@offset means, so hand it the
 # partition on its own.

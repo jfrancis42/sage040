@@ -31,7 +31,8 @@ K := $(TOPDIR)/kernel
 SH_SRCS := sh.c $(K)/shell.c $(K)/edit.c $(K)/sysuser.c $(K)/string.c \
            $(K)/errno.c $(K)/time.c
 
-sh: $(SH_SRCS) $(LIB)/crt0.s $(LIB)/user.ld $(K)/syscall.h
+sh: $(SH_SRCS) $(LIB)/crt0.s $(LIB)/user.ld $(K)/syscall.h $(K)/uapi.h \
+    $(TOPDIR)/types.h $(K)/edit.h
 	$(CC) $(CFLAGS) $(LDFLAGS) \
 	    -x assembler-with-cpp $(LIB)/crt0.s \
 	    -x c $(SH_SRCS) -o $@

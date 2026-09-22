@@ -771,6 +771,31 @@ static int tty_ioctl(struct file *f, u32 request, u32 arg)
         *(struct termios *)arg = tio;
         return 0;
 
+    /* The termios2 forms: the same settings, plus two speeds that are
+     * reported as 38400 and not changed by setting them. */
+    case TCGETS2: {
+        struct termios2 *t2 = (struct termios2 *)arg;
+
+        if (!t2) {
+            return -EINVAL;
+        }
+        memcpy(t2, &tio, sizeof(tio));
+        t2->c_ispeed = t2->c_ospeed = 38400;
+        return 0;
+    }
+
+    case TCSETS2:
+    case TCSETSW2:
+    case TCSETSF2: {
+        struct termios t;
+
+        if (!arg) {
+            return -EINVAL;
+        }
+        memcpy(&t, (const void *)arg, sizeof(t));
+        return tty_ioctl(f, request == TCSETSF2 ? TCSETSF : TCSETS, (u32)&t);
+    }
+
     case TCSETSF:
         /* Throw away anything typed ahead, which is what the F is for:
          * a program switching modes does not want the previous mode's

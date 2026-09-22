@@ -294,6 +294,157 @@ int fd_install(const struct file_ops *ops, void *priv, int flags)
     return fd;
 }
 
+/* ---------------------------------------------------------------- */
+/* Open directories                                                  */
+/* ---------------------------------------------------------------- */
+
+/*
+ * A directory descriptor carries the directory's identity -- the u32 a
+ * filesystem keeps a working directory as -- in priv, biased by one so
+ * that the root (0) is not a null pointer, and how far through it the
+ * reader has got in pos. Nothing else: the entries are read from the
+ * filesystem as they are asked for, so a directory changed while it is
+ * open is seen as it is now, the way Linux behaves.
+ */
+static u32 dir_ino_of(struct file *f)
+{
+    return (u32)f->priv - 1;
+}
+
+static s32 dir_read(struct file *f, void *buf, u32 len)
+{
+    (void)f; (void)buf; (void)len;
+    return -EISDIR;
+}
+
+static s32 dir_write(struct file *f, const void *buf, u32 len)
+{
+    (void)f; (void)buf; (void)len;
+    return -EBADF;
+}
+
+/* Only back to the start, which is what rewinddir() is. */
+static s32 dir_lseek(struct file *f, s32 offset, int whence)
+{
+    if (whence != SEEK_SET || offset < 0) {
+        return -EINVAL;
+    }
+    f->pos = (u32)offset;
+    return offset;
+}
+
+static int dir_close(struct file *f)
+{
+    (void)f;
+    return 0;
+}
+
+static int dir_fstat(struct file *f, struct stat *st)
+{
+    u32 ino = dir_ino_of(f);
+
+    st->st_mode = S_IFDIR | 0755;
+    st->st_ino = ino ? ino : 1;
+    return 0;
+}
+
+static const struct file_ops dir_ops = {
+    dir_read,
+    dir_write,
+    dir_lseek,
+    0,
+    dir_close,
+    dir_fstat,
+    0,
+};
+
+static int dir_open(const char *path, int flags)
+{
+    u32 ino;
+    int err;
+
+    if (!mounted_fs->dir_ino || !mounted_fs->readdir_in) {
+        return -ENOSYS;
+    }
+    err = mounted_fs->dir_ino(path, &ino);
+    if (err < 0) {
+        return err;
+    }
+    return fd_install(&dir_ops, (void *)(ino + 1), flags & ~O_ACCMODE);
+}
+
+int vfs_is_dir_file(struct file *f)
+{
+    return f && f->ops == &dir_ops;
+}
+
+/*
+ * Fill `buf` with as many linux_dirent64 records as fit, from where the
+ * descriptor has got to. Returns the bytes used, 0 at the end, or
+ * -EINVAL if not even one record fits -- Linux's answers.
+ *
+ * FAT's root has no "." or ".." on disk and every other directory does,
+ * so the root is given them here: a program should not have to know
+ * which directory it is listing to be shown the same two entries.
+ */
+s32 vfs_getdents64(int fd, u8 *buf, u32 len)
+{
+    struct file *f = fd_get(fd);
+    u32 used = 0, ino;
+    int synth;
+
+    if (!f) {
+        return -EBADF;
+    }
+    if (!vfs_is_dir_file(f)) {
+        return -ENOTDIR;
+    }
+    ino = dir_ino_of(f);
+    synth = (ino == 0) ? 2 : 0;
+
+    for (;;) {
+        struct dirent d;
+        struct linux_dirent64 *r;
+        u32 n, reclen;
+        int idx = (int)f->pos;
+
+        if (idx < synth) {
+            memset(&d, 0, sizeof(d));
+            strcpy(d.d_name, idx == 0 ? "." : "..");
+            d.d_mode = S_IFDIR;
+            d.d_ino = 1;
+        } else {
+            int err = mounted_fs->readdir_in(ino, idx - synth, &d);
+
+            if (err == -ENOENT) {
+                break;
+            }
+            if (err < 0) {
+                return used ? (s32)used : err;
+            }
+        }
+
+        n = (u32)strlen(d.d_name);
+        reclen = (19 + n + 1 + 7) & ~7UL;   /* header is 19 bytes */
+        if (used + reclen > len) {
+            if (used == 0) {
+                return -EINVAL;
+            }
+            break;
+        }
+        r = (struct linux_dirent64 *)(buf + used);
+        memset(r, 0, reclen);
+        r->d_ino = d.d_ino ? d.d_ino : 1;
+        r->d_off = idx + 1;
+        r->d_reclen = (u16)reclen;
+        r->d_type = S_ISDIR(d.d_mode) ? DT_DIR : DT_REG;
+        memcpy(r->d_name, d.d_name, n + 1);
+        used += reclen;
+        f->pos++;
+    }
+    return (s32)used;
+}
+
 int fd_open(const char *path, int flags)
 {
     struct chardev *cd;
@@ -319,6 +470,29 @@ int fd_open(const char *path, int flags)
 
     if (!mounted_fs) {
         return -ENODEV;
+    }
+
+    /*
+     * A directory can be opened, to read it with getdents64 -- which is
+     * what readdir() in any C library is -- but not written, and it is
+     * not a file the filesystem's open() knows how to hand out.
+     */
+    {
+        struct stat st;
+        int exists = mounted_fs->stat && mounted_fs->stat(path, &st) == 0;
+
+        if (exists && S_ISDIR(st.st_mode)) {
+            if ((flags & O_ACCMODE) != O_RDONLY || (flags & O_CREAT)) {
+                return -EISDIR;
+            }
+            return dir_open(path, flags);
+        }
+        if (flags & O_DIRECTORY) {
+            return exists ? -ENOTDIR : -ENOENT;
+        }
+        if (exists && (flags & O_CREAT) && (flags & O_EXCL)) {
+            return -EEXIST;
+        }
     }
 
     fd = fd_alloc();

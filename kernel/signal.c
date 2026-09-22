@@ -269,12 +269,8 @@ int signal_set_action(int sig, const struct sigaction *act,
     if (sig == SIGKILL || sig == SIGSTOP) {
         return -EINVAL;
     }
-    if (act->sa_flags & (SA_SIGINFO | SA_ONSTACK)) {
-        return -EINVAL;         /* not supported, and said so */
-    }
-    if (act->sa_handler != SIG_DFL && act->sa_handler != SIG_IGN &&
-        (!(act->sa_flags & SA_RESTORER) || !act->sa_restorer)) {
-        return -EINVAL;         /* nowhere for the handler to return to */
+    if (act->sa_flags & SA_ONSTACK) {
+        return -EINVAL;         /* there is no sigaltstack, and said so */
     }
 
     t->sigact[sig] = *act;
@@ -417,14 +413,67 @@ static void syscall_outcome(struct task *t, struct pt_regs *regs,
 /* --- running a handler ----------------------------------------------- */
 
 struct sigframe {
-    u32 retaddr;                /* sa_restorer: where the handler returns */
+    u32 retaddr;                /* where the handler returns              */
     u32 sig;                    /* the handler's argument                 */
     u32 code;
     u32 scp;                    /* -> sc, for a handler that wants it      */
     struct sigcontext sc;
+    u16 retcode[4];             /* the trampoline, if no restorer given   */
 } __attribute__((packed));
 
 #define SIGFRAME_SC_OFFSET  16
+
+/*
+ * Linux/m68k's rt frame, exactly: what an SA_SIGINFO handler gets. The
+ * handler is called with sig, pinfo and puc as its three arguments,
+ * which are the three words above the return address.
+ */
+struct rt_sigframe {
+    u32 pretcode;
+    s32 sig;
+    u32 pinfo;                  /* -> info */
+    u32 puc;                    /* -> uc   */
+    u16 retcode[4];
+    struct siginfo info;
+    struct ucontext uc;
+};                              /* no padding: m68k aligns ints to two */
+
+/*
+ * Where a handler returns to. For the old frame with SA_RESTORER, the
+ * address given -- lib/ulib's trampoline in crt0.s. Otherwise, and for
+ * every rt frame, what Linux/m68k always does: two instructions written
+ * into the frame, "move.l #nr,%d0" and "trap #0", which make the right
+ * sigreturn call for the frame.
+ *
+ * Code written to memory has to be pushed out of the data cache and
+ * invalidated in the instruction cache before it is run. The caches are
+ * not turned on here -- CACR is never written -- so today there is
+ * nothing to push; whoever enables them has this to do, and exec's
+ * loading of program text as well.
+ */
+static void put_retcode(void *where, u32 nr)
+{
+    u16 code[4];
+
+    code[0] = 0x203c;                   /* move.l #imm,%d0 */
+    code[1] = (u16)(nr >> 16);
+    code[2] = (u16)nr;
+    code[3] = 0x4e40;                   /* trap #0 */
+    memcpy(where, code, sizeof(code));
+}
+
+static void block_for_handler(struct task *t, int sig, struct sigaction *act);
+
+static u32 return_address(const struct sigaction *act, u32 retcode_uva)
+{
+    if ((act->sa_flags & SA_RESTORER) && act->sa_restorer) {
+        return (u32)act->sa_restorer;
+    }
+    return retcode_uva;
+}
+
+static int setup_rt_frame(struct task *t, struct pt_regs *regs, int sig,
+                          struct sigaction *act, u32 usp);
 
 static int setup_frame(struct task *t, struct pt_regs *regs, int sig,
                        struct sigaction *act)
@@ -448,6 +497,10 @@ static int setup_frame(struct task *t, struct pt_regs *regs, int sig,
 
     syscall_outcome(t, regs, act);
 
+    if (act->sa_flags & SA_SIGINFO) {
+        return setup_rt_frame(t, regs, sig, act, usp);
+    }
+
     memset(&f, 0, sizeof(f));
     f.sc.sc_mask = t->sig_restore_mask ? t->sig_saved_mask : t->sig_blocked;
     t->sig_restore_mask = 0;
@@ -469,7 +522,10 @@ static int setup_frame(struct task *t, struct pt_regs *regs, int sig,
     }
 
     fp = (usp - sizeof(f)) & ~3UL;
-    f.retaddr = (u32)act->sa_restorer;
+    put_retcode((u8 *)&f + __builtin_offsetof(struct sigframe, retcode),
+                __NR_sigreturn);
+    f.retaddr = return_address(act, fp + (u32)__builtin_offsetof(struct sigframe,
+                                                                 retcode));
     f.sig = (u32)sig;
     f.code = 0;
     f.scp = fp + SIGFRAME_SC_OFFSET;
@@ -481,7 +537,12 @@ static int setup_frame(struct task *t, struct pt_regs *regs, int sig,
     set_usp(fp);
     regs->pc = (u32)act->sa_handler;
     regs->sr &= ~SR_TRACE;
+    block_for_handler(t, sig, act);
+    return 0;
+}
 
+static void block_for_handler(struct task *t, int sig, struct sigaction *act)
+{
     t->sig_blocked |= act->sa_mask;
     if (!(act->sa_flags & SA_NODEFER)) {
         t->sig_blocked |= SIGMASK(sig);
@@ -489,7 +550,80 @@ static int setup_frame(struct task *t, struct pt_regs *regs, int sig,
     t->sig_blocked &= ~SIG_UNBLOCKABLE;
     if (act->sa_flags & SA_RESETHAND) {
         act->sa_handler = SIG_DFL;
+        act->sa_flags &= ~SA_SIGINFO;
     }
+}
+
+/*
+ * The FPU part of a ucontext, both ways. task->fpu's layout (taskasm.s)
+ * is the fsave frame in its first 96 bytes, fp0-fp7 at 96, and the
+ * three control registers at 192; Linux/m68k's ucontext has the
+ * registers in uc_mcontext.fpregs and the frame at the start of
+ * uc_filler.
+ */
+static void fpu_to_uc(const u32 *fpu, struct ucontext *uc)
+{
+    memcpy(uc->uc_filler, fpu, 96);
+    memcpy(uc->uc_mcontext.fpregs.f_fpregs, fpu + 24, 96);
+    memcpy(uc->uc_mcontext.fpregs.f_fpcntl, fpu + 48, 12);
+}
+
+static void uc_to_fpu(const struct ucontext *uc, u32 *fpu)
+{
+    memcpy(fpu, uc->uc_filler, 96);
+    memcpy(fpu + 24, uc->uc_mcontext.fpregs.f_fpregs, 96);
+    memcpy(fpu + 48, uc->uc_mcontext.fpregs.f_fpcntl, 12);
+}
+
+static int setup_rt_frame(struct task *t, struct pt_regs *regs, int sig,
+                          struct sigaction *act, u32 usp)
+{
+    static struct rt_sigframe f;    /* ~700 bytes: see setup_frame */
+    u32 fpu[52];
+    u32 fp;
+    int i;
+
+    memset(&f, 0, sizeof(f));
+    fp = (usp - sizeof(f)) & ~3UL;
+
+    f.sig = sig;
+    f.pinfo = fp + (u32)((u8 *)&f.info - (u8 *)&f);
+    f.puc = fp + (u32)((u8 *)&f.uc - (u8 *)&f);
+    put_retcode(f.retcode, __NR_rt_sigreturn);
+    /* Always the trampoline, whatever sa_restorer says: a restorer
+     * written for the old frame (lib/ulib's is) would make the wrong
+     * call, and Linux/m68k ignores sa_restorer for every frame. */
+    f.pretcode = fp + (u32)__builtin_offsetof(struct rt_sigframe, retcode);
+
+    f.info.si_signo = sig;
+    f.info.si_code = SI_USER;
+
+    f.uc.uc_stack.ss_flags = 2;     /* SS_DISABLE: there is no altstack */
+    f.uc.uc_mcontext.version = MCONTEXT_VERSION;
+    for (i = 0; i < 8; i++) {
+        f.uc.uc_mcontext.gregs[i] = (int)regs->d[i];
+    }
+    for (i = 0; i < 7; i++) {
+        f.uc.uc_mcontext.gregs[8 + i] = (int)regs->a[i];
+    }
+    f.uc.uc_mcontext.gregs[15] = (int)usp;
+    f.uc.uc_mcontext.gregs[16] = (int)regs->pc;
+    f.uc.uc_mcontext.gregs[17] = (int)regs->sr;
+    f.uc.uc_sigmask[0] = t->sig_restore_mask ? t->sig_saved_mask
+                                             : t->sig_blocked;
+    t->sig_restore_mask = 0;
+
+    fpu_save(fpu);
+    fpu_to_uc(fpu, &f.uc);
+
+    if (copy_to_user(fp, &f, sizeof(f)) < 0) {
+        return -1;
+    }
+
+    set_usp(fp);
+    regs->pc = (u32)act->sa_handler;
+    regs->sr &= ~SR_TRACE;
+    block_for_handler(t, sig, act);
     return 0;
 }
 
@@ -544,6 +678,51 @@ s32 signal_return(struct pt_regs *regs)
         }
         fpu_restore(fpu);
     }
+
+    return (s32)regs->d[0];
+}
+
+/*
+ * rt_sigreturn: back from an SA_SIGINFO handler. The handler's rts has
+ * popped pretcode, so the frame starts four bytes below the stack
+ * pointer. Everything comes from the ucontext, which the handler may
+ * have changed -- that is what a ucontext is for -- with the same
+ * limits as sigreturn: the condition codes and nothing else of the sr,
+ * and an FPU frame the kernel could have written.
+ */
+s32 signal_rt_return(struct pt_regs *regs)
+{
+    struct task *t = current;
+    static struct ucontext uc;
+    u32 fpu[52];
+    u32 frame = get_usp() - 4;
+    int i;
+
+    t->syscall_nr = -1;
+
+    if (!t->as ||
+        copy_from_user(&uc, frame + (u32)__builtin_offsetof(struct rt_sigframe, uc),
+                       sizeof(uc)) < 0) {
+        force_segv(t);
+    }
+
+    for (i = 0; i < 8; i++) {
+        regs->d[i] = (u32)uc.uc_mcontext.gregs[i];
+    }
+    for (i = 0; i < 7; i++) {
+        regs->a[i] = (u32)uc.uc_mcontext.gregs[8 + i];
+    }
+    regs->pc = (u32)uc.uc_mcontext.gregs[16];
+    regs->sr = (u16)((regs->sr & ~SR_CCR & ~SR_TRACE) |
+                     ((u16)uc.uc_mcontext.gregs[17] & SR_CCR));
+    set_usp((u32)uc.uc_mcontext.gregs[15]);
+    t->sig_blocked = uc.uc_sigmask[0] & ~SIG_UNBLOCKABLE;
+
+    uc_to_fpu(&uc, fpu);
+    if (fpu[0] != 0 && fpu[0] != FPU_IDLE_FRAME) {
+        fpu[0] = FPU_IDLE_FRAME;
+    }
+    fpu_restore(fpu);
 
     return (s32)regs->d[0];
 }

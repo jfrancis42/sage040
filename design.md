@@ -501,8 +501,11 @@ The convention is Linux/m68k's, unchanged: `d0` holds the call number,
 `d1`–`d5` the arguments, and `d0` comes back with the result or a negated
 errno. That is not an imitation — Linux picked the obvious convention for
 this architecture and there is nothing to improve on. The numbers are
-Linux's i386 numbers, because `__NR_write` being 4 is a fact a lot of
-people carry around, and the errnos are Linux's by name and value.
+Linux/m68k's, checked against Linux's own table on every build
+(`kernel/abicheck.sh`), and the errnos are Linux's by name and value.
+They were described as i386's for a long time, and the socket calls
+really were -- three too high -- until a C library built on the real
+table found them.
 
 `uapi.h` holds what crosses the boundary and nothing else, the same split
 Linux makes under the same name: a program gets `O_CREAT` and
@@ -832,6 +835,26 @@ can arrive later without invalidating either.
 
 ### A C library
 
+**Done (task 13): picolibc 1.8.12**, in `libc/`. The choice turned on
+something the options below did not know about: picolibc already has
+`libos/linux`, a complete POSIX layer over Linux's system calls that
+translates its own errno and signal numbers to Linux's. Because this
+kernel's interface is Linux/m68k's, the port was an m68k backend for
+that layer -- constants, a `syscall()` stub, three missing POSIX calls
+-- plus the Linux calls the layer makes that the kernel lacked
+(`kernel/syslinux.c`), rather than fifteen hand-written stubs over this
+system's own calls. It also means any Linux-targeted C library would
+now run. `libc/README.md` has the details and what differs from glibc.
+
+Doing it found five bugs that had passed every test: the socket calls
+carried i386's numbers, the private calls sat on `msgsnd`/`msgrcv`/
+`msgctl`, `fstat` on a file read its size from the vector table,
+`unlink` wrote through an uninitialised directory, and `unlink` and
+`rename` looked every name up in the root. And one in picolibc
+(`libc/patches/`).
+
+What follows is the reasoning as it stood before, kept for the record.
+
 `lib/ulib.c` is not a libc and does not pretend to be. It is a thin
 wrapper over the system calls plus `strlen`, `strcmp`, `memset`, `memcpy`
 and a few output helpers — enough for the programs in `system/` and
@@ -1060,15 +1083,15 @@ the flags arguments:
 
 | | | |
 |---|---|---|
-| 359 | `socket` | `SOCK_NONBLOCK`, `SOCK_CLOEXEC` in the type |
-| 360 | `socketpair` | `AF_UNIX`, stream only: a pipe each way |
-| 361–363 | `bind`, `connect`, `listen` | port 0 picks one; `listen` binds if unbound |
-| 364 | `accept4` | `accept()` is it with no flags |
-| 365–366 | `getsockopt`, `setsockopt` | `SO_REUSEADDR`, `SO_ERROR`, `SO_RCVTIMEO`, `SO_SNDTIMEO`, `SO_TYPE`, `SO_ACCEPTCONN`, `SO_KEEPALIVE` (recorded), `TCP_NODELAY` (always on) |
-| 367–368 | `getsockname`, `getpeername` | |
-| 369, 371 | `sendto`, `recvfrom` | `MSG_DONTWAIT`, `MSG_PEEK`, `MSG_WAITALL`, `MSG_NOSIGNAL`, `MSG_TRUNC` |
-| 370, 372 | `sendmsg`, `recvmsg` | scatter/gather; no ancillary data |
-| 373 | `shutdown` | a real half-close |
+| 356 | `socket` | `SOCK_NONBLOCK`, `SOCK_CLOEXEC` in the type |
+| 357 | `socketpair` | `AF_UNIX`, stream only: a pipe each way |
+| 358–360 | `bind`, `connect`, `listen` | port 0 picks one; `listen` binds if unbound |
+| 361 | `accept4` | `accept()` is it with no flags |
+| 362–363 | `getsockopt`, `setsockopt` | `SO_REUSEADDR`, `SO_ERROR`, `SO_RCVTIMEO`, `SO_SNDTIMEO`, `SO_TYPE`, `SO_ACCEPTCONN`, `SO_KEEPALIVE` (recorded), `TCP_NODELAY` (always on) |
+| 364–365 | `getsockname`, `getpeername` | |
+| 366, 368 | `sendto`, `recvfrom` | `MSG_DONTWAIT`, `MSG_PEEK`, `MSG_WAITALL`, `MSG_NOSIGNAL`, `MSG_TRUNC` |
+| 367, 369 | `sendmsg`, `recvmsg` | scatter/gather; no ancillary data |
+| 370 | `shutdown` | a real half-close |
 
 Blocking calls block until they are satisfied. The old 30-second
 `ETIMEDOUT` is gone, and timeouts are `SO_RCVTIMEO`/`SO_SNDTIMEO`. A

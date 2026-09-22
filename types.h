@@ -28,6 +28,8 @@ typedef unsigned int       u32;
 typedef signed char        s8;
 typedef signed short       s16;
 typedef signed int         s32;
+typedef unsigned long long u64;     /* only where Linux's ABI has one */
+typedef signed long long   s64;
 
 /* Seconds since 1970-01-01 UTC, as everything Unix counts time. */
 typedef u32 time_t;

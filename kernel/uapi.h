@@ -41,6 +41,10 @@
 #define O_NONBLOCK    0x0800    /* reads and writes that would wait fail
                                  * with EAGAIN instead                    */
 #define O_CLOEXEC     0x80000   /* the new descriptor is FD_CLOEXEC       */
+#define O_EXCL        0x0080    /* with O_CREAT: fail if it exists        */
+#define O_DIRECTORY   0x4000    /* m68k's value, not the generic 0x10000 */
+#define O_NOFOLLOW    0x8000    /* accepted: there are no symlinks        */
+#define O_LARGEFILE   0x20000   /* accepted: no file is over 4 GB         */
 
 /*
  * ioctl requests. FIONREAD is Linux's, with Linux's number, and it is
@@ -117,6 +121,28 @@ struct termios {
     u8  c_line;
     u8  c_cc[NCCS];
 };
+
+/*
+ * termios2: the same, with the speeds as numbers rather than as bits in
+ * c_cflag. Linux's, and the form picolibc asks for -- its isatty() is a
+ * TCGETS2. The speeds are reported and not set: this terminal is a
+ * console, and the serial line's rate is the emulator's business.
+ */
+struct termios2 {
+    u32 c_iflag;
+    u32 c_oflag;
+    u32 c_cflag;
+    u32 c_lflag;
+    u8  c_line;
+    u8  c_cc[NCCS];
+    u32 c_ispeed;
+    u32 c_ospeed;
+};
+
+#define TCGETS2       0x802C542A
+#define TCSETS2       0x402C542B
+#define TCSETSW2      0x402C542C
+#define TCSETSF2      0x402C542D
 
 /* c_iflag */
 #define ICRNL         0x0100    /* carriage return arrives as newline */
@@ -239,11 +265,18 @@ struct fb_palette {
 #define W_OK          2
 #define R_OK          4
 
+/*
+ * NOT Linux's struct stat, although stat (106) and fstat (108) are
+ * Linux's numbers. These are this system's own, used by lib/ulib; a C
+ * library uses statx (379), which IS Linux's -- see struct statx below.
+ * The same goes for getdents (141) against getdents64 (220).
+ */
 struct stat {
     u32    st_mode;
     u32    st_size;
     time_t st_mtime;
     u32    st_blocks;
+    u32    st_ino;              /* see ino_for() in fs/fat16.c         */
 };
 
 struct dirent {
@@ -251,6 +284,7 @@ struct dirent {
     u32    d_size;
     u32    d_mode;
     time_t d_mtime;
+    u32    d_ino;
 };
 
 struct statfs {
@@ -294,8 +328,7 @@ struct statfs {
 #define __NR_sysinfo   116
 #define __NR_uname     122
 #define __NR_getdents  141
-#define __NR_sync      166      /* Linux has 36; 166 keeps it clear of
-                                 * this table's own use of 36..38      */
+#define __NR_sync       36
 
 /*
  * The program break. Linux's number and Linux's convention, which is
@@ -554,9 +587,9 @@ struct mmap_arg_struct {
  * day there are pipes.
  */
 /*
- * Sockets, with Linux's own i386 numbers -- the direct calls rather than
- * the old socketcall(102) multiplexer, which existed because i386 ran
- * out of argument registers and this machine has not.
+ * Sockets, with Linux/m68k's numbers -- the direct calls rather than
+ * the old socketcall(102) multiplexer, which m68k Linux also still has
+ * and which this machine does not need.
  *
  * A socket IS a file descriptor here, as it is on any Unix, so read(),
  * write() and close() work on one and there is no send()/recv() pair
@@ -568,22 +601,29 @@ struct mmap_arg_struct {
 #define __NR_getpid     20
 #define __NR_sched_yield 158
 
-#define __NR_socket      359
-#define __NR_socketpair  360
-#define __NR_bind        361
-#define __NR_connect     362
-#define __NR_listen      363
-#define __NR_accept4     364    /* i386's 364 is accept4; accept() is it
-                                 * with flags 0, in the library          */
-#define __NR_getsockopt  365
-#define __NR_setsockopt  366
-#define __NR_getsockname 367
-#define __NR_getpeername 368
-#define __NR_sendto      369
-#define __NR_sendmsg     370
-#define __NR_recvfrom    371
-#define __NR_recvmsg     372
-#define __NR_shutdown    373
+/*
+ * Linux/m68k's numbers, from arch/m68k/kernel/syscalls/syscall.tbl.
+ * They were i386's -- every one three too high, so `socket` sat where
+ * m68k has `connect` -- which nothing here noticed, because both ends
+ * came from this header. A C library built on the real table did not
+ * share the mistake.
+ */
+#define __NR_socket      356
+#define __NR_socketpair  357
+#define __NR_bind        358
+#define __NR_connect     359
+#define __NR_listen      360
+#define __NR_accept4     361    /* accept() is this with flags 0, in the
+                                 * library                               */
+#define __NR_getsockopt  362
+#define __NR_setsockopt  363
+#define __NR_getsockname 364
+#define __NR_getpeername 365
+#define __NR_sendto      366
+#define __NR_sendmsg     367
+#define __NR_recvfrom    368
+#define __NR_recvmsg     369
+#define __NR_shutdown    370
 
 /*
  * The socket interface is Linux's now, signatures and all: a struct
@@ -684,9 +724,14 @@ struct msghdr {
     int           msg_flags;
 };
 
-#define __NR_spawn     400
-#define __NR_jobctl    401
-#define __NR_netctl    402
+/*
+ * This system's own calls, numbered where Linux will not reach: they
+ * were 400-402, which Linux/m68k assigns to msgsnd, msgrcv and msgctl,
+ * so a ported program calling msgsnd would have spawned something.
+ */
+#define __NR_spawn     1000
+#define __NR_jobctl    1001
+#define __NR_netctl    1002
 
 /*
  * What spawn() returns when the program was stopped by ctrl-Z rather
@@ -904,16 +949,15 @@ struct utsname {
  *
  * A mask has signal N in bit N-1, as Linux's old_sigset_t does.
  *
- * sa_restorer is REQUIRED for a handler: it is where the handler
- * returns to, and it must make the sigreturn call. The library supplies
- * one (lib/crt0.s) and sets SA_RESTORER. The kernel does not write
- * code onto the stack for a caller that leaves it out; it refuses with
- * EINVAL.
+ * sa_restorer is optional. With SA_RESTORER the handler returns there
+ * -- lib/ulib supplies one, in crt0.s. Without it, the kernel writes
+ * Linux/m68k's two-instruction trampoline into the signal frame, as
+ * Linux/m68k always does. SA_SIGINFO handlers get Linux/m68k's rt frame
+ * and always return through the kernel's trampoline; see the rt_ calls
+ * further down.
  *
- * NOT SUPPORTED YET, and refused rather than half done: SA_SIGINFO
- * (three-argument handlers) and SA_ONSTACK (there is no sigaltstack).
- * The rt_ family of calls, with 64-bit masks, is not here either;
- * nothing here has more than 31 signals to describe.
+ * NOT SUPPORTED, and refused rather than half done: SA_ONSTACK (there
+ * is no sigaltstack).
  */
 #define __NR_pause          29
 #define __NR_sigaction      67
@@ -937,7 +981,7 @@ struct sigaction {
 };
 
 #define SA_NOCLDSTOP    0x00000001
-#define SA_SIGINFO      0x00000004      /* refused: not supported yet */
+#define SA_SIGINFO      0x00000004      /* three arguments: see struct siginfo */
 #define SA_RESTORER     0x04000000
 #define SA_ONSTACK      0x08000000      /* refused: no sigaltstack */
 #define SA_RESTART      0x10000000
@@ -973,6 +1017,267 @@ struct sigcontext {
     u16 sc_format;
     u32 sc_fpu[52];             /* fsave frame, fp0-fp7, fpcr/fpsr/fpiar */
 } __attribute__((packed));
+
+/* ---------------------------------------------------------------- */
+/* The rest of Linux's interface, for a C library                    */
+/*                                                                    */
+/* Everything below is Linux/m68k's, layout and all, because picolibc */
+/* (lib/libc) is built against Linux's own headers for m68k and makes */
+/* these calls exactly as it would on Linux. None of it is used by    */
+/* lib/ulib, which keeps this system's simpler calls above.           */
+/* ---------------------------------------------------------------- */
+
+#define __NR_chmod          15
+#define __NR_setuid         23
+#define __NR_getuid         24
+#define __NR_setgid         46
+#define __NR_getgid         47
+#define __NR_geteuid        49
+#define __NR_getegid        50
+#define __NR_umask          60
+#define __NR_setreuid       70
+#define __NR_setregid       71
+#define __NR_setrlimit      75
+#define __NR_getrlimit      76
+#define __NR_getgroups      80
+#define __NR_setgroups      81
+#define __NR_readlink       85
+#define __NR_fstatfs       100
+#define __NR_lstat         107  /* this system's struct stat, like stat */
+#define __NR_wait4         114
+#define __NR_clone         120
+#define __NR_fchdir        133
+#define __NR__llseek       140
+#define __NR_msync         144
+#define __NR_mlock         150
+#define __NR_munlock       151
+#define __NR_mlockall      152
+#define __NR_munlockall    153
+#define __NR_rt_sigreturn  173
+#define __NR_rt_sigaction  174
+#define __NR_rt_sigprocmask 175
+#define __NR_rt_sigpending 176
+#define __NR_rt_sigsuspend 179
+#define __NR_sigaltstack   186
+#define __NR_vfork         190
+#define __NR_ugetrlimit    191
+#define __NR_getuid32      199
+#define __NR_getgid32      200
+#define __NR_geteuid32     201
+#define __NR_getegid32     202
+#define __NR_getgroups32   205
+#define __NR_setgroups32   206
+#define __NR_setuid32      213
+#define __NR_setgid32      214
+#define __NR_getdents64    220
+#define __NR_madvise       238
+#define __NR_clock_gettime 260
+#define __NR_statfs64      263
+#define __NR_fstatfs64     264
+#define __NR_openat        288
+#define __NR_mkdirat       289
+#define __NR_unlinkat      294
+#define __NR_renameat      295
+#define __NR_symlinkat     297
+#define __NR_readlinkat    298
+#define __NR_fchmodat      299
+#define __NR_faccessat     300
+#define __NR_dup3          326
+#define __NR_pipe2         327
+#define __NR_prlimit64     339
+#define __NR_getrandom     352
+#define __NR_statx         379
+
+/* The *at calls' directory argument, and their flags. */
+#define AT_FDCWD            (-100)
+#define AT_SYMLINK_NOFOLLOW 0x100
+#define AT_REMOVEDIR        0x200   /* unlinkat: act as rmdir          */
+#define AT_EACCESS          0x200   /* faccessat                        */
+#define AT_SYMLINK_FOLLOW   0x400
+#define AT_NO_AUTOMOUNT     0x800
+#define AT_EMPTY_PATH       0x1000  /* statx on the descriptor itself   */
+#define AT_STATX_SYNC_TYPE  0x6000
+
+/* statx: Linux's struct, 256 bytes. */
+struct statx_timestamp {
+    s64 tv_sec;
+    u32 tv_nsec;
+    s32 __reserved;
+};
+
+struct statx {
+    u32 stx_mask;
+    u32 stx_blksize;
+    u64 stx_attributes;
+    u32 stx_nlink;
+    u32 stx_uid;
+    u32 stx_gid;
+    u16 stx_mode;
+    u16 __spare0;
+    u64 stx_ino;
+    u64 stx_size;
+    u64 stx_blocks;
+    u64 stx_attributes_mask;
+    struct statx_timestamp stx_atime;
+    struct statx_timestamp stx_btime;
+    struct statx_timestamp stx_ctime;
+    struct statx_timestamp stx_mtime;
+    u32 stx_rdev_major;
+    u32 stx_rdev_minor;
+    u32 stx_dev_major;
+    u32 stx_dev_minor;
+    u64 __spare2[14];
+};
+
+#define STATX_TYPE          0x0001
+#define STATX_MODE          0x0002
+#define STATX_NLINK         0x0004
+#define STATX_UID           0x0008
+#define STATX_GID           0x0010
+#define STATX_ATIME         0x0020
+#define STATX_MTIME         0x0040
+#define STATX_CTIME         0x0080
+#define STATX_INO           0x0100
+#define STATX_SIZE          0x0200
+#define STATX_BLOCKS        0x0400
+#define STATX_BASIC_STATS   0x07ff
+
+/* getdents64: variable-length records, each 8-byte aligned. */
+struct linux_dirent64 {
+    u64  d_ino;
+    s64  d_off;
+    u16  d_reclen;
+    u8   d_type;
+    char d_name[1];             /* NUL-terminated, then padding */
+} __attribute__((packed));
+
+#define DT_UNKNOWN  0
+#define DT_FIFO     1
+#define DT_CHR      2
+#define DT_DIR      4
+#define DT_BLK      6
+#define DT_REG      8
+#define DT_SOCK     12
+
+/* clock_gettime */
+#define CLOCK_REALTIME           0
+#define CLOCK_MONOTONIC          1
+#define CLOCK_PROCESS_CPUTIME_ID 2
+#define CLOCK_THREAD_CPUTIME_ID  3
+
+/* getrlimit and friends. RLIM_INFINITY is all ones in either width. */
+struct rlimit {
+    u32 rlim_cur;
+    u32 rlim_max;
+};
+
+struct rlimit64 {
+    u64 rlim_cur;
+    u64 rlim_max;
+};
+
+#define RLIM_INFINITY   0xffffffffUL
+#define RLIMIT_CPU      0
+#define RLIMIT_FSIZE    1
+#define RLIMIT_DATA     2
+#define RLIMIT_STACK    3
+#define RLIMIT_CORE     4
+#define RLIMIT_RSS      5
+#define RLIMIT_NPROC    6
+#define RLIMIT_NOFILE   7
+#define RLIMIT_MEMLOCK  8
+#define RLIMIT_AS       9
+#define RLIM_NLIMITS    16
+
+/* wait4's resource usage, 72 bytes. Only the times are filled in. */
+struct rusage {
+    struct timeval ru_utime;
+    struct timeval ru_stime;
+    s32 ru_other[14];
+};
+
+/*
+ * The rt_ signal calls. Linux/m68k's struct sigaction for these puts
+ * the flags second and the mask last, and the mask is 64 bits; signals
+ * above 31 do not exist here, so the upper word is ignored going in and
+ * zero coming out. sigsetsize must be 8, as on Linux.
+ *
+ * Linux/m68k does not define SA_RESTORER, and ignores sa_restorer:
+ * the kernel writes a two-instruction trampoline onto the stack and
+ * returns through that. This kernel does the same unless SA_RESTORER is
+ * set, which lib/ulib does, pointing at a trampoline in crt0.s.
+ */
+struct kernel_sigaction {
+    sighandler_t sa_handler;
+    u32          sa_flags;
+    void       (*sa_restorer)(void);
+    u32          sa_mask[2];
+};
+
+#define SA_NOCLDWAIT    0x00000002
+#define SIGSET_BYTES    8
+
+typedef struct {
+    void *ss_sp;
+    int   ss_flags;
+    u32   ss_size;
+} stack_t;
+
+/* What an SA_SIGINFO handler gets as its second argument: 128 bytes. */
+struct siginfo {
+    int si_signo;
+    int si_errno;
+    int si_code;
+    union {
+        int _pad[29];
+        struct {
+            int si_pid;
+            u32 si_uid;
+        } _kill;
+        struct {
+            int si_pid;
+            u32 si_uid;
+            int si_status;
+            s32 si_utime;
+            s32 si_stime;
+        } _chld;
+    } _sifields;
+};
+
+#define SI_USER     0
+#define SI_KERNEL   0x80
+
+/*
+ * And as its third: Linux/m68k's ucontext. The registers are d0-d7,
+ * a0-a6, the user stack pointer, pc and sr, in that order. The FPU's
+ * visible registers are in fpregs; its state frame (fsave) goes in the
+ * first words of uc_filler, where Linux/m68k keeps it too. A handler
+ * that changes any of them changes what the interrupted code resumes
+ * with.
+ */
+struct m68k_mcontext {
+    int version;                /* MCONTEXT_VERSION */
+    int gregs[18];
+    struct {
+        int f_fpcntl[3];        /* fpcr, fpsr, fpiar */
+        int f_fpregs[8 * 3];    /* fp0-fp7, 96-bit extended each */
+    } fpregs;
+};
+
+#define MCONTEXT_VERSION 2
+
+struct ucontext {
+    u32                  uc_flags;
+    struct ucontext     *uc_link;
+    stack_t              uc_stack;
+    struct m68k_mcontext uc_mcontext;
+    u32                  uc_filler[80];
+    u32                  uc_sigmask[2];
+};
+
+/* getrandom flags: accepted; the pool never blocks. */
+#define GRND_NONBLOCK   0x0001
+#define GRND_RANDOM     0x0002
 
 /* reboot() commands, Linux's magic values cut down to what is useful. */
 #define RB_HALT_SYSTEM  0xcdef0123

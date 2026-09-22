@@ -156,20 +156,20 @@ d0 = result, or a negated errno
 ```
 
 That is not an imitation. Linux picked the obvious convention for this
-architecture and there is nothing to improve on. The numbers are Linux's
-i386 numbers — `__NR_write` is 4 — because that is the set most people
-recognise.
+architecture and there is nothing to improve on. The numbers are
+Linux/m68k's -- `__NR_write` is 4 -- and `abicheck.sh` checks every one
+against Linux's table before each link.
 
-Forty of them:
+The calls this system has always had:
 
 ```
 exit(1) read(3) write(4) open(5) close(6) waitpid(7) unlink(10) chdir(12)
 time(13) lseek(19) getpid(20) stime(25) kill(37) rename(38) mkdir(39)
 rmdir(40) times(43) ioctl(54) reboot(88) statfs(99) stat(106) sysinfo(116)
 fsync(118) uname(122) getdents(141) sched_yield(158) nanosleep(162)
-sync(166) getcwd(183) socket(359) bind(361) connect(362) listen(363)
-accept(364) sendto(369) recvfrom(371) shutdown(373)
-spawn(400) jobctl(401) netctl(402)
+sync(36) getcwd(183) socket(356) bind(358) connect(359) listen(360)
+accept4(361) sendto(366) recvfrom(368) shutdown(370)
+spawn(1000) jobctl(1001) netctl(1002)
 ```
 
 Four are not Linux's. `spawn`, `jobctl` and `netctl` are above 400

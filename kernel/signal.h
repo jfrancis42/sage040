@@ -58,6 +58,7 @@ u32  signal_pending_set(void);
 int  signal_pause(void);
 int  signal_suspend(u32 mask);
 s32  signal_return(struct pt_regs *regs);
+s32  signal_rt_return(struct pt_regs *regs);
 
 /*
  * Returned by pause() and sigsuspend() inside the kernel, never seen

@@ -150,6 +150,8 @@ static void catch(int sig, sighandler_t h, u32 flags, sigset_t mask)
     sigaction(sig, &act, 0);
 }
 
+static void test_siginfo(void);
+
 static void counting(int sig)
 {
     count[sig]++;
@@ -391,22 +393,88 @@ static void test_basics(void)
            sigismember(&got, SIGTERM));
     sigemptyset(&set);
     sigprocmask(SIG_SETMASK, &set, 0);
-    {
-        struct sigaction a;
-
-        a.sa_handler = counting;
-        a.sa_mask = 0;
-        a.sa_flags = SA_SIGINFO;
-        a.sa_restorer = 0;
-        report("SA_SIGINFO is refused, not half supported",
-               sigaction(SIGUSR1, &a, 0) == -EINVAL);
-        a.sa_flags = 0;
-        report("a handler with no restorer is refused",
-               syscall(__NR_sigaction, SIGUSR1, (u32)&a, 0) == -EINVAL);
-    }
+    test_siginfo();
     report("kill(pid, 0) finds a task that exists",
            kill(getpid(), 0) == 0);
     report("  and not one that does not", kill(9999, 0) == -ESRCH);
+}
+
+/* --- SA_SIGINFO, the kernel's trampoline, and the rt_ calls --- */
+
+static volatile int info_sig, info_signo, info_code, info_version;
+static volatile u32 info_mask;
+
+/*
+ * A three-argument handler. It records what it was given, and changes
+ * d0 in the context it will return to -- which, interrupting kill()'s
+ * return to user mode, is kill()'s result.
+ */
+static void info_handler(int sig, struct siginfo *si, void *ucv)
+{
+    struct ucontext *uc = ucv;
+
+    info_sig = sig;
+    info_signo = si->si_signo;
+    info_code = si->si_code;
+    info_version = uc->uc_mcontext.version;
+    info_mask = uc->uc_sigmask[0];
+    uc->uc_mcontext.gregs[0] = 1234;
+}
+
+static void test_siginfo(void)
+{
+    struct sigaction a;
+    struct kernel_sigaction ka, kold;
+    u32 set[2], old[2];
+    s32 r;
+
+    memset(&a, 0, sizeof(a));
+    a.sa_handler = (sighandler_t)(void (*)(void))info_handler;
+    a.sa_flags = SA_SIGINFO;
+    report("SA_SIGINFO is accepted", sigaction(SIGUSR2, &a, 0) == 0);
+    r = kill(getpid(), SIGUSR2);
+    report("  and the handler gets the signal, and a siginfo that says so",
+           info_sig == SIGUSR2 && info_signo == SIGUSR2 &&
+           info_code == SI_USER);
+    report("  and a ucontext, Linux/m68k's version 2",
+           info_version == MCONTEXT_VERSION);
+    report("  whose saved mask is what was in force before the handler",
+           !(info_mask & (1UL << (SIGUSR2 - 1))));
+    report("  and changing d0 in it changed what kill() returned",
+           r == 1234);
+    signal(SIGUSR2, SIG_DFL);
+
+    /* No SA_RESTORER, through the raw call: the kernel's trampoline. */
+    count[SIGUSR1] = 0;
+    memset(&a, 0, sizeof(a));
+    a.sa_handler = counting;
+    report("a handler with no restorer is accepted",
+           syscall(__NR_sigaction, SIGUSR1, (u32)&a, 0) == 0);
+    raise(SIGUSR1);
+    report("  and returns through the trampoline the kernel wrote",
+           count[SIGUSR1] == 1);
+
+    /* The rt_ calls, as a C library makes them. */
+    memset(&ka, 0, sizeof(ka));
+    ka.sa_handler = counting;
+    report("rt_sigaction installs a handler",
+           syscall(__NR_rt_sigaction, SIGUSR1, (u32)&ka, (u32)&kold, 8) == 0);
+    report("  and reported the one it replaced",
+           kold.sa_handler == counting && !(kold.sa_flags & SA_RESTORER));
+    report("rt_sigaction refuses a mask that is not 64 bits",
+           syscall(__NR_rt_sigaction, SIGUSR1, (u32)&ka, 0, 4) == -EINVAL);
+    set[0] = 1UL << (SIGUSR1 - 1);
+    set[1] = 0;
+    report("rt_sigprocmask blocks",
+           syscall(__NR_rt_sigprocmask, SIG_BLOCK, (u32)set, (u32)old, 8) == 0);
+    count[SIGUSR1] = 0;
+    raise(SIGUSR1);
+    syscall(__NR_rt_sigpending, (u32)old, 8);
+    report("  and rt_sigpending sees it held",
+           count[SIGUSR1] == 0 && (old[0] & set[0]) && old[1] == 0);
+    syscall(__NR_rt_sigprocmask, SIG_UNBLOCK, (u32)set, 0, 8);
+    report("  and it arrives when unblocked", count[SIGUSR1] == 1);
+    signal(SIGUSR1, SIG_DFL);
 }
 
 /* Start `sigtest poke <this pid> SIG MS` and return its pid. */

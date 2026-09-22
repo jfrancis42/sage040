@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: 13 of 23 complete.**
+**Status: 14 of 23 complete.**
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -42,7 +42,7 @@ drive almost all of it:
 | 10 | The rest of the socket API, and the signatures | before a libc is written against the old ones | **done** |
 | 11 | **VT102** emulation in `fbcon.c` | a full-screen program needs cursor addressing | **done** |
 | 12 | `TIOCGWINSZ` and `SIGWINCH` | depends on 5 and 11 | **done** |
-| 13 | A C library (picolibc or newlib) | the gate everything real passes through | todo |
+| 13 | A C library (picolibc or newlib) | the gate everything real passes through | **done** |
 | 14 | VFAT long file names | 8.3 decides what can be shipped | todo |
 | 15 | `fsck`, and a clean-unmount flag | the machine cannot check its own disk | todo |
 | 16 | Build and run uEmacs | the cheapest real editor | todo |
@@ -146,8 +146,9 @@ printing `ok`/`FAIL` per line, counted and named by the script — a new
 check is a line of C. A group is added only once its calls work, so a
 failure there is always a regression.
 
-**569 checks across seven suites now:** 12 device programs, 41 fs, 357
-api, 29 edit, 18 vm, 17 net, 95 vt.
+**657 checks across eight suites now:** 12 device programs, 47 fs, 368
+api, 29 edit, 18 vm, 17 net, 95 vt, 71 libc. The libc suite needs
+`make libc` first.
 
 ### 1. Grow the user address space — done
 
@@ -801,6 +802,94 @@ SIGWINCH checks fail.
 
 **Named `winsize`, not `winchtest`:** nine characters, and FAT's 8.3
 truncated it to a name the shell could not find.
+
+### 13. A C library: picolibc — done
+
+**picolibc 1.8.12**, in `libc/` (`make libc`; installs to
+`~/m68k/sage040-libc`). Chosen over newlib because picolibc already has
+`libos/linux`: a POSIX layer over Linux's system calls, with arm,
+aarch64 and x86 backends, that translates picolibc's newlib-flavoured
+errno and signal numbers to and from Linux's. This kernel's ABI is
+Linux/m68k's, so the port is:
+
+- **An m68k backend** (`libc/picolibc/libos/linux/machine/m68k/`): the
+  `linux-*.h` constants, taken from the i686 set and corrected against
+  Linux's own m68k sources (syscall table, `O_DIRECTORY` and friends,
+  `POLLWRNORM`/`POLLWRBAND`, no `SA_RESTORER`); `syscall()` in assembly;
+  and `pause`, `usleep`, `select`, which picolibc's Linux layer lacks on
+  every architecture. New files only.
+- **One patch** to picolibc (`libc/patches/`): an `SA_SIGINFO` handler
+  got Linux's number in `si_signo`. Not m68k-specific.
+- **`crt0.s`, `sage040.ld`, `libc.mk`** for programs.
+- **The Linux calls picolibc makes that the kernel lacked**, in a new
+  `kernel/syslinux.c`: `statx`, `getdents64` (on real directory
+  descriptors -- `open` of a directory now works), the `*at` calls,
+  `pipe2`, `dup3`, `wait4`, `clock_gettime`, `_llseek`, `prlimit64` and
+  the rlimits, `getrandom`, `umask`, the uid calls (one user, root),
+  `vfork`/`clone` as fork, no-op `mlock`/`madvise`/`msync`, `lstat`,
+  `readlink`, `chmod`; `TCGETS2`/`TCSETS2` in the tty; and the `rt_sig*`
+  family with **`SA_SIGINFO`**, Linux/m68k's exact rt frame with
+  `siginfo` and `ucontext` (a handler that edits the context changes
+  what resumes). Handlers without `SA_RESTORER` now return through a
+  trampoline the kernel writes into the frame, as Linux/m68k's do.
+  Structure sizes are pinned with `_Static_assert`.
+
+FAT has no inode numbers, and some programs need them nonzero and
+consistent between `stat` and `readdir`: a directory is its first
+cluster, a file is its parent's cluster above its slot
+(`ino_for()` in `fs/fat16.c`).
+
+#### Bugs found on the way, all of which had passed every test
+
+1. **The socket calls had i386's numbers**, all fifteen three too high:
+   `socket` was where Linux/m68k has `connect`. Kernel and programs
+   shared the header, so they agreed perfectly. `sync` was 166
+   (`getpagesize`); the private `spawn`/`jobctl`/`netctl` were 400-402,
+   which are `msgsnd`/`msgrcv`/`msgctl`, and are now 1000-1002.
+   **`kernel/abicheck.sh`** now checks every `__NR_` in `uapi.h` against
+   Linux's m68k table (`kernel/linux-m68k-syscalls.txt`) before each
+   link; with `socket` put back at 359 it fails the build.
+2. **Programs did not depend on `uapi.h`**, so renumbering left every
+   built program calling the old numbers -- apitest's first run after
+   the renumbering failed 52 checks. `lib/program.mk` now lists
+   `uapi.h` and `types.h`; the kernel's header list, which had fallen
+   far behind, is a wildcard.
+3. **`fstat` on a FAT file read its size from the vector table**: it
+   treated `f->priv`, a handle number plus one, as a pointer. The only
+   test asked for a size greater than zero, which any nonzero memory
+   passes, and memtest then mapped a file of that "size". The check now
+   compares against `stat` and against seeking to the end; with the old
+   code it fails, along with ten memtest checks.
+4. **`unlink` wrote its deletion through an uninitialised `struct dir`**
+   -- into whichever directory the stack named -- and took its name
+   with `name_to_83`, so `/X.TXT` could not be unlinked at all.
+5. **`unlink` and `rename` looked every name up in the root**, whatever
+   the path or working directory; `rename` then wrote into the source
+   directory at the slot the root lookup found. Everything was tested
+   in the root. `rename` is POSIX's now: it **replaces** an existing
+   file (an editor's save depends on that) and really **moves** between
+   directories, rewriting a moved directory's `..`. `entry_is_open`
+   compared slots without directories.
+
+`fstest.sh` gained six checks for 4 and 5, verified with mtools and
+`fsck.fat`; without the `..` rewrite, the `..` check and fsck both fail.
+
+**Tests:** `kernel/libctest.sh`, a new suite: `libc/test/libctest`
+makes 64 checks the way a foreign program would -- printf and scanf,
+malloc of 8 and 16 MB, qsort, setjmp, the maths library on the FPU,
+stdio files, `O_APPEND`, `O_EXCL`, rename and unlink, errno and
+strerror, opendir with `.`/`..`, executable bits from `stat`, fork and
+exec and waitpid, pipes and poll, signals by picolibc's numbers (SIGUSR1
+is 30 to picolibc and 10 to the kernel), `SA_SIGINFO`, alarm and pause,
+`WTERMSIG`, time and strftime, `CLOCK_MONOTONIC`, termios and
+`tcgetwinsize`; then runs again with stdout redirected to a file that
+the host reads -- the check on a buffered stdout being flushed at exit,
+and on fork not duplicating unflushed output. 71 checks. Its first run
+failed ten, and each was a real fault: no constructors and no atexit
+(the linker script lacked picolibc's `__bothinit_array` and
+`.fini_array_onexit`), `si_signo`, `isatty` (`TCGETS2`), and unlink by
+path. apitest's `sigtest` replaced its two "refused" checks with eleven
+for `SA_SIGINFO`, the kernel's trampoline and the `rt_` calls.
 
 ## Decisions worth knowing about
 

@@ -120,10 +120,12 @@ void task_cwd_inherit(struct task *t, struct task *from)
     if (!from) {
         t->cwd_ino = 0;
         strcpy(t->cwd_path, "/");
+        t->umask = 022;
         return;
     }
     t->cwd_ino = from->cwd_ino;
     memcpy(t->cwd_path, from->cwd_path, sizeof(t->cwd_path));
+    t->umask = from->umask;     /* inherited the same way, and as often */
 }
 
 /*

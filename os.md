@@ -354,7 +354,7 @@ above 400 are local, because Linux has nothing to match.
 |---|---|
 | **Files** | `open` `close` `read` `write` `lseek` `ioctl` `unlink` `rename` `stat` `getdents` `fsync` `sync` `statfs` |
 | **Directories** | `mkdir` `rmdir` `chdir` `getcwd` |
-| **Tasks** | `exit` `getpid` `kill` `waitpid` `sched_yield` `spawn` (400) `jobctl` (401) |
+| **Tasks** | `exit` `getpid` `kill` `waitpid` `sched_yield` `spawn` (1000) `jobctl` (1001) |
 | **Time** | `time` `stime` `times` `nanosleep` |
 | **System** | `uname` `sysinfo` `reboot` |
 | **Network** | `socket` `bind` `connect` `listen` `accept` `sendto` `recvfrom` `shutdown` `netctl` (402) |
@@ -647,8 +647,9 @@ page-fault handling (task 21), so a `fork` of a large program costs its
 whole address space, even when an `execve` follows at once. `spawn` is
 the cheap way to start a program.
 
-**Signals are complete except for `SA_SIGINFO` and `sigaltstack`**, both
-refused with `EINVAL` rather than half supported. A fault's own signal
+**Signals are complete except for `sigaltstack`**, refused with `EINVAL`
+rather than half supported. `SA_SIGINFO` handlers get Linux/m68k's
+`siginfo` and `ucontext`, through the `rt_` calls. A fault's own signal
 (SIGSEGV from an access fault, for instance) cannot be caught: the 68040
 access-fault frame cannot be redirected to a handler in place.
 
