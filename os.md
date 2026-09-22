@@ -446,15 +446,12 @@ and that reader taking one from the device, the two come out in the wrong
 order: a line typed `SHELL` arrives as `SHLEL`, rarely enough to be
 baffling.
 
-**Nothing in the line editor may use an ANSI escape to move the cursor.**
-`fbcon.c` understands carriage return, backspace, tab and newline, plus
-just enough of `ESC[2J`, `ESC[H` and `ESC[K` for `clear`. Everything else
-is dropped — so an editor written the obvious way works perfectly over
-serial and does nothing at all on the screen. Every movement is built from
-`\r` and `\b`. The redraw is deliberately minimal: a character typed at the
-end of a line echoes one character, because on the framebuffer each one is
-128 pixels drawn individually and redrawing a whole line per keystroke is
-visibly slow.
+**The line editor moves the cursor with `\r` and `\b` only.** That was
+forced when `fbcon.c` understood nothing else; it is a VT102 now, and the
+rule stays because it works on any terminal. The redraw is deliberately
+minimal: a character typed at the end of a line echoes one character,
+because on the framebuffer each one is 128 pixels drawn individually and
+redrawing a whole line per keystroke is visibly slow.
 
 ---
 

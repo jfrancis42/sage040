@@ -899,42 +899,59 @@ straightforward.
 
 ### The console: VT102 emulation, curses, and termcap
 
-Today `fbcon.c` understands carriage return, backspace, tab and newline,
-plus exactly enough of `ESC[2J`, `ESC[H` and `ESC[K` for `clear` and
-ctrl-L. **Everything else is dropped.** That is why the rule exists that
-nothing in the line editor may use an escape to move the cursor — every
-movement is built from `\r` and `\b`, so the editor works identically over
-the serial line and on the screen.
+**`fbcon.c` is a VT102** (task 11 in `progress.md`). It used to
+understand carriage return, backspace, tab and newline plus just enough
+of `ESC[2J`, `ESC[H` and `ESC[K` for `clear`, and dropped everything
+else -- which is why the line editor builds every movement out of `\r`
+and `\b`. The editor still does, because that works on anything; it is
+no longer the only thing that works on the screen.
 
-That rule has held well for a line editor and will not survive a
-full-screen program. Anything with a cursor that moves in two dimensions —
-an editor, a pager, `top`, a form — needs real addressing. In layers:
+1. **The VT102 emulation -- done.** VT102 rather than bare VT100 because
+   it adds insert and delete of lines and characters (`ESC[L`, `ESC[M`,
+   `ESC[P`, `ESC[@`), which are exactly what an editor uses to avoid
+   repainting, and `vt102` is in every termcap and terminfo already.
+   What it does:
 
-1. **A VT102 emulation in `fbcon.c`.** VT102 rather than bare VT100,
-   and the reason is practical rather than nostalgic: VT102 adds insert
-   and delete of lines and characters (`ESC[L`, `ESC[M`, `ESC[P`,
-   `ESC[@`) to VT100's cursor addressing, and those four are exactly
-   what an editor uses to avoid repainting a screen when a line is
-   inserted or a character typed mid-line. On a console where every
-   glyph is 128 pixels drawn one at a time, that is the difference
-   between usable and not. `vt102` is also a terminal type every
-   termcap and terminfo database already knows, so nothing has to be
-   invented or shipped to describe it.
+   - Cursor: CUP/HVP, CUU/CUD/CUF/CUB, CHA, VPA, CNL/CPL, save and
+     restore (`ESC 7`/`ESC 8` and `ESC[s`/`ESC[u`), IND, NEL, RI.
+   - Erase: ED and EL with all three parameters, ECH. Erased cells take
+     the NORMAL rendition, as a VT102's do (vt102 has no `bce`).
+   - Insert and delete: IL, DL, ICH, DCH, insert mode (IRM).
+   - **Scroll regions** (DECSTBM) and origin mode (DECOM). Every scroll,
+     insert and delete is one blitter copy plus one fill; the SM501
+     driver's copy learnt the right-to-left bit for the moves that go
+     down or right, which is where they overlap.
+   - **The deferred wrap.** Writing the last column leaves the cursor on
+     it and wraps only when the next glyph arrives -- terminfo's `xn`.
+     Without it, painting an editor's bottom line scrolls the screen.
+   - SGR: bold, underline, reverse, and the ANSI colours (30-37, 40-47,
+     90-97), because programs send them whatever `TERM` says. The
+     console's sixteen colours are palette entries 16-31, so the ones a
+     drawing program uses are untouched. Blink is accepted and not shown.
+   - DEC special graphics (`ESC ( 0`, and G1 through SO/SI), mapped onto
+     the PC font's box pieces; tab stops (HTS, TBC); DECAWM, DECTCEM,
+     LNM; RIS and DECALN.
+   - **Replies** to DSR (`ESC[6n`, `ESC[5n`) and DA, typed back through a
+     small input source -- but ONLY when the screen is the only output.
+     With the serial line enabled, the question also went to a real
+     terminal that will answer it, and two answers is worse than one.
 
-   At minimum
-   `ESC[<row>;<col>H` for absolute positioning, `ESC[A`/`B`/`C`/`D` for
-   relative, `ESC[J` and `ESC[K` with all three parameter values,
-   `ESC[m` for attributes, and `ESC[s`/`ESC[u` for save and restore. A
-   **scroll region** (`ESC[<top>;<bot>r`) is what makes a full-screen
-   editor redraw one line instead of the whole screen, and is worth
-   having early. Roughly 200 lines, and it is a state machine of the kind
-   already there.
+   The parser follows the DEC one: a C0 control inside a sequence is
+   acted on and the sequence continues, CAN and SUB abandon it.
 
-   Note the framebuffer console's real constraint: each character is 128
-   pixels drawn individually, so a program that repaints the whole screen
-   per keystroke will be visibly slow no matter how correct the escape
-   handling is. Scroll regions and `ESC[K` are not optional niceties here,
-   they are the performance story.
+   **`/dev/vcsa`** is Linux's view of the screen -- rows, columns, cursor,
+   then a character and attribute byte per cell -- and is how
+   `apps/vtcheck` checks what a sequence did. It cannot see pixels, so
+   `kernel/vttest.sh` also compares a screenshot taken after a run of
+   blitter moves with one taken after `FBCON_REDRAW` redraws everything
+   from the character buffer; they must be identical. A forward copy in
+   place of the right-to-left one passes every `/dev/vcsa` check and
+   fails that one by 7,600 pixels.
+
+   The real constraint remains: each glyph is 128 pixels drawn one at a
+   time, so a program that repaints the whole screen per keystroke is
+   visibly slow however correct the emulation is. Scroll regions and the
+   insert and delete operations are the performance story, not niceties.
 
 2. **`TIOCGWINSZ`**, and `SIGWINCH` behind it. Without the ioctl every
    program assumes 80×24; the framebuffer console is 80×30, so six rows

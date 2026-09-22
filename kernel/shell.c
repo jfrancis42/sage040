@@ -1797,7 +1797,7 @@ static int run_builtin(int argc)
         /*
          * Home, then erase. Both sinks understand it: the serial
          * terminal because it is a terminal, and the framebuffer
-         * console because fbcon.c was taught these two sequences.
+         * console because it is one too, a VT102.
          */
         out_puts("\033[H\033[2J");
 

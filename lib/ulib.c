@@ -901,3 +901,17 @@ int isatty(int fd)
 
     return ioctl(fd, TCGETS, (u32)&t) == 0 ? 1 : 0;
 }
+
+int tcgetattr(int fd, struct termios *t)
+{
+    return ioctl(fd, TCGETS, (u32)t);
+}
+
+/* TCSETS, TCSETSW and TCSETSF are consecutive, as the actions are. */
+int tcsetattr(int fd, int action, const struct termios *t)
+{
+    if (action < TCSANOW || action > TCSAFLUSH) {
+        return -EINVAL;
+    }
+    return ioctl(fd, TCSETS + (u32)action, (u32)t);
+}

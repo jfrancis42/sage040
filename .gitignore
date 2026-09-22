@@ -61,3 +61,4 @@ apps/proctest
 apps/socktest
 
 # Scratch disk and log from kernel/fstest.sh
+apps/vtcheck

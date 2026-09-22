@@ -310,6 +310,7 @@ u16  mfp_get_sr(void);
 #define SM501_2D_CMD_BITBLT   (0UL << 16)
 #define SM501_2D_CMD_RECTFILL (1UL << 16)
 #define SM501_2D_START        (1UL << 31)
+#define SM501_2D_RTL          (1UL << 27)   /* right to left, from the far corner */
 #define SM501_2D_FMT_8BPP     (0UL << 20)
 #define SM501_2D_FMT_16BPP    (1UL << 20)
 #define SM501_2D_FMT_32BPP    (2UL << 20)

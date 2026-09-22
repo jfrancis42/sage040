@@ -40,7 +40,7 @@ Copyright (C) 2026 Jeff Francis.  GPL-3.0-or-later.
   fbcon   : /dev/fbcon, 80x30 of IBM PC 8x16, green on black
   keyboard: 8042 as /dev/kbd0, scancode set 1, US layout
   network : eth0, 52:54:00:12:34:56
-  console : output to ttyS0 fbcon, input from ttyS0 kbd0
+  console : output to ttyS0 fbcon, input from ttyS0 fbcon kbd0
   net     : eth0 up, ethernet + ARP, no address yet (try `ifconfig`)
   root    : fat16 on /dev/hda 'SAGE040', 101158 KB, 100884 KB free, 2048 byte clusters
 
@@ -818,16 +818,13 @@ thing a terminal must never stop doing.
 
 Two constraints shaped the rest of it.
 
-**There is no cursor addressing.** The framebuffer console understands
-carriage return, backspace, tab and newline, plus exactly three escape
-sequences — `ESC [ H`, `ESC [ 2J` and `ESC [ K` — so that `clear` and
-ctrl-L can write one thing and have both sinks do the right thing.
-Cursor addressing is deliberately not among them: it would invite the
-editor to use it, and the editor is carefully built out of `\r` and
-`\b` so that it works on the screen at all. An editor written with
-`ESC [ nD` would work perfectly over the serial line and do nothing on
-the screen. That turns out to cost nothing: an editor that never leaves
-one line does not need more.
+**It moves the cursor with nothing but `\r` and `\b`.** When it was
+written the framebuffer console understood carriage return, backspace,
+tab and newline and three escape sequences, so an editor written with
+`ESC [ nD` would have worked over the serial line and done nothing on
+the screen. The console is a VT102 now, but the rule stays: it costs
+nothing for an editor that never leaves one line, and it works on any
+terminal at all.
 
 **Redrawing is expensive on one of the two sinks.** A character on the
 serial line is a byte; on the framebuffer it is 128 pixels drawn

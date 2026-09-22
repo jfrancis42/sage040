@@ -165,6 +165,10 @@ struct termios {
 #define FBIO_COPY     0x4609    /* struct fb_copy in                  */
 #define FBIO_DOUBLE   0x460A    /* double buffering on/off, by value  */
 
+/* On /dev/fbcon: draw the whole console again from its character
+ * buffer. Numbered where TIOCGCONS is, past anything Linux uses. */
+#define FBCON_REDRAW  0x46F0
+
 struct fb_info {
     u32 width;
     u32 height;

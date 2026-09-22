@@ -245,7 +245,7 @@ check "the framebuffer registered as a device" $?
 contains "$LOG" "/dev/fbcon, 80x30 of IBM PC 8x16"
 check "the text console came up at 80x30" $?
 
-contains "$LOG" "output to ttyS0 fbcon, input from ttyS0 kbd0"
+contains "$LOG" "output to ttyS0 fbcon, input from ttyS0 fbcon kbd0"
 check "the terminal has both sinks and both input sources" $?
 
 contains "$LOG" "8042 as /dev/kbd0, scancode set 1"

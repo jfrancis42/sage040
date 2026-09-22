@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: 11 of 23 complete.**
+**Status: 12 of 23 complete.**
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -40,7 +40,7 @@ drive almost all of it:
 | 8 | Pipes, `dup2`, real redirection | `>` did nothing for a program until this | **done** |
 | 9 | Subprocesses: `fork`/`execve`/`waitpid` | `:!` and `:make` in an editor | **done** |
 | 10 | The rest of the socket API, and the signatures | before a libc is written against the old ones | **done** |
-| 11 | **VT102** emulation in `fbcon.c` | a full-screen program needs cursor addressing | todo |
+| 11 | **VT102** emulation in `fbcon.c` | a full-screen program needs cursor addressing | **done** |
 | 12 | `TIOCGWINSZ` and `SIGWINCH` | depends on 5 and 11 | todo |
 | 13 | A C library (picolibc or newlib) | the gate everything real passes through | todo |
 | 14 | VFAT long file names | 8.3 decides what can be shipped | todo |
@@ -146,8 +146,8 @@ printing `ok`/`FAIL` per line, counted and named by the script — a new
 check is a line of C. A group is added only once its calls work, so a
 failure there is always a regression.
 
-**474 checks across six suites now:** 12 device programs, 41 fs, 357
-api, 29 edit, 18 vm, 17 net.
+**539 checks across seven suites now:** 12 device programs, 41 fs, 357
+api, 29 edit, 18 vm, 17 net, 65 vt.
 
 ### 1. Grow the user address space — done
 
@@ -714,6 +714,55 @@ sender address, `MSG_TRUNC`, the 1472 limit, connected UDP,
 `sendmsg`/`recvmsg`; the options and refusals. Plus `ping 127.0.0.1`
 from `apitest.sh`. The 100 KB check is the negative control for the
 FIN fix: it failed before, by exactly one byte.
+
+### 11. VT102 in `fbcon.c` — done
+
+`fbcon.c` was CR, BS, TAB, LF and three escapes; it is a VT102 now:
+CUP/HVP, relative moves, CHA/VPA, save and restore, IND/NEL/RI; ED, EL
+and ECH; IL, DL, ICH, DCH and insert mode; **scroll regions** and origin
+mode; SGR bold, underline, reverse and the ANSI colours; DEC graphics
+through G0/G1 and SO/SI; tab stops; DECAWM, DECTCEM, LNM, RIS, DECALN;
+DSR and DA replies. A DEC-style parser: C0 controls inside a sequence
+are acted on, CAN and SUB abandon it. Details in `design.md`, "The
+console".
+
+**Behaviour that changed:**
+
+- **LF is a bare line feed.** `ONLCR` in `tty.c` already supplied the
+  CR for everything written through `/dev/console`; only a program
+  writing `/dev/fbcon` directly sees the difference, and none did.
+- **The last column wraps late** (`xn`), so a full bottom line no longer
+  scrolls. Backspace from that state moves off the last column.
+- **Tab only moves.** It used to write spaces.
+- The console's colours are palette entries 16-31, leaving 0-15 to
+  drawing programs; default green is unchanged.
+
+**The blitter learnt to move down and right.** `sm501_copy` refused
+those (`-ENOSYS`) because nothing needed them; insert-line and
+insert-character do. Right-to-left is bit 27 of the 2D control word,
+and its coordinates are the BOTTOM-RIGHT corner of each rectangle --
+read from QEMU's `sm501_2d_operation`.
+
+**Replies only when the screen is the only output.** With the serial
+line enabled a host terminal answers `ESC[6n` too, and two answers
+corrupt the asking program's input. Replies arrive through an input
+source named `fbcon`, so the boot banner now says "input from ttyS0
+fbcon kbd0" (`fstest.sh` updated).
+
+**New interfaces:** `/dev/vcsa` (Linux's format: rows, columns, cursor
+column and row, then character and attribute per cell),
+`FBCON_REDRAW` on `/dev/fbcon`, and `tcgetattr`/`tcsetattr` in `lib/`.
+
+**Tests:** `kernel/vttest.sh`, a new suite. `apps/vtcheck` makes 59
+checks through `/dev/vcsa`. Then `vtcheck blit` does every
+blitter-moving operation, the harness screenshots, the console redraws
+from its buffer, and it screenshots again; the two must be identical.
+**Negative control:** a forward copy in place of right-to-left passes
+all 59 vcsa checks and fails the screenshot comparison by 7,615
+pixels -- which is why the suite has both halves.
+
+The one failure on the first run was the test's own expectation for
+insert mode (`XYZC` where a VT102 gives `XYZBC`).
 
 ## Decisions worth knowing about
 

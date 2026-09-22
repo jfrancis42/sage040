@@ -226,14 +226,18 @@ static int sm501_setdouble(struct fbdev *f, int on)
  * copy; bit 15 of the control word clear selects the three-operand ROP
  * set, which is the one 0xcc belongs to.
  *
- * Only ever called to move a region UP the screen, which is a forward
- * copy and safe when source and destination overlap. The chip has a
- * right-to-left bit for the other direction; nothing needs it yet, so
- * moving down is refused rather than done wrongly.
+ * Moving a region up or left is a forward copy, safe when source and
+ * destination overlap. Moving it down or right -- inserting a line or a
+ * character on the console -- would overwrite the source before reading
+ * it, so those set the right-to-left bit (27), under which the chip
+ * starts at the bottom-right corner and the coordinates it is given ARE
+ * that corner, not the top-left.
  */
 static int sm501_copy(struct fbdev *f, int sx, int sy, int dx, int dy,
                       int w, int h)
 {
+    u32 ctl = SM501_2D_START | SM501_2D_CMD_BITBLT | 0xccUL;
+
     if (w <= 0 || h <= 0) {
         return -EINVAL;
     }
@@ -243,7 +247,11 @@ static int sm501_copy(struct fbdev *f, int sx, int sy, int dx, int dy,
         return -EINVAL;
     }
     if (dy > sy || (dy == sy && dx > sx)) {
-        return -ENOSYS;         /* would need the right-to-left bit */
+        ctl |= SM501_2D_RTL;
+        sx += w - 1;
+        sy += h - 1;
+        dx += w - 1;
+        dy += h - 1;
     }
 
     SM501_WR(SM501_2D_SRC_BASE, back);
@@ -253,8 +261,7 @@ static int sm501_copy(struct fbdev *f, int sx, int sy, int dx, int dy,
     SM501_WR(SM501_2D_DIMENSION, ((u32)w << 16) | (u32)h);
     SM501_WR(SM501_2D_PITCH, (f->width << 16) | f->width);
     SM501_WR(SM501_2D_STRETCH, SM501_2D_FMT_8BPP);
-    SM501_WR(SM501_2D_CONTROL,
-             SM501_2D_START | SM501_2D_CMD_BITBLT | 0xccUL);
+    SM501_WR(SM501_2D_CONTROL, ctl);
 
     return sm501_sync(f);
 }

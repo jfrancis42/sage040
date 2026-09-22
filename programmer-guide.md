@@ -1268,14 +1268,38 @@ the edge is not an error.
 ### The text console
 
 The screen can be a terminal instead of a canvas. `/dev/fbcon` is 80x30
-of the IBM PC 8x16 font in green, and writing to it puts characters on
-the screen — newline, carriage return, backspace and tab all do what you
-would expect, and it scrolls.
+of the IBM PC 8x16 font in green, and it is a **VT102**: cursor
+addressing, erasing, insert and delete of lines and characters, scroll
+regions, bold, underline, reverse and the ANSI colours, the DEC line
+drawing set. Use `TERM=vt102`.
 
 ```c
 int con = open("/dev/fbcon", O_WRONLY);
-write(con, "hello\n", 6);
+write(con, "\033[2J\033[10;30H\033[7m hello \033[m\r\n", 28);
 ```
+
+Two things a program written on a PC console might not expect:
+
+- **LF is a line feed and nothing else**, as on a VT102. `/dev/console`
+  turns `\n` into `\r\n` (`ONLCR`) on the way to every sink, so a
+  program writing through descriptor 1 never notices; one writing to
+  `/dev/fbcon` directly gets exactly the bytes it wrote.
+- **The last column wraps late.** Writing column 80 leaves the cursor
+  there, and the wrap happens when the next character arrives (`xn` in
+  terminfo). A full bottom line does not scroll.
+
+The console answers "where is the cursor" (`ESC[6n`) and "what are you"
+(`ESC[c`) only when the screen is the sole output. With the serial line
+enabled too, the terminal on the other end answers, and a second reply
+would be garbage in the program's input.
+
+`/dev/vcsa` reads the screen back, as on Linux: four bytes (rows,
+columns, cursor column, cursor row), then a character and an attribute
+byte for every cell. The attribute byte is foreground in bits 0-2, bold
+in 3, background in 4-6 and underline in 7, with reverse already applied
+by swapping the colours. `ioctl(con, FBCON_REDRAW, 0)` draws the whole
+console again from that buffer, which is what a program that drew over
+it wants on its way out.
 
 You rarely need to: `/dev/console` already writes to the screen **and**
 the serial line at once. The terminal has a list of output sinks, and
@@ -1404,6 +1428,7 @@ devices      /dev/console /dev/tty  the terminal (sources + sinks)
              /dev/ttyS0   the serial port, raw
              /dev/kbd0    the 8042 keyboard, an input source
              /dev/fbcon   the text console, output only
+             /dev/vcsa    what is on it, readable
              /dev/fb0     the framebuffer
              /dev/hda     the disk
 ```

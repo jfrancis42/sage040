@@ -457,7 +457,7 @@ Copyright (C) 2026 Jeff Francis.  GPL-3.0-or-later.
   fbcon   : /dev/fbcon, 80x30 of IBM PC 8x16, green on black
   keyboard: 8042 as /dev/kbd0, scancode set 1, US layout
   network : eth0, 52:54:00:12:34:56
-  console : output to ttyS0 fbcon, input from ttyS0 kbd0
+  console : output to ttyS0 fbcon, input from ttyS0 fbcon kbd0
   net     : eth0 up, ethernet + ARP, no address yet (try `ifconfig`)
   root    : fat16 on /dev/hda 'SAGE040', 101158 KB, 100884 KB free, 2048 byte clusters
 

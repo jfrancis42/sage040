@@ -115,6 +115,12 @@ void  *sbrk(s32 incr);
 /* Is this descriptor a terminal? Built on fstat, the way it is
  * everywhere: there is no separate call to ask. */
 int    isatty(int fd);
+/* POSIX's names for TCGETS and TCSETS; the actions are Linux's values. */
+#define TCSANOW    0
+#define TCSADRAIN  1
+#define TCSAFLUSH  2
+int    tcgetattr(int fd, struct termios *t);
+int    tcsetattr(int fd, int action, const struct termios *t);
 int    getdents(int index, struct dirent *d);
 
 /* Directories. The working directory is per task, so a chdir() here
