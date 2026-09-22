@@ -1241,8 +1241,26 @@ static int do_netctl(int cmd, u32 arg, u32 p)
         out.rtt_ms = c->rtt_valid ? c->srtt_ms : 0;
         strncpy(out.state_name, tcp_state_name(c->state),
                 sizeof(out.state_name) - 1);
+        out.flags = (c->ws_ok ? CONN_WS : 0) | (c->ts_ok ? CONN_TS : 0) |
+                    (c->sack_ok ? CONN_SACK : 0) |
+                    (c->keepalive ? CONN_KEEP : 0);
+        out.snd_wscale = c->snd_wscale;
+        out.rcv_wscale = c->rcv_wscale;
+        out.snd_wnd = c->snd_wnd;
+        out.max_snd_wnd = c->max_snd_wnd;
+        out.rexmit_segs = c->rexmit_segs;
+        out.rexmit_bytes = c->rexmit_bytes;
+        out.keep_sent = c->keep_sent;
         return store(p, &out, sizeof(out));
     }
+
+    case NETCTL_TCPLOSS:
+        tcp_set_loss(arg);
+        return 0;
+
+    case NETCTL_TCPOPTS:
+        tcp_set_disabled(arg);
+        return 0;
 
     case NETCTL_DHCP: {
         struct netaddr out;

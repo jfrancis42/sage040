@@ -813,6 +813,20 @@ int sock_setopt(struct file *f, int level, int name, const void *val,
     if (level == IPPROTO_TCP && name == TCP_NODELAY) {
         return len >= sizeof(int) ? 0 : -EINVAL;    /* always on */
     }
+    if (level == IPPROTO_TCP &&
+        (name == TCP_KEEPIDLE || name == TCP_KEEPINTVL || name == TCP_KEEPCNT)) {
+        if (len < sizeof(int) || v < 1 || v > 32767 || !s->tcp) {
+            return -EINVAL;             /* Linux's limits */
+        }
+        if (name == TCP_KEEPIDLE) {
+            s->tcp->keep_idle_s = (u32)v;
+        } else if (name == TCP_KEEPINTVL) {
+            s->tcp->keep_intvl_s = (u32)v;
+        } else {
+            s->tcp->keep_cnt = (u32)v;
+        }
+        return 0;
+    }
     if (level != SOL_SOCKET) {
         return -ENOPROTOOPT;
     }
@@ -843,7 +857,10 @@ int sock_setopt(struct file *f, int level, int name, const void *val,
         if (name == SO_REUSEADDR) {
             s->reuseaddr = v != 0;
         } else if (name == SO_KEEPALIVE) {
-            s->keepalive = v != 0;  /* recorded; probes are task 19 */
+            s->keepalive = v != 0;
+            if (s->tcp) {
+                s->tcp->keepalive = v != 0;     /* probes: see tcp_timer */
+            }
         } else if (name == SO_BROADCAST) {
             s->broadcast = v != 0;
         }
@@ -863,6 +880,13 @@ int sock_getopt(struct file *f, int level, int name, void *val, u32 *len)
 
     if (level == IPPROTO_TCP && name == TCP_NODELAY) {
         v = 1;
+        goto give_int;
+    }
+    if (level == IPPROTO_TCP && s->tcp &&
+        (name == TCP_KEEPIDLE || name == TCP_KEEPINTVL || name == TCP_KEEPCNT)) {
+        v = (int)(name == TCP_KEEPIDLE ? s->tcp->keep_idle_s :
+                  name == TCP_KEEPINTVL ? s->tcp->keep_intvl_s :
+                  s->tcp->keep_cnt);
         goto give_int;
     }
     if (level != SOL_SOCKET) {

@@ -16,6 +16,7 @@
 #include "random.h"
 #include "timer.h"
 #include "console.h"
+#include "pmm.h"
 #include "errno.h"
 #include "string.h"
 
@@ -49,7 +50,7 @@ struct tcphdr {
 #define RTO_MAX_MS      8000
 #define RTO_INITIAL_MS  1000    /* before anything has been measured */
 #define REXMIT_LIMIT    6
-#define TIMEWAIT_MS     10000   /* not 2MSL; see tcp_timer */
+#define TIMEWAIT_MS     60000   /* 2 MSL, as Linux has it: see tcp_timer */
 
 /* A delayed acknowledgement waits this long, or until a second segment
  * arrives -- whichever comes first. RFC 1122 allows 500 ms and requires
@@ -64,6 +65,33 @@ struct tcphdr {
  */
 static u8  ooo_pool[TCP_OOO_SLOTS][TCP_MSS];
 static int ooo_used[TCP_OOO_SLOTS];
+static u32 ooo_clock;           /* arrival order, for SACK's first block */
+
+/* The netctl knobs: see tcp.h. */
+static u32 loss_every, loss_count;
+static u32 opts_disabled;
+
+void tcp_set_loss(u32 every)
+{
+    loss_every = every;
+    loss_count = 0;
+}
+
+u32 tcp_loss_every(void)
+{
+    return loss_every;
+}
+
+void tcp_set_disabled(u32 mask)
+{
+    opts_disabled = mask;
+}
+
+/* The timestamp clock: milliseconds since boot, as RFC 7323 suggests. */
+static u32 ts_now(void)
+{
+    return timer_jiffies() * (1000 / HZ);
+}
 
 static struct tcpcb conns[TCP_MAX_CONNS];
 
@@ -141,13 +169,30 @@ struct tcpcb *tcp_alloc(void)
 
     for (i = 0; i < TCP_MAX_CONNS; i++) {
         if (!conns[i].used) {
-            memset(&conns[i], 0, sizeof(conns[i]));
-            conns[i].used = 1;
-            conns[i].state = TCP_CLOSED;
-            conns[i].rto_ms = RTO_INITIAL_MS;
-            conns[i].cwnd = IW;
-            conns[i].ssthresh = 64 * 1024;  /* effectively no limit yet */
-            return &conns[i];
+            struct tcpcb *t = &conns[i];
+            u32 s = pmm_alloc_pages(TCP_SNDBUF / PAGE_SIZE);
+            u32 r = s ? pmm_alloc_pages(TCP_RCVBUF / PAGE_SIZE) : 0;
+
+            if (!r) {
+                if (s) {
+                    pmm_free_pages(s, TCP_SNDBUF / PAGE_SIZE);
+                }
+                return 0;
+            }
+            memset(t, 0, sizeof(*t));
+            t->used = 1;
+            t->state = TCP_CLOSED;
+            t->rto_ms = RTO_INITIAL_MS;
+            t->cwnd = IW;
+            t->ssthresh = 256 * 1024;   /* effectively no limit yet */
+            t->sndbuf = (u8 *)s;
+            t->rcvbuf = (u8 *)r;
+            /* Linux's defaults: probe after two hours idle, every 75
+             * seconds, and give up after nine unanswered. */
+            t->keep_idle_s = 7200;
+            t->keep_intvl_s = 75;
+            t->keep_cnt = 9;
+            return t;
         }
     }
     return 0;
@@ -157,6 +202,14 @@ void tcp_free(struct tcpcb *t)
 {
     if (t) {
         ooo_flush(t);           /* give the shared buffers back */
+        if (t->sndbuf) {
+            pmm_free_pages((u32)t->sndbuf, TCP_SNDBUF / PAGE_SIZE);
+            t->sndbuf = 0;
+        }
+        if (t->rcvbuf) {
+            pmm_free_pages((u32)t->rcvbuf, TCP_RCVBUF / PAGE_SIZE);
+            t->rcvbuf = 0;
+        }
         t->used = 0;
         t->state = TCP_CLOSED;
     }
@@ -295,8 +348,8 @@ static void cwnd_on_ack(struct tcpcb *t, u32 acked)
 
         t->cwnd += inc ? inc : 1;
     }
-    if (t->cwnd > 32 * 1024) {
-        t->cwnd = 32 * 1024;    /* no window scaling, so no point beyond */
+    if (t->cwnd > 256 * 1024) {
+        t->cwnd = 256 * 1024;   /* beyond any window this machine has */
     }
 }
 
@@ -393,6 +446,7 @@ static void ooo_queue(struct tcpcb *t, u32 seq, const u8 *data, u32 len)
     t->ooo[i].slot = slot;
     t->ooo[i].seq = seq;
     t->ooo[i].len = len;
+    t->ooo[i].when = ++ooo_clock;
 }
 
 /* --- sending -------------------------------------------------------- */
@@ -404,16 +458,119 @@ static u32 pseudo_sum(ip4_t src, ip4_t dst, u32 len)
            IPPROTO_TCP + len;
 }
 
+/*
+ * The SACK blocks to report: the out-of-order data held, merged into
+ * runs, the run holding the most recent arrival first (RFC 2018 says
+ * so, because that is the news the sender does not have yet). Returns
+ * how many were written, at most `max`.
+ */
+static int sack_blocks(struct tcpcb *t, u32 out[][2], int max)
+{
+    u32 blk[TCP_OOO_PER_CB][3];     /* start, end, latest arrival */
+    int n = 0, i, j, first = 0;
+
+    for (i = 0; i < TCP_OOO_PER_CB; i++) {
+        u32 st, en;
+        int merged = 0;
+
+        if (!t->ooo[i].used) {
+            continue;
+        }
+        st = t->ooo[i].seq;
+        en = st + t->ooo[i].len;
+        for (j = 0; j < n; j++) {
+            /* Overlapping or touching: one run. */
+            if (seq_le(st, blk[j][1]) && seq_ge(en, blk[j][0])) {
+                if (seq_gt(blk[j][0], st)) blk[j][0] = st;
+                if (seq_gt(en, blk[j][1])) blk[j][1] = en;
+                if (t->ooo[i].when > blk[j][2]) blk[j][2] = t->ooo[i].when;
+                merged = 1;
+                break;
+            }
+        }
+        if (!merged) {
+            blk[n][0] = st;
+            blk[n][1] = en;
+            blk[n][2] = t->ooo[i].when;
+            n++;
+        }
+    }
+    /* A second pass, since merging can make two runs touch. */
+    for (i = 0; i < n; i++) {
+        for (j = i + 1; j < n; j++) {
+            if (seq_le(blk[j][0], blk[i][1]) && seq_ge(blk[j][1], blk[i][0])) {
+                if (seq_gt(blk[i][0], blk[j][0])) blk[i][0] = blk[j][0];
+                if (seq_gt(blk[j][1], blk[i][1])) blk[i][1] = blk[j][1];
+                if (blk[j][2] > blk[i][2]) blk[i][2] = blk[j][2];
+                blk[j][0] = blk[n - 1][0];
+                blk[j][1] = blk[n - 1][1];
+                blk[j][2] = blk[n - 1][2];
+                n--;
+                j = i;
+            }
+        }
+    }
+    for (i = 1; i < n; i++) {
+        if (blk[i][2] > blk[first][2]) {
+            first = i;
+        }
+    }
+    j = 0;
+    if (n > 0 && j < max) {
+        out[j][0] = blk[first][0];
+        out[j][1] = blk[first][1];
+        j++;
+    }
+    for (i = 0; i < n && j < max; i++) {
+        if (i != first) {
+            out[j][0] = blk[i][0];
+            out[j][1] = blk[i][1];
+            j++;
+        }
+    }
+    return j;
+}
+
+static void put32(u8 *p, u32 v)
+{
+    p[0] = (u8)(v >> 24);
+    p[1] = (u8)(v >> 16);
+    p[2] = (u8)(v >> 8);
+    p[3] = (u8)v;
+}
+
+/*
+ * One segment. The options go in here, because every segment carries
+ * the same ones once they are agreed:
+ *
+ *   a SYN offers MSS, SACK-permitted, a timestamp and a window shift
+ *   (a SYN-ACK offers only what the peer's SYN did), in Linux's order;
+ *   after that, a timestamp on everything if both sides agreed, and on
+ *   an ACK with data held out of order, the SACK blocks for it.
+ *
+ * The window in a SYN is never scaled; in everything after, it is the
+ * free space shifted down by the scale this end announced.
+ */
 static int send_seg(struct tcpcb *t, u32 seq, u8 flags,
                     const void *data, u32 len)
 {
-    u8 buf[TCP_HDR_LEN + TCP_MSS + 4];
+    u8 buf[TCP_HDR_LEN + 40 + TCP_MSS];
     struct tcphdr *h = (struct tcphdr *)buf;
-    u32 total = (u32)TCP_HDR_LEN + len;
     u8 *opt = buf + TCP_HDR_LEN;
+    u32 olen = 0, total, win;
 
     if (len > TCP_MSS) {
         return -EMSGSIZE;
+    }
+
+    /*
+     * The loss knob, for the tests: every Nth data segment to a
+     * loopback address vanishes, as it would on a lossy link -- which
+     * the emulator's own network never is.
+     */
+    if (loss_every && (len > 0 || loss_every == 1) &&
+        IP4_IS_LOOPBACK(t->remote_ip) && ++loss_count % loss_every == 0) {
+        return 0;               /* 1 drops everything: a dead peer */
     }
 
     memset(buf, 0, TCP_HDR_LEN);
@@ -422,33 +579,127 @@ static int send_seg(struct tcpcb *t, u32 seq, u8 flags,
     h->seq = seq;
     h->ack = t->rcv_nxt;
     h->flags = flags;
-    h->window = (u16)rcv_free(t);
     h->urgent = 0;
 
-    /*
-     * A SYN carries the maximum segment size, because the default of 536
-     * is what a peer assumes otherwise -- and a server that believes it
-     * is talking over a 536-byte path sends three segments where one
-     * would do.
-     */
     if (flags & TCP_SYN) {
-        opt[0] = 2;             /* kind: MSS   */
-        opt[1] = 4;             /* length      */
-        opt[2] = (u8)(TCP_MSS >> 8);
-        opt[3] = (u8)TCP_MSS;
-        h->offset = (u8)(((TCP_HDR_LEN + 4) / 4) << 4);
-        memcpy(buf + TCP_HDR_LEN + 4, data, len);
-        total += 4;
+        int synack = (flags & TCP_ACK) != 0;
+        int ws = !(opts_disabled & TCPOPT_NO_WS) && (!synack || t->peer_ws);
+        int ts = !(opts_disabled & TCPOPT_NO_TS) && (!synack || t->peer_ts);
+        int sk = !(opts_disabled & TCPOPT_NO_SACK) && (!synack || t->peer_sack);
+
+        /* MSS, because otherwise a peer assumes 536. */
+        opt[olen++] = 2;
+        opt[olen++] = 4;
+        opt[olen++] = (u8)(TCP_MSS >> 8);
+        opt[olen++] = (u8)TCP_MSS;
+        if (sk) {
+            opt[olen++] = 4;            /* SACK permitted */
+            opt[olen++] = 2;
+        } else if (ts) {
+            opt[olen++] = 1;
+            opt[olen++] = 1;
+        }
+        if (ts) {
+            opt[olen++] = 8;            /* timestamp */
+            opt[olen++] = 10;
+            put32(opt + olen, ts_now());
+            put32(opt + olen + 4, synack ? t->ts_recent : 0);
+            olen += 8;
+        }
+        if (ws) {
+            opt[olen++] = 1;
+            opt[olen++] = 3;            /* window scale */
+            opt[olen++] = 3;
+            opt[olen++] = TCP_WSCALE;
+        }
+        while (olen % 4) {
+            opt[olen++] = 1;
+        }
+        win = rcv_free(t);
     } else {
-        h->offset = (u8)((TCP_HDR_LEN / 4) << 4);
-        memcpy(opt, data, len);
+        if (t->ts_ok) {
+            opt[olen++] = 1;
+            opt[olen++] = 1;
+            opt[olen++] = 8;
+            opt[olen++] = 10;
+            put32(opt + olen, ts_now());
+            put32(opt + olen + 4, t->ts_recent);
+            olen += 8;
+        }
+        if (t->sack_ok && (flags & TCP_ACK)) {
+            u32 blocks[4][2];
+            int n = sack_blocks(t, blocks, t->ts_ok ? 3 : 4), k;
+
+            if (n > 0) {
+                opt[olen++] = 1;
+                opt[olen++] = 1;
+                opt[olen++] = 5;
+                opt[olen++] = (u8)(2 + 8 * n);
+                for (k = 0; k < n; k++) {
+                    put32(opt + olen, blocks[k][0]);
+                    put32(opt + olen + 4, blocks[k][1]);
+                    olen += 8;
+                }
+            }
+        }
+        win = rcv_free(t) >> t->rcv_wscale;
     }
+    h->window = (u16)(win > 65535 ? 65535 : win);
+    h->offset = (u8)(((TCP_HDR_LEN + olen) / 4) << 4);
+    memcpy(buf + TCP_HDR_LEN + olen, data, len);
+    total = (u32)TCP_HDR_LEN + olen + len;
 
     h->check = 0;
     h->check = net_checksum(buf, total,
                             pseudo_sum(t->local_ip, t->remote_ip, total));
 
     return ip_output(t->remote_ip, IPPROTO_TCP, buf, total);
+}
+
+/* Copy n bytes from `offset` into the send ring (offset 0 is snd_una). */
+static void snd_copy(struct tcpcb *t, u32 offset, u8 *out, u32 n)
+{
+    u32 at = (t->sndstart + offset) % TCP_SNDBUF;
+    u32 first = TCP_SNDBUF - at;
+
+    if (first > n) {
+        first = n;
+    }
+    memcpy(out, t->sndbuf + at, first);
+    memcpy(out + first, t->sndbuf, n - first);
+}
+
+/* Send n bytes of the ring from sequence `seq`, counting it as a
+ * retransmission if it has been sent before. */
+static int send_range(struct tcpcb *t, u32 seq, u32 n)
+{
+    static u8 seg[TCP_MSS];
+    int err;
+
+    snd_copy(t, seq - t->snd_una, seg, n);
+    err = send_seg(t, seq, TCP_ACK | TCP_PSH, seg, n);
+    if (err == 0 && seq_gt(t->snd_max, seq)) {
+        t->rexmit_segs++;
+        t->rexmit_bytes += n;
+    }
+    if (err == 0 && seq_gt(seq + n, t->snd_max)) {
+        t->snd_max = seq + n;
+    }
+    return err;
+}
+
+/* Is `seq` inside a range the peer has SACKed? Returns the range's end
+ * if so, else seq itself. */
+static u32 sacked_until(const struct tcpcb *t, u32 seq)
+{
+    int i;
+
+    for (i = 0; i < t->nsacked; i++) {
+        if (seq_ge(seq, t->sacked[i].start) && seq_gt(t->sacked[i].end, seq)) {
+            return t->sacked[i].end;
+        }
+    }
+    return seq;
 }
 
 /*
@@ -486,21 +737,49 @@ static void send_data(struct tcpcb *t)
             break;                      /* the peer's window is full */
         }
 
+        /*
+         * Resending after a timeout starts from snd_una again; anything
+         * the peer has SACKed on the way is stepped over rather than
+         * sent twice. That is the whole of SACK's saving on a timeout.
+         */
+        {
+            u32 skip = sacked_until(t, t->snd_nxt);
+
+            if (skip != t->snd_nxt) {
+                if (seq_gt(skip, t->snd_una + t->sndlen)) {
+                    skip = t->snd_una + t->sndlen;
+                }
+                t->snd_nxt = skip;
+                continue;
+            }
+        }
+
         offset = inflight;
         n = window - inflight;
         if (n > TCP_MSS) {
             n = TCP_MSS;
         }
+        /* Not into a SACKed range either. */
+        {
+            int i;
 
-        if (send_seg(t, t->snd_nxt, TCP_ACK | TCP_PSH,
-                     t->sndbuf + offset, n) < 0) {
+            for (i = 0; i < t->nsacked; i++) {
+                if (seq_gt(t->sacked[i].start, t->snd_nxt) &&
+                    seq_gt(t->snd_nxt + n, t->sacked[i].start)) {
+                    n = t->sacked[i].start - t->snd_nxt;
+                }
+            }
+        }
+        (void)offset;
+
+        if (send_range(t, t->snd_nxt, n) < 0) {
             break;
         }
         /*
-         * Time one segment at a time. More would need a timestamp in
-         * every segment, which is the option this stack declines.
+         * Without timestamps, time one segment at a time (with them,
+         * every ACK measures -- see ack_sent_data).
          */
-        if (!t->rtt_timing) {
+        if (!t->ts_ok && !t->rtt_timing) {
             t->rtt_timing = 1;
             t->rtt_seq = t->snd_nxt + n;
             t->rtt_start = timer_jiffies();
@@ -583,35 +862,200 @@ static void send_rst(ip4_t dst, ip4_t self, const struct tcphdr *in,
 
 /* --- receiving ------------------------------------------------------ */
 
-static void parse_mss(struct tcpcb *t, const u8 *opt, u32 len)
+/* What a segment's options said. */
+struct tcpopts {
+    int ws;                     /* the peer's shift, or -1           */
+    int sack_perm;
+    int ts;
+    u32 tsval, tsecr;
+    int nsack;
+    u32 sack[4][2];
+};
+
+static u32 get32(const u8 *p)
+{
+    return ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | p[3];
+}
+
+/*
+ * Walk the option block. Bounded by its length as well as by the
+ * end-of-options marker, and it stops at anything malformed rather
+ * than guessing. MSS is read and not used: TCP_MSS is already below
+ * any path this machine will see.
+ */
+static void parse_opts(const u8 *opt, u32 len, struct tcpopts *o)
 {
     u32 i = 0;
 
-    (void)t;
+    memset(o, 0, sizeof(*o));
+    o->ws = -1;
     while (i < len) {
-        u8 kind = opt[i];
+        u8 kind = opt[i], olen;
 
         if (kind == 0) {
-            return;             /* end of options */
+            return;
         }
         if (kind == 1) {
-            i++;                /* no-op padding */
+            i++;
             continue;
         }
         if (i + 1 >= len || opt[i + 1] < 2 || i + opt[i + 1] > len) {
-            return;             /* malformed; stop rather than guess */
+            return;
         }
-        /* MSS is read and deliberately not used: TCP_MSS is already
-         * below any path this machine will see, and honouring a
-         * smaller one needs segmentation logic that earns nothing
-         * here. Parsed so that the option block is walked correctly. */
-        i += opt[i + 1];
+        olen = opt[i + 1];
+        switch (kind) {
+        case 3:                         /* window scale */
+            if (olen == 3) {
+                o->ws = opt[i + 2] > 14 ? 14 : opt[i + 2];
+            }
+            break;
+        case 4:                         /* SACK permitted */
+            if (olen == 2) {
+                o->sack_perm = 1;
+            }
+            break;
+        case 5:                         /* SACK blocks */
+            if (olen >= 10 && (olen - 2) % 8 == 0) {
+                u32 k, n = (olen - 2) / 8;
+
+                for (k = 0; k < n && k < 4; k++) {
+                    o->sack[k][0] = get32(opt + i + 2 + 8 * k);
+                    o->sack[k][1] = get32(opt + i + 6 + 8 * k);
+                }
+                o->nsack = (int)(n < 4 ? n : 4);
+            }
+            break;
+        case 8:                         /* timestamps */
+            if (olen == 10) {
+                o->ts = 1;
+                o->tsval = get32(opt + i + 2);
+                o->tsecr = get32(opt + i + 6);
+            }
+            break;
+        default:
+            break;
+        }
+        i += olen;
     }
 }
 
-static void ack_sent_data(struct tcpcb *t, u32 ack, u32 datalen, u16 window)
+/*
+ * What the two SYNs agreed. Each option is on only if the peer offered
+ * it and this end did (or, answering, would): RFC 7323 and RFC 2018 are
+ * explicit that either side's silence turns it off for both.
+ */
+static void agree_opts(struct tcpcb *t, const struct tcpopts *o)
+{
+    t->peer_ws = o->ws >= 0;
+    t->peer_ts = o->ts;
+    t->peer_sack = o->sack_perm;
+    t->ws_ok = t->peer_ws && !(opts_disabled & TCPOPT_NO_WS);
+    t->ts_ok = t->peer_ts && !(opts_disabled & TCPOPT_NO_TS);
+    t->sack_ok = t->peer_sack && !(opts_disabled & TCPOPT_NO_SACK);
+    t->snd_wscale = t->ws_ok ? (u8)o->ws : 0;
+    t->rcv_wscale = t->ws_ok ? TCP_WSCALE : 0;
+    if (o->ts) {
+        t->ts_recent = o->tsval;
+    }
+}
+
+/* Add a SACKed range to the scoreboard, merging it with what is there. */
+static void sack_add(struct tcpcb *t, u32 st, u32 en)
+{
+    int i;
+
+    if (!seq_gt(en, st) || !seq_gt(en, t->snd_una) || seq_gt(en, t->snd_max)) {
+        return;                         /* nonsense, or already acked */
+    }
+    if (seq_gt(t->snd_una, st)) {
+        st = t->snd_una;
+    }
+    for (i = 0; i < t->nsacked; i++) {
+        if (seq_le(st, t->sacked[i].end) && seq_ge(en, t->sacked[i].start)) {
+            if (seq_gt(t->sacked[i].start, st)) t->sacked[i].start = st;
+            if (seq_gt(en, t->sacked[i].end)) t->sacked[i].end = en;
+            return;
+        }
+    }
+    if (t->nsacked < TCP_SACK_MAX) {
+        t->sacked[t->nsacked].start = st;
+        t->sacked[t->nsacked].end = en;
+        t->nsacked++;
+    }
+}
+
+/* Forget whatever the cumulative ACK has now covered. */
+static void sack_trim(struct tcpcb *t)
+{
+    int i;
+
+    for (i = 0; i < t->nsacked; i++) {
+        if (seq_le(t->sacked[i].end, t->snd_una)) {
+            t->sacked[i] = t->sacked[--t->nsacked];
+            i--;
+        } else if (seq_gt(t->snd_una, t->sacked[i].start)) {
+            t->sacked[i].start = t->snd_una;
+        }
+    }
+}
+
+/*
+ * In recovery with SACK, send the next hole: the first data at or past
+ * high_rxt that the peer has not SACKed, below the highest it has. One
+ * segment per call -- each duplicate ACK is one more segment's worth of
+ * room. Returns 1 if it sent something.
+ */
+static int sack_rexmit_hole(struct tcpcb *t)
+{
+    u32 top = t->snd_una, seq, n;
+    int i;
+
+    for (i = 0; i < t->nsacked; i++) {
+        if (seq_gt(t->sacked[i].end, top)) {
+            top = t->sacked[i].end;
+        }
+    }
+    seq = seq_gt(t->high_rxt, t->snd_una) ? t->high_rxt : t->snd_una;
+    for (;;) {
+        u32 skip = sacked_until(t, seq);
+
+        if (skip == seq) {
+            break;
+        }
+        seq = skip;
+    }
+    if (!seq_gt(top, seq)) {
+        return 0;                       /* no hole below what was SACKed */
+    }
+    n = top - seq;
+    for (i = 0; i < t->nsacked; i++) {
+        if (seq_gt(t->sacked[i].start, seq) &&
+            seq_gt(seq + n, t->sacked[i].start)) {
+            n = t->sacked[i].start - seq;
+        }
+    }
+    if (n > TCP_MSS) {
+        n = TCP_MSS;
+    }
+    if (n == 0 || send_range(t, seq, n) < 0) {
+        return 0;
+    }
+    t->high_rxt = seq + n;
+    return 1;
+}
+
+static void ack_sent_data(struct tcpcb *t, u32 ack, u32 datalen, u32 window,
+                          const struct tcpopts *o)
 {
     u32 acked;
+    int k;
+
+    /* The peer's SACK blocks go on the scoreboard, whatever else. */
+    if (t->sack_ok) {
+        for (k = 0; k < o->nsack; k++) {
+            sack_add(t, o->sack[k][0], o->sack[k][1]);
+        }
+    }
 
     if (!seq_gt(ack, t->snd_una)) {
         /*
@@ -632,25 +1076,29 @@ static void ack_sent_data(struct tcpcb *t, u32 ack, u32 datalen, u16 window)
                 t->recover = t->snd_nxt;
                 t->cwnd = t->ssthresh + 3 * TCP_MSS;
                 t->rtt_timing = 0;      /* Karn: this one is not timed */
-                {
+                t->high_rxt = t->snd_una;
+                if (!t->sack_ok || !sack_rexmit_hole(t)) {
                     u32 n = t->sndlen;
 
                     if (n > TCP_MSS) {
                         n = TCP_MSS;
                     }
                     if (n > 0) {
-                        send_seg(t, t->snd_una, TCP_ACK | TCP_PSH,
-                                 t->sndbuf, n);
+                        send_range(t, t->snd_una, n);
+                        t->high_rxt = t->snd_una + n;
                     }
                 }
             } else if (t->in_recovery) {
                 /*
                  * Fast recovery: each further duplicate says another
                  * segment has left the network, so one more may be put
-                 * into it.
+                 * into it -- the next hole, if SACK says where one is,
+                 * and otherwise new data.
                  */
                 t->cwnd += TCP_MSS;
-                send_data(t);
+                if (!t->sack_ok || !sack_rexmit_hole(t)) {
+                    send_data(t);
+                }
             }
         }
         return;                 /* nothing new acknowledged */
@@ -662,7 +1110,15 @@ static void ack_sent_data(struct tcpcb *t, u32 ack, u32 datalen, u16 window)
      * A measurement, if this acknowledges the segment being timed and
      * that segment was never retransmitted (Karn's algorithm).
      */
-    if (t->rtt_timing && seq_ge(ack, t->rtt_seq)) {
+    if (t->ts_ok && o->ts && o->tsecr) {
+        /* With timestamps, every ACK of new data is a measurement: the
+         * peer echoes when we sent what it is acknowledging. */
+        u32 ms = ts_now() - o->tsecr;
+
+        if ((s32)ms >= 0 && ms < 60000) {
+            rtt_update(t, ms ? ms : 1);
+        }
+    } else if (t->rtt_timing && seq_ge(ack, t->rtt_seq)) {
         u32 ms = (timer_jiffies() - t->rtt_start) * (1000 / HZ);
 
         rtt_update(t, ms ? ms : 1);
@@ -687,11 +1143,18 @@ static void ack_sent_data(struct tcpcb *t, u32 ack, u32 datalen, u16 window)
         acked = t->sndlen;
     }
     if (acked > 0) {
-        memmove(t->sndbuf, t->sndbuf + acked, t->sndlen - acked);
+        t->sndstart = (t->sndstart + acked) % TCP_SNDBUF;
         t->sndlen -= acked;
     }
     t->snd_una = ack;
     t->rexmits = 0;
+    sack_trim(t);
+
+    /* A partial ACK in recovery: the next hole is due now, not at the
+     * next duplicate (RFC 6582's point, made with SACK's knowledge). */
+    if (t->in_recovery && t->sack_ok) {
+        sack_rexmit_hole(t);
+    }
 
     /* Stop the timer if everything is acknowledged. */
     t->rexmit_at = (t->snd_una == t->snd_nxt) ? 0
@@ -702,7 +1165,8 @@ void tcp_input(ip4_t src, ip4_t dst, const void *seg, u32 len)
 {
     const struct tcphdr *h = seg;
     struct tcpcb *t;
-    u32 hlen, datalen;
+    struct tcpopts o;
+    u32 hlen, datalen, wnd;
     const u8 *data;
 
     if (len < (u32)TCP_HDR_LEN) {
@@ -724,6 +1188,7 @@ void tcp_input(ip4_t src, ip4_t dst, const void *seg, u32 len)
         send_rst(src, dst, h, datalen);
         return;
     }
+    parse_opts((const u8 *)seg + TCP_HDR_LEN, hlen - TCP_HDR_LEN, &o);
 
     /* --- a listener meeting a SYN --------------------------------- */
     if (t->state == TCP_LISTEN) {
@@ -748,18 +1213,33 @@ void tcp_input(ip4_t src, ip4_t dst, const void *seg, u32 len)
         c->rcv_nxt = h->seq + 1;
         c->snd_una = tcp_isn();
         c->snd_nxt = c->snd_una;
-        c->snd_wnd = h->window;
+        c->snd_wnd = h->window;         /* a SYN's window is never scaled */
         c->listener = t;
-        parse_mss(c, (const u8 *)seg + TCP_HDR_LEN, hlen - TCP_HDR_LEN);
+        agree_opts(c, &o);
+        /* Keepalive is the listener's, as Linux gives it to accept(). */
+        c->keepalive = t->keepalive;
+        c->keep_idle_s = t->keep_idle_s;
+        c->keep_intvl_s = t->keep_intvl_s;
+        c->keep_cnt = t->keep_cnt;
+        c->last_rcv = timer_jiffies();
 
         send_seg(c, c->snd_nxt, TCP_SYN | TCP_ACK, 0, 0);
         c->snd_nxt++;
+        c->snd_max = c->snd_nxt;
         c->rexmit_at = timer_jiffies() + (c->rto_ms * HZ) / 1000;
         return;
     }
 
     /* --- a reset ends it, whatever state it was in ----------------- */
     if (h->flags & TCP_RST) {
+        /*
+         * Except TIME_WAIT, which a reset must not cut short (RFC 1337):
+         * TIME_WAIT exists to outlive stray segments, and an old RST is
+         * one of them.
+         */
+        if (t->state == TCP_TIME_WAIT) {
+            return;
+        }
         t->reset = 1;
         t->state = TCP_CLOSED;
         return;
@@ -777,15 +1257,18 @@ void tcp_input(ip4_t src, ip4_t dst, const void *seg, u32 len)
             }
             t->snd_una = h->ack;
             t->rcv_nxt = h->seq + 1;
-            t->snd_wnd = h->window;
+            t->snd_wnd = h->window;     /* unscaled, in a SYN */
+            t->max_snd_wnd = t->snd_wnd;
             t->state = TCP_ESTABLISHED;
             t->rexmit_at = 0;
-            parse_mss(t, (const u8 *)seg + TCP_HDR_LEN, hlen - TCP_HDR_LEN);
+            t->last_rcv = timer_jiffies();
+            agree_opts(t, &o);
             send_ack(t);
         } else {
             /* Simultaneous open: both sides sent SYN. Rare, legal. */
             t->rcv_nxt = h->seq + 1;
             t->state = TCP_SYN_RECEIVED;
+            agree_opts(t, &o);
             send_seg(t, t->snd_una, TCP_SYN | TCP_ACK, 0, 0);
         }
         return;
@@ -795,7 +1278,32 @@ void tcp_input(ip4_t src, ip4_t dst, const void *seg, u32 len)
     if (!(h->flags & TCP_ACK)) {
         return;
     }
-    t->snd_wnd = h->window;
+
+    /*
+     * PAWS (RFC 7323 5): a segment whose timestamp is older than the
+     * last one taken is a stray from an earlier trip round the
+     * sequence space, and is dropped -- with an ACK, so a peer that
+     * merely got out of step learns where things are.
+     */
+    if (t->ts_ok && o.ts) {
+        if (t->ts_recent && (s32)(o.tsval - t->ts_recent) < 0) {
+            send_ack(t);
+            return;
+        }
+        if (seq_le(h->seq, t->rcv_nxt)) {
+            t->ts_recent = o.tsval;
+        }
+    }
+
+    /* The peer is alive, whatever this segment is. */
+    t->last_rcv = timer_jiffies();
+    t->keep_probes = 0;
+
+    wnd = (u32)h->window << t->snd_wscale;
+    t->snd_wnd = wnd;
+    if (wnd > t->max_snd_wnd) {
+        t->max_snd_wnd = wnd;
+    }
 
     if (t->state == TCP_SYN_RECEIVED) {
         if (h->ack != t->snd_nxt) {
@@ -809,7 +1317,7 @@ void tcp_input(ip4_t src, ip4_t dst, const void *seg, u32 len)
         }
     }
 
-    ack_sent_data(t, h->ack, datalen, h->window);
+    ack_sent_data(t, h->ack, datalen, wnd, &o);
 
     /* --- data ------------------------------------------------------- */
     if (datalen > 0) {
@@ -888,6 +1396,15 @@ void tcp_input(ip4_t src, ip4_t dst, const void *seg, u32 len)
              * where we are, so the sender stops. */
             send_ack(t);
         }
+    } else if (seq_gt(t->rcv_nxt, h->seq) &&
+               !(h->flags & (TCP_SYN | TCP_FIN))) {
+        /*
+         * An empty segment from before rcv_nxt is "not acceptable", and
+         * RFC 793 says to answer one with an ACK. It is also exactly
+         * what a keepalive probe is -- this end's and anybody else's --
+         * so without this no probe would ever be answered.
+         */
+        send_ack(t);
     }
 
     /* --- the peer closing ------------------------------------------- */
@@ -906,6 +1423,13 @@ void tcp_input(ip4_t src, ip4_t dst, const void *seg, u32 len)
             break;
         case TCP_FIN_WAIT_2:
             t->state = TCP_TIME_WAIT;
+            t->timewait_at = timer_jiffies() + (TIMEWAIT_MS * HZ) / 1000;
+            break;
+        case TCP_TIME_WAIT:
+            /* The peer did not get our ACK of its FIN and sent the FIN
+             * again: answer it, and wait the full time again. This is
+             * the case TIME_WAIT is there for. */
+            send_ack(t);
             t->timewait_at = timer_jiffies() + (TIMEWAIT_MS * HZ) / 1000;
             break;
         default:
@@ -960,18 +1484,47 @@ void tcp_timer(void)
         }
 
         /*
-         * TIME_WAIT should be twice the maximum segment lifetime, which
-         * the standard puts at two minutes. Ten seconds is used instead
-         * and it is a real shortcut: it exists to catch a delayed
-         * duplicate from this connection being taken as data on the
-         * next one with the same port pair, and on a LAN a segment does
-         * not survive ten seconds. On a long-haul path it could.
+         * TIME_WAIT is twice the maximum segment lifetime, and 60 seconds
+         * is what Linux uses for it: long enough that a delayed
+         * duplicate from this connection cannot be taken as data on the
+         * next one with the same port pair. It was ten seconds, which a
+         * segment on a LAN does not survive and one on a long path can.
          */
         if (t->state == TCP_TIME_WAIT) {
             if ((s32)(now - t->timewait_at) >= 0) {
                 t->state = TCP_CLOSED;
             }
             continue;
+        }
+
+        /*
+         * Keepalive. A connection with nothing outstanding and nothing
+         * heard for keep_idle_s gets a probe -- a segment one byte
+         * behind, which any live peer must answer with an ACK -- every
+         * keep_intvl_s, and after keep_cnt unanswered it is declared
+         * dead: ETIMEDOUT to whoever next reads it.
+         */
+        if (t->keepalive && (t->state == TCP_ESTABLISHED ||
+                             t->state == TCP_CLOSE_WAIT) &&
+            t->snd_una == t->snd_nxt &&
+            (s32)(now - t->last_rcv) >= (s32)(t->keep_idle_s * HZ)) {
+            if (t->keep_probes == 0 && !t->keep_next) {
+                t->keep_next = now;
+            }
+            if ((s32)(now - t->keep_next) >= 0) {
+                if (t->keep_probes >= t->keep_cnt) {
+                    t->state = TCP_CLOSED;
+                    t->reset = 1;
+                    t->timed_out = 1;
+                    continue;
+                }
+                send_seg(t, t->snd_una - 1, TCP_ACK, 0, 0);
+                t->keep_probes++;
+                t->keep_sent++;
+                t->keep_next = now + t->keep_intvl_s * HZ;
+            }
+        } else {
+            t->keep_next = 0;
         }
 
         /* A delayed acknowledgement that has waited long enough. */
@@ -1090,6 +1643,8 @@ int tcp_connect(struct tcpcb *t, ip4_t addr, u16 port)
         return -EIO;
     }
     t->snd_nxt++;
+    t->snd_max = t->snd_nxt;
+    t->last_rcv = timer_jiffies();
     t->rexmit_at = timer_jiffies() + (t->rto_ms * HZ) / 1000;
     return 0;
 }
@@ -1162,7 +1717,7 @@ s32 tcp_send(struct tcpcb *t, const void *data, u32 len)
     u32 room;
 
     if (t->state == TCP_CLOSED || t->reset) {
-        return -ECONNRESET;
+        return t->timed_out ? -ETIMEDOUT : -ECONNRESET;
     }
     if (t->state != TCP_ESTABLISHED && t->state != TCP_CLOSE_WAIT) {
         return -ENOTCONN;
@@ -1178,7 +1733,16 @@ s32 tcp_send(struct tcpcb *t, const void *data, u32 len)
     if (len > room) {
         len = room;
     }
-    memcpy(t->sndbuf + t->sndlen, data, len);
+    {
+        u32 at = (t->sndstart + t->sndlen) % TCP_SNDBUF;
+        u32 first = TCP_SNDBUF - at;
+
+        if (first > len) {
+            first = len;
+        }
+        memcpy(t->sndbuf + at, data, first);
+        memcpy(t->sndbuf, (const u8 *)data + first, len - first);
+    }
     t->sndlen += len;
 
     send_data(t);
@@ -1198,7 +1762,10 @@ s32 tcp_peek(struct tcpcb *t, void *data, u32 len)
         return (s32)n;
     }
     if (t->reset) {
-        return -ECONNRESET;
+        /* A connection that timed out -- retransmission or keepalive --
+         * says ETIMEDOUT, as Linux's does; a reset from the peer says
+         * ECONNRESET. */
+        return t->timed_out ? -ETIMEDOUT : -ECONNRESET;
     }
     if (t->fin_rcvd) {
         return 0;
@@ -1264,7 +1831,10 @@ s32 tcp_recv(struct tcpcb *t, void *data, u32 len)
     }
 
     if (t->reset) {
-        return -ECONNRESET;
+        /* A connection that timed out -- retransmission or keepalive --
+         * says ETIMEDOUT, as Linux's does; a reset from the peer says
+         * ECONNRESET. */
+        return t->timed_out ? -ETIMEDOUT : -ECONNRESET;
     }
     if (t->fin_rcvd) {
         return 0;               /* end of stream, the way read() says it */

@@ -676,6 +676,9 @@ struct mmap_arg_struct {
 #define IPPROTO_TCP     6
 #define IPPROTO_UDP     17
 #define TCP_NODELAY     1       /* always on: there is no Nagle to turn off */
+#define TCP_KEEPIDLE    4       /* seconds idle before the first probe  */
+#define TCP_KEEPINTVL   5       /* seconds between probes               */
+#define TCP_KEEPCNT     6       /* unanswered probes before giving up   */
 
 typedef u32 socklen_t;
 
@@ -809,6 +812,14 @@ struct fsck_report {
 #define NETCTL_DHCP    7        /* p = struct netaddr * (filled in)   */
 #define NETCTL_UP      4
 #define NETCTL_DOWN    5
+/*
+ * For tests and comparisons, not for use: drop every Nth data segment a
+ * TCP connection sends over loopback (1 drops every segment, empty ones
+ * too -- a dead peer; 0 turns it off), and switch off TCP options this
+ * end would otherwise offer (TCPOPT_NO_WS | _NO_TS | _NO_SACK).
+ */
+#define NETCTL_TCPLOSS 9        /* arg = N                            */
+#define NETCTL_TCPOPTS 10       /* arg = mask of options to turn off  */
 
 struct netinfo {
     char name[8];
@@ -843,7 +854,24 @@ struct conninfo {
     u32 cwnd;
     u32 rtt_ms;
     char state_name[16];
+    /* What the SYNs agreed, and what it has done since. */
+    u32 flags;                  /* CONN_WS | CONN_TS | CONN_SACK | CONN_KEEP */
+    u8  snd_wscale, rcv_wscale;
+    u16 pad;
+    u32 snd_wnd;                /* the peer's window now, scaled      */
+    u32 max_snd_wnd;            /* the largest it has been            */
+    u32 rexmit_segs;
+    u32 rexmit_bytes;
+    u32 keep_sent;              /* keepalive probes sent              */
 };
+
+#define CONN_WS         0x01
+#define CONN_TS         0x02
+#define CONN_SACK       0x04
+#define CONN_KEEP       0x08
+#define TCPOPT_NO_WS    0x01
+#define TCPOPT_NO_TS    0x02
+#define TCPOPT_NO_SACK  0x04
 
 struct arpinfo {
     u32 ip;

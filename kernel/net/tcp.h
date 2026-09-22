@@ -77,9 +77,21 @@ enum tcp_state {
     TCP_TIME_WAIT
 };
 
-#define TCP_SNDBUF      4096
-#define TCP_RCVBUF      4096
+/*
+ * The buffers, from the page allocator per connection. Powers of two,
+ * because both are rings. The receive buffer is what the window can
+ * say, and 128 KB is past what 16 bits of window can: that is what
+ * window scaling is for (TCP_WSCALE below).
+ */
+#define TCP_SNDBUF      (64 * 1024)
+#define TCP_RCVBUF      (128 * 1024)
 #define TCP_MAX_CONNS   16
+
+/* Our window shift: 128 KB / 4 fits the 16-bit field. RFC 7323. */
+#define TCP_WSCALE      2
+
+/* SACK blocks remembered from the peer (the sender's scoreboard). */
+#define TCP_SACK_MAX    8
 
 /*
  * Segments held while a gap in front of them is filled.
@@ -95,8 +107,8 @@ enum tcp_state {
  * connection its own would reserve memory for a situation that is rare
  * on all of them at once.
  */
-#define TCP_OOO_SLOTS   6
-#define TCP_OOO_PER_CB  4
+#define TCP_OOO_SLOTS   64
+#define TCP_OOO_PER_CB  24
 
 struct tcpcb {
     int   used;
@@ -141,12 +153,48 @@ struct tcpcb {
     /* Receive sequence space. */
     u32   rcv_nxt;              /* next expected                    */
 
-    u8    sndbuf[TCP_SNDBUF];
+    /* Rings, allocated with the connection (tcp_alloc). The send ring
+     * holds sndlen bytes starting at sndstart, which is snd_una. */
+    u8   *sndbuf;
+    u32   sndstart;
     u32   sndlen;               /* bytes held, starting at snd_una  */
+    u32   snd_max;              /* the highest sequence ever sent   */
 
-    u8    rcvbuf[TCP_RCVBUF];
+    u8   *rcvbuf;
     u32   rcvhead;
     u32   rcvtail;
+
+    /*
+     * The options negotiated in the SYN exchange (RFC 7323, RFC 2018).
+     * Each is on only if both ends offered it.
+     */
+    int   ws_ok;                /* window scaling                   */
+    u8    snd_wscale;           /* the peer's shift, for its window */
+    u8    rcv_wscale;           /* ours, for the window we send     */
+    int   ts_ok;                /* timestamps                       */
+    u32   ts_recent;            /* the peer's latest TSval, echoed  */
+    int   sack_ok;              /* selective acknowledgements       */
+    int   peer_ws, peer_ts, peer_sack;  /* what the peer's SYN offered */
+
+    /* The sender's SACK scoreboard: ranges the peer says it holds,
+     * above snd_una, which a retransmission need not send again. */
+    struct {
+        u32 start, end;
+    } sacked[TCP_SACK_MAX];
+    int   nsacked;
+    u32   high_rxt;             /* retransmitted up to here, in recovery */
+
+    /* Keepalive (RFC 1122 4.2.3.6), with Linux's knobs. */
+    int   keepalive;
+    u32   keep_idle_s, keep_intvl_s, keep_cnt;
+    u32   last_rcv;             /* jiffies of the last segment in   */
+    u32   keep_next;            /* jiffies of the next probe        */
+    u32   keep_probes;          /* sent since the peer last spoke   */
+
+    /* Counters, for netstat and for the tests that judge the above. */
+    u32   rexmit_segs, rexmit_bytes;
+    u32   max_snd_wnd;          /* the largest window the peer gave */
+    u32   keep_sent;
 
     /* Retransmission. */
     u32   rto_ms;
@@ -161,6 +209,7 @@ struct tcpcb {
         int slot;               /* index into the shared buffer pool  */
         u32 seq;
         u32 len;
+        u32 when;               /* arrival order, for the SACK report */
     } ooo[TCP_OOO_PER_CB];
 
     /* Delayed acknowledgement: how many segments have gone unanswered
@@ -227,6 +276,15 @@ void tcp_release(struct tcpcb *t);
 
 /* POLLIN / POLLOUT / POLLERR / POLLHUP for this connection, now. */
 int  tcp_poll(struct tcpcb *t);
+
+/*
+ * Test and comparison knobs, set with netctl: drop every Nth data
+ * segment sent over loopback (0 for none), and turn off the options
+ * that would otherwise be offered in a SYN.
+ */
+void tcp_set_loss(u32 every);
+u32  tcp_loss_every(void);
+void tcp_set_disabled(u32 mask);     /* TCPOPT_NO_* in uapi.h */
 
 /* Walk the connection table, for netstat. Returns 0 past the end. */
 struct tcpcb *tcp_nth(int index);

@@ -16,7 +16,7 @@ cd "$(dirname "$0")"
 t="$1"
 
 # How big the machine is. One place, shared with the Makefiles.
-. "$(dirname "$0")/../machine.conf"
+. ../machine.conf
 
 SAGE_QEMU="$HOME/m68k/sage040-qemu/bin/qemu-system-m68k"
 [ -x "$SAGE_QEMU" ] || SAGE_QEMU=qemu-system-m68k

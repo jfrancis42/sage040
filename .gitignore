@@ -72,3 +72,4 @@ apps/vcsnap
 ports/vi/vi
 system/host
 system/ntpdate
+apps/tcptest

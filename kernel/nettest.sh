@@ -22,7 +22,7 @@ set -u
 cd "$(dirname "$0")"
 
 # How big the machine is. One place, shared with the Makefiles.
-. "$(dirname "$0")/../machine.conf"
+. ../machine.conf
 
 M68K_PREFIX=${M68K_PREFIX:-$HOME/m68k/install}
 SAGE_QEMU=${SAGE_QEMU:-$HOME/m68k/sage040-qemu}
@@ -52,6 +52,9 @@ PART_LBA=2048
 OFFSET=$((PART_LBA * 512))
 MIMG="$DISK@@$OFFSET"
 LOG="$SCRATCH/nettest.log"
+# Gone before QEMU starts, so a run that never reaches the guest has no
+# log to grade -- rather than silently grading the last run's.
+rm -f "$LOG"
 BOOT_WAIT=${BOOT_WAIT:-4}
 HTTP_PORT=${HTTP_PORT:-8099}
 
@@ -96,7 +99,7 @@ done
 # A web server on the host. The guest reaches it at 10.0.2.2, which is
 # what slirp calls the machine QEMU is running on.
 #
-rm -rf "$SCRATCH/webroot.tmp"
+rm -rf "$SCRATCH/webroot.tmp" "$SCRATCH/net.pcap" "$SCRATCH/synopts.tmp"
 mkdir -p "$SCRATCH/webroot.tmp"
 echo "SMALL-FILE-OK" > "$SCRATCH/webroot.tmp"/small.txt
 # Comfortably more than the 2 KB receive buffer, so the window has to
@@ -178,7 +181,8 @@ mkfifo "$SCRATCH/in.fifo"
 "$QEMU" -M sage040 -cpu m68040 -m "$RAM_MB" \
     -kernel ../bootrom/bootrom.elf \
     -drive file="$DISK",format=raw,if=ide \
-    -display none -no-reboot -nic user \
+    -display none -no-reboot -nic user,id=n0 \
+    -object filter-dump,id=cap,netdev=n0,file="$SCRATCH/net.pcap" \
     -chardev stdio,id=con,signal=off -serial chardev:con \
     < "$SCRATCH/in.fifo" > "$LOG" 2>&1 &
 qemu_pid=$!
@@ -268,6 +272,22 @@ check "ifconfig ran as a program out of /bin" $?
 
 echo "=== checks: nothing broke ==="
 
+# The SYN as a real peer saw it, decoded by the host rather than by the
+# code that wrote it. tcptest checks the options over loopback, where
+# this stack is both ends and could get one wrong the same way twice.
+python3 ./synopts.py "$SCRATCH/net.pcap" 52:54:00:12:34:56 \
+    > "$SCRATCH/synopts.tmp"
+syn_rc=$?
+sed 's/^/  | /' "$SCRATCH/synopts.tmp"
+syn=$(grep -m1 '^syn ' "$SCRATCH/synopts.tmp")
+[ "$syn_rc" -eq 0 ] && [ -n "$syn" ]
+check "the guest's SYNs were captured and every option parses" $?
+echo "$syn" | grep -qE '(^| )mss=1400( |$)' &&
+    echo "$syn" | grep -qE '(^| )ws=2( |$)' &&
+    echo "$syn" | grep -qE '(^| )sackok( |$)' &&
+    echo "$syn" | grep -qE '(^| )ts=[1-9][0-9]*,0( |$)'
+check "  offering MSS 1400, window scale 2, SACK and a timestamp" $?
+
 grep -q "NETTEST-DONE" "$SCRATCH/clean.tmp"
 check "the shell survived all of it" $?
 
@@ -279,7 +299,7 @@ awk '/TX [0-9]+ packets, [0-9]+ errors/ {
      } END { exit bad ? 1 : 0 }' "$SCRATCH/clean.tmp"
 check "no transmit errors" $?
 
-rm -rf "$SCRATCH/webroot.tmp"
+rm -rf "$SCRATCH/webroot.tmp" "$SCRATCH/net.pcap" "$SCRATCH/synopts.tmp"
 
 echo
 echo "  passed: $pass"

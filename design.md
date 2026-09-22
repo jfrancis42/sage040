@@ -209,6 +209,7 @@ catch a byte-order error, because both directions swap.
 | Long file names — VFAT, UTF-8 | ✅ done — task 14 |
 | `fsck`, clean-unmount flag, check at boot | ✅ done — task 15 |
 | `mmap`/`brk` | ✅ done — `vm.c`, `mmap.c` |
+| TCP options — window scaling, timestamps, SACK, keepalives, `TIME_WAIT` | ✅ done — task 19 |
 | Pipes and redirection, paging, shared libraries | ✗ open — §11 |
 
 **Every hardware dependency is satisfied**, and has been for some time.
@@ -269,6 +270,23 @@ RFC 793's state machine, both opens, an orderly close on both sides, and:
 - **RTT measurement and a computed RTO**, RFC 6298, with Karn's algorithm
 - **Delayed acknowledgements**, and duplicate-ACK handling as the
   fast-retransmit trigger
+- **Window scaling**, RFC 7323, shift 2. The buffers are 64 KB to send
+  and 128 KB to receive, page-allocated when a connection is made, so an
+  idle socket costs nothing and a busy one can keep more than 16 bits'
+  worth of window in flight
+- **Timestamps and PAWS**, RFC 7323. The RTT is measured from the echoed
+  timestamp on every acknowledgement rather than once a round trip, and
+  a segment whose timestamp is older than the last one seen is dropped
+- **SACK**, RFC 2018: the receiver reports up to three blocks from its
+  reassembly queue; the sender keeps a scoreboard of eight, resends the
+  holes below the highest SACKed byte during recovery, and steps over
+  SACKed data when a timeout sends it back to `snd_una`
+- **Keepalives**, `SO_KEEPALIVE` with Linux's `TCP_KEEPIDLE`,
+  `TCP_KEEPINTVL` and `TCP_KEEPCNT` (7200 s, 75 s, 9, as on Linux). A
+  connection given up reports `ETIMEDOUT`
+- **A real `TIME_WAIT`**: 60 seconds, Linux's figure for 2 MSL. A
+  retransmitted FIN is acknowledged again and restarts it, and a reset
+  does not cut it short (RFC 1337)
 - **Initial sequence numbers that cannot be guessed**, RFC 6528, over
   `kernel/random.c` — which is xorshift32 seeded from the clock, the tick
   and the MAC address, and which says at the top of the file, in as many
@@ -284,23 +302,29 @@ who knows roughly when the connection was made.
 
 ### What the TCP does not do
 
-Each of these is a decision, and the first four are negotiated options
-that a peer works perfectly well without.
+Each of these is a decision.
 
-- **Window scaling.** It would matter on a path whose bandwidth-delay
-  product exceeds 64 KB. The receive buffer is 4 KB, so the window is the
-  binding constraint long before the field width is.
-- **SACK**, and **timestamps**, and therefore **PAWS**.
-- **Path MTU discovery.** The MSS is what fits an ethernet frame.
-- **Nagle.** Small writes go out as they are made. A machine with a 4 KB
-  send buffer and a human at the other end is not where the
-  forty-byte-header problem is solved, and coalescing would make an
-  interactive session worse.
-- **Keepalives.**
-- **A real `TIME_WAIT`.** It is 10 seconds; the specification says 2 MSL,
-  which is minutes. This is the one genuine shortcut in the list, and the
-  one most likely to matter — a quickly reused port can in principle
-  accept a stale segment from a previous connection.
+- **Path MTU discovery.** The MSS is 1400, which fits an ethernet frame
+  with room for a tunnel's headers.
+- **Nagle.** Small writes go out as they are made; `TCP_NODELAY` is
+  always on. A human at the other end is not where the forty-byte-header
+  problem is solved, and coalescing would make an interactive session
+  worse.
+- **Buffer sizes per socket.** `SO_SNDBUF` and `SO_RCVBUF` are accepted
+  and ignored, and report the fixed sizes.
+
+**How the options are tested** (`kernel/tcptest.sh`, 24 checks): both
+ends over loopback, with two knobs in `netctl` that make the network
+misbehave in known ways -- `NETCTL_TCPLOSS` drops every Nth outgoing
+data segment, `NETCTL_TCPOPTS` stops new connections offering an
+option. "SACK works" is not something a test can observe; "on the same
+losses, the sender with SACK retransmitted less than the one without"
+is. Because loopback has this stack at both ends, an option written and
+read wrongly *in the same way* would pass there -- so `nettest.sh` also
+captures the guest's frames against QEMU's NAT and decodes the SYN's
+options on the host (`kernel/synopts.py`). Sending window scale as
+option 30 on both sides passes all 24 loopback checks and fails that
+one.
 
 And above it, **a resolver** (task 18, `lib/resolv.c`): `/etc/hosts`,
 `localhost`, then DNS over UDP to the servers in `/etc/resolv.conf` or
@@ -727,7 +751,7 @@ machine being small. The machine is not small now — 64 MB of RAM and a
 | Sockets | ✅ the Linux socket API, signatures and all, and loopback |
 | Long file names | VFAT, and why not a different filesystem |
 | `fsck` | and a clean-unmount flag to say when it is needed |
-| TCP | window scaling, timestamps, SACK, keepalives, a real `TIME_WAIT` |
+| TCP | ✅ window scaling, timestamps, SACK, keepalives, a real `TIME_WAIT` |
 | Shared libraries | downstream of `mmap` and a libc |
 | Paging | downstream of `mmap`, and what makes a big address space affordable |
 
@@ -1091,7 +1115,7 @@ the flags arguments:
 | 357 | `socketpair` | `AF_UNIX`, stream only: a pipe each way |
 | 358–360 | `bind`, `connect`, `listen` | port 0 picks one; `listen` binds if unbound |
 | 361 | `accept4` | `accept()` is it with no flags |
-| 362–363 | `getsockopt`, `setsockopt` | `SO_REUSEADDR`, `SO_ERROR`, `SO_RCVTIMEO`, `SO_SNDTIMEO`, `SO_TYPE`, `SO_ACCEPTCONN`, `SO_KEEPALIVE` (recorded), `TCP_NODELAY` (always on) |
+| 362–363 | `getsockopt`, `setsockopt` | `SO_REUSEADDR`, `SO_ERROR`, `SO_RCVTIMEO`, `SO_SNDTIMEO`, `SO_TYPE`, `SO_ACCEPTCONN`, `SO_KEEPALIVE`, `SO_SNDBUF`/`SO_RCVBUF` (fixed: 64 KB and 128 KB), `TCP_NODELAY` (always on), `TCP_KEEPIDLE`/`TCP_KEEPINTVL`/`TCP_KEEPCNT` |
 | 364–365 | `getsockname`, `getpeername` | |
 | 366, 368 | `sendto`, `recvfrom` | `MSG_DONTWAIT`, `MSG_PEEK`, `MSG_WAITALL`, `MSG_NOSIGNAL`, `MSG_TRUNC` |
 | 367, 369 | `sendmsg`, `recvmsg` | scatter/gather; no ancillary data |
@@ -1236,28 +1260,6 @@ Two decisions worth making up front:
 Being able to run the *host's* `fsck.fat` over the same image afterwards
 is the thing that makes this testable, and it is the same argument that
 chose FAT16 in the first place.
-
-### TCP's remaining options
-
-Previously listed as deliberate omissions and now on the list to do,
-because "a peer works fine without them" is an argument about
-correctness and these are about throughput and safety:
-
-- **Window scaling** (RFC 7323). The receive buffer is 4 KB and `cwnd`
-  is clamped at 32 KB, so this is only worth having once those grow --
-  but they should grow, now that the machine has 64 MB rather than 4.
-  Raising the buffers is the first half of this item and the cheaper
-  half.
-- **Timestamps**, and **PAWS** on top of them. Timestamps also give a
-  better RTT sample per round trip than Karn's algorithm can.
-- **SACK** (RFC 2018). The reassembly queue already holds out-of-order
-  segments, so the receiver half of SACK is mostly a matter of
-  reporting what it is already tracking.
-- **Keepalives.**
-- **A real `TIME_WAIT`.** It is 10 seconds; the specification says 2
-  MSL, which is minutes. This is the genuine shortcut in the list: a
-  quickly reused port can accept a stale segment from a previous
-  connection. It interacts with `SO_REUSEADDR`, so do both together.
 
 ### Shared libraries
 

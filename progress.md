@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: 19 of 23 complete.**
+**Status: 20 of 23 complete.**
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -48,7 +48,7 @@ drive almost all of it:
 | 16 | Build and run uEmacs | the cheapest real editor | **done** |
 | 17 | Build and run vi | the other one | **done** |
 | 18 | A resolver (DNS), then **NTP** | independent of the editor work; both are UDP clients and NTP wants a name | **done** |
-| 19 | TCP: window scaling, timestamps, SACK, keepalives, real `TIME_WAIT` | was "deliberately not doing"; now on the list | todo |
+| 19 | TCP: window scaling, timestamps, SACK, keepalives, real `TIME_WAIT` | was "deliberately not doing"; now on the list | **done** |
 | 20 | Shared libraries | downstream of `mmap` and the libc | todo |
 | 21 | Paging and swapping | downstream of `mmap` | todo |
 | 22 | Interrupt-driven input **and disk**, the NVRAM, the static limits | cleanup, any time | todo |
@@ -1090,6 +1090,83 @@ two fails the "asked twice" check; accepting any ID believes the forged
 6.6.6.6. The 2040 check failed first because the test's own timestamp
 was mistyped -- 2213937000 for 2214109800 -- and then because of the
 2038 bug above.
+
+### 19. TCP: window scaling, timestamps, SACK, keepalives, `TIME_WAIT` — done
+
+**Buffers first**, because the options are worth nothing without them:
+64 KB to send and 128 KB to receive (they were 4 KB), page-allocated per
+connection when it is made and freed when it ends. The send buffer
+became a ring indexed from `snd_una`.
+
+**The options**, each on only if both SYNs offered it:
+
+- window scaling (RFC 7323), shift 2;
+- timestamps, with PAWS and an RTT sample from every echoed timestamp;
+- SACK (RFC 2018): up to three blocks reported from the reassembly queue
+  (now 64 slots, 24 per connection); an eight-entry scoreboard on the
+  sending side; holes below the highest SACKed byte resent during
+  recovery; SACKed data stepped over after a timeout.
+
+**Keepalives:** `SO_KEEPALIVE` does something now, with Linux's
+`TCP_KEEPIDLE`/`TCP_KEEPINTVL`/`TCP_KEEPCNT` and Linux's defaults. A
+connection that stops answering is given up with `ETIMEDOUT`. A probe is
+an empty segment one byte behind, which RFC 793 says a receiver must
+answer with an ACK -- and this stack did not, so without that fix it
+could probe but never be probed.
+
+**`TIME_WAIT`** is 60 s (was 10). A retransmitted FIN in it is
+re-acknowledged and restarts the timer; an RST no longer ends it early
+(RFC 1337).
+
+**Two test knobs in `netctl`:** `NETCTL_TCPLOSS N` drops every Nth
+outgoing data segment (1 drops everything, which is how the keepalive
+test makes a peer go silent); `NETCTL_TCPOPTS` stops new connections
+offering chosen options. `NETCTL_CONN` reports the agreed options, both
+shifts, the largest window seen, retransmission counts and probes sent.
+
+**Tests:** `kernel/tcptest.sh`, a new suite, 24 checks, all over
+loopback (`apps/tcptest`):
+- 256 KB with every option agreed, a peer window above 65535, an RTT
+  measured, and nothing retransmitted;
+- a receiver that stalls for 1.5 s still takes more than 64 KB;
+- 512 KB at one loss in 25, with SACK and without, both intact, and
+  SACK retransmitting less on the same losses;
+- every option off, with the window staying inside 16 bits;
+- keepalive probing a live peer that stays up, and a silent one given
+  up with `ETIMEDOUT`;
+- `TIME_WAIT` still present after 15 s, with its port refused to `bind`.
+
+**Loopback cannot catch a mistake made the same way at both ends**, and
+this stack is both ends. So `nettest.sh` now captures the guest's frames
+with `-object filter-dump` and decodes its SYN options on the host
+(`kernel/synopts.py`, straight from the RFCs): MSS 1400, window scale 2,
+SACK permitted, a nonzero timestamp. 2 checks.
+
+**Negative controls**, each caught:
+
+| Change | Checks that failed |
+|---|---|
+| window scaling never agreed | 3 |
+| `sacked_until` disabled | "SACK resent less" |
+| keepalive probe not sent | "stays up" |
+| `TIME_WAIT` back to 10 s | both `TIME_WAIT` checks |
+| the RFC 793 ACK to an old segment removed | "stays up" |
+| keepalive never gives up | "given up: ETIMEDOUT" (a hang, until that read got a timeout) |
+| window scale sent as option 30 on both sides | **none of tcptest's 24**; nettest's SYN decode |
+
+The last row is why the SYN decode exists.
+
+**Found on the way -- a harness bug in five suites, older than this task:**
+`apitest`, `fstest`, `nettest`, `vmtest` and `edittest` did `cd
+"$(dirname "$0")"` and then sourced `"$(dirname "$0")/../machine.conf"`,
+a path relative to the directory just left. Run as `make test` runs
+them (`cd kernel && ./x.sh`), that is `./../machine.conf` and works; run
+by path from the root it is not found, `RAM_MB` is unset, and `set -u`
+kills the backgrounded QEMU line during expansion -- **before its
+redirection truncates the log**. The checks then graded the previous
+run's log and passed. All five now source `../machine.conf`, `runtest.sh`
+likewise, and every suite deletes its log before starting QEMU, so a run
+that never reaches the guest has nothing to grade.
 
 ## Decisions worth knowing about
 

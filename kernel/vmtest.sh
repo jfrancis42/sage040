@@ -24,7 +24,7 @@ set -u
 cd "$(dirname "$0")"
 
 # How big the machine is. One place, shared with the Makefiles.
-. "$(dirname "$0")/../machine.conf"
+. ../machine.conf
 
 M68K_PREFIX=${M68K_PREFIX:-$HOME/m68k/install}
 SAGE_QEMU=${SAGE_QEMU:-$HOME/m68k/sage040-qemu}
@@ -54,6 +54,9 @@ PART_LBA=2048
 OFFSET=$((PART_LBA * 512))
 MIMG="$DISK@@$OFFSET"
 LOG="$SCRATCH/vmtest.log"
+# Gone before QEMU starts, so a run that never reaches the guest has no
+# log to grade -- rather than silently grading the last run's.
+rm -f "$LOG"
 BOOT_WAIT=${BOOT_WAIT:-4}
 
 pass=0

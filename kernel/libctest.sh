@@ -31,6 +31,9 @@ PART_LBA=2048
 OFFSET=$((PART_LBA * 512))
 MIMG="$DISK@@$OFFSET"
 LOG="$SCRATCH/libctest.log"
+# Gone before QEMU starts, so a run that never reaches the guest has no
+# log to grade -- rather than silently grading the last run's.
+rm -f "$LOG"
 BOOT_WAIT=${BOOT_WAIT:-4}
 
 pass=0
