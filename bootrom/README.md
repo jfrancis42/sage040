@@ -15,7 +15,7 @@ KERNEL.ROM  43672 bytes, first cluster 2
 image SSP = 0x003FFFF0  PC = 0x00000400
 starting
 
-Sage040 kernel 0.3  (built Sep 21 2026 10:03:12)
+SuckOS 0.3 on Sage040  (built Sep 22 2026 13:26:08)
 ...
 ```
 
@@ -144,25 +144,22 @@ with "short read".
 
 `make write` asks `../kernel` to install itself, so the kernel owns the file it
 puts on the disk. The programs that go alongside it come from
-`make -C ../user install`, or `make programs` at the top level. To boot something else, `mcopy` your own file in as
+`make programs` at the top level. To boot something else, `mcopy` your own file in as
 `KERNEL.ROM`; the only requirement is that it links at address 0 with a vector
 table first, which `../tests/sage040.ld` and `../kernel/kernel.ld` both do.
 
 `make write-cube` is the demonstration this ROM was first written against, and
 still a useful way to prove the loader with the kernel out of the picture.
 
-## A bug this found
+## Byte order
 
-The first boot attempt read `SSP = 0x3F00F0FF, PC = 0x00000004` from a disk
-that plainly contained `003ffff0 00000400`. Every 16-bit word was swapped.
+**Sector data is a byte stream and takes no swap; `IDENTIFY` returns 16-bit
+values and does.** Getting that backwards is self-consistent — a
+write-then-read-back check passes while the image on the media is
+byte-swapped — and the first thing it breaks is this ROM, which read
+`SSP = 0x3F00F0FF, PC = 0x00000004` from a disk that plainly contained
+`003ffff0 00000400`.
 
-The cause was in `tests/t3-ata.c`, which had been passing for weeks: it
-swapped sector bytes on the way out *and* on the way back in. That is
-perfectly self-consistent, so its write-then-read-back check passed — while it
-wrote a byte-swapped image to the media. Nothing noticed until something else
-had to read the disk.
-
-Sector data is a byte stream and needs no swap; `IDENTIFY` returns word values
-and does. `t3-ata` now also verifies a signature the harness writes into the
+`t3-ata` therefore also verifies a signature the harness writes into the
 image before boot, which is the only check that can catch absolute byte order
 from inside the guest.

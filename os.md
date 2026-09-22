@@ -1,18 +1,21 @@
-# The Sage040 operating system
+# SuckOS
 
 `README.md` describes the machine — a 68040, its chips, and the QEMU model
-that provides them. This document describes the software that runs on it:
+that provides them. This document describes the system that runs on it:
 what it is, how it is put together, and why each piece is the way it is.
 
-It is a real operating system in the sense that matters. It has protected
-address spaces, preemptive multitasking, signals, job control, a
-filesystem, a TCP/IP stack and a shell, and a program it runs cannot bring
-it down. It is not a Unix clone, it is not POSIX, and it will not build
-anything off the shelf. `emacs.md` works through exactly how far short it
-falls, using GNU Emacs as the measuring stick.
+SuckOS has protected address spaces, preemptive multitasking, demand paging
+and swap, signals with job control and sessions, a filesystem, a TCP/IP
+stack, a cryptographic random generator and a shell, and a program it runs
+cannot bring it down. Its system call interface is Linux/m68k's, which is
+what lets ordinary POSIX programs build against it: GNU bash, GNU sed and
+grep, the one true awk, uEmacs, vi, and 98 of suckless's utilities all run
+on it, built from their own unmodified sources against picolibc.
 
-There is no name for it beyond the machine's. It boots, it runs programs,
-and that is the whole claim.
+It is not a Unix clone and it is not a Linux. It has one user, root, and a
+FAT filesystem that cannot record who owns a file. **What it is not**, at
+the end of this document, says where the edges are; `progress.md` is what
+is still to be built.
 
 ---
 
@@ -26,6 +29,7 @@ and that is the whole claim.
 - [Signals and job control](#signals-and-job-control)
 - [System calls](#system-calls)
 - [Files](#files)
+- [Randomness](#randomness)
 - [The terminal](#the-terminal)
 - [The network](#the-network)
 - [Programs](#programs)
@@ -140,8 +144,8 @@ to.
 
 `pmm.c` is a bitmap allocator over 4 KB pages, from the end of the kernel
 to the top of RAM. One page at a time; there is no buddy allocator and
-nothing needs contiguous physical memory. The machine's default is 4 MB and
-the model accepts up to 2 GB.
+nothing needs contiguous physical memory. The machine is configured with
+64 MB (`machine.conf`) and the model accepts up to 2 GB.
 
 ### Virtual
 
@@ -248,9 +252,10 @@ waited.
 ## Tasks
 
 A task is a kernel stack and an address space. `struct task` holds a pid, a
-state, the saved kernel stack pointer, the address space, eight file
-descriptors, signal masks and the job-control bookkeeping. There are eight
-of them, statically allocated.
+state, the saved kernel stack pointer, the address space, its descriptors,
+signal masks, its session and process group, its nice value and the
+job-control bookkeeping. There are 64 of them, statically allocated, and a
+kernel stack is four pages with a guard page below it.
 
 ```
 TASK_UNUSED   free slot
@@ -276,10 +281,23 @@ makes `switch_context` the only switch in the system.
 
 ### Scheduling
 
-Round robin over the ready tasks. No priorities; there is nothing here for
-priorities to decide between. The idle task is *excluded from the scan*
-rather than merely ranked below everything, because an idle task competing
-on equal terms takes every other turn from whatever is actually working.
+Round robin over the ready tasks, where **`nice` sets the length of a turn
+and not whether there is one**: a step of nice is about a quarter more or
+less time, as Linux weighs it, so two busy tasks ten apart divide the
+processor about five to one and nothing is ever starved. The idle task is
+*excluded from the scan* rather than merely ranked below everything,
+because an idle task competing on equal terms takes every other turn from
+whatever is actually working.
+
+`getpriority` and `setpriority` take a process, a process group or
+everything; `nice(1)` is the utility over them.
+
+**Sessions and process groups.** Every task belongs to a process group and
+a session, inherited across `fork` and `exec`. `setsid` starts a new
+session for a task that does not already lead a group -- which is why
+`setsid(1)` forks first -- and `setpgid` may only move a task within its
+own session. The terminal has a foreground process group: that is what
+ctrl-C reaches, and a background task that reads gets `SIGTTIN`.
 
 **Preemption happens only on the way back to user mode.** That is the
 single most important property of this kernel, because it is what lets it
@@ -414,7 +432,7 @@ answers the same question with `sysconf(_SC_CLK_TCK)`.
 
 ## Files
 
-**The disk is interrupt-driven** (task 22): a task waiting for a sector
+**The disk is interrupt-driven**: a task waiting for a sector
 sleeps, and the machine runs something else. That made a new thing
 possible -- a task asleep in the MIDDLE of a filesystem operation -- so
 every call from the VFS into the filesystem holds a lock (`vfs.c`),
@@ -424,13 +442,39 @@ takes that one alone, and the disk never takes the filesystem's, so the
 two cannot deadlock. At boot, before there is anything to switch to, the
 disk polls.
 
-**`/dev/nvram`** is the M48T59's 8176 bytes of battery-backed RAM, and
-`/bin/nvram` keeps settings there.
+### The devices
+
+| | |
+|---|---|
+| `/dev/console` | the terminal: its sources and sinks, below |
+| `/dev/ttyS0` | the serial port itself |
+| `/dev/fbcon` `/dev/vcsa` | the framebuffer console, and its character buffer |
+| `/dev/fb0` | the framebuffer, by ioctl or `mmap` |
+| `/dev/kbd0` | the keyboard |
+| `/dev/hda` | the disk |
+| `/dev/nvram` | the M48T59's 8176 bytes of battery-backed RAM; `/bin/nvram` keeps settings there |
+| `/dev/null` `/dev/zero` `/dev/full` | as everywhere else |
+| `/dev/random` `/dev/urandom` | the generator below; `urandom` never waits, `random` waits until the pool is ready |
+
+### Where "/" is
+
+Each task has a root directory as well as a working directory, so
+`chroot()` works: absolute paths start there, `..` in it stays in it, and
+an open directory's path is computed up to it. The working directory does
+not move when the root does, as on Linux.
+
+### File times
+
+FAT records a modification time to two seconds and a last-access date, and
+`utimensat`/`futimens` set them, which is what `touch` and `make` need. A
+file that is open and has unwritten metadata is flushed before its time is
+set, so that closing it afterwards does not stamp over what was asked for.
 
 `vfs.c` holds mounts, path resolution and open files. A descriptor is a
-small integer indexing a per-task table of eight; the table entries point
-at refcounted open-file objects, so two tasks can share one offset and a
-dup would be free if there were a `dup`.
+small integer indexing a per-task table of 64; the table entries point at
+refcounted open-file objects, so `dup`, `dup2` and `dup3` cost nothing and
+two tasks can share one offset. Descriptors close on `exec` when they are
+marked `FD_CLOEXEC`.
 
 Descriptors are inherited by both `task_create()` and `exec`. That they are
 inherited by *both* is a bug's worth of experience: a shell created without
@@ -463,6 +507,36 @@ is recorded as cluster 0.
 The startup script is `/etc/rc` because `rc.local` was not a valid 8.3
 name when it was chosen -- a five-character extension. Long names have
 made it legal since (task 14); the name stayed.
+
+---
+
+## Randomness
+
+`random.c` is a cryptographic generator, built the way Linux's has been
+since 5.17 and cut down to what this machine has.
+
+Everything goes into one BLAKE2s-256 state, the pool, which never outputs
+directly: at boot the real-time clock, the ethernet address, the tick and
+where the kernel landed; after that **the timing of every interrupt** --
+which one it was, the tick, and how far the MFP's timer had counted into
+the tick when it arrived, at 12288 Hz -- and anything written to
+`/dev/random`.
+
+Output is ChaCha20 keyed from the pool, with **fast key erasure**: every
+request draws its next key from the stream before anything is returned, so
+what came out before cannot be recomputed from the state after.
+
+How much is credited decides when `getrandom()` stops waiting, and it was
+measured rather than assumed: a timer tick's own counter reading is the
+same value 85% of the time, so a tick is credited an eighth of a bit and
+any other interrupt one bit. The pool is ready at 128 bits -- about ten
+seconds on an idle machine, much sooner with anything happening.
+`/dev/urandom` and the kernel's own uses never wait, as on Linux.
+
+`crypto.c` holds the two primitives, with no kernel dependencies, so that
+`kernel/cryptotest.sh` can build them for the host and check them against
+RFC 7693 and RFC 8439; the same program runs on the machine, which is
+big-endian where the host is not.
 
 ---
 
@@ -606,15 +680,23 @@ is executable from the file's first four bytes**, because FAT16 has no
 permission bit — do not "tidy" this by adding `.EXE` or by matching on
 names.
 
-`lib/` is what a program links against: `crt0.s`, `ulib.c`, `user.ld`.
-`system/` is what the system ships, installed into `/BIN`: `ifconfig`,
-`ping`, `netstat`, `shutdown`, `env`, `stty`, `resize`, `fsck`, `host`, `ntpdate`. `apps/` is everything else — `cube`,
-`fbtest`, `hello`, `fetch`, `httpd`, `spin`, `faulter` — installed at the
-root.
+`lib/` is what a program written for this system links against: `crt0.s`,
+`ulib.c`, `user.ld`. `system/` is what the system ships, installed into
+`/bin`: `ifconfig`, `ping`, `netstat`, `shutdown`, `env`, `stty`,
+`resize`, `fsck`, `host`, `ntpdate`, `swapon`, `swapoff`, `nvram`, `irqs`
+and `sh`. `apps/` is everything else, installed at the root: `cube`,
+`fbtest`, `fbmap`, `hello`, `fetch`, `httpd`, and the test programs.
 
-That split is recent. The network tools used to be shell builtins reaching
-straight into the kernel, which was a layering violation with a
-command-line interface.
+None of them is privileged. A system program can do only what the system
+call interface allows, which is the point of it being a program: the ones
+that cannot be written that way are the argument for a system call that is
+missing.
+
+`ports/` holds programs written by other people -- bash, sbase, sed, grep,
+awk, uEmacs, vi. No source from any of them is copied into this tree: each
+port fetches its own at a pinned version, applies whatever patches are kept
+beside it, and builds against picolibc. Each has a README saying what it
+needed from the system.
 
 `ulib` is a thin wrapper over the system calls plus the handful of string
 and output helpers that every program needs, and `lib/malloc.c`, a
@@ -673,27 +755,38 @@ the machine instead of ending it.
 
 ## Testing
 
-Sixteen suites, `make test`, all of which boot the machine and drive it
-over its serial line -- 1003 checks as of task 22:
+Everything here is tested, and `make test` runs the lot: the twelve
+bare-metal device tests, the crypto vectors on the host, and twenty-one
+scripted suites that each boot the machine and drive it over its serial
+line.
 
 | | | |
 |---|---|---|
-| `tests/` | 12 programs | devices: UART, ATA, MFP, RTC, keyboard, SM501 |
+| `tests/` | 12 programs | the devices: CPU and FPU, UART, ATA, MFP and its timers, MMU, SM501, RTC, keyboard |
+| `kernel/cryptotest.sh` | 4 | ChaCha20 and BLAKE2s against the RFCs, built for the host |
 | `kernel/fstest.sh` | 59 | the filesystem, long names included, verified with the host's mtools and fsck.fat |
 | `kernel/apitest.sh` | 368 | the system call surface a ported program expects |
-| `kernel/edittest.sh` | 29 | the line editor, history, job control, shutdown |
+| `kernel/edittest.sh` | 41 | the line editor, history, job control, command lists, scripts, shutdown |
 | `kernel/vmtest.sh` | 18 | what a program cannot touch |
-| `kernel/nettest.sh` | 19 | ARP, DHCP, ICMP and TCP against the host; the SYN's options decoded on the host |
-| `kernel/vttest.sh` | 95 | the VT102 console, checked against screenshots |
-| `kernel/libctest.sh` | 90 | picolibc |
-| `kernel/fscktest.sh` | 23 | fsck, against damage made on the host |
-| `kernel/uemacstest.sh` | 9 | uEmacs, a real editor |
-| `kernel/vitest.sh` | 9 | neatvi, the other one |
-| `kernel/dnstest.sh` | 57 | the resolvers (lib/ulib's and picolibc's) and ntpdate, against servers on the host |
+| `kernel/pagetest.sh` | 51 | demand paging, copy-on-write, swap, and running out of memory |
+| `kernel/nettest.sh` | 19 | ARP, DHCP, ICMP and TCP against the host; the SYN's options decoded there |
+| `kernel/lotest.sh` | 22 | the loopback interface, and 127/8 frames forged onto the wire |
+| `kernel/dnstest.sh` | 57 | both resolvers and `ntpdate`, against servers on the host |
 | `kernel/tcptest.sh` | 24 | TCP's options, loss, keepalives and TIME_WAIT |
-| `kernel/sotest.sh` | 117 | shared libraries, ld.so, and the sharing of their pages |
-| `kernel/pagetest.sh` | 51 | demand paging, copy-on-write, swap, and running out |
-| `kernel/devtest.sh` | 23 | interrupts, the filesystem under concurrency, the limits, the NVRAM |
+| `kernel/vttest.sh` | 95 | the VT102 console, checked against screenshots |
+| `kernel/devtest.sh` | 36 | interrupts, the filesystem under concurrency, the limits, the NVRAM, `mmap` of the framebuffer |
+| `kernel/libctest.sh` | 232 | picolibc and the POSIX layer added to it |
+| `kernel/sotest.sh` | 117 | shared libraries, `ld.so`, and the sharing of their pages |
+| `kernel/fscktest.sh` | 23 | `fsck`, against damage made on the host |
+| `kernel/uemacstest.sh` `kernel/vitest.sh` | 9, 9 | the two editors |
+| `kernel/awktest.sh` | 40 | awk's own regression tests, and eleven more against the host's awk |
+| `kernel/sedtest.sh` | 21 | sed, against the same sed built for the host |
+| `kernel/greptest.sh` | 37 | grep's own 329 pattern cases, and its options against the host's grep |
+| `kernel/sbasetest.sh` | 76 | the utilities, against the host's own, and what only the disk can say |
+| `kernel/bashtest.sh` | | the shell language against the host's bash, and part of bash's own suite |
+
+`make bashsuite` runs every one of bash's 83 tests instead of the subset,
+which takes hours: one test is minutes of work for a 25 MHz 68040.
 
 The picolibc suites need `make libc` first.
 
@@ -721,51 +814,44 @@ seconds later" landed before the program existed and went to the shell.
 
 ## What it is not
 
-Named, so that nobody has to discover them by trying:
+Named, so that nobody has to discover them by trying.
 
-**`fork` copies nothing up front.** Every page is shared, writable ones
-copy-on-write, so a fork costs its page tables -- a 1 MB process forks
-for six pages -- and a fork followed at once by `execve` costs almost
-nothing. `spawn` is still the direct way to start a program.
+**One user, root.** Every uid and gid is 0, and the kernel says so rather
+than pretending: `chown` to anyone else is `EPERM`, as it is on a Linux
+FAT mount. There are no passwords, no `/etc/passwd` and no login.
 
-**Signals are complete except for `sigaltstack`**, refused with `EINVAL`
-rather than half supported. `SA_SIGINFO` handlers get Linux/m68k's
-`siginfo` and `ucontext`, through the `rt_` calls. A fault's own signal
-(SIGSEGV from an access fault, for instance) cannot be caught: the 68040
-access-fault frame cannot be redirected to a handler in place.
+**No permissions.** FAT has nowhere to put them. `chmod` succeeds and
+changes nothing; what is executable is decided by a file's first four
+bytes, which is also how `exec` decides.
 
-**Memory is Linux-shaped.** A 256 MB address space with `brk`/`sbrk`,
-`mmap`/`munmap`/`mprotect` for anonymous memory and file copies, and
-`malloc`/`free`/`calloc`/`realloc` in `lib/malloc.c`, a stand-in until
-there is a C library.
+**No links, no FIFOs, no device nodes on disk.** `link`, `symlink`,
+`mkfifo` and `mknod` answer `EPERM`. A FIFO could live in the VFS instead
+of on the disk, and does not yet.
 
-**Pipes, `fcntl`, redirection and pipelines work**, for programs and
-builtins alike. The shell points its own descriptors 0–2 at the files
-for the length of a command and puts them back afterwards, which is
-what any shell does for a builtin, and a spawned program inherits them.
-A pipeline's programs share a process group, and the terminal's
-foreground is a group, so ctrl-C reaches every stage. A background
-program that reads the terminal is stopped with SIGTTIN rather than
-given keys meant for somebody else.
+**No `/dev/fd`, and so no process substitution in bash.** `<(...)` needs
+either that or a FIFO.
 
-**No users, no permissions, no `chmod` or `chown`.** FAT16 has nowhere to
-put them.
+**No pseudo-terminals.** `openpty` and `ptsname` are not there, which is
+what a terminal multiplexer, `script`, or Python's `pty` module would
+want.
 
-**No symbolic or hard links.** Same reason.
+**No `diff`.** sbase has none; GNU diffutils is the obvious port.
 
-**No shared libraries.** Everything is statically linked.
-
-**No floating-point in the kernel.** Programs may use the FPU; `cube` does.
+**A fault's own signal cannot be caught.** `SIGSEGV` from an access fault
+ends the program: the 68040's access-fault frame cannot be redirected to a
+handler in place. Every other signal works, including `SA_SIGINFO` with
+Linux/m68k's `siginfo` and `ucontext`, and `sigaltstack`.
 
 **One filesystem, one partition, one network interface.** The static
 limits that were constants are larger now -- 64 tasks, 64 descriptors
 each, 128 open FAT files -- but these three are structure.
 
-**Swap is a file, one at a time**, and there is no swap cache: a page
-read back in gives up its slot, so evicting it again writes it again.
-When memory is overcommitted and runs out, whoever faults is killed --
-there is no chosen victim.
+**Swap is a file, one at a time**, and there is no swap cache: a page read
+back in gives up its slot, so evicting it again writes it again. When
+memory is overcommitted and runs out, whoever faults is killed -- there is
+no chosen victim.
 
-None of these is hard to fix in isolation. The point of listing them is
-that a program expecting any of them will not build, and will not say so
-clearly.
+**No floating point in the kernel.** Programs may use the FPU; `cube`
+does.
+
+`design.md` keeps the list of what is planned, and what each would take.

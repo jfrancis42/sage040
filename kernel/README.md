@@ -1,4 +1,4 @@
-# The Sage040 kernel
+# The SuckOS kernel
 
 A small kernel: Linux-shaped system calls, a device driver model, a VFS,
 a read/write FAT16 filesystem with subdirectories, an MMU giving every
@@ -8,9 +8,8 @@ discipline, a clock, a 100 Hz tick, a framebuffer, a text console on it,
 and a shell that reaches all of it only through `trap #0`.
 
 This file is about the kernel's internals. [`../os.md`](../os.md)
-describes the operating system as a whole, and [`../emacs.md`](../emacs.md)
-measures how far short of a real Unix it falls by trying to put GNU Emacs
-on it.
+describes SuckOS as a whole, and [`../progress.md`](../progress.md) is
+what has still to be built.
 
 It is loaded from the disk by the [boot ROM](../bootrom/), which finds
 `KERNEL.ROM` in the filesystem and jumps to it.
@@ -19,11 +18,11 @@ It is loaded from the disk by the [boot ROM](../bootrom/), which finds
 $ make boot
 Sage040 boot ROM
 partition 1 at LBA 2048, type 0x06
-KERNEL.ROM  108924 bytes, first cluster 2
+KERNEL.ROM  205424 bytes, first cluster 2
 image SSP = 0x003FFFF0  PC = 0x00000400
 starting
 
-Sage040 kernel 0.3  (built Sep 21 2026 15:04:17)
+SuckOS 0.3 on Sage040  (built Sep 22 2026 13:26:08)
 Copyright (C) 2026 Jeff Francis.  GPL-3.0-or-later.
 
   traps   : 256 vectors at 0x00000000, TRAP #0 is the system call gate
@@ -203,24 +202,18 @@ it.
 
 ### What is still on the wrong side of the line
 
-This section used to say that `syscall_dispatch()` took its pointer
-arguments at face value, which was correct while every caller shared the
-kernel's address space. It does not any more: the MMU is on, a program's
-pointers are not the kernel's, and every one of them goes through
-[`uaccess.c`](uaccess.c) — see **Memory** below.
+The shell is a kernel task, so it passes kernel pointers through the same
+gate a program's go through. `uaccess_current()` is null for it and
+non-null for a program, which is exactly the distinction, and it is the
+one branch that collapses when the shell moves out of the kernel.
 
-What is left is the shell, which is still a kernel task and so still
-passes kernel pointers through the same gate. `uaccess_current()` is
-null for it and non-null for a program, which is exactly the
-distinction, and it is the one branch that collapses when the shell
-moves out of the kernel.
-
-`cmd_console` used to call `tty_sink()` directly —
-listing where console output goes was not something a program could ask
-for — and three documents asserted the rule while that was quietly
-false. It is `TIOCGCONS` and `TIOCSCONS` on the terminal instead, and
-`layercheck.sh` runs before every link so the next one fails the build
-rather than the documentation.
+**The layering is enforced, not asserted.** `layercheck.sh` runs before
+every link and fails the build if `shell.c` or `edit.c` includes anything
+beyond `syscall.h` and a short list of pure headers. It exists because
+the rule stood in three documents for months while `cmd_console` quietly
+called `tty_sink()` directly. When one of those files genuinely needs
+something, the answer is a system call or an ioctl — `TIOCGCONS` and
+`TIOCSCONS` is what that looked like here.
 
 ## Running programs
 
@@ -229,7 +222,7 @@ Anything the shell does not recognise is looked up on the disk and run:
 ```
 /$ hello one two
 hello from a program
-  running on Sage040 0.3 (m68040)
+  running on SuckOS 0.3 (m68040)
   argc = 3
   argv[0] = hello
   argv[1] = one
@@ -247,12 +240,12 @@ step and no private format. `exec.c` reads the program headers, loads
 each `PT_LOAD` segment at its `p_vaddr` and zeroes the part the file did
 not supply.
 
-They used to be linked at 1 MB, and moving them up is not cosmetic. The
-kernel identity-maps RAM, so a program at 1 MB sat at an address the
-kernel could dereference, and a system call that forgot to go through
-`uaccess.c` would quietly read the right bytes instead of failing. At
-`0x10000000` there is nothing behind that address in the kernel's map
-and the same mistake faults in the first test that touches it.
+**`0x10000000` is chosen, not arbitrary.** The kernel identity-maps RAM,
+so a program linked at 1 MB would sit at an address the kernel can
+dereference, and a system call that forgot to go through `uaccess.c`
+would quietly read the right bytes instead of failing. Up there, nothing
+is behind that address in the kernel's map and the same mistake faults in
+the first test that touches it.
 
 **They carry no extension**, and that follows from how executability is
 decided. Linux uses a permission bit; a FAT16 volume has none to consult,
@@ -261,12 +254,10 @@ whether it is a program, which is what Unix has always done. An extension
 would be decoration that could lie.
 
 The kernel bounds-checks every segment against the user area before
-reading a byte. This used to say that with no MMU the check was the only
-thing between a mislinked program and the kernel's own memory; that is
-history. The MMU protects the kernel at run time now, and what the check
-still buys is a clear answer at load time: a segment outside the user
-area has no page tables behind it, so refusing it here gives `-ENOEXEC`
-instead of a fault partway through loading.
+reading a byte. The MMU protects the kernel at run time; what the check
+buys is a clear answer at load time — a segment outside the user area has
+no page tables behind it, so refusing it here gives `-ENOEXEC` instead of
+a fault partway through loading.
 
 `spawn()` is fork and exec in one call: it starts a new task and
 returns its pid. **It does not wait.** Whether to wait is the caller's
@@ -331,7 +322,7 @@ underneath.
 
 ### Waiting without spinning
 
-Every wait in this system used to be a spin. `wait.h` has queues,
+`wait.h` has queues,
 semaphores and mutexes, and the race they exist to close is the one
 where a driver's interrupt wakes a queue between a task deciding to
 wait and actually sleeping. `sleep_on()` masks across both, so the
@@ -495,24 +486,20 @@ runs no protocol code at all.
 
 That split is not an optimisation. **The LAN91C111 allocates transmit
 buffers from the same pool of packet pages that holds arriving frames**,
-so a card whose receiver is never drained stops being able to send. The
-first version only polled while waiting for a reply, which worked
-perfectly on QEMU's user-mode NAT -- where almost nothing arrives unasked
--- and failed within seconds of meeting a real LAN, with every transmit
-returning ENOMEM.
+so a card whose receiver is never drained stops being able to send. A
+receiver polled only while waiting for a reply works perfectly on QEMU's
+user-mode NAT -- where almost nothing arrives unasked -- and fails within
+seconds of meeting a real LAN, with every transmit returning ENOMEM.
 
 Transmit raises the interrupt mask for its duration, because receive and
 transmit share the chip's bank select and pointer register.
 
-`net_poll()` is called by anything that waits on the network --
-`net_wait()` and every blocking path in `socket.c` -- so the protocol
-runs while a task is waiting for it rather than only when a reply is
-expected. That is not the same as running all the time, and a machine
-that answers a ping only while waiting for something of its own is not
-on a network; the terminal used to call `net_poll()` from its idle spin
-for exactly that reason, and the spin went away with the scheduler.
-`net.c` still registers `tty_set_idle(net_poll_idle)` and nothing calls
-it, which is the loose end here.
+**`netd` runs the stack.** It is a kernel task that calls `net_poll()`
+and `tcp_timer()` and sleeps 20 ms, so the protocol runs whether or not
+anybody is waiting for it -- a machine that answers a ping only while
+waiting for something of its own is not on a network. Anything that
+blocks on a socket also polls before it sleeps, through `net_wait()`, so
+the data being waited for can arrive.
 
 ### A socket is a file descriptor
 
@@ -522,38 +509,35 @@ be pointed at one instead of a file. That is also what keeps the TCP
 replaceable: a program calls `socket()` and `connect()`, and which
 implementation answers is not its business.
 
-Blocking used to be a spin, through `net_wait()`, because there was
-nothing else for the processor to do. Now it is a sleep on a wait queue,
-bounded at 20 ms so that a missed wakeup costs a small delay instead of
-a hang and so that TCP's own timers get looked at whether or not
-anything is arriving. `net_wait()` still drives the protocol itself
-before each sleep -- the data being waited for has to be able to arrive
--- and it returns early if a signal is pending, which is how ctrl-C
-reaches a program waiting on a socket.
+Blocking is a sleep on a wait queue, bounded at 20 ms so that a missed
+wakeup costs a small delay instead of a hang and so that TCP's own timers
+get looked at whether or not anything is arriving. `net_wait()` returns
+early if a signal is pending, which is how ctrl-C reaches a program
+waiting on a socket.
 
 ### What TCP does and does not do
 
-The state machine of RFC 793, both opens, retransmission with an
-exponentially backed-off timer, and an orderly close. Enough to fetch a
-page from a real server and enough to be one.
+The state machine of RFC 793, both opens, an orderly close on both sides,
+retransmission with an exponentially backed-off timer -- and, because the
+interface can be bridged onto a real LAN rather than only QEMU's NAT:
+**congestion control** (RFC 5681 slow start, congestion avoidance, fast
+retransmit and fast recovery); **out-of-order reassembly** into a small
+pool of shared slots; **RTT and RTO estimation** (RFC 6298) with Karn's
+algorithm; **delayed acknowledgements**; **window scaling** and
+**timestamps** with PAWS (RFC 7323); **SACK** (RFC 2018); **keepalives**
+with Linux's `TCP_KEEPIDLE`, `TCP_KEEPINTVL` and `TCP_KEEPCNT`; and a
+real 60-second `TIME_WAIT`.
 
-Since then, and each because the one-LAN excuse stopped holding:
-**congestion control** (RFC 5681 slow start and congestion avoidance,
-halving on loss); **out-of-order reassembly** into a small pool of
-shared slots, rather than dropping a segment that arrives ahead of a
-gap; **RTT and RTO estimation** with Karn's algorithm, so the
-retransmit timer is measured rather than guessed; and **delayed
-acknowledgements**.
+Not done, and each a decision: **no path MTU discovery** (the MSS is
+1400, which leaves room for a tunnel's headers), **no Nagle**
+(`TCP_NODELAY` is always on), and **no per-socket buffer sizes**
+(`SO_SNDBUF` and `SO_RCVBUF` are accepted and report the fixed sizes:
+64 KB out, 128 KB in).
 
-Not done, still on purpose: **no window scaling, SACK or timestamps** --
-without window scaling there is no point going past 32 KB, which is
-where `cwnd` is clamped.
-
-The **initial sequence number** used to come from the tick, which was a
-real exposure on a machine facing the open internet: an off-path
-attacker who can guess an ISN can inject data into a connection. It now
-comes from `random.c` plus the tick. `random.c` is not cryptographic and
-does not claim to be.
+The **initial sequence number** follows RFC 6528, over `random.c` -- a
+BLAKE2s pool fed by interrupt timing with ChaCha20 output. An off-path
+attacker who can guess an ISN can inject data into a connection, which
+is a real exposure for a machine facing the open internet.
 
 ## Devices that are not there
 
@@ -657,12 +641,9 @@ ioctl(fb, FBIO_FLIP, 0);
 Drawing through ioctl rather than through a dozen system calls of its
 own: a framebuffer is a device, the device model already carries it, and
 putting graphics calls in the system call table would tie the kernel's
-ABI to one kind of hardware. Linux controls its framebuffer the same way
-— though Linux expects a program to `mmap` the memory and draw for
-itself. That used to be out of reach because the MMU was off; it is on
-now, and what is missing is `mmap` itself. A program cannot ask for a
-mapping of anything, which is the same gap [`../emacs.md`](../emacs.md)
-runs into from the other direction.
+ABI to one kind of hardware. Linux controls its framebuffer the same way,
+and, as on Linux, a program that would rather draw for itself can
+`mmap` `/dev/fb0` and write pixels — `apps/fbmap` does.
 
 **Only `point()` is required of a driver.** `fb.c` builds `clear`, `line`
 and `rect` from it, so a new framebuffer works the moment it can set one
@@ -738,12 +719,10 @@ input — canonical mode, in the terminal rather than in a driver, so that
 every program that reads a line does not implement it again slightly
 differently.
 
-**A read with nothing to read sleeps on a wait queue**, and the tick's
-poll is what wakes it. It used to spin, which was fine when there was
-nothing else for the processor to do and is not now. This is also what
-keeps the machine alive: the shell is a kernel task and kernel tasks are
-never preempted, so it has to block or yield, and waiting at the prompt
-is where it blocks.
+**A read with nothing to read sleeps on a wait queue**, woken by the
+arriving character. This is also what keeps the machine alive: the shell
+is a kernel task and kernel tasks are never preempted, so it has to block
+or yield, and waiting at the prompt is where it blocks.
 
 Two translations, named after the termios flags that do the same job:
 
@@ -760,10 +739,19 @@ character arrived on.
 
 A source is any device whose `ioctl` answers `FIONREAD` — that is how
 the terminal asks whether a character is waiting without committing to a
-read that would block. There are two: the serial port and the keyboard.
-Polled, for now; when both are interrupt-driven they should feed one
-ring buffer and the poll loop becomes a drain of it, which is a change
-inside `tty.c` and nowhere else.
+read that would block. There are three: the serial port, the keyboard,
+and `fbcon`, which is how the console's answers to DSR and DA come back.
+
+**The first two are interrupt-driven and feed one ring.** A source's
+receive interrupt calls `tty_input_irq()`, which takes *everything*
+waiting from *every* interrupt-driven source, because the MFP sees edges:
+a handler that leaves data in a chip leaves the line high, makes no new
+edge, and never hears from that device again. When the ring is full the
+drain stops and leaves the rest in the chip rather than discarding it —
+QEMU will not deliver into a full UART FIFO, and that back-pressure is
+what keeps a burst from losing its middle. `poll_char()` resumes a
+stalled drain, and is masked against the tick so that two readers cannot
+take characters out of order.
 
 ## The keyboard
 
@@ -878,29 +866,17 @@ handed to the next reader in order. What has changed is that it only
 *raises* the signal — it no longer decides anything about what happens
 next.
 
-This section used to describe two delivery sites with different rules —
-one at the system call boundary and one in the timer interrupt, with a
-depth counter in `syscall.c` deciding what the tick was allowed to do —
-because there was no scheduler and no per-task kernel stack to leave a
-program sitting on. All of that is gone. There is one site, and it
-cannot run while the kernel is in the middle of anything, because it
-only runs when the kernel has finished.
-
-What that bought is visible: a bare `spin`, which makes **no system
-calls at all**, can now be stopped as well as killed. It used to be that
-stopping meant coming back, coming back meant a saved context, and the
-only context worth saving was at a C call boundary — so a program that
-never called anything could be killed and not stopped. Every task has a
-kernel stack of its own now, so ctrl-Z is a state change on it and
-SIGCONT resumes it where it stood.
+**There is one delivery site**, `signal_deliver()` on the way back to
+user mode, and it cannot run while the kernel is in the middle of
+anything because it only runs when the kernel has finished. A bare
+`spin`, which makes no system calls at all, can therefore be stopped as
+well as killed: every task has a kernel stack of its own, so ctrl-Z is a
+state change on it and SIGCONT resumes it where it stood.
 
 ### `&`, `bg` and `fg`
 
-They really run things. This section used to be headed "what does not
-work yet": `&` and `bg` were parsed, tracked, and refused with a reason,
-because running a job in the background means running it while the shell
-also runs and there was nothing to schedule two things. There is now, so
-`&` starts the task and the shell does not `waitpid()` on it.
+`&` starts the task and the shell does not `waitpid()` on it; `bg`
+continues a stopped one the same way, and `fg` waits.
 
 ```
 /$ spin calls &
@@ -915,11 +891,9 @@ ps
 [3]  running  spin calls
 ```
 
-A stopped job used to hold the one program area at 1 MB, so `exec.c`
-refused a second spawn while one existed. That went away with the MMU,
-exactly as this document said it would: every task has an address space
-of its own, a stopped job keeps its pages, and a new program gets
-different ones.
+Every task has an address space of its own, so a stopped job keeps its
+pages and a new program gets different ones: several programs can be
+stopped, backgrounded and resumed at once.
 
 ## Stopping the machine
 
@@ -1142,6 +1116,8 @@ halt                 stop the processor
 
 < > >> 2> 2>> 2>&1   redirection, for programs and builtins
 A | B | C            a pipeline (a builtin only as the first command)
+A ; B   A && B       a command list, run in order or on success
+A || B               and on failure
 CMD &                run a job in the background
 $NAME                expands to what `export` put there
 
@@ -1152,12 +1128,9 @@ The network tools are PROGRAMS, not builtins: `ifconfig`, `ping` and
 `shutdown`, which stops the machine rather than the processor.
 ```
 
-`ifconfig`, `ping`, `arp` and `dhcp` used to be builtins, which was
-honest while the shell was the only thing that could run. They moved out
-to [`../system/`](../system/) when programs became able to do the work
-themselves, and the move is the point: a network tool that needs nothing
-but system calls is a program, and leaving it in the shell would have
-made the shell special.
+**The network tools are programs**, in [`../system/`](../system/), not
+builtins: a tool that needs nothing but system calls is a program, and
+leaving it in the shell would make the shell special.
 
 `/etc/rc` runs at startup if it is there — an ordinary script, read by
 the same `source` the user can call.

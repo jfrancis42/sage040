@@ -33,10 +33,12 @@
  *
  * A device is a source if its ioctl answers FIONREAD, which is how this
  * asks "is there a character waiting" without committing to a read that
- * would block. Polling rather than interrupts, for now: when the UART
- * and the keyboard are both interrupt-driven they should feed one ring
- * buffer and this loop becomes a drain of it, which is a change inside
- * this file and nowhere else.
+ * would block. The serial port and the keyboard are INTERRUPT-DRIVEN:
+ * each marks itself with tty_source_irq(), its receive interrupt calls
+ * tty_input_irq(), and that drains every such source into the one ring
+ * below. Polling is what is left for a source with no interrupt -- the
+ * console's own replies on fbcon -- and for resuming a drain that
+ * stopped because the ring was full.
  */
 #include "poll.h"
 #include "tty.h"

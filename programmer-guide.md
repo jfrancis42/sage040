@@ -16,6 +16,7 @@ running emulator by the test suite in [`tests/`](tests/).
 | Ethernet | SMSC **LAN91C111** | *LAN91C111* (SMSC/Microchip) |
 | Video | Silicon Motion **SM501** | *SM501* |
 | Clock + NVRAM | ST **M48T59** TIMEKEEPER | *M48T59* (STMicroelectronics) |
+| Keyboard | Intel **8042** | *8042 Universal Peripheral Interface* |
 
 ---
 
@@ -37,9 +38,7 @@ this guide is then background rather than instruction.
 The difference is not a matter of taste, and it is no longer a matter of
 discipline either. **The MMU is on and programs run unprivileged**, so a
 program that pokes a register does not quietly work — it takes a bus
-error and is killed, and the shell says so and carries on. This used to
-say the opposite, which was true when it was written and stopped being
-true when user mode arrived.
+error and is killed, and the shell says so and carries on.
 
 Two things enforce the split: the hardware, as above, and the include
 paths — `lib/program.mk` does not put the hardware header on the path.
@@ -1585,10 +1584,7 @@ A sleeping program is off the run queue until its time is up, so it
 costs nothing and other programs run meanwhile. Prefer it to a delay
 loop, which is only ever right on the machine it was tuned on.
 
-### What a program can do that it once could not
-
-Kept because this list used to say the opposite, and somebody reading an
-older copy should know which way round it is now.
+### What a program can do
 
 - **Run at the same time as another.** Each task has its own address
   space; several programs run at once. The single program area at 1 MB
@@ -1621,15 +1617,24 @@ older copy should know which way round it is now.
 - **Use subdirectories**, a working directory, and relative paths.
 - **Read its environment.** `getenv()`, inherited from the shell.
 
+- **Use an alternate signal stack.** `sigaltstack` and `SA_ONSTACK`,
+  with `SA_SIGINFO` handlers carrying Linux/m68k's `siginfo` and
+  `ucontext`.
+- **Ask for randomness.** `getrandom`, `/dev/random` and `/dev/urandom`,
+  from a generator good enough to seed a key with.
+
 ### What a program cannot do yet
 
-- **Use an alternate signal stack.** `SA_ONSTACK` is refused with
-  `EINVAL`. Nor can a program catch the signal from its own access
-  fault: that one still ends it. (`SA_SIGINFO` handlers work, with
-  Linux/m68k's `siginfo` and `ucontext`.)
+- **Catch the signal from its own access fault.** `SIGSEGV` and
+  `SIGBUS` raised by the MMU end the program whatever it asked for; a
+  handler would have to return to the faulting instruction, and nothing
+  has made the page.
+- **Open a FIFO, a symbolic link or a second link to a file**, or own a
+  file: FAT holds none of those, so `mknod`, `link`, `symlink`, `chown`
+  and `chmod` answer `EPERM` and every id is 0.
+- **Open a pseudo-terminal**, or `/dev/fd`.
 
-`design.md` §11 is the open-items list, and `emacs.md` costs the whole
-set out against one real program.
+[`progress.md`](progress.md) is the list of what is still to be built.
 
 ---
 
@@ -1664,17 +1669,15 @@ devices      /dev/console /dev/tty  the terminal (sources + sinks)
              /dev/vcsa    what is on it, readable
              /dev/fb0     the framebuffer
              /dev/hda     the disk
+             /dev/nvram   8176 bytes that survive a reset
+             /dev/null /dev/zero /dev/full /dev/random /dev/urandom
 ```
 
 Worked, tested code for every device is in [`tests/`](tests/) — `t6` for the
 interrupt chain, `t7`/`t8`/`t9` for the MFP, `t3` for ATA, `t4` for ethernet,
 `t5` for the MMU, `t10` for video, `t11` for the clock and its NVRAM, `t12`
-for the keyboard. **Four scripted sessions** test the system rather than
-a device: `kernel/fstest.sh` for the filesystem (39 checks),
-`kernel/edittest.sh` for the line editor, history, job control and
-`shutdown` (27), `kernel/vmtest.sh` for memory protection (15), and
-`kernel/nettest.sh` for DHCP, ARP, ICMP and TCP against a web server on
-the host (13).
+for the keyboard. The system's own suites boot the machine and drive it over
+its serial line; `os.md` lists them and `make test` runs everything.
 
 Driver versions of most of them are in [`kernel/drivers/`](kernel/drivers/), which is
 where to look for code that has to keep working rather than code that only has

@@ -19,7 +19,7 @@ in about 9,000 lines that need nothing but POSIX. It writes its own
 escape sequences, so it needs no termcap at all, and its colours come
 out as ANSI SGR, which the VT102 console draws.
 
-BusyBox's `vi` was the other candidate, and is what `emacs.md` named.
+BusyBox's `vi` was the other candidate.
 It lives inside BusyBox's `libbb`, whose header pulls in the network
 headers picolibc does not have, so building it would have meant porting
 a good part of BusyBox. neatvi is ISC-licensed; it is fetched at a fixed

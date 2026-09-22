@@ -15,7 +15,7 @@ job on a machine two decades younger.
 > the 2D engine, and paces itself off a hardware timer. That is a hardware
 > test, and it belongs on bare metal.
 >
-> [`../user/cube.c`](../user/) is the other one: a **program**, loaded off
+> [`../apps/cube.c`](../apps/) is the other one: a **program**, loaded off
 > the disk by name and run from the shell. It opens `/dev/fb0`, draws with
 > ioctls and sleeps on the kernel's tick, and includes no hardware header
 > at all. That is the one to read if you want to know how to write

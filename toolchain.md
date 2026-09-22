@@ -111,11 +111,12 @@ place that matters: the include path.
 **Bare metal** — the tests, the boot ROM, `cube/`, and the kernel itself.
 These get the machine's hardware header and own every register.
 
-**Programs** — everything in `user/`. These get `kernel/uapi.h`, the
-system call ABI, and deliberately *not* the hardware header: `user/Makefile`
+**Programs** — everything in `apps/` and `system/`, the ports, and
+anything built against picolibc. These get `kernel/uapi.h`, the system
+call ABI, and deliberately *not* the hardware header: `lib/program.mk`
 leaves `../tests` off the include path, so a program cannot reach a chip
-by adding an `#include`. With no MMU turned on nothing would stop it at
-run time, which is exactly why the build stops it instead.
+by adding an `#include`. The MMU stops it at run time; the build stops it
+at compile time, which turns it into a decision rather than a slip.
 
 The kernel additionally defines `-DSAGE040_NO_TESTLIB`, which fences off
 the test support library's declarations in `sage040.h` — names like

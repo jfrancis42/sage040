@@ -95,3 +95,5 @@ ports/sed/sed
 ports/grep/grep
 ports/sbase/bin/
 ports/sbase/share/
+ports/bash/bash
+libc/test/threadtest

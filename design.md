@@ -6,11 +6,12 @@ buy and solder, chosen so the design could plausibly be built in hardware.
 
 Implemented as a custom QEMU machine, `sage040`.
 
+**[`os.md`](os.md)** describes SuckOS, the system that runs on it; this file
+is the machine, and the decisions behind it.
+
 - **[`programmer-guide.md`](programmer-guide.md)** — how to write code for it
 - [`qemu-patch/`](qemu-patch/) — the emulator, reproducible from pristine source
 - [`tests/`](tests/) — twelve device tests, `make run`
-- **[`os.md`](os.md)** — the operating system that runs on it
-- [`emacs.md`](emacs.md) — what it would take to run GNU Emacs
 - [`cube/`](cube/) — a rotating wireframe cube; the first real program on the machine
 - [`toolchain.md`](toolchain.md) — the cross toolchain
 
@@ -70,7 +71,7 @@ else itself: it reads the partition table, mounts the FAT16 volume, finds
 `KERNEL.ROM` in its root directory and loads it to address 0. The image carries
 a 68k vector table at its start, so the loader takes the initial SSP from
 offset 0 and the entry point from offset 4 — the 68000 reset convention — and
-needs to know nothing else about it. See §9.
+needs to know nothing else about it. See §8.
 
 ---
 
@@ -145,21 +146,14 @@ MC146818 — see §1.
 ## 6. Verification
 
 Every device has a bare-metal test that exercises the real hardware path.
-`make run` in `tests/`: **12 programs, all passing.** The kernel adds four
-more scripted suites, each of which boots the machine and drives it over
-its serial line:
+`make run` in `tests/` runs all twelve. The system's own suites, which boot
+the machine and drive it over its serial line, are listed in `os.md`;
+`make test` runs everything.
 
-| | | |
-|---|---|---|
-| `kernel/fstest.sh` | 39 checks | the filesystem, verified afterwards with the host's own `mdir`, `mtype` and `fsck.fat` |
-| `kernel/edittest.sh` | 27 | the line editor, history, job control, background jobs and `shutdown` |
-| `kernel/vmtest.sh` | 15 | memory protection: what a program cannot touch |
-| `kernel/nettest.sh` | 13 | ARP, DHCP, ICMP and TCP against a host web server |
-
-106 checks in total. Verifying the guest's writes with the *host's* tools
-rather than by reading them back with the same code that wrote them is
-deliberate: `t3-ata` is the standing reminder that a round trip cannot
-catch a byte-order error, because both directions swap.
+Verifying the guest's writes with the *host's* tools rather than by reading
+them back with the same code that wrote them is deliberate: `t3-ata` is the
+standing reminder that a round trip cannot catch a byte-order error,
+because both directions swap.
 
 | Test | Checks | What it proves |
 |---|---|---|
@@ -178,74 +172,26 @@ catch a byte-order error, because both directions swap.
 
 ---
 
-## 7. Status
-
-| Stage | State |
-|-------|-------|
-| Machine, toolchain, boot | ✅ done |
-| Boot ROM loading `KERNEL.ROM` from a FAT16 filesystem | ✅ done — `bootrom/` |
-| Console, C runtime, exception vectors, interrupt dispatch | ✅ done |
-| Disk, ethernet, video, MMU, timers | ✅ hardware proven by tests |
-| Disk format (§9) — real MS-DOS, host read/write | ✅ done |
-| Kernel (§10) — VFS, device model, drivers, FAT16 read/write, shell | ✅ done — `kernel/` |
-| System calls — Linux/m68k convention, Linux numbers and errnos | ✅ done, and programs use them |
-| Clock — M48T59, `time()`/`stime()`, file timestamps | ✅ done |
-| Programs (§10) — ELF loader, `spawn`, argv, envp, exit status | ✅ done — `lib/`, `system/`, `apps/` |
-| System tick — MC68901 timer D, HZ=100, `nanosleep`, `times` | ✅ done |
-| Framebuffer — `/dev/fb0`, point/line/rect/clear/flip, double buffered | ✅ done |
-| Text console (§10) — `/dev/fbcon`, 80×30, IBM PC 8×16 font | ✅ done |
-| Terminal (§10) — `tty.c`, many sources and sinks | ✅ done |
-| Keyboard — Intel 8042, scancode set 1, `/dev/kbd0` | ✅ done |
-| Shell — Linux-named commands, environment, PATH, scripts, `/etc/rc` | ✅ done |
-| **Virtual memory** — 68040 MMU, per-task address spaces, `uaccess` | ✅ done — `vm.c`, `uaccess.c` |
-| **User mode** — programs run unprivileged, faults kill only the program | ✅ done — proven by `vmtest.sh` |
-| **Tasks and preemption** — round-robin scheduler, context switch | ✅ done — `task.c`, `taskasm.s` |
-| **Blocking** — wait queues, counting semaphores, mutexes | ✅ done — `wait.c` |
-| **Signals** — Linux's numbers and `sigaction`, handlers, masks, restart | ✅ done — `signal.c` |
-| **Job control** — `&`, `jobs`, `fg`, `bg`, `ps`, `kill`, ctrl-Z | ✅ done |
-| Ethernet driver — `struct netdev`, registered as `eth0` | ✅ done, and exercised end to end |
-| **TCP/IP (§8)** — ARP, IP, ICMP, UDP, DHCP, TCP, sockets | ✅ done — `kernel/net/` |
-| Filesystem (§9) — subdirectories, cwd, `mkdir`/`rmdir`/`chdir` | ✅ done |
-| Long file names — VFAT, UTF-8 | ✅ done — task 14 |
-| `fsck`, clean-unmount flag, check at boot | ✅ done — task 15 |
-| `mmap`/`brk` | ✅ done — `vm.c`, `mmap.c` |
-| TCP options — window scaling, timestamps, SACK, keepalives, `TIME_WAIT` | ✅ done — task 19 |
-| Shared libraries — `/lib/ld.so`, `/lib/libc.so`, shared text pages | ✅ done — task 20 |
-| Paging and swapping — demand paging, copy-on-write, a swap file | ✅ done — task 21 |
-| Interrupt-driven input and disk, the NVRAM, the limits | ✅ done — task 22 |
-
-**Every hardware dependency is satisfied**, and has been for some time.
-What the machine now runs is described in **[`os.md`](os.md)**; what is
-still missing is §11.
-
----
-
-## 8. TCP/IP stack
+## 7. TCP/IP stack
 
 **Settled: written out, not imported.** The stack is in `kernel/net/` —
 ARP, IP, ICMP, UDP, DHCP, TCP and a socket layer — and it works against
 real hosts on a real LAN. `os.md` describes what it does; this section is
-the record of *why it is not lwIP*, because that was the recommendation
-here for a long time and reversing it was a deliberate call.
+why it is not lwIP, which is the obvious answer for a machine this size.
 
-### Why lwIP was the recommendation
+### The case for lwIP, and why it does not apply
 
 For a machine with a few MB of RAM, lwIP is the obvious answer: 40 KB of
 code, a `netif` driver of roughly 250 lines, no dynamic allocation
 required, a raw API that avoids threads entirely, and a BSD-socket
 compatibility layer on top. It is the standard choice for exactly this
-size of system and it would have been quicker.
+size of system.
 
-### Why it was not adopted
-
-The recommendation was right **when the layers below TCP did not exist.**
-By the time the question became urgent, ARP, IP, ICMP and UDP were all
-written, documented, and wired into the device model and the shell.
-
-lwIP is not a TCP. It is a whole stack, with its own ARP, its own IP and
-its own idea of what an interface is. Adopting it at that point meant
-*discarding* everything already working and adapting to its device model,
-not slotting a layer in on top. The cost had inverted.
+That case holds **when the layers below TCP do not exist.** lwIP is not a
+TCP: it is a whole stack, with its own ARP, its own IP and its own idea
+of what an interface is. Once ARP, IP, ICMP and UDP are written and wired
+into the device model, adopting it means *discarding* what works and
+adapting to its device model, not slotting a layer in on top.
 
 What keeps the decision reversible is the socket layer: a program calls
 `socket()`, `connect()` and `read()`, and which implementation answers is
@@ -257,7 +203,7 @@ not its business. If lwIP is ever wanted, `net/socket.c` is the seam.
 |---|---|
 | **lwIP** | If the stack below TCP did not already exist, or if IPv6, DNS and DHCP-with-options were all wanted at once |
 | **uIP** | A far smaller machine — one segment in flight, no window worth the name |
-| **Written out** | What happened: the lower layers existed, and TCP was the only missing piece |
+| **Written out** | What is here: the lower layers exist, and TCP was the only missing piece |
 
 ### What the TCP does
 
@@ -290,17 +236,14 @@ RFC 793's state machine, both opens, an orderly close on both sides, and:
   retransmitted FIN is acknowledged again and restarts it, and a reset
   does not cut it short (RFC 1337)
 - **Initial sequence numbers that cannot be guessed**, RFC 6528, over
-  `kernel/random.c` — which is xorshift32 seeded from the clock, the tick
-  and the MAC address, and which says at the top of the file, in as many
-  words, that it is not a cryptographic generator
+  `kernel/random.c` — a BLAKE2s pool fed by interrupt timing with
+  ChaCha20 output, described in `os.md`
 
-**Every item on that list was once in the section below**, as a
-deliberate omission justified by the machine only ever talking to its own
-LAN. That reasoning held exactly as long as the only network was QEMU's
-NAT. Bridging the interface onto a real one turned each omission into a
-defect: without reassembly a single lost packet stalls a transfer for a
-whole round trip, and an ISN of `jiffies * 7919` is guessable by anyone
-who knows roughly when the connection was made.
+Every item on that list matters because the interface can be bridged onto
+a real LAN. On QEMU's NAT none of it shows: without reassembly a single
+lost packet stalls a transfer for a whole round trip, and an ISN of
+`jiffies * 7919` is guessable by anyone who knows roughly when the
+connection was made.
 
 ### What the TCP does not do
 
@@ -332,7 +275,7 @@ And above it, **a resolver** (task 18, `lib/resolv.c`): `/etc/hosts`,
 `localhost`, then DNS over UDP to the servers in `/etc/resolv.conf` or
 the one DHCP gave. `host`, `ping`, `fetch` and `ntpdate` take names.
 
-## 9. Filesystem
+## 8. Filesystem
 
 **Decided and partly built: a real MS-DOS disk.** Not a FAT-like format of our
 own, but a genuine partitioned FAT16 volume that the host reads and writes
@@ -392,13 +335,12 @@ directory scan that skips deleted entries, long-name fragments, the volume
 label and subdirectories.
 
 **In the kernel** (`kernel/fs/fat16.c`), read *and* write over a real block
-layer (`kernel/drivers/ata.c`): open, read, write, seek, create, truncate, append, delete,
-rename, stat and a directory walk — and **subdirectories**, with `mkdir`,
-`rmdir`, a working directory, `chdir` and `getcwd`, and path resolution
-through any depth of them.
-
-**That working directory is global rather than per task**, which is a
-defect rather than a decision -- see §11.
+layer (`kernel/drivers/ata.c`): open, read, write, seek, create, truncate,
+append, delete, rename, stat and a directory walk — **subdirectories**, with
+`mkdir`, `rmdir`, a per-task working directory, `chdir` and `getcwd` —
+**long names**, VFAT's UTF-16 encoded from the UTF-8 a program uses — and a
+`fsck` of its own, with the clean-unmount flag in the boot sector that says
+when one is needed.
 
 Two structural facts about FAT16 make that more than a loop change. **A
 directory is one of two things**: the root is a fixed run of sectors that
@@ -420,18 +362,18 @@ byte for byte through `mtype`, a file the host wrote is what the kernel
 printed, and `fsck.fat` finds nothing afterwards. A filesystem only the
 kernel can read would prove nothing.
 
-### What is not, yet
+### What FAT cannot hold
 
-- **Permissions, ownership, and links.** FAT has nowhere to put any of
-  them. `ls -l` shows a mode because `stat` synthesises one.
-- **Timestamps before the clock is set.** Stamps come from the M48T59, which
-  reads the host's clock under emulation and a dead battery's idea of the
-  time on hardware. If it does not answer, files get a fixed date — wrong
-  but constant, which reads as obviously synthetic.
+- **Permissions, ownership, links and FIFOs.** There is nowhere to put any
+  of them: `ls -l` shows a mode because `stat` synthesises one, and `link`,
+  `symlink` and `mknod` answer `EPERM` as a Linux FAT mount does. Making
+  the system genuinely multi-user is therefore a filesystem change as much
+  as a kernel one (§9).
 - **FAT12 and FAT32.** Refused at mount rather than misread as FAT16.
-- **Crash consistency.** Writes go out as they are made, with no journal and
-  no clean-shutdown flag. Pulling the plug mid-write leaves what MS-DOS would
-  have left: lost clusters that `fsck.fat` can reclaim.
+- **A journal.** Writes go out as they are made. Pulling the plug mid-write
+  leaves what MS-DOS would have left — lost clusters and cross-links — and
+  the volume is marked dirty, so the next boot checks it. `mount` sets that
+  flag and only an orderly `halt`, `reboot` or `shutdown` clears it.
 
 ### The byte-order trap, for whoever writes the kernel side
 
@@ -449,904 +391,24 @@ verification that a round trip cannot give you.
 
 ---
 
-## 10. The kernel
-
-`kernel/`, loaded from the disk by the boot ROM as `KERNEL.ROM`. It runs in
-supervisor mode from its first instruction and never leaves it.
-
-### The shape
-
-```
-  user mode   programs in their own address spaces:
-              lib/  system/{ifconfig,ping,netstat,shutdown,env}  apps/
- ============================== rte / trap #0  ===== the privilege boundary
-
-          shell.c  edit.c        a kernel task, but only syscalls below it
- ------------------------------  trap #0
-              syscall.c          40 calls, Linux numbers and convention
-      +-----------+-----------+-----------+-----------+
-    vfs.c      net/socket.c   task.c      vm.c      exec.c
-  paths,       sockets       scheduler   address    ELF loading
-  mounts,          |         wait.c      spaces         |
-  descriptors      |         signal.c    pmm.c      uaccess.c
-      |            |             |        |             |
-      |      net/tcp.c udp.c     +--------+-------------+
-      |      net/ip.c icmp.c        taskasm.s: the context switch
-      |      net/arp.c dhcp.c
-      +-----------+-----------+
-   fs/fat16.c           dev.c    filesystem types, device registries
-      |                   |
- struct blockdev     chardev / netdev / rtcdev / timerdev / fbdev
-      |                   |
- drivers/ata.c       drivers/ns16550.c  m48t59.c  mfp.c  sm501.c  i8042.c
-                     drivers/smc91c111.c
-```
-
-**[`os.md`](os.md) is the full description of everything above the driver
-line.** This section is the design record; that document is the reference.
-
-The shell is a **task** now, scheduled like any other, rather than a
-function the kernel calls. What has not changed is that it reaches the
-machine only through `trap #0`.
-
-Three properties are worth stating because they are what the layering is
-for, and each is checkable rather than aspirational:
-
-- **The shell reaches the filesystem, the disk and the terminal only
-  through `trap #0`.** Every command in it is system calls and nothing
-  else, and `kernel/layercheck.sh` fails the build if that stops being
-  true. It was asserted here while it was false — `cmd_console` had
-  grown a direct call into `tty.c` — which is the argument for checking
-  the rule rather than restating it.
-- **A driver probes before it pokes.** An address with no device behind
-  it bus-errors rather than reading zeroes, so every driver asks with
-  `io_probe8`/`16`/`32` first and `main.c` reports what is absent. A
-  kernel on an emulator built before one of its devices existed says so
-  instead of panicking.
-- **The line editor is above the boundary too.** `edit.c` clears
-  `ICANON` and `ECHO` with `TCSETS` and does the editing, the history
-  and the searching itself, which is where bash keeps that work. It
-  includes `syscall.h` and nothing else and would compile unchanged as
-  an ordinary program.
-- **The filesystem talks to a `struct blockdev`** and has no idea an ATA
-  taskfile answers. A SCSI controller or a RAM disk is a new file in
-  `drivers/` and one more line in `main.c`.
-- **`main.c` is the only file that names a chip.** Deliberate: this is a
-  board with parts soldered to it, not a bus that can be enumerated, so
-  something has to know what is fitted — and exactly one thing does.
-
-### System calls
-
-The convention is Linux/m68k's, unchanged: `d0` holds the call number,
-`d1`–`d5` the arguments, and `d0` comes back with the result or a negated
-errno. That is not an imitation — Linux picked the obvious convention for
-this architecture and there is nothing to improve on. The numbers are
-Linux/m68k's, checked against Linux's own table on every build
-(`kernel/abicheck.sh`), and the errnos are Linux's by name and value.
-They were described as i386's for a long time, and the socket calls
-really were -- three too high -- until a C library built on the real
-table found them.
-
-`uapi.h` holds what crosses the boundary and nothing else, the same split
-Linux makes under the same name: a program gets `O_CREAT` and
-`struct stat`, never `struct fs_type` or the descriptor table.
-
-`kmain()` makes a call through the gate at startup and checks that an
-unknown number comes back `-ENOSYS`, so the path is known good where it is
-installed rather than where something first depends on it.
-
-**This used to say that `syscall_dispatch()` took pointer arguments at
-face value, because the MMU was off and there was no address space to
-separate.** Both halves have been false for some time. The MMU is on, each
-task has its own address space, and every pointer that crosses the gate
-goes through `kernel/uaccess.c` — a software table walk against
-`current->as`, one page-sized chunk at a time, returning `-EFAULT` rather
-than faulting. `kernel/vmtest.sh` is fifteen attempts by a program to
-reach something it should not, and exists so that this paragraph cannot
-quietly go stale again.
-
-Following `current->as` rather than a global is the whole of one bug:
-`exec` used to set the address space around a program's entire run, which
-worked while the program ran *inside* the spawning call. The moment a
-program became a task of its own, nothing set it, every user pointer
-looked like a kernel pointer, and the first `write()` handed the terminal
-an address belonging to a different address space.
-
-### The tick
-
-`drivers/mfp.c` is both the interrupt controller and the system timer. The
-MC68901 drives one IPL line and supplies its own vector, so its sixteen
-channels arrive at sixteen consecutive vectors and one stub serves all of
-them — it recovers the channel from the format/vector word the 68040
-pushed. A driver asks for a channel with `mfp_request_irq()`; nothing
-above that knows the chip exists.
-
-Timer D at /200 runs at 12288 Hz and a reload of 123 gives **99.9 Hz**.
-`HZ` is 100 — what Linux used for most of its life, and a 10 ms tick that
-makes a 50 fps frame exactly two of them.
-
-The reload is computed rather than written down, and clamped: a value
-under 8 is refused outright. A tick shorter than its own handler starves
-the foreground completely, and this machine already walked into that once
-with a timer at 13 µs. Sleeping uses `STOP`, so an idle program costs the
-host nothing, and `timer_sleep_ticks()` returns `-ENODEV` rather than
-waiting forever when no timer is running.
-
-The tick now does three jobs, not one. It counts time for `nanosleep` and
-`times`; it **drives preemption**, setting `need_resched` so that
-`task_ret_to_user()` switches tasks on the way back to user mode; and it
-calls `net_drain()` to move arriving frames off the ethernet card into a
-ring. That last one is not an optimisation — the LAN91C111 allocates
-transmit buffers from the same page pool that holds received frames, so a
-receiver that is never drained stops the machine being able to *send*.
-
-**Preemption happens only on the way back to user mode**, which is what
-lets this kernel have no locking at all: it can only be entered by one
-task at a time, because a task inside a system call cannot be preempted
-out of it. The cost is that a kernel task — the shell — is never preempted
-and must block or yield.
-
-Interrupts are enabled **last** in startup, after every driver is up: a
-fault before that point is reported by a handler with the console to
-itself, and an interrupt arriving mid-initialisation would be a much
-harder thing to understand.
-
-### The framebuffer
-
-`/dev/fb0`, drawn with ioctls — `FBIO_POINT`, `FBIO_LINE`, `FBIO_RECT`,
-`FBIO_CLEAR`, `FBIO_FLIP`, `FBIO_PALETTE`, `FBIO_GETINFO`.
-
-Through ioctl rather than through system calls of its own, because a
-framebuffer is a device and the device model already carries it. A dozen
-graphics calls in the system call table would tie the kernel's ABI to one
-kind of hardware. Linux controls its framebuffer the same way, though
-Linux then expects a program to `mmap` the memory and draw for itself,
-which needs an MMU that is off here.
-
-**Only `point()` is required of a driver.** `fb.c` builds clear, line and
-rect from it, so a new display works as soon as it can set one pixel, and
-gets faster as its driver learns to do more. `sm501.c` implements clear
-and filled rect with the 2D engine — at a period-correct clock the CPU
-cannot clear 640×480 and hold a frame rate, 37 fps against the engine's
-50, while a dozen short lines cost nothing either way.
-
-Double buffered. `FBIO_FLIP` is one register write, so the change lands
-between frames rather than halfway down one.
-
-### The terminal, and the text console
-
-`/dev/console` is `tty.c`: a line discipline plus a list of input sources
-and a list of output sinks. A UART is one place characters can come from
-and go to; the screen is another.
-
-`/dev/fbcon` is 80 columns by 30 rows of the IBM PC 8×16 font, green on
-black — 640×480 over the character cell, the geometry a VGA text mode had
-for the same reason. It is an output sink and nothing else.
-
-**Output goes to every enabled sink at once and input is taken from every
-source**, so the shell is on the screen and on the serial line together
-rather than on one of them. `console NAME off` silences a sink; the last
-one cannot be silenced.
-
-That is a constraint rather than a preference. The test harnesses drive
-this machine over the serial line with `-display none`, and QEMU delivers
-no keyboard input at all without a display — so an exclusive console
-would break every test in the tree, and would also lose the serial log at
-exactly the moment the display path is what is broken.
-
-The split forced one thing out of the UART driver: **echo belongs to the
-terminal, not to the chip the character arrived on.** With the line
-discipline inside the driver, output on the screen meant typing blind.
-
-Scrolling is a single `copy()` — the blitter moves 29 rows in one
-operation. Without one, `copy` is left null and the console redraws from
-its own character buffer, which is why `fbdev` has the operation at all.
-
-The font is the actual VGA ROM font, extracted rather than redrawn; see
-`kernel/font8x16.c` for its provenance and licence.
-
-### Devices
-
-Six classes, each with one interface: `chardev` (a byte stream),
-`blockdev` (sectors), `netdev` (packets), `rtcdev` (seconds since 1970),
-`timerdev` (a periodic interrupt), `fbdev` (a display).
-Drivers register during startup and stay registered until the power goes
-off — no hotplug, no refcounting, nothing to unregister, because with a
-handful of soldered parts that would be machinery in search of a problem.
-
-Path resolution has two fixed mount points: `/dev` is the device registry,
-everything else is the mounted volume. That was written when the
-filesystem had one directory, and the promise it made — that the calls
-above it would not change when that stopped being true — held: the volume
-now resolves through any depth of subdirectory and nothing above `vfs.c`
-noticed.
-
-### The serial port
-
-`drivers/ns16550.c` is **a serial port and nothing more**, registered as
-`/dev/ttyS0` and as both an input source and an output sink of the
-terminal described above.
-
-This section used to say the opposite — that the driver was a terminal,
-with canonical mode inside it — and that was true once. The line
-discipline moved to `tty.c` when the console grew a second source and a
-second sink, because canonical mode belongs to the *terminal*, not to one
-of the several devices that can be attached to it. The driver's own header
-comment says so, and the two statements disagreed here for a while.
-
-Polled in both directions, on purpose: it works before interrupts are set
-up, works inside a panic, and cannot deadlock against the code reporting
-the fault. `tty.c` above it does not spin — it sleeps on a wait queue with
-a timeout — so polled no longer means burning the processor.
-
-### Sizing memory, and surviving it
-
-Nothing on this machine reports how much RAM is fitted, so the kernel writes
-to each megabyte boundary until one does not answer. The first address past
-the end raises a **bus error** rather than reading back wrong — QEMU faults
-there exactly as hardware with no card in the slot would — so `memprobe.s`
-installs its own bus error handler, throws the frame away and returns as if
-the test had failed. The traditional 68k ROM trick, and still the only way
-to do it here.
-
-It is deliberately narrow. The recovery abandons the exception frame and
-restores the stack pointer by hand, which is safe only because the routine
-touches no callee-saved register and holds no state worth unwinding. It is
-not a general fault handler and should not grow into one.
-
-### Faults
-
-Every vector except reset lands on one handler. The 68040 pushes a
-format/vector word on every exception, so the handler identifies itself from
-its own frame instead of needing 255 stubs, and reports the vector, its
-name, the PC, the SR and all fifteen registers before halting.
-
-**A fault in user mode is first offered to `vm_fault()`**, which may make
-the page -- lazy, swapped out, or copy-on-write -- and return, and then
-the 68040 runs the faulting instruction again, because it pushed the
-address of the **faulting instruction**. That is the whole mechanism of
-demand paging (task 21), and why it needed no instruction decoding. A
-fault `vm_fault()` cannot resolve kills the program, not the machine:
-`trap.c` raises `SIGSEGV` and exits the task, and the shell prints what
-happened. Only a fault in supervisor mode panics. Note also that the SSW says nothing about
-*why*: no bit distinguishes "not mapped" from "write protected" from
-"supervisor only", so a handler that needs to know must walk the tables or
-use `ptest`.
-
-The full-register report found the first real bug in the kernel: the
-memory probe walking off the end of RAM, faulting address in `a0`. A
-silent hang is the one outcome worth ruling out.
 
 ---
 
-## 11. Open items
-
-Everything below is genuinely open. Items that were on this list and have
-since shipped — the scheduler, tasks and preemption, wait queues,
-semaphores and mutexes, signals, per-task address spaces, user mode, the
-TCP/IP stack, the shell's environment and PATH, shell scripts and
-`/etc/rc`, FAT16 subdirectories, job control, and moving the network
-tools out of the shell and into `/bin` — are described in `os.md` rather
-than kept here as history.
-
-Most of what follows hangs off two things — **a program cannot ask for
-memory, and there is no C library** — and the order below reflects that.
-Nothing after *A C library* is blocked on anything except the items
-above it.
-
-Everything here is intended to be done. There is no "deliberately not
-doing this" section any more: paging, shared libraries and the
-remaining TCP options used to sit in one, and each was justified by the
-machine being small. The machine is not small now — 64 MB of RAM and a
-512 MB disk — so the justification went with it.
-
-| | |
-|---|---|
-| Near-term | ✅ interrupt-driven input and disk, DNS, NTP, the NVRAM, the limits |
-| **Memory** | ✅ `mmap`, `brk`, `sbrk`, `malloc`, and a 256 MB address space |
-| **A C library** | picolibc or newlib over a dozen syscall stubs |
-| Pipelines | `pipe`, `dup2`, `SIGPIPE`, and `\|` `>` `>>` `<` in the shell |
-| The console | VT102 emulation, `TIOCGWINSZ`, termcap, curses |
-| POSIX surface | a dozen small calls (signals, `select`/`poll`, timers, subprocesses ✅) |
-| Sockets | ✅ the Linux socket API, signatures and all, and loopback |
-| Long file names | VFAT, and why not a different filesystem |
-| `fsck` | and a clean-unmount flag to say when it is needed |
-| TCP | ✅ window scaling, timestamps, SACK, keepalives, a real `TIME_WAIT` |
-| Shared libraries | ✅ `ld.so`, `libc.so`, and one copy of their text in memory |
-| Paging | ✅ demand paging, copy-on-write `fork`, a swap file |
-
-`emacs.md` is the same list approached from the other end: one real
-program, and everything it needs that is not here.
-
-### Near-term, and well understood
-
-1. **Interrupt-driven input — done (task 22)**, and the disk with it.
-   The serial port, the keyboard and the ATA controller each take their
-   interrupt through the MFP's GPIP inputs, rising edge. Input drains
-   into a ring in `tty.c` that stops -- leaving the rest in the chip, so
-   the sender waits -- when it is full, rather than dropping. The disk
-   moves up to 256 sectors a command and the task waiting sleeps between
-   them; the filesystem has a lock of its own for that reason (`vfs.c`),
-   because a task can now be asleep in the middle of a FAT operation.
-
-2. **A resolver, and NTP -- done (task 18)**, mostly as planned below.
-   Where it differs: the resolver is `resolve_host()` in lib/ulib, not
-   `gethostbyname`/`getaddrinfo` -- picolibc has no socket layer for them
-   to sit in -- and it **does not cache**; each lookup asks. `ntpdate`
-   steps the clock; it does not slew, and there is no daemon. The clock
-   it sets IS the M48T59's, so the time survives a reboot without the
-   NVRAM. The 2036 NTP era is handled (unsigned arithmetic, to 2106),
-   and doing so found that the kernel refused every date after January
-   2038: `clock_set` rejected a "negative" `tv_sec`. It is read as the
-   unsigned time it is now.
-
-   The plan, as it was:
-
-   **DNS** first: addresses are numeric everywhere, which is the single
-   most visible way this machine is not finished. A stub resolver over
-   UDP is a few hundred lines on a UDP layer that already works —
-   build the query, send it to the server DHCP already handed us, parse
-   the answer section, follow a CNAME, cache what comes back with the
-   TTL it came with. `gethostbyname` and then `getaddrinfo` above it,
-   in `lib/`, because that is where a ported program looks.
-
-   **NTP** after it. The clock is an M48T59 that reads the host's clock
-   under emulation and a dead battery's idea of the time on hardware,
-   so the machine's notion of *now* is either borrowed or wrong — and
-   every file it writes is stamped with it. SNTP (RFC 4330) is the
-   right amount of protocol: one UDP packet out, one back, four
-   timestamps, and the offset is
-   `((T2 - T1) + (T3 - T4)) / 2`. That is perhaps 200 lines.
-
-   Decisions to make when doing it:
-   - **Step or slew.** Step at boot, because the clock may be years
-     out and there is nothing running that a jump would upset. Slew
-     afterwards if it is ever run as a daemon, because a backward step
-     makes file timestamps go backwards and `make` disbelieve its own
-     output.
-   - **NTP's epoch is 1900, Unix's is 1970.** The difference is
-     2,208,988,800 seconds and getting it wrong puts the machine
-     seventy years out, which is at least obvious.
-   - **The era problem.** NTP's 32-bit seconds field wraps in 2036.
-     Worth a comment at minimum, because this machine's own `time_t`
-     choices should not quietly inherit somebody else's deadline.
-   - **Where it lives.** A program in `system/`, called `ntpdate`, run
-     from `/etc/rc` after the interface is up — not a kernel service.
-     Setting the clock is `stime()`, which already exists.
-   - It should also **write the result to the NVRAM**, which is the
-     other open item just below and which is what makes the answer
-     survive a reboot.
-
-3. **Use the NVRAM — done (task 22).** `/dev/nvram` is its 8176 bytes;
-   `/bin/nvram` keeps `KEY=VALUE` settings in it, and `ifconfig nvram`
-   configures the interface from them. Under QEMU it lasts as long as the
-   QEMU process -- through a machine reset, not past the emulator
-   exiting -- because the model gives it no backing file. The time is
-   not stored there: the clock is the same chip.
-
-4. **Static limits — raised (task 22)**: 64 tasks, 64 descriptors per
-   task, 256 open files and 128 open FAT files machine-wide, 64 sockets,
-   32 TCP connections, 128 pipes. Each is filled and then passed by
-   `apps/limits`. Still one filesystem, one partition and one interface:
-   those are structure, not constants.
-
-### Memory: `mmap`, `brk`, `sbrk` and `malloc`
-
-**This is the prerequisite for most of the rest of this section**, and the
-first blocker in `emacs.md`. A program's pages are mapped at exec and the
-set never changes afterwards; `lib/ulib.h` has no allocator at all, so a
-program that wants memory declares an array.
-
-Four things, in dependency order:
-
-1. **A larger user address space. Done:** 256 MB, with page tables
-   allocated on demand rather than packed into one page, and a 1 MB
-   stack at the top. It was 2 MB because the packing was eight page
-   tables to a page; the constant was never the hard part.
-
-2. **`brk`/`sbrk`. Done:** a break per address space, set by exec to
-   the page after the image, mapped and unmapped as it moves, with
-   Linux's return convention (the old break on failure, never an
-   errno).
-
-3. **`mmap`/`munmap`/`mprotect`. Done,** with Linux/m68k's numbers and
-   shapes (`mmap2` at 192 with the sixth argument in `a0`, `old_mmap`
-   at 90). Anonymous mappings, and file mappings as eager copies:
-   exact for `MAP_PRIVATE`, read-only only for `MAP_SHARED`. A real
-   shared file mapping still needs a page cache and the reverse mapping
-   that paging wants. There is no table of mappings: the page tables are
-   the record, which is why partial `munmap` needs no splitting.
-
-4. **`malloc`/`free`/`realloc`/`calloc`.** In the long run, the one
-   that comes with a libc (see *A C library* below). For now,
-   `lib/malloc.c`: boundary tags, segregated free lists, `mmap` for
-   large blocks, and a checker the tests call. It is written to be
-   thrown away when the libc arrives, and exists so that nothing
-   between here and there waits on it.
-
-The ordering matters because each step is usable on its own: a bigger
-address space helps immediately, `brk` alone unlocks `malloc`, and `mmap`
-can arrive later without invalidating either.
-
-### A C library
-
-**Done (task 13): picolibc 1.8.12**, in `libc/`. The choice turned on
-something the options below did not know about: picolibc already has
-`libos/linux`, a complete POSIX layer over Linux's system calls that
-translates its own errno and signal numbers to Linux's. Because this
-kernel's interface is Linux/m68k's, the port was an m68k backend for
-that layer -- constants, a `syscall()` stub, three missing POSIX calls
--- plus the Linux calls the layer makes that the kernel lacked
-(`kernel/syslinux.c`), rather than fifteen hand-written stubs over this
-system's own calls. It also means any Linux-targeted C library would
-now run. `libc/README.md` has the details and what differs from glibc.
-
-Doing it found five bugs that had passed every test: the socket calls
-carried i386's numbers, the private calls sat on `msgsnd`/`msgrcv`/
-`msgctl`, `fstat` on a file read its size from the vector table,
-`unlink` wrote through an uninitialised directory, and `unlink` and
-`rename` looked every name up in the root. And one in picolibc
-(`libc/patches/`).
-
-What follows is the reasoning as it stood before, kept for the record.
-
-`lib/ulib.c` is not a libc and does not pretend to be. It is a thin
-wrapper over the system calls plus `strlen`, `strcmp`, `memset`, `memcpy`
-and a few output helpers — enough for the programs in `system/` and
-`apps/`, and enough for nothing else. There is a stand-in `malloc`
-(`lib/malloc.c`), but no `stdio`, no `printf`, no `qsort`, no `setjmp`,
-no locale and no math.
-
-**This is the second-biggest barrier to running anything written by
-somebody else**, after the address space. Every portable C program assumes
-a hosted implementation.
-
-Three options:
-
-- **Port newlib.** The conventional answer for exactly this situation. It
-  targets m68k already, it is designed to sit on a small syscall layer,
-  and the interface it expects is about fifteen stubs — `_open`, `_close`,
-  `_read`, `_write`, `_lseek`, `_fstat`, `_isatty`, `_sbrk`, `_exit`,
-  `_kill`, `_getpid`, `_times`, `_unlink`, `_link`, `_stat`. Most already
-  exist here under those names minus the underscore. Its licence is a
-  patchwork of BSD-style terms, which is compatible with this project.
-- **Port picolibc.** Newlib's smaller descendant, same stub interface,
-  better suited to constrained machines, and with a cleaner build. If
-  starting today this is probably the better of the two, and the choice
-  between them is a genuine decision rather than a toss-up.
-- **Grow `ulib` into one.** Tempting, and wrong. A correct `printf` alone
-  is a serious piece of work, `setjmp`/`longjmp` needs assembly per ABI,
-  and `stdio` buffering has decades of edge cases in it. The only argument
-  for writing one is that the result would be small and fully understood —
-  which is the same argument that was made, correctly, for writing the
-  TCP stack, so it is not absurd. But TCP was written because the layers
-  below it already existed and lwIP would have meant discarding them.
-  Nothing analogous applies here.
-
-**The recommendation is picolibc or newlib, not a hand-written libc.** A
-port converts "write an allocator, a `printf`, `setjmp`, `qsort` and a
-string library" into "write fifteen syscall stubs and a linker script",
-which is the right trade by a wide margin.
-
-The dependency is one way and strict: a libc needs `sbrk` before `malloc`
-can work, and `sbrk` needs the address space item above. So the order is
-address space, `brk`, libc — and only then is porting somebody else's
-program a question about that program rather than about this system.
-
-One consequence worth naming: today every program statically links its own
-`ulib` at ~12 KB. A real libc makes that number much larger and turns
-shared libraries from a curiosity into something worth doing.
-
-### Pipelines and redirection
-
-`|`, `>`, `>>` and `<` do not exist, and neither do the pieces underneath
-them: there is no `pipe`, no `dup`, no `dup2` and no `fcntl`. The shell
-can start several programs now, which is the hard half, so what is left is
-mostly plumbing:
-
-- a pipe as a pair of descriptors over a ring buffer, with a reader that
-  blocks on a wait queue and a writer that blocks when full
-- `SIGPIPE`, which already has a number and a default action
-- `dup2`, so the shell can put a descriptor where a program expects it
-- redirection parsing in the shell, which is the easy part
-
-The design question worth settling first is whether a pipe is a file in
-the VFS or a distinct object that descriptors can point at. The
-refcounted open-file layer already in `vfs.c` makes the second
-straightforward.
-
-### The console: VT102 emulation, curses, and termcap
-
-**`fbcon.c` is a VT102** (task 11 in `progress.md`). It used to
-understand carriage return, backspace, tab and newline plus just enough
-of `ESC[2J`, `ESC[H` and `ESC[K` for `clear`, and dropped everything
-else -- which is why the line editor builds every movement out of `\r`
-and `\b`. The editor still does, because that works on anything; it is
-no longer the only thing that works on the screen.
-
-1. **The VT102 emulation -- done.** VT102 rather than bare VT100 because
-   it adds insert and delete of lines and characters (`ESC[L`, `ESC[M`,
-   `ESC[P`, `ESC[@`), which are exactly what an editor uses to avoid
-   repainting, and `vt102` is in every termcap and terminfo already.
-   What it does:
-
-   - Cursor: CUP/HVP, CUU/CUD/CUF/CUB, CHA, VPA, CNL/CPL, save and
-     restore (`ESC 7`/`ESC 8` and `ESC[s`/`ESC[u`), IND, NEL, RI.
-   - Erase: ED and EL with all three parameters, ECH. Erased cells take
-     the NORMAL rendition, as a VT102's do (vt102 has no `bce`).
-   - Insert and delete: IL, DL, ICH, DCH, insert mode (IRM).
-   - **Scroll regions** (DECSTBM) and origin mode (DECOM). Every scroll,
-     insert and delete is one blitter copy plus one fill; the SM501
-     driver's copy learnt the right-to-left bit for the moves that go
-     down or right, which is where they overlap.
-   - **The deferred wrap.** Writing the last column leaves the cursor on
-     it and wraps only when the next glyph arrives -- terminfo's `xn`.
-     Without it, painting an editor's bottom line scrolls the screen.
-   - SGR: bold, underline, reverse, and the ANSI colours (30-37, 40-47,
-     90-97), because programs send them whatever `TERM` says. The
-     console's sixteen colours are palette entries 16-31, so the ones a
-     drawing program uses are untouched. Blink is accepted and not shown.
-   - DEC special graphics (`ESC ( 0`, and G1 through SO/SI), mapped onto
-     the PC font's box pieces; tab stops (HTS, TBC); DECAWM, DECTCEM,
-     LNM; RIS and DECALN.
-   - **Replies** to DSR (`ESC[6n`, `ESC[5n`) and DA, typed back through a
-     small input source -- but ONLY when the screen is the only output.
-     With the serial line enabled, the question also went to a real
-     terminal that will answer it, and two answers is worse than one.
-
-   The parser follows the DEC one: a C0 control inside a sequence is
-   acted on and the sequence continues, CAN and SUB abandon it.
-
-   **`/dev/vcsa`** is Linux's view of the screen -- rows, columns, cursor,
-   then a character and attribute byte per cell -- and is how
-   `apps/vtcheck` checks what a sequence did. It cannot see pixels, so
-   `kernel/vttest.sh` also compares a screenshot taken after a run of
-   blitter moves with one taken after `FBCON_REDRAW` redraws everything
-   from the character buffer; they must be identical. A forward copy in
-   place of the right-to-left one passes every `/dev/vcsa` check and
-   fails that one by 7,600 pixels.
-
-   The real constraint remains: each glyph is 128 pixels drawn one at a
-   time, so a program that repaints the whole screen per keystroke is
-   visibly slow however correct the emulation is. Scroll regions and the
-   insert and delete operations are the performance story, not niceties.
-
-2. **`TIOCGWINSZ`, and `SIGWINCH` behind it -- done** (task 12). The
-   interesting part is not the ioctl but what the answer should be,
-   with two outputs of different sizes live at once. It is **the
-   smallest of the enabled outputs**: a program told 30 rows while an
-   80x24 terminal is also showing its output paints six rows the
-   terminal does not have. The screen answers `TIOCGWINSZ` for itself;
-   the serial line cannot be measured, so it is 24x80 until
-   `TIOCSWINSZ` says otherwise -- which makes `TIOCSWINSZ` "the line's
-   size", not "the answer". `stty` sets it by hand and `resize` asks
-   the terminal. Any change to the answer, including switching an
-   output on or off with `console`, sends `SIGWINCH` to the foreground
-   group. `TERM=vt102` is set by the shell.
-
-   Rejected: making `TIOCSWINSZ` override everything. After `resize` on
-   a 50-row xterm, programs would paint 50 rows onto the 30-row screen.
-
-3. **A terminfo or termcap database**, or a deliberate decision not to
-   have one. This is the real choice in this section:
-
-   - **Ship terminfo.** Correct, conventional, and drags in either
-     ncurses or a reimplementation of its parsing. It also needs a place
-     to put the database and long-ish filenames to name the entries.
-   - **Compile in one terminal.** Many programs support this — uEmacs
-     selects an `ansi.c` driver at build time and needs no database at
-     all, and Vim ships builtin entries for exactly this case. Much
-     cheaper, and it fits a machine with one console type.
-
-   **The second is almost certainly right here**, at least first. There
-   is one console and it is whatever `fbcon.c` implements, so a database
-   describing other terminals describes nothing this machine has.
-
-4. **curses or ncurses**, if programs that want it are to be ported. It
-   is a substantial library that expects a libc, `malloc`, terminfo and a
-   real tty layer — so it sits downstream of §11's memory and libc items
-   rather than beside them. Worth noting that the cheapest useful
-   full-screen programs deliberately avoid it: BusyBox's `vi` writes ANSI
-   escapes directly, and uEmacs has its own driver layer.
-
-The practical sequence is **1, then 2, then decide 3, and treat 4 as
-optional** — because a fuller `fbcon.c` plus a compiled-in terminal is
-enough to run a real editor, and that is the point of the exercise.
-`emacs.md` costs this out against actual editors.
-
-### The POSIX surface a ported program expects
-
-Everything in this subsection exists because `emacs.md` went looking for
-it and did not find it. That document costs out one concrete program;
-this is the same list as kernel work. **The numbering matches
-`emacs.md`'s work list**, so the two can be read against each other.
-
-**(4) Signal handlers, and `sigreturn`.** Signals here have default
-actions only and a program cannot install one. Delivering a signal to
-user code means building a signal frame on the user stack, returning to
-the handler in user mode, and providing a `sigreturn` that unwinds it —
-real work in `trap.c` and `execasm.s`, and the largest single kernel item
-on this list at perhaps 350 lines. `sigaction`, `sigprocmask` and a
-`sigaltstack` for the stack-overflow case. **Almost every interactive
-program needs at least `SIGWINCH` and `SIGCHLD`.**
-
-**(5) `select` or `poll`. Done** (`kernel/poll.c`), with Linux/m68k's
-three calls. Not built the way this paragraph proposed, with a task
-registered on several queues at once. Instead there is one shared
-queue that the terminal wakes from the tick, and a short sleep of its
-own as a fallback (100 ms, or 20 ms when a socket is watched). That
-fallback is needed because the network stack does its protocol work
-only when somebody asks, so a socket has nothing that would wake a
-queue until a waiting task polls it anyway. Readiness comes from a new
-`file_ops->poll`, or from `FIONREAD` for a file that has none.
-
-**(6) Interval timers. Done:** `alarm`, and `setitimer`/`getitimer` with
-all three timers. The tick charges each task's time to user or system
-from the registers it interrupted, which is what `ITIMER_VIRTUAL`, `ITIMER_PROF`
-and `times()`'s `struct tms` needed. `timer_create` is not here.
-
-**(8) The small missing calls.** Individually trivial, collectively the
-difference between a program building and not:
-
-| | |
-|---|---|
-| `fstat` | distinct from `stat`; ported code stats descriptors constantly |
-| `access` | can be expressed over `stat` |
-| `dup`, `dup2` | needed by redirection; see *Pipelines* above |
-| `umask`, `chmod`, `utime` | preserving mode and mtime across a save — and FAT16 has nowhere to put mode, so these must fail honestly rather than silently |
-| `getuid`, `getgid`, `getpwuid` | `~` expansion and `user-login-name` |
-| `readlink`, `symlink` | no links here, so returning `EINVAL` is the correct answer, not a stub |
-| `TIOCGWINSZ` | window size; without it every program assumes 80×24 and the framebuffer console's bottom six rows go unused |
-| `fchdir` | Vim uses it |
-
-~300 lines for the lot.
-
-**(9) Subprocesses. Done:** `fork` (an eager copy), `execve`,
-`waitpid` with Linux's statuses and options, orphans reaped, and
-`/bin/sh`, the kernel's shell built as a program, for `sh -c`.
-
-Items (1) and (2) are *Memory* above; (3) is *A C library*; (7) is *Long
-file names* below; (10) and (11) are *The console*. Nothing in
-`emacs.md`'s list is missing from this section — which is the point of
-numbering them the same way.
-
-### The rest of the Linux socket API
-
-**Done** (`progress.md` task 10). Every call has Linux/i386's number and
-signature, with `struct sockaddr` plus `socklen_t`, `struct in_addr`, and
-the flags arguments:
-
-| | | |
-|---|---|---|
-| 356 | `socket` | `SOCK_NONBLOCK`, `SOCK_CLOEXEC` in the type |
-| 357 | `socketpair` | `AF_UNIX`, stream only: a pipe each way |
-| 358–360 | `bind`, `connect`, `listen` | port 0 picks one; `listen` binds if unbound |
-| 361 | `accept4` | `accept()` is it with no flags |
-| 362–363 | `getsockopt`, `setsockopt` | `SO_REUSEADDR`, `SO_ERROR`, `SO_RCVTIMEO`, `SO_SNDTIMEO`, `SO_TYPE`, `SO_ACCEPTCONN`, `SO_KEEPALIVE`, `SO_SNDBUF`/`SO_RCVBUF` (fixed: 64 KB and 128 KB), `TCP_NODELAY` (always on), `TCP_KEEPIDLE`/`TCP_KEEPINTVL`/`TCP_KEEPCNT` |
-| 364–365 | `getsockname`, `getpeername` | |
-| 366, 368 | `sendto`, `recvfrom` | `MSG_DONTWAIT`, `MSG_PEEK`, `MSG_WAITALL`, `MSG_NOSIGNAL`, `MSG_TRUNC` |
-| 367, 369 | `sendmsg`, `recvmsg` | scatter/gather; no ancillary data |
-| 370 | `shutdown` | a real half-close |
-
-Blocking calls block until they are satisfied. The old 30-second
-`ETIMEDOUT` is gone, and timeouts are `SO_RCVTIMEO`/`SO_SNDTIMEO`. A
-non-blocking `connect` returns `EINPROGRESS` and reports through
-`SO_ERROR`. `O_NONBLOCK` and `FIONBIO` work on sockets, and so do
-`poll`/`select`. **Loopback** (`127.0.0.0/8`, and the machine's own
-address) is delivered locally, with or without a configured interface.
-A kernel task, `netd`, runs the protocol whether or not anybody is in a
-socket call, so a closed connection finishes its FIN handshake and
-`TIME_WAIT` on its own, and `close` does not block.
-
-Still not here: named `AF_UNIX` sockets (there is no FAT file type to be
-one), `SA_SIGINFO`-style ancillary data, and `getaddrinfo`, which needs
-**a resolver** (`progress.md` task 18).
-
-### Long file names
-
-**Done (task 14): VFAT long names, in UTF-8.** Up to 255 UTF-16 units,
-stored as the standard run of `0x0F` entries with the checksum of an 8.3
-alias; names cross the system call boundary as UTF-8 bytes, as with
-Linux's vfat `utf8` option. A name that is already an upper-case 8.3
-name gets a short entry only, as before; anything else keeps its
-spelling in a long name, with the upper-cased name itself as its alias
-if that is a free 8.3 name (`readme.txt` → `README.TXT`) and Windows'
-`NAME~N` scheme otherwise. Lookup ignores case (ASCII only). Short names
-carrying the NT lower-case bits are shown in lower case, and their bytes
-above 127 are decoded as code page 437, Linux's default. `rename`
-re-creates the entries, so a name can gain or lose a long form; deleting
-frees the run. `fsck.fat` checks all of it in `fstest.sh`, and finds the
-orphaned runs if deletion leaves them. `NAME_MAX` is 255 and `PATH_MAX`
-256.
-
-What follows is the case as it was made before.
-
-FAT16's 8.3 names are the single biggest practical limitation of the
-filesystem, and the cost is not abstract: **43% of GNU Emacs's Lisp files
-cannot be named at all** on this volume (measured — see `emacs.md`).
-
-The answer is almost certainly **VFAT long-name directory entries** rather
-than a different filesystem. They are an extension to the on-disk format
-already implemented, not a replacement for it: a long name is stored in a
-run of extra directory entries that carry attribute byte `0x0F`, which
-every FAT driver written before them ignores as a volume label. So the
-host's `mtools` and `fsck.fat` keep working, the disk stays readable and
-writable from Linux without root, and `make write` stays a one-liner —
-which is the property that has made this filesystem choice worth keeping.
-
-Roughly 400 lines in `fs/fat16.c`: the checksum that ties a long-name run
-to its 8.3 alias, UCS-2 to the kernel's byte strings, generating unique
-`NAME~1` aliases, and deleting a whole run rather than one entry.
-
-The alternative — a real filesystem with an inode table — buys permissions,
-links, better timestamps and atomic rename, and costs the host
-interoperability that makes the current workflow work. Worth a discussion
-before anyone starts, not a decision to make in passing.
-
-### fsck, and crash consistency
-
-**Done (task 15).** The volume carries a **clean-unmount flag**: bit 0
-of boot-sector byte 0x25, Linux's, and the one `fsck.fat` checks.
-Mounting sets it and unmounting -- which `halt`, `shutdown` and `reboot`
-now do -- clears it. Windows 95's flag, the top bit of `FAT[1]`, is read
-(a volume Windows left dirty is checked) and set when clean, but never
-cleared: mtools refuses a FAT whose second entry is not an end-of-chain
-value, and the first version, which cleared it, locked the host's tools
-out of every disk the machine had been running on. A volume found not cleanly unmounted **is checked and
-repaired at boot**, before anything uses it, and the boot says so.
-`/bin/fsck` checks on demand (`-y` to repair), with fsck's exit codes.
-
-The checking is in `fs/fat16.c` (`fat_check`), reached by a private
-call, `fsctl` (1003), because that is where chains, directories and
-long names are already understood. It checks the FAT copies against
-each other straight off the disk; walks every chain from the root,
-cutting one at the first link that is out of range, free, bad or
-already claimed (a cross-link, or a loop); fits sizes to chains (a size
-beyond the chain is cut to it, a chain beyond the size is cut to it);
-fixes `.` and `..`; frees long-name runs with no 8.3 entry after them;
-frees lost clusters; and copies the first FAT over the second. The
-repairs are fsck.fat's own choices, so the host and the guest agree
-about what "repaired" means -- `kernel/fscktest.sh` damages an image in
-seven ways, checks that `fsck.fat` objects, lets the guest repair it,
-and checks that `fsck.fat` is then satisfied. Repair is refused while
-any file on the volume is open.
-
-Still not done: **ordering**. A repair, or any write, interrupted
-halfway can still leave damage for the next check to find; there is no
-journal. The check at boot is what makes that recoverable rather than
-silent.
-
-What follows is the analysis as it stood before.
-
-There is no `fsck` on the machine. The host has one — `fsck.fat`, which
-the test suites run after every session precisely because a filesystem
-only the kernel can check proves nothing — but the machine cannot check
-its own disk, and a guest that cannot is a guest that has to be shut down
-cleanly or trusted blindly.
-
-This matters more than it looks, because **writes go out as they are
-made**: no journal, no ordering guarantees, and no clean-shutdown flag.
-Pulling the plug mid-write leaves exactly what MS-DOS would have left —
-lost clusters, cross-linked chains, a directory entry whose size
-disagrees with its chain. All recoverable, none currently detected.
-
-What a guest `fsck` has to do, in the order the checks depend on
-each other:
-
-- **The boot sector and BPB** against the partition table, and the two
-  FAT copies against each other — FAT16 keeps two, and `fs/fat16.c`
-  writes both, so a disagreement is the first evidence of a bad write
-- **Cluster chains**: every chain terminates, none loops, none runs off
-  the end of the table
-- **Cross-links**: no cluster claimed by two files, which is the one that
-  cannot be repaired without deciding which file to damage
-- **Lost clusters**: allocated but claimed by no directory entry, the
-  classic `FILE0001.CHK` case
-- **Directory sanity**: `.` and `..` present in every subdirectory and
-  pointing where they should, given that they are the *only* record of a
-  parent; `..` of a directory in the root recorded as cluster 0; sizes
-  against chain lengths; names valid 8.3
-- **The free count**, recomputed
-
-Then the harder half: **repairing**, and doing it in an order that is
-itself crash-safe. A repair interrupted halfway must not leave the volume
-worse than it found it.
-
-Two decisions worth making up front:
-
-1. **A clean-unmount flag.** FAT16 has a place for one — the top bits of
-   FAT entry 1 — and using it is what lets the machine check the disk
-   only when it needs to rather than on every boot. `shutdown` would set
-   it and mount would clear it.
-2. **A program, not a builtin.** `fsck` belongs in `system/`, like
-   `ifconfig` and `ping`, and it needs raw access to `/dev/hda` — which
-   works today, since the disk is an ordinary device the shell can open.
-   That also means it can be run against an unmounted volume, which is
-   the only way to repair one safely.
-
-Being able to run the *host's* `fsck.fat` over the same image afterwards
-is the thing that makes this testable, and it is the same argument that
-chose FAT16 in the first place.
-
-### Shared libraries — done (task 20)
-
-Kept as a record of how, because every step of the plan that stood here
-changed shape on contact:
-
-1. **Position-independent code** is what the plan said, and libc is
-   built `-fPIC` -- a second picolibc build, since PIC costs a register.
-   **libgcc is not PIC** and there is no PIC build of it, so its code is
-   renamed and placed in libc.so's *data* segment (`libc/libc-so.ld`):
-   its absolute addresses become data relocations, in a few pages each
-   process copies anyway, and the rest of the text has no relocations at
-   all. `build.sh` refuses a libc.so with `DT_TEXTREL`, or with anything
-   left undefined.
-2. **`mmap`** places the segments, from `ld.so`, as planned.
-3. **The ELF loader** learned `PT_INTERP` and `PT_PHDR` and an auxiliary
-   vector -- and nothing about `.dynamic`, `.got` or `.plt`, which the
-   plan had it learning. Those are `ld.so`'s. `ld.so` is itself linked at
-   a fixed address, so the kernel relocates nothing and neither does
-   `ld.so` relocate itself.
-4. **The dynamic linker** binds eagerly -- no lazy binding, no resolver
-   trampoline -- so a missing symbol is a refusal before `main`.
-5. **Sharing pages** needed a reference count per page in `pmm.c`, a
-   cache of read-only file pages (`textcache.c`) that mmap consults, and
-   one rule in `vm_protect()`: a page anyone else holds is copied before
-   it is made writable. That rule is copy-on-write without a fault
-   handler, and it is why nothing in the fault path had to change.
-
-What was learned the hard way is in the working notes and `progress.md`: this
-gcc's driver passes neither `-static` nor `-shared` to the linker, and
-a program's `&printf` is its own PLT entry.
-
-### Paging and swapping — done (task 21)
-
-Built as the plan here said, and the plan's list is what it took:
-
-- **A fault path that resolves** -- `vm_fault()`, called from the access
-  fault handler and from `uaccess` (the kernel walks tables rather than
-  touching, so it must do what a fault would).
-- **Lazy pages.** Stacks, the heap and anonymous `mmap` are invalid
-  descriptors marked `SW_LAZY` until touched. A program's 1 MB stack
-  cost 256 pages at exec; it now costs the pages it uses.
-- **Copy-on-write `fork`**: writable pages go read-only in both spaces,
-  marked `SW_COW`, and the first write copies -- or, if the other side
-  has gone, just makes the page writable again.
-- **A swap file**, not a partition: `swapon` turns its clusters into
-  sectors once (the filesystem's `bmap`), and the kernel then reads and
-  writes them directly, never re-entering the filesystem. The file is
-  refused to writes, truncation, renames and deletion while in use.
-- **Replacement** is the clock algorithm over the MMU's used bits, across
-  every address space; only pages with one holder are taken, which also
-  covers **pinning**: a system call that sleeps holding a user page's
-  physical address takes a reference to it first.
-
-Deliberate limits: eviction happens only where a page is about to be
-given to a program, never inside `pmm_alloc`; there is no swap cache, so
-a page read back in gives up its slot; and when memory is overcommitted
-and nothing is left, whoever faults is killed (SIGKILL) -- not one
-chosen victim as Linux's OOM killer would pick.
-
-### Loose ends
-
-- **Consider upstreaming** the `sm501.c` build fix and the IACK callback.
-  Both are plausibly of general use, which is why `qemu-patch/` is
-  GPL-2.0-or-later.
-
-## 12. Next
-
-1. **A bigger address space, then `brk`, then `malloc`.** In that order,
-   because each step is useful on its own and the first is a constant.
-   Everything downstream — `mmap`, shared libraries, paging, a real libc,
-   and any hope of running a large program — waits on this.
-2. **A libc** — picolibc or newlib over those stubs. Together with (1)
-   this is what turns "port a program" from a rewrite into a build.
-3. **Pipes, `dup2` and redirection.** The shell can already run several
-   programs; this is what makes running them *together* possible, and it
-   is the largest visible gain for the least new machinery.
-4. **A VT102 emulation in `fbcon.c`**, which is what a full-screen
-   program needs and what the line editor's `\r`-and-`\b` rule cannot
-   stretch to cover.
-5. **Long file names**, so the filesystem stops being the thing that
-   decides what can be ported — and **`fsck`**, so the machine can check
-   the disk it just wrote to.
+## 9. Not there yet
+
+The system that runs on this machine is described in [`os.md`](os.md), and
+what remains to be built is listed in [`progress.md`](progress.md). Two
+items belong here rather than there, because they are decisions about the
+machine:
+
+- **Permissions and ownership need a filesystem that can hold them.** FAT
+  cannot (§8), so a genuinely multi-user system means a second filesystem
+  type under the VFS, not a change to `fat16.c`.
+- **Upstreaming.** The `sm501.c` build fix and the IACK callback are both
+  plausibly of general use, which is why `qemu-patch/` is
+  GPL-2.0-or-later rather than matching the rest of the tree.
+
+Nothing is on a "deliberately not doing" list. Paging, shared libraries and
+the remaining TCP options each sat on one once, justified by the machine
+being small; it is not small — 64 MB of RAM and a 512 MB disk — so the
+justification went with them.
