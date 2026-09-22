@@ -391,6 +391,7 @@ static const struct file_ops kbd_ops = {
     kbd_close,
     kbd_fstat,
     0,                          /* poll: the default; see dev.h */
+    0,                          /* truncate: nothing to truncate */
 };
 
 static struct chardev kbd_dev = {

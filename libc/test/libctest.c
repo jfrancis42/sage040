@@ -37,6 +37,7 @@
 #include <sys/time.h>
 #include <sys/statvfs.h>
 #include <sys/file.h>
+#include <sys/ioctl.h>
 
 /* POSIX has programs declare it themselves; picolibc declares it nowhere. */
 extern char **environ;
@@ -267,6 +268,49 @@ static void test_files(void)
                read(r, b, sizeof(b)) == 4 && strcmp(b, "new\n") == 0);
         close(w);
         close(r);
+
+        /* ftruncate, both ways. */
+        {
+            char big[3000];
+            int t = open("/TRUNC.TXT", O_RDWR | O_CREAT | O_TRUNC, 0644), ok, k;
+
+            memset(big, 'x', sizeof(big));
+            write(t, big, sizeof(big));
+            report("ftruncate shortens a file",
+                   ftruncate(t, 10) == 0 && fstat(t, &st) == 0 &&
+                   st.st_size == 10);
+            report("  and lengthens one", ftruncate(t, 5000) == 0 &&
+                                          fstat(t, &st) == 0 &&
+                                          st.st_size == 5000);
+            lseek(t, 0, SEEK_SET);
+            memset(big, 0, sizeof(big));
+            read(t, big, 10);
+            ok = memcmp(big, "xxxxxxxxxx", 10) == 0;
+            {
+                /* All 4990 bytes, each of them zero: a count as well as
+                 * a value, or a gap that read back as nothing at all
+                 * would pass. */
+                int total = 0, got;
+
+                while ((got = read(t, big, sizeof(big))) > 0) {
+                    for (k = 0; k < got; k++) {
+                        ok = ok && big[k] == 0;
+                    }
+                    total += got;
+                }
+                ok = ok && total == 4990;
+            }
+            report("  with zeroes, not whatever the disk held", ok);
+            close(t);
+            report("truncate by name",
+                   truncate("/TRUNC.TXT", 3) == 0 &&
+                   stat("/TRUNC.TXT", &st) == 0 && st.st_size == 3);
+            t = open("/TRUNC.TXT", O_RDONLY);
+            report("ftruncate on a read-only descriptor is refused",
+                   ftruncate(t, 0) < 0 && errno == EINVAL);
+            close(t);
+            unlink("/TRUNC.TXT");
+        }
 
         /* flock: the lock belongs to the open description. */
         r = open("/SHARED.TXT", O_RDONLY);
@@ -501,6 +545,18 @@ static void test_tty(void)
     report("tcgetwinsize gives the terminal's size",
            tcgetwinsize(0, &w) == 0 && w.ws_row == 24 && w.ws_col == 80);
     report("isatty on a file says no", !isatty(open("/LIBCTEST", O_RDONLY)));
+    {
+        /* ioctl() itself, which is what programs call -- neatvi does. */
+        struct winsize w2;
+        int r;
+
+        memset(&w2, 0, sizeof(w2));
+        r = ioctl(0, TIOCGWINSZ, &w2);
+        printf("libctest: ioctl TIOCGWINSZ = %d, %dx%d, errno %d\n", r,
+               w2.ws_row, w2.ws_col, r < 0 ? errno : 0);
+        report("ioctl(TIOCGWINSZ) gives the terminal's size",
+               r == 0 && w2.ws_row == 24 && w2.ws_col == 80);
+    }
 }
 
 int main(int argc, char **argv)

@@ -1058,6 +1058,8 @@ struct sigcontext {
 /* ---------------------------------------------------------------- */
 
 #define __NR_chmod          15
+#define __NR_truncate       92
+#define __NR_ftruncate      93
 #define __NR_setuid         23
 #define __NR_getuid         24
 #define __NR_setgid         46

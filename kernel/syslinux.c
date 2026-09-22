@@ -458,6 +458,31 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
     case __NR_flock:
         return vfs_flock((int)a1, (int)a2);
 
+    case __NR_ftruncate:
+        if ((s32)a2 < 0) {
+            return -EINVAL;
+        }
+        return vfs_ftruncate((int)a1, a2);
+
+    case __NR_truncate: {
+        int fd;
+
+        if ((s32)a2 < 0) {
+            return -EINVAL;
+        }
+        err = fetch_str(path, a1, sizeof(path));
+        if (err < 0) {
+            return err;
+        }
+        fd = fd_open(path, O_WRONLY);
+        if (fd < 0) {
+            return fd;
+        }
+        err = vfs_ftruncate(fd, a2);
+        fd_close(fd);
+        return err;
+    }
+
     case __NR_symlinkat:
         return -EPERM;          /* FAT cannot hold one */
 

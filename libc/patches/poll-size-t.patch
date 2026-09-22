@@ -1,0 +1,14 @@
+picolibc 1.8.12: <poll.h> uses __size_t for nfds_t without including
+<sys/_types.h>, where it is defined, so a file whose first include is
+<poll.h> does not compile. Found porting neatvi. Not specific to m68k.
+
+--- a/libc/include/poll.h
++++ b/libc/include/poll.h
+@@ -37,6 +37,7 @@
+ #define _POLL_H_
+ 
+ #include <sys/cdefs.h>
++#include <sys/_types.h>             /* __size_t, for nfds_t */
+ 
+ struct pollfd {
+     int   fd;

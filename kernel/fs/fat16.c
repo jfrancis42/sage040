@@ -3213,6 +3213,96 @@ static int fat_file_fstat(struct file *f, struct stat *st)
     return 0;
 }
 
+/*
+ * ftruncate. Shorter: the clusters past the new end are freed, and every
+ * handle open on the file forgets where it was in the chain. Longer: the
+ * gap is written with zeroes, through the same path a write takes, so
+ * that nothing beyond the old end reads back as whatever the clusters
+ * held before -- which is what POSIX says a file extended this way
+ * contains.
+ */
+static int fat_file_truncate(struct file *f, u32 len)
+{
+    struct fat_file *ff = handle(priv_to_handle(f));
+    struct fat_node *n;
+    int err;
+
+    if (!ff) {
+        return -EBADF;
+    }
+    if (!can_write(ff->flags)) {
+        return -EINVAL;             /* Linux's answer for a read-only fd */
+    }
+    n = ff->node;
+
+    if (len < n->size) {
+        u32 need = (len + cluster_bytes - 1) / cluster_bytes;
+
+        if (need == 0) {
+            if (n->first) {
+                err = fat_free_chain(n->first);
+                if (err != 0) {
+                    return err;
+                }
+            }
+            n->first = 0;
+        } else {
+            u32 c = n->first, k;
+            u16 next = 0;
+
+            for (k = 1; k < need; k++) {
+                if (fat_get(c, &next) != 0) {
+                    return -EIO;
+                }
+                c = next;
+            }
+            if (fat_get(c, &next) != 0) {
+                return -EIO;
+            }
+            err = fat_set(c, 0xffff);
+            if (err == 0 && cluster_valid(next)) {
+                err = fat_free_chain(next);
+            }
+            if (err != 0) {
+                return err;
+            }
+        }
+        n->size = len;
+        n->dirty = 1;
+        node_forget_hints(n);
+        err = file_sync(ff);
+        return err ? err : fat_flush_all();
+    }
+
+    if (len > n->size) {
+        static const u8 zeroes[SECTOR_SIZE];
+        u32 pos = ff->pos;
+        u8 flags = ff->flags;
+
+        ff->flags &= (u8)~O_APPEND;
+        ff->pos = n->size;
+        while (ff->pos < len) {
+            u32 k = len - ff->pos;
+            s32 w;
+
+            if (k > sizeof(zeroes)) {
+                k = sizeof(zeroes);
+            }
+            w = fat_handle_write(priv_to_handle(f), zeroes, k);
+            if (w <= 0) {
+                ff->pos = pos;
+                ff->flags = flags;
+                return w < 0 ? w : -EIO;
+            }
+        }
+        ff->pos = pos;
+        ff->flags = flags;
+        err = file_sync(ff);
+        return err ? err : fat_flush_all();
+    }
+    return 0;
+}
+
 static const struct file_ops fat_file_ops = {
     fat_file_read,
     fat_file_write,
@@ -3221,6 +3311,7 @@ static const struct file_ops fat_file_ops = {
     fat_file_close,
     fat_file_fstat,
     0,                          /* poll: the default; see dev.h */
+    fat_file_truncate,
 };
 
 static int fat_open(const char *path, int flags, struct file *f)

@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: 17 of 23 complete.**
+**Status: 18 of 23 complete.**
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -46,7 +46,7 @@ drive almost all of it:
 | 14 | VFAT long file names | 8.3 decides what can be shipped | **done** |
 | 15 | `fsck`, and a clean-unmount flag | the machine cannot check its own disk | **done** |
 | 16 | Build and run uEmacs | the cheapest real editor | **done** |
-| 17 | Build and run vi | the other one | todo |
+| 17 | Build and run vi | the other one | **done** |
 | 18 | A resolver (DNS), then **NTP** | independent of the editor work; both are UDP clients and NTP wants a name | todo |
 | 19 | TCP: window scaling, timestamps, SACK, keepalives, real `TIME_WAIT` | was "deliberately not doing"; now on the list | todo |
 | 20 | Shared libraries | downstream of `mmap` and the libc | todo |
@@ -146,9 +146,9 @@ printing `ok`/`FAIL` per line, counted and named by the script — a new
 check is a line of C. A group is added only once its calls work, so a
 failure there is always a regression.
 
-**714 checks across ten suites now:** 12 device programs, 59 fs, 368
-api, 29 edit, 18 vm, 17 net, 95 vt, 84 libc, 23 fsck, 9 uemacs. The libc
-and uEmacs suites need `make libc` first.
+**729 checks across eleven suites now:** 12 device programs, 59 fs, 368
+api, 29 edit, 18 vm, 17 net, 95 vt, 90 libc, 23 fsck, 9 uemacs, 9 vi.
+The libc, uEmacs and vi suites need `make libc` first.
 
 ### 1. Grow the user address space — done
 
@@ -1015,6 +1015,41 @@ rule back and flock always succeeding, exactly those checks fail.
 
 The screen shot is `ports/uemacs/uemacs.png`, from the test's own
 session.
+
+### 17. Build and run vi — done
+
+**vi is neatvi** (`ports/vi/`), Ali Gholami Rudi's vi and ex: complete
+-- operators, counts, registers, undo, ex with regular expressions,
+windows -- in 9,000 lines of POSIX that write their own escape
+sequences. ISC-licensed, fetched at a pinned commit like uEmacs. 143 KB
+of text.
+
+**Why not BusyBox's vi**, which `emacs.md` named: it lives inside
+BusyBox's `libbb`, whose header pulls in the network headers picolibc
+lacks. Building it would have been porting half of BusyBox.
+
+**What it needed:**
+
+- **`ftruncate` and `truncate`** (Linux 93 and 92), which the kernel
+  did not have. `struct file_ops` gained a `truncate` member; FAT's cuts
+  the chain and forgets every handle's chain hint, or extends the file
+  with zeroes through the ordinary write path, so the gap reads back as
+  zeroes. Wrappers in the m68k backend.
+- **A third picolibc patch**: `<poll.h>` used `__size_t` without
+  including the header that defines it.
+- **A patch to neatvi**: its client for a named Unix-domain socket is
+  compiled out where there is no `<sys/socket.h>`.
+
+**neatvi uses one row more than the terminal reports** -- status line
+on the last row, message line one below. Measured with `stty rows 20`:
+it draws 21. Harmless on the 30-row screen, and neatvi's own layout
+rather than anything here, so left alone.
+
+**Tests:** `kernel/vitest.sh`, a new suite, 9 checks: `G` `o`, `1G` `0`
+`4l` `i`, `dd` then `u`, `:%s`, `:wq`, then the host reads the file and
+vcsnap's copy of the screen; the terminal's modes afterwards. It passed
+on its first run. libctest gained a check of `ioctl(TIOCGWINSZ)` itself,
+added while working out where neatvi's extra row came from.
 
 ## Decisions worth knowing about
 

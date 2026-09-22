@@ -34,7 +34,8 @@
  */
 
 /*
- * pause, usleep, select and flock are not in picolibc's libos/linux (1.8.12)
+ * pause, usleep, select, flock, ftruncate and truncate are not in
+ * picolibc's libos/linux (1.8.12)
  * on any architecture. They are here, in the m68k backend, only so that
  * the release underneath stays unmodified; nothing in them is specific
  * to m68k, and they belong beside the other calls in libos/linux.
@@ -94,4 +95,29 @@ int
 flock(int fd, int op)
 {
     return syscall(LINUX_SYS_flock, fd, op);
+}
+
+/*
+ * off_t is 64 bits and the calls here take 32: a length that does not
+ * fit is refused rather than cut, since no file on a FAT volume can be
+ * that long anyway.
+ */
+int
+ftruncate(int fd, off_t len)
+{
+    if (len < 0 || len > 0x7fffffff) {
+        errno = EINVAL;
+        return -1;
+    }
+    return syscall(LINUX_SYS_ftruncate, fd, (long)len);
+}
+
+int
+truncate(const char *path, off_t len)
+{
+    if (len < 0 || len > 0x7fffffff) {
+        errno = EINVAL;
+        return -1;
+    }
+    return syscall(LINUX_SYS_truncate, path, (long)len);
 }

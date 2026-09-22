@@ -137,6 +137,7 @@ static const struct file_ops serial_ops = {
     serial_close,
     serial_fstat,
     0,                          /* poll: the default; see dev.h */
+    0,                          /* truncate: nothing to truncate */
 };
 
 static struct chardev serial_dev = {

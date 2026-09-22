@@ -1,0 +1,38 @@
+neatvi on Sage040, against picolibc.
+
+cmd.c: cmd_unix() talks to a server over a named Unix-domain socket, and
+this system has none -- nor does picolibc have <sys/socket.h>. Where the
+header is missing it returns NULL, as it does when the connection fails.
+
+--- a/cmd.c
++++ b/cmd.c
+@@ -5,8 +5,11 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <unistd.h>
++#if __has_include(<sys/socket.h>)
+ #include <sys/socket.h>
+ #include <sys/un.h>
++#define HAVE_UNIX_SOCKETS 1
++#endif
+ #include <sys/wait.h>
+ #include <sys/ioctl.h>
+ #include <termios.h>
+@@ -169,6 +172,11 @@
+ 
+ char *cmd_unix(char *path, char *ibuf)
+ {
++#ifndef HAVE_UNIX_SOCKETS
++	(void) path;
++	(void) ibuf;
++	return NULL;		/* no Unix-domain sockets on this system */
++#else
+ 	char buf[512];
+ 	int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+ 	struct sockaddr_un addr;
+@@ -191,4 +199,5 @@
+ 		sbuf_mem(&sb, buf, nc);
+ 	close(fd);
+ 	return sbuf_done(&sb);
++#endif
+ }

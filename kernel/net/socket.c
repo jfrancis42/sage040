@@ -332,6 +332,7 @@ static const struct file_ops sock_ops = {
     sock_close,
     sock_fstat,
     sock_poll,
+    0,                          /* truncate: nothing to truncate */
 };
 
 /* --- the calls -------------------------------------------------------- */

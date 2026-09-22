@@ -1092,6 +1092,11 @@ a C library is. `read` on one is `EISDIR`, as on Linux. lib/ulib's older
 `getdents(index, &dirent)` walks the working directory by index and
 returns `-ENOENT` when there are no more.
 
+`ftruncate` and `truncate` cut a file or extend it with zeroes; `flock`
+takes BSD advisory locks, shared or exclusive, held by the open file
+description and released at its last close. A file can be open for
+writing while other descriptors read it, and they see what is written.
+
 **Shut the machine down, or it checks the disk next time.** Mounting
 marks the volume in use and unmounting -- `halt`, `shutdown`, `reboot`
 -- marks it clean; a machine reset or an emulator killed leaves it

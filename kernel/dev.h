@@ -66,6 +66,13 @@ struct file_ops {
      * reading one never waits.
      */
     int (*poll)(struct file *f);
+
+    /*
+     * Make the file exactly `len` bytes: cut off what is past it, or
+     * add zeroes up to it. ftruncate() is this. Null for anything that
+     * has no length -- a device, a pipe -- which gets EINVAL.
+     */
+    int (*truncate)(struct file *f, u32 len);
 };
 
 struct file {

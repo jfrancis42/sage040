@@ -25,7 +25,7 @@ numbers, the calling convention, the structures. So the port is:
 
 | | |
 |---|---|
-| `picolibc/libos/linux/machine/m68k/` | the m68k backend: Linux/m68k's constants and structure layouts, a `syscall()` in assembly, and the POSIX calls picolibc's Linux layer lacks everywhere (`pause`, `usleep`, `select`, `flock`) |
+| `picolibc/libos/linux/machine/m68k/` | the m68k backend: Linux/m68k's constants and structure layouts, a `syscall()` in assembly, and the POSIX calls picolibc's Linux layer lacks everywhere (`pause`, `usleep`, `select`, `flock`, `ftruncate`, `truncate`) |
 | `patches/` | fixes to picolibc itself, for bugs that are not about m68k |
 | `build.sh` | fetch, verify, lay the backend over the release, apply the patches, build |
 | `termcap/` | termcap with the one terminal compiled in -- a VT102 -- and the size asked of the terminal; BSD-licensed, since it is linked into programs that are not GPL |

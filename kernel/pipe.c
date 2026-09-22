@@ -213,6 +213,7 @@ static const struct file_ops pipe_ops = {
     pipe_close,
     pipe_fstat,
     pipe_poll,
+    0,                          /* truncate: nothing to truncate */
 };
 
 /* A new ring with one reader and one writer counted, or null. */
@@ -387,6 +388,7 @@ static const struct file_ops usock_ops = {
     usock_close,
     usock_fstat,
     usock_poll,
+    0,                          /* truncate: nothing to truncate */
 };
 
 int usock_is(struct file *f)

@@ -501,6 +501,7 @@ static const struct file_ops dir_ops = {
     dir_close,
     dir_fstat,
     0,
+    0,                          /* truncate: nothing to truncate */
 };
 
 static int dir_open(const char *path, int flags)
@@ -962,6 +963,19 @@ int vfs_stat(const char *path, struct stat *st)
         return -ENOSYS;
     }
     return mounted_fs->stat(path, st);
+}
+
+int vfs_ftruncate(int fd, u32 len)
+{
+    struct file *f = fd_get(fd);
+
+    if (!f) {
+        return -EBADF;
+    }
+    if (!f->ops || !f->ops->truncate) {
+        return -EINVAL;
+    }
+    return f->ops->truncate(f, len);
 }
 
 int vfs_check(int flags, struct fsck_report *r)

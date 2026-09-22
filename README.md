@@ -571,6 +571,10 @@ editing a file on the framebuffer console (`ports/uemacs/`).
 
 ![uEmacs](ports/uemacs/uemacs.png)
 
+and vi -- neatvi, `ports/vi/`:
+
+![vi](ports/vi/vi.png)
+
 ---
 
 ## Status
