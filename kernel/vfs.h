@@ -68,6 +68,11 @@ struct fs_type {
      * NOW -- what an *at call and fchdir resolve an open directory by. */
     int (*dir_path)(u32 ino, char *out, u32 size);
 
+    /* A file's modification and access times, in seconds since 1970;
+     * (u32)-1 leaves that one alone. By name, or by open file. */
+    int (*utime)(const char *path, u32 mtime, u32 atime);
+    int (*futime)(struct file *f, u32 mtime, u32 atime);
+
     /* Check the volume, and with FSCK_REPAIR put it right. */
     int (*check)(int flags, struct fsck_report *r);
 
@@ -152,6 +157,8 @@ s32  vfs_getdents64(int fd, u8 *buf, u32 len);
 int  vfs_is_dir_file(struct file *f);
 int  vfs_dir_path(struct file *f, char *out, u32 size);
 int  vfs_fchdir(int fd);
+int  vfs_utime(const char *path, u32 mtime, u32 atime);
+int  vfs_futime(int fd, u32 mtime, u32 atime);
 int  vfs_statfs(struct statfs *s);
 int  vfs_check(int flags, struct fsck_report *r);
 int  vfs_flock(int fd, int op);
@@ -172,6 +179,8 @@ int  vfs_sync(void);
  * moved every task's idea of where it was, including the shell's.
  */
 u32  vfs_cwd_ino(void);
+u32  vfs_root_ino(void);                /* where "/" is for this task */
+int  vfs_chroot(const char *path);
 void vfs_cwd_set(u32 ino, const char *path);
 const char *vfs_cwd_path(void);
 

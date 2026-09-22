@@ -3,7 +3,7 @@
 #ifndef MEMDEV_H
 #define MEMDEV_H
 
-/* /dev/null, /dev/zero and /dev/full. */
+/* /dev/null, /dev/zero, /dev/full, /dev/random and /dev/urandom. */
 int memdev_init(void);
 
 #endif

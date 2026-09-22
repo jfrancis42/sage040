@@ -1052,7 +1052,11 @@ struct utsname {
     char release[16];
     char machine[16];
     char version[32];
+    char nodename[65];          /* the host name: sethostname() */
+    char pad[3];
 };
+
+#define HOST_NAME_MAX   64
 
 /*
  * Signals, with Linux's numbers -- all 31 of them, because a ported
@@ -1135,7 +1139,10 @@ struct sigaction {
 #define SA_NOCLDSTOP    0x00000001
 #define SA_SIGINFO      0x00000004      /* three arguments: see struct siginfo */
 #define SA_RESTORER     0x04000000
-#define SA_ONSTACK      0x08000000      /* refused: no sigaltstack */
+#define SA_ONSTACK      0x08000000      /* on the sigaltstack, if set */
+#define SS_ONSTACK      1
+#define SS_DISABLE      2
+#define MINSIGSTKSZ     2048
 #define SA_RESTART      0x10000000
 #define SA_NODEFER      0x40000000
 #define SA_RESETHAND    0x80000000
@@ -1180,6 +1187,19 @@ struct sigcontext {
 /* ---------------------------------------------------------------- */
 
 #define __NR_link            9
+#define __NR_chroot         61
+#define __NR_setsid         66
+#define __NR_getpriority    96
+#define __NR_setpriority    97
+#define __NR_sigaltstack   186
+#define PRIO_PROCESS    0
+#define PRIO_PGRP       1
+#define PRIO_USER       2
+#define __NR_sethostname    74
+#define __NR_getsid        147
+#define __NR_utimensat     316
+#define UTIME_NOW       ((1L << 30) - 1)
+#define UTIME_OMIT      ((1L << 30) - 2)
 #define __NR_mknod          14
 #define __NR_chmod          15
 #define __NR_chown          16

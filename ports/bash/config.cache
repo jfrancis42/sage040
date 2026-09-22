@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Jeff Francis
+#
+# The answers bash's configure cannot find out when cross-compiling --
+# it would run a program on the machine -- given here as they are on
+# SuckOS. Each is Linux's answer, which is this kernel's ABI, unless
+# said otherwise.
+
+# The exit status is in bits 8-15 of a wait status. configure's default
+# is 0, which would make every $? wrong.
+bash_cv_wexitstatus_offset=8
+# picolibc's snprintf and vsnprintf are C99's.
+bash_cv_func_snprintf=yes
+bash_cv_func_vsnprintf=yes
+# picolibc's printf does %a.
+bash_cv_printf_a_format=yes
+# sigsetjmp/siglongjmp are there (<setjmp.h>).
+bash_cv_func_sigsetjmp=present
+# Job control: process groups, tcsetpgrp, SIGTSTP/SIGCONT, WUNTRACED.
+bash_cv_job_control_missing=present
+# A handler stays installed after it runs (sigaction semantics).
+bash_cv_must_reinstall_sighandlers=no
+# dup2 clears FD_CLOEXEC on the new descriptor (kernel/vfs.c fd_dup2).
+bash_cv_dup2_broken=no
+# opendir refuses a non-directory (ENOTDIR).
+bash_cv_opendir_not_robust=no
+# There is no /dev/fd and FAT cannot hold a FIFO, so no process
+# substitution for now (progress.md, task 30).
+bash_cv_dev_fd=absent
+bash_cv_sys_named_pipes=missing
+# picolibc has strsignal, not sys_siglist.
+bash_cv_sys_siglist=no
+bash_cv_under_sys_siglist=no
+# getcwd(NULL, 0) is not relied on.
+bash_cv_getcwd_malloc=no

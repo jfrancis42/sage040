@@ -40,6 +40,10 @@ srcs_os_linux_machine = [
   'posix-extra.c',
   'posix-more.c',
   'stdio-ext.c',
+  'posix-files.c',
+  'posix-proc.c',
+  'glob.c',
+  'syslog.c',
 ]
 
 src_os_linux_machine = files(srcs_os_linux_machine)

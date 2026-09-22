@@ -58,7 +58,7 @@ struct file;
  * Five ticks is 50 ms: long enough that switching costs nothing
  * measurable, short enough that a compute-bound program does not make
  * the machine feel stuck. */
-#define TASK_SLICE      5
+#define TASK_SLICE      5       /* ticks a turn lasts at nice 0 */
 
 enum task_state {
     TASK_UNUSED = 0,
@@ -93,6 +93,7 @@ struct task {
     int   signalled;            /* the signal that ended it, or 0      */
     struct task *parent;
     int   pgid;                 /* process group: what ctrl-C reaches  */
+    int   sid;                  /* session: the groups a login holds   */
 
     /*
      * Signals. A bitmask each, signal N in bit N-1 (SIGMASK), because
@@ -117,6 +118,8 @@ struct task {
     int   syscall_nr;
 
     int   slice;                /* ticks left in this turn             */
+    int   nice;                 /* -20..19: how long its turns are     */
+    u32   ss_sp, ss_size;       /* sigaltstack; size 0 when there is none */
     int   background;
     int   exiting;
     int   stop_reported;        /* its stop has been told to the parent */
@@ -134,6 +137,7 @@ struct task {
      * number here and be equally well served.
      */
     u32   cwd_ino;
+    u32   root_ino;             /* chroot: where "/" is, 0 the real one */
     char  cwd_path[PATH_MAX];
     u32   umask;                /* kept and reported; FAT has no modes  */
 
@@ -227,6 +231,7 @@ void task_init(void);
 struct task *task_create(const char *name, void (*entry)(void));
 
 struct task *task_find(int pid);
+int task_slice(const struct task *t);   /* ticks in a turn, from nice */
 struct task *task_nth(int index);
 
 /* Give up the processor. Returns when this task runs again. */

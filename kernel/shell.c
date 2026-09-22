@@ -30,7 +30,7 @@
 #include "edit.h"
 #include "string.h"
 
-#define LINE_MAX    128
+#define LINE_MAX    1024
 #define MAX_ARGS    16
 #define IOBUF_SIZE  512
 #define OUTBUF_SIZE 256
@@ -39,6 +39,10 @@ static char line[LINE_MAX];
 /* The line as it was typed, before split() chopped it into pieces. `&`
  * puts this in the job table and `fg` gets it back. */
 static char cmdline_saved[LINE_MAX];
+
+/* sh -e and sh -x. */
+static int opt_errexit;
+static int opt_xtrace;
 
 /* What the last command returned, for $? and for scripts. */
 static int last_status;
@@ -1586,14 +1590,14 @@ static int wait_for(int pid, const char *what)
  * a letter. $$ is this shell's pid, because a script needs some way to
  * make a name nothing else will use.
  */
-static void expand(char *line, u32 max)
+static int expand(char *line, u32 max)
 {
-    char out[LINE_MAX];
+    char out[2 * LINE_MAX];     /* room to notice going past max */
     u32 i = 0, o = 0;
 
     int in_single = 0, in_double = 0;
 
-    while (line[i] && o + 1 < max) {
+    while (line[i] && o + 1 < sizeof(out)) {
         char name[32];
         u32 n = 0;
         const char *val;
@@ -1610,7 +1614,7 @@ static void expand(char *line, u32 max)
             in_double = !in_double;
         } else if (line[i] == '\\' && !in_single && line[i + 1]) {
             out[o++] = line[i++];
-            if (o + 1 < max) {
+            if (o + 1 < sizeof(out)) {
                 out[o++] = line[i++];
             }
             continue;
@@ -1633,7 +1637,7 @@ static void expand(char *line, u32 max)
                 buf[k++] = (char)('0' + pid % 10);
                 pid /= 10;
             }
-            while (k > 0 && o + 1 < max) {
+            while (k > 0 && o + 1 < sizeof(out)) {
                 out[o++] = buf[--k];
             }
             continue;
@@ -1651,7 +1655,7 @@ static void expand(char *line, u32 max)
                 buf[k++] = (char)('0' + v % 10);
                 v /= 10;
             }
-            while (k > 0 && o + 1 < max) {
+            while (k > 0 && o + 1 < sizeof(out)) {
                 out[o++] = buf[--k];
             }
             continue;
@@ -1675,13 +1679,17 @@ static void expand(char *line, u32 max)
             continue;
         }
         val = env_get(name);
-        while (val && *val && o + 1 < max) {
+        while (val && *val && o + 1 < sizeof(out)) {
             out[o++] = *val++;
         }
     }
     out[o] = '\0';
-    strncpy(line, out, max - 1);
-    line[max - 1] = '\0';
+    /* Too long once expanded: an error, never a command cut short. */
+    if (line[i] || o >= max) {
+        return -1;
+    }
+    memcpy(line, out, o + 1);
+    return 0;
 }
 
 /*
@@ -2347,7 +2355,10 @@ static void run_list(char *line)
             u32 a = 0, b;
 
             if (n > sizeof(seg) - 3) {
-                n = sizeof(seg) - 3;
+                /* Refused, never cut short. */
+                err_puts("sh: command too long\n");
+                last_status = 2;
+                n = 0;
             }
             memcpy(seg, start, n);
             b = n;
@@ -2363,7 +2374,18 @@ static void run_list(char *line)
                            (cond == 2 && last_status != 0))) {
                 strncpy(cmdline_saved, seg + a, sizeof(cmdline_saved) - 1);
                 cmdline_saved[sizeof(cmdline_saved) - 1] = '\0';
+                if (opt_xtrace) {
+                    err_puts("+ ");
+                    err_puts(seg + a);
+                    err_puts("\n");
+                }
                 run_command(seg + a);
+                /* -e: a failure that is not the left of && or || ends
+                 * the shell, with that status. */
+                if (opt_errexit && last_status != 0 && next == 0) {
+                    out_flush();
+                    sys_exit(last_status);
+                }
             }
             cond = next;
             if (c == '\0') {
@@ -2385,7 +2407,11 @@ static void run_command(char *cmdline)
     int err;
 
     {
-        expand(cmdline, LINE_MAX);
+        if (expand(cmdline, LINE_MAX) < 0) {
+            err_puts("sh: command too long\n");
+            last_status = 2;
+            return;
+        }
         if (has_bar(cmdline)) {
             run_pipeline(cmdline);
             return;
@@ -2908,14 +2934,58 @@ int shell_main(int argc, char **args, char **envp)
         env_set("TERM", "vt102");
     }
 
-    if (argc > 2 && strcmp(args[1], "-c") == 0) {
-        strncpy(line, args[2], sizeof(line) - 1);
-        line[sizeof(line) - 1] = '\0';
-        strncpy(cmdline_saved, line, sizeof(cmdline_saved) - 1);
-        cmdline_saved[sizeof(cmdline_saved) - 1] = '\0';
-        run_list(line);
-        out_flush();
-        return last_status;
+    /*
+     * Options, in clusters as POSIX has them: -c (the command is the next
+     * argument), -e (stop at the first command that fails) and -x (show
+     * each command, with a "+ ", on stderr). make runs recipes as
+     * `sh -ec 'command'`.
+     */
+    {
+        int i = 1, cmd = 0;
+
+        while (i < argc && args[i][0] == '-' && args[i][1]) {
+            const char *o = args[i] + 1;
+
+            if (strcmp(args[i], "--") == 0) {
+                i++;
+                break;
+            }
+            for (; *o; o++) {
+                if (*o == 'c') {
+                    cmd = 1;
+                } else if (*o == 'e') {
+                    opt_errexit = 1;
+                } else if (*o == 'x') {
+                    opt_xtrace = 1;
+                } else {
+                    char bad[2] = { *o, '\0' };
+
+                    err_puts("sh: unknown option -");
+                    err_puts(bad);
+                    err_puts("\n");
+                    return 2;
+                }
+            }
+            i++;
+        }
+        if (cmd) {
+            if (i >= argc) {
+                err_puts("sh: -c needs a command\n");
+                return 2;
+            }
+            if (strlen(args[i]) >= sizeof(line)) {
+                err_puts("sh: command too long\n");
+                return 2;
+            }
+            strcpy(line, args[i]);
+            strncpy(cmdline_saved, line, sizeof(cmdline_saved) - 1);
+            cmdline_saved[sizeof(cmdline_saved) - 1] = '\0';
+            run_list(line);
+            out_flush();
+            return last_status;
+        }
+        args += i - 1;
+        argc -= i - 1;
     }
     if (argc > 1) {
         int err = run_script(args[1]);

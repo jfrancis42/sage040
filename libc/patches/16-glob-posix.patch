@@ -1,0 +1,18 @@
+picolibc 1.8.12: <glob.h> is the BSD one and lacks two names POSIX
+requires, GLOB_NOESCAPE and GLOB_ABORTED. Added; glob() itself is in
+this system's backend (machine/m68k/glob.c), since picolibc has none.
+
+diff -ru a/libc/include/glob.h b/libc/include/glob.h
+--- a/libc/include/glob.h	2026-09-22 10:44:01.194940037 -0600
++++ b/libc/include/glob.h	2026-09-22 10:44:01.257177102 -0600
+@@ -82,6 +82,10 @@
+ #define GLOB_ABEND   (-2) /* Unignored error. */
+ #define GLOB_NOMATCH (-3) /* No match and GLOB_NOCHECK not set. */
+ 
++/* POSIX's names, which the BSD-derived list above lacks. */
++#define GLOB_NOESCAPE 0x2000       /* Backslash is not an escape. */
++#define GLOB_ABORTED  GLOB_ABEND   /* The scan was stopped by an error. */
++
+ _BEGIN_STD_C
+ int  glob(const char  *__restrict, int, int (*)(const char *, int),
+           glob_t  *__restrict) __picolibc_export;

@@ -3,12 +3,12 @@
 /*
  * task.c - the scheduler.
  *
- * Round robin over whatever is ready, with a fixed slice. There is no
- * priority and no fairness accounting, and both are deliberate: a
- * machine running a shell, a program and an idle loop gets nothing from
- * a scheduler that can rank them, and a wrong ranking is far harder to
- * see than a simple one. When there is something to prioritise, this is
- * the file that grows.
+ * Round robin over whatever is ready. A task's NICE value sets how long
+ * its turn is, not whether it gets one: each step of nice is about a
+ * quarter more or less time, as Linux weighs it, so two busy tasks ten
+ * apart share the processor about 5 to 1, and nothing is ever starved.
+ * There is no other fairness accounting, deliberately: a ranking that
+ * is wrong is far harder to see than a simple one.
  */
 #include "task.h"
 #include "vm.h"
@@ -48,7 +48,8 @@ static volatile int need_resched;
 /* --- the kernel stack ------------------------------------------------ */
 
 /*
- * Three pages: a guard and then two of stack.
+ * Five pages: a guard and then four of stack -- 16 KB, which leaves the
+ * deepest use yet measured (see THE HIGH-WATER MARK) well under half.
  *
  * The guard comes out of the KERNEL's map rather than the task's,
  * because it is the kernel that would overflow -- running that task's
@@ -56,7 +57,7 @@ static volatile int need_resched;
  * corrupts whatever is next and surfaces somewhere else entirely, which
  * is close to the worst failure a system can have.
  */
-#define KSTACK_PAGES    2
+#define KSTACK_PAGES    4
 #define KSTACK_TOTAL    (KSTACK_PAGES + 1)
 #define KSTACK_BYTES    (KSTACK_PAGES * (u32)PAGE_SIZE)
 
@@ -65,7 +66,7 @@ static volatile int need_resched;
  * it is made, and when its task is reaped the paint left at the bottom
  * says how deep it ever went. The deepest of all is kept, with the name
  * of the task that reached it, and kstat(KSTAT_STACK) reports it -- so
- * "is 8 KB enough" is a measurement, not an estimate from one frame.
+ * "is the stack big enough" is a measurement, not an estimate from one frame.
  */
 #define KSTACK_PAINT    0x5ac3a55aUL
 
@@ -179,6 +180,7 @@ void task_cwd_inherit(struct task *t, struct task *from)
         return;
     }
     t->cwd_ino = from->cwd_ino;
+    t->root_ino = from->root_ino;
     memcpy(t->cwd_path, from->cwd_path, sizeof(t->cwd_path));
     t->umask = from->umask;     /* inherited the same way, and as often */
 }
@@ -240,6 +242,7 @@ struct task *task_create(const char *name, void (*entry)(void))
         return 0;
     }
     t->pgid = t->pid;           /* a kernel task leads its own group */
+    t->sid = t->pid;            /* and its own session: the shell's */
 
     /* A kernel task: supervisor mode, and its "user" stack pointer is
      * never used because it never goes there. */
@@ -344,6 +347,10 @@ struct task *task_fork(struct pt_regs *regs)
     memcpy(t->cmd, p->cmd, sizeof(t->cmd));
     t->parent = p;
     t->pgid = p->pgid;
+    t->sid = p->sid;
+    t->nice = p->nice;
+    t->ss_sp = p->ss_sp;        /* the alternate stack is in the copy */
+    t->ss_size = p->ss_size;
     fd_fork(t, p);
     task_cwd_inherit(t, p);
     memcpy(t->sigact, p->sigact, sizeof(t->sigact));
@@ -461,6 +468,30 @@ static void reap_orphans(void)
     }
 }
 
+/*
+ * Ticks in a turn for each nice value, -20 to 19: TASK_SLICE at 0 and a
+ * factor of 1.25 a step, capped at 40 ticks (400 ms) so that even a
+ * favoured task leaves the terminal responsive, and never below one.
+ */
+static const u8 nice_slice[40] = {
+    40, 40, 40, 40, 40, 40, 40, 40, 40, 40,     /* -20 .. -11 */
+    40, 37, 30, 24, 19, 15, 12, 10,  8,  6,     /* -10 ..  -1 */
+     5,  4,  3,  3,  2,  2,  1,  1,  1,  1,     /*   0 ..   9 */
+     1,  1,  1,  1,  1,  1,  1,  1,  1,  1,     /*  10 ..  19 */
+};
+
+int task_slice(const struct task *t)
+{
+    int n = t->nice;
+
+    if (n < -20) {
+        n = -20;
+    } else if (n > 19) {
+        n = 19;
+    }
+    return nice_slice[n + 20];
+}
+
 void schedule(void)
 {
     struct task *prev = current;
@@ -476,7 +507,7 @@ void schedule(void)
 
     next = pick_next();
     next->state = TASK_RUNNING;
-    next->slice = TASK_SLICE;
+    next->slice = task_slice(next);
     current = next;
 
     if (next == prev) {
@@ -853,6 +884,7 @@ void task_init(void)
     current->cwd_ino = 0;
     strcpy(current->cwd_path, "/");
     current->pgid = current->pid;
+    current->sid = current->pid;
     idle = current;
 }
 

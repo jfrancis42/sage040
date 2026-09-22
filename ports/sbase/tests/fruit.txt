@@ -1,0 +1,6 @@
+banana 3 yellow
+apple 10 red
+cherry 7 red
+apple 2 green
+date 25 brown
+banana 3 yellow

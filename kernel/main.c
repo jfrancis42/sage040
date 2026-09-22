@@ -230,7 +230,7 @@ static void start_drivers(void)
 
     /* Not hardware, so nothing to probe for: /dev/null and friends. */
     if (memdev_init() < 0) {
-        kputs("/dev/null, /dev/zero and /dev/full would not register\n");
+        kputs("/dev/null and the other memory devices would not register\n");
     }
 
     status("video");

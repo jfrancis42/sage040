@@ -9,7 +9,7 @@ the running state as it actually is.
 implementation, and not economy of RAM or disk — both can be increased
 and have been.
 
-**Status: 27 of 31 complete** -- 23 being "regression tests throughout", which is never finished; 24-31 (the standard tools, the POSIX gaps, then Python) are in progress.
+**Status: 28 of 31 complete** -- 23 being "regression tests throughout", which is never finished; 24-31 (the standard tools, the POSIX gaps, then Python) are in progress.
 
 Entries below are filled in *when the work is finished and tested*, not
 before. If a task says done, its tests pass.
@@ -58,7 +58,7 @@ drive almost all of it:
 | 26 | GNU sed | gnulib, a cross configure | **done** |
 | 27 | GNU grep | the same, and gnulib's own regex | **done** |
 | 28 | bash | the most demanding: signals, job control | |
-| 29 | The small utilities: sort, wc, find, xargs, head, tail, cut, tr, uniq... | sbase (suckless): ~100 POSIX tools, MIT, one Makefile | |
+| 29 | The small utilities: sort, wc, find, xargs, head, tail, cut, tr, uniq... | sbase (suckless): ~100 POSIX tools, MIT, one Makefile | **done** |
 | 30 | The POSIX gaps found along the way -- all of them, not only what 24-29 need | see the list under 30; Python will need most | |
 | 31 | Python (CPython) | the largest port yet; 30 prepares for it | |
 
@@ -1248,7 +1248,7 @@ addresses (1).
   had the same bare `-lc` and would have broken on their next build.
 - **picolibc 1.8.12's `cfsetspeed.c` defines `cfsetospeed`** -- so there
   is no `cfsetspeed`, and linking the whole library fails -- and none of
-  the three `cfset*speed` returns a value (`patches/cfsetspeed.patch`).
+  the three `cfset*speed` returns a value (`patches/01-cfsetspeed.patch`).
 - **`clock_getres` existed nowhere**, kernel or libc, though picolibc's
   `timespec_getres` calls it.
 - **libctest exec'd `/LIBCTEST` by name**, so its dynamic build tested
@@ -1602,62 +1602,52 @@ runs from the prompt; the program is what scripts, `xargs`, `find -exec`
 and awk's `system()` reach. Needed already: awk's own `space` test pipes
 into `sort`.
 
-### 30. POSIX gaps found along the way — to do
+### 30. POSIX gaps found along the way — in progress
 
-Found while porting awk, sed, grep and sbase. Those marked (29) are being
-done as part of task 29, because sbase's utilities need them. The rest
-are to be done too, whether or not anything needs them yet: task 31
-(Python) will need most of them, and anything done now makes it easier.
+Found while porting awk, sed, grep and sbase, and done whether or not
+anything needs them yet: task 31 (Python) will need most.
 
-**Kernel**
-- (29) Setting file times: `utimensat`/`futimens`. FAT keeps a
-  modification time; `touch` and any `make` need to set it.
-- (29) Sessions: `setsid`, `getsid`. Process groups exist; sessions and
-  a controlling terminal do not.
-- (29) A settable host name: `sethostname`, and `uname`'s node name from
-  it (now fixed at "sage040" in the C library).
-- Scheduling priorities: `getpriority`/`setpriority`, so `nice` and
-  `renice` mean something. The scheduler is plain round robin.
-- `sigaltstack` (`SA_ONSTACK` is refused).
-- `/dev/random` and `/dev/urandom` need a cryptographic generator;
-  `random.c` is xorshift, which is why neither device exists.
-- `PATH_MAX` is 256 in the kernel and 1024 in picolibc's headers: a
-  program sizing buffers from PATH_MAX is fine, one trusting it gets
-  ENAMETOOLONG past 256. Raise the kernel's, or make them agree.
-- `execve` takes at most 256 arguments, a limit POSIX cannot express
-  (ARG_MAX is bytes); `xargs` builds command lines by bytes.
-- FIFOs, device nodes and links cannot live on FAT: `mkfifo`, `mknod`,
-  `link` and `symlink` fail with EPERM. Named pipes could be kept in
-  memory by the VFS instead.
-- `chroot`: there is one mounted filesystem and no reason yet.
-- `/dev/fd` (or FIFOs) for bash's process substitution `<(...)`.
+**Done**, each with tests in libc/test/posixtest.c (run by libctest.sh)
+and a negative control where the check could pass vacuously:
+- Kernel: file times (`utimensat`, `futimens`; a time set while a file
+  is open and dirty survives its close); sessions (`setsid`, `getsid`,
+  and `setpgid` confined to a session); `sethostname`, and `uname`'s
+  node name from it; scheduling priorities (`getpriority`,
+  `setpriority`, `nice` -- a turn is 1.25x longer or shorter per step,
+  measured 4:1 between nice 0 and 10); `sigaltstack` and `SA_ONSTACK`;
+  `chroot` (per-task root; ".." cannot climb out); `/dev/null`,
+  `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom`; a
+  cryptographic generator (BLAKE2s pool fed by interrupt timing,
+  ChaCha20 output with fast key erasure, ready at 128 credited bits;
+  `getrandom` waits for it); a 16 KB kernel stack; `mknod`, `link` and
+  friends answering EPERM as a FAT mount does.
+- C library: `fdopendir`, `dirfd`, the rest of the *at family, `utime`,
+  `utimes`, `sync`, `confstr`, `clock_settime`, `mkdtemp`, `pipe2`,
+  `dup3`, `glob`, `posix_spawn` and its attributes and file actions,
+  `sigaltstack`, `getrandom` and `<sys/random.h>`, `getloadavg`,
+  `daemon`, `syslog` (to /var/log/messages, no daemon), `chroot`,
+  `<sys/sysmacros.h>`, `tm_gmtoff`/`tm_zone` (POSIX 2024; struct tm grew,
+  so ports rebuild when picolibc's headers change -- `libc_fresh` in
+  ports/cross.sh), `NZERO`, `UTIME_*`, the `SI_` codes with Linux's
+  values, `_SC_NPROCESSORS_*`/`_SC_PHYS_PAGES`, and `waitpid`/`wait3`
+  with a null status (picolibc wrote through it).
+- Shell: `sh -c`, `-e`, `-x` in clusters (make runs `sh -ec`); lines up
+  to 1024 bytes, and anything longer refused, never truncated.
 
-**C library (picolibc)**
-- (29) `fdopendir`, `fchownat`, `fchmodat`, `linkat`, `symlinkat`,
-  `sync`, `confstr`, `clock_settime`, `mkdtemp`, `utime`/`utimes`.
-- (29) Headers: `NZERO` in `<limits.h>`, `UTIME_NOW`/`UTIME_OMIT` in
-  `<sys/stat.h>`, `<sys/sysmacros.h>` (`major`/`minor`/`makedev`).
-- `glob()`, `posix_spawn()`.
-- `struct tm` has no `tm_gmtoff` or `tm_zone`; sbase's `touch` uses
-  them for a trailing `Z` (UTC).
-- `SI_USER` is 1 in picolibc and 0 on Linux, and si_code is passed
-  through from the kernel, so a handler testing for SI_USER misjudges
-  a kill().
-- `sysconf` has no `_SC_NPROCESSORS_*` or `_SC_PHYS_PAGES`: picolibc's
-  `<unistd.h>` does not define the names.
-- `cfsetspeed` is defined but not declared in `<termios.h>`.
-- No `<syslog.h>` and no syslog daemon: sbase's `logger` and `cron`
-  are not built.
-- Time zones: not checked whether `localtime` honours `TZ`.
-
-**Tools and tests**
+**Open:**
+- `PATH_MAX` is 256 in the kernel and 1024 in picolibc's headers.
+- `execve` takes at most 256 arguments, which POSIX cannot express
+  (ARG_MAX is bytes, 30,712 here); `xargs` builds lines by bytes.
+- FIFOs: FAT cannot hold one; named pipes could live in the VFS.
+- `/dev/fd` (bash's process substitution) and pseudo-terminals
+  (`ptsname`, `openpty`; Python's pty module).
+- Time zones: whether `localtime` honours `TZ` is unchecked.
 - grep has no `-P` (no PCRE).
-- sed's and grep's own test suites are shell scripts over a POSIX shell
-  and coreutils: run them once bash and sbase are in (28, 29).
-- awk's `space` and `system-status` tests are skipped until `sort`, a
-  POSIX `kill -SIGNAME`, `$$` and `VAR=value cmd` exist (28, 29).
-- sbase's `nice`, `renice`, `logger`, `cron` and `chroot` are not built
-  (above).
+- No `diff` (POSIX): sbase has none. GNU diffutils (diff, cmp, diff3,
+  sdiff) is the obvious port; bash's and sed's test suites use it.
+- sed's and grep's own test suites, and sbase's, are shell scripts over
+  a POSIX shell: run them once bash is in (28).
+- awk's `space` and `system-status` tests, skipped until bash (28).
 
 ### 31. Python — to do
 

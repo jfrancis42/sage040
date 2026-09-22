@@ -681,6 +681,8 @@ int exec_spawn(const char *path, int argc, char **argv, char **envp)
      * goes to the shell's group and nowhere.
      */
     t->pgid = current->pgid;
+    t->sid = current->sid;
+    t->nice = current->nice;
 
     return t->pid;
 }
@@ -741,6 +743,7 @@ int exec_replace(const char *path, int argc, char **argv, char **envp,
         }
     }
     current->sig_restore_mask = 0;
+    current->ss_sp = current->ss_size = 0;  /* the old image's memory */
 
     /* A fresh FPU, as a new program's is. */
     {

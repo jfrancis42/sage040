@@ -59,7 +59,8 @@ fi
 CFLAGS="-mcpu=68040 -O2 -nostdinc -nostdlib \
         -isystem $SAGE_LIBC/include -isystem $("$CC" -print-file-name=include) \
         -ffunction-sections -fdata-sections -D_GNU_SOURCE"
-mkdir -p "$SRC/sage040"
+. "$HERE/../cross.sh"
+libc_fresh "$SRC/sage040" || true   # rebuilt whole if picolibc's headers changed
 objs=
 for f in b main parse proctab tran lib run lex awkgram.tab; do
     o="$SRC/sage040/$f.o"

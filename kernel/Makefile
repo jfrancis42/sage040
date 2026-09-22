@@ -50,7 +50,7 @@ LDFLAGS := $(CPUFLAGS) -ffreestanding -nostdlib -T kernel.ld \
 # there.
 SRCS := main.c version.c console.c trap.c syscall.c syslinux.c sysuser.c vfs.c dev.c \
  time.c timer.c errno.c string.c exec.c tty.c edit.c \
- pmm.c vm.c mmap.c textcache.c swap.c poll.c pipe.c uaccess.c task.c wait.c signal.c random.c memdev.c fb.c fbcon.c \
+ pmm.c vm.c mmap.c textcache.c swap.c poll.c pipe.c uaccess.c task.c wait.c signal.c random.c crypto.c memdev.c fb.c fbcon.c \
  font8x16.c \
  probe.c shell.c \
  drivers/ns16550.c drivers/ata.c drivers/m48t59.c \

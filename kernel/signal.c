@@ -269,10 +269,6 @@ int signal_set_action(int sig, const struct sigaction *act,
     if (sig == SIGKILL || sig == SIGSTOP) {
         return -EINVAL;
     }
-    if (act->sa_flags & SA_ONSTACK) {
-        return -EINVAL;         /* there is no sigaltstack, and said so */
-    }
-
     t->sigact[sig] = *act;
     t->sigact[sig].sa_mask &= ~SIG_UNBLOCKABLE;
 
@@ -475,6 +471,58 @@ static u32 return_address(const struct sigaction *act, u32 retcode_uva)
 static int setup_rt_frame(struct task *t, struct pt_regs *regs, int sig,
                           struct sigaction *act, u32 usp);
 
+/* Is `usp` on the task's alternate signal stack? */
+static int on_altstack(const struct task *t, u32 usp)
+{
+    return t->ss_size && usp > t->ss_sp && usp - t->ss_sp <= t->ss_size;
+}
+
+/*
+ * Where a handler's frame goes: below the interrupted stack pointer, or
+ * at the top of the alternate stack for an SA_ONSTACK handler -- unless
+ * the task is already on it, when a nested signal stacks up on it
+ * normally. The frame records the interrupted pointer either way, so
+ * sigreturn goes back to the stack the program was on.
+ */
+static u32 frame_base(const struct task *t, const struct sigaction *act, u32 usp)
+{
+    if ((act->sa_flags & SA_ONSTACK) && t->ss_size && !on_altstack(t, usp)) {
+        return t->ss_sp + t->ss_size;
+    }
+    return usp;
+}
+
+int signal_altstack(const stack_t *ss, stack_t *old)
+{
+    struct task *t = current;
+    int on = on_altstack(t, get_usp());
+
+    if (old) {
+        old->ss_sp = (void *)t->ss_sp;
+        old->ss_size = t->ss_size;
+        old->ss_flags = on ? SS_ONSTACK : (t->ss_size ? 0 : SS_DISABLE);
+    }
+    if (!ss) {
+        return 0;
+    }
+    if (on) {
+        return -EPERM;          /* not while running on it */
+    }
+    if (ss->ss_flags == SS_DISABLE) {
+        t->ss_sp = t->ss_size = 0;
+        return 0;
+    }
+    if (ss->ss_flags != 0 && ss->ss_flags != SS_ONSTACK) {
+        return -EINVAL;
+    }
+    if (ss->ss_size < MINSIGSTKSZ) {
+        return -ENOMEM;
+    }
+    t->ss_sp = (u32)ss->ss_sp;
+    t->ss_size = ss->ss_size;
+    return 0;
+}
+
 static int setup_frame(struct task *t, struct pt_regs *regs, int sig,
                        struct sigaction *act)
 {
@@ -521,7 +569,7 @@ static int setup_frame(struct task *t, struct pt_regs *regs, int sig,
         memcpy(f.sc.sc_fpu, fpu, sizeof(fpu));
     }
 
-    fp = (usp - sizeof(f)) & ~3UL;
+    fp = (frame_base(t, act, usp) - sizeof(f)) & ~3UL;
     put_retcode((u8 *)&f + __builtin_offsetof(struct sigframe, retcode),
                 __NR_sigreturn);
     f.retaddr = return_address(act, fp + (u32)__builtin_offsetof(struct sigframe,
@@ -584,7 +632,7 @@ static int setup_rt_frame(struct task *t, struct pt_regs *regs, int sig,
     int i;
 
     memset(&f, 0, sizeof(f));
-    fp = (usp - sizeof(f)) & ~3UL;
+    fp = (frame_base(t, act, usp) - sizeof(f)) & ~3UL;
 
     f.sig = sig;
     f.pinfo = fp + (u32)((u8 *)&f.info - (u8 *)&f);
@@ -598,7 +646,10 @@ static int setup_rt_frame(struct task *t, struct pt_regs *regs, int sig,
     f.info.si_signo = sig;
     f.info.si_code = SI_USER;
 
-    f.uc.uc_stack.ss_flags = 2;     /* SS_DISABLE: there is no altstack */
+    f.uc.uc_stack.ss_sp = (void *)t->ss_sp;
+    f.uc.uc_stack.ss_size = t->ss_size;
+    f.uc.uc_stack.ss_flags = !t->ss_size ? SS_DISABLE
+                           : on_altstack(t, usp) ? SS_ONSTACK : 0;
     f.uc.uc_mcontext.version = MCONTEXT_VERSION;
     for (i = 0; i < 8; i++) {
         f.uc.uc_mcontext.gregs[i] = (int)regs->d[i];

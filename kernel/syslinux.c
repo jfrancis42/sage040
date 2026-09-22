@@ -470,6 +470,158 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         return err < 0 ? err : vfs_stat(path, &st);
     }
 
+    /*
+     * --- priorities: nice values, which set how long a task's turns
+     * are (task.c). One user, root, may raise or lower any of them.
+     * getpriority returns 20 - nice, Linux's convention, so that no
+     * answer looks like an error; the C library turns it back.
+     */
+    case __NR_getpriority:
+    case __NR_setpriority: {
+        struct task *m;
+        int i, found = 0, best = 20;
+        s32 prio = (s32)a3;
+
+        if (a1 > PRIO_USER) {
+            return -EINVAL;
+        }
+        if (prio < -20) {
+            prio = -20;
+        } else if (prio > 19) {
+            prio = 19;
+        }
+        for (i = 0; (m = task_nth(i)) != 0; i++) {
+            int hit;
+
+            if (m->state == TASK_ZOMBIE) {
+                continue;
+            }
+            if (a1 == PRIO_PROCESS) {
+                hit = a2 ? m->pid == (int)a2 : m == current;
+            } else if (a1 == PRIO_PGRP) {
+                hit = m->pgid == (a2 ? (int)a2 : current->pgid);
+            } else {
+                hit = a2 == 0;          /* everything is root's */
+            }
+            if (!hit) {
+                continue;
+            }
+            found = 1;
+            if (nr == __NR_setpriority) {
+                m->nice = (int)prio;
+            } else if (m->nice < best) {
+                best = m->nice;
+            }
+        }
+        if (!found) {
+            return -ESRCH;
+        }
+        return nr == __NR_getpriority ? 20 - best : 0;
+    }
+
+    case __NR_sigaltstack: {
+        stack_t ss, old;
+
+        if (a1) {
+            err = fetch(&ss, a1, sizeof(ss));
+            if (err < 0) {
+                return err;
+            }
+        }
+        err = signal_altstack(a1 ? &ss : 0, a2 ? &old : 0);
+        if (err == 0 && a2) {
+            err = store(a2, &old, sizeof(old));
+        }
+        return err;
+    }
+
+    /* --- sessions --- */
+    case __NR_setsid: {
+        struct task *m;
+        int i;
+
+        /* A group leader cannot start a session, nor anyone whose pid
+         * some group already uses (POSIX); a shell's jobs are leaders,
+         * which is why setsid(1) forks first. */
+        if (current->pgid == current->pid) {
+            return -EPERM;
+        }
+        for (i = 0; (m = task_nth(i)) != 0; i++) {
+            if (m->pgid == current->pid && m->state != TASK_ZOMBIE) {
+                return -EPERM;
+            }
+        }
+        current->sid = current->pgid = current->pid;
+        return current->pid;
+    }
+
+    case __NR_getsid: {
+        struct task *t = a1 ? task_find((int)a1) : current;
+
+        return t ? t->sid : -ESRCH;
+    }
+
+    case __NR_sethostname: {
+        extern char hostname[];
+        char name[HOST_NAME_MAX + 1];
+
+        if (a2 > HOST_NAME_MAX) {
+            return -EINVAL;
+        }
+        err = fetch(name, a1, a2);
+        if (err < 0) {
+            return err;
+        }
+        name[a2] = '\0';
+        memcpy(hostname, name, a2 + 1);
+        return 0;
+    }
+
+    /*
+     * File times. Linux/m68k's struct timespec is two 32-bit words; a
+     * null `times` is "now" for both, UTIME_NOW and UTIME_OMIT per field,
+     * and a null path with a descriptor is futimens().
+     */
+    case __NR_utimensat: {
+        struct timespec ts[2];
+        u32 t[2];
+        int i;
+        struct timeval now;
+
+        clock_get(&now);
+        if (a3) {
+            err = fetch(ts, a3, sizeof(ts));
+            if (err < 0) {
+                return err;
+            }
+            for (i = 0; i < 2; i++) {
+                if (ts[i].tv_nsec == UTIME_NOW) {
+                    t[i] = (u32)now.tv_sec;
+                } else if (ts[i].tv_nsec == UTIME_OMIT) {
+                    t[i] = 0xffffffffUL;
+                } else if (ts[i].tv_nsec >= 1000000000UL) {
+                    return -EINVAL;
+                } else {
+                    t[i] = (u32)ts[i].tv_sec;
+                }
+            }
+        } else {
+            t[0] = t[1] = (u32)now.tv_sec;
+        }
+        if (a4 & ~(u32)AT_SYMLINK_NOFOLLOW) {
+            return -EINVAL;
+        }
+        if (!a2) {
+            return vfs_futime((int)a1, t[1], t[0]);
+        }
+        err = at_path((int)a1, a2, path);
+        return err < 0 ? err : vfs_utime(path, t[1], t[0]);
+    }
+
+    case __NR_chroot:
+        err = fetch_str(path, a1, sizeof(path));
+        return err < 0 ? err : vfs_chroot(path);
+
     /* An open directory as the working directory. */
     case __NR_fchdir:
         return vfs_fchdir((int)a1);
@@ -774,22 +926,34 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
     case __NR_prlimit64:
         return do_prlimit64((int)a1, (int)a2, a3, a4);
 
+    /*
+     * Waits until the pool is ready, as Linux's does; GRND_NONBLOCK makes
+     * that EAGAIN instead. GRND_RANDOM is the same thing, as it has been
+     * on Linux since 5.6. Through a kernel buffer, 256 bytes at a time.
+     */
     case __NR_getrandom: {
+        u8 buf[256];
         u32 done = 0;
 
         if (a3 & ~(u32)(GRND_NONBLOCK | GRND_RANDOM)) {
             return -EINVAL;
         }
+        err = random_wait((a3 & GRND_NONBLOCK) != 0);
+        if (err < 0) {
+            return err;
+        }
         while (done < a2) {
-            u32 v = random_u32();
-            u32 n = (a2 - done < 4) ? a2 - done : 4;
+            u32 n = a2 - done < sizeof(buf) ? a2 - done : sizeof(buf);
 
-            err = store(a1 + done, &v, n);
+            random_get(buf, n);
+            err = store(a1 + done, buf, n);
             if (err < 0) {
+                memset(buf, 0, sizeof(buf));
                 return done ? (s32)done : err;
             }
             done += n;
         }
+        memset(buf, 0, sizeof(buf));
         return (s32)done;
     }
 

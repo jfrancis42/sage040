@@ -42,7 +42,8 @@ fi
 CFLAGS="-mcpu=68040 -O2 -Wall -nostdinc -nostdlib \
         -isystem $SAGE_LIBC/include -isystem $("$CC" -print-file-name=include) \
         -ffunction-sections -fdata-sections -DPOSIX -D_GNU_SOURCE"
-mkdir -p "$SRC/sage040"
+. "$HERE/../cross.sh"
+libc_fresh "$SRC/sage040" || true   # rebuilt whole if picolibc's headers changed
 objs=
 for f in "$SRC"/*.c; do
     o="$SRC/sage040/$(basename "${f%.c}").o"

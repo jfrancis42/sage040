@@ -1,0 +1,66 @@
+# TAG|command, run in the test directory on the machine and on the host.
+# A leading '~' on the command compares with whitespace squeezed: the
+# widths of columns are not what is being tested. A leading '=' compares
+# the values of the words -- hex numbers as numbers -- for od, whose
+# padding POSIX leaves open.
+sort1|sort fruit.txt
+sortn|sort -n nums.txt
+sortr|sort -r fruit.txt
+sortk|sort -k2,2n -k1,1 fruit.txt
+sortu|sort -u fruit.txt
+sortt|sort -t: -k3,3n passwd.txt
+wc|~wc fruit.txt
+wcl|~wc -l big.txt
+head|head -n 3 fruit.txt
+tail|tail -n 2 fruit.txt
+tailc|tail -c 12 text.txt
+headbig|head -n 5 big.txt
+cut1|cut -d: -f1,3 passwd.txt
+cutc|cut -c2-4 fruit.txt
+tr1|tr a-z A-Z < fruit.txt
+trd|tr -d aeiou < fruit.txt
+trs|tr -s ' ' < text.txt
+uniq|uniq fruit.txt
+uniqc|~uniq -c fruit.txt
+uniqd|uniq -d fruit.txt
+od|=od -A n -t x1 c1.txt
+odc|~od -t c c1.txt
+cmpsame|cmp c1.txt c1.txt
+cmpdiff|cmp -s c1.txt c2.txt
+comm|comm c1.txt c2.txt
+join|join join1.txt join2.txt
+paste|paste c1.txt c2.txt
+pasted|paste -d, -s c1.txt
+nl|~nl c1.txt
+rev|rev c1.txt
+fold|fold -w 20 text.txt
+expand|expand text.txt
+seq|seq 1 5
+seqw|seq -w 8 11
+expr|expr 3 + 4
+exprm|expr 17 % 5
+printf|printf '%05d|%s|%x\n' 42 word 255
+basename|basename /a/b/c.txt .txt
+dirname|dirname /a/b/c.txt
+md5|md5sum big.txt
+sha1|sha1sum big.txt
+sha256|sha256sum big.txt fruit.txt
+sha512|sha512sum c1.txt
+cksum|cksum big.txt
+findn|~find . -name '*.txt' -type f -print
+findd|find . -type d
+xargs|~echo a b c | xargs -n 1 echo
+xargswc|~find . -name 'c?.txt' | xargs /bin/cat
+bc|echo '2^64' | bc
+bcl|echo 'scale=20; 4*a(1)' | bc -l
+dc|echo '2 64 ^ p' | dc
+strings|strings big.txt
+tsort|tsort tsort.txt
+env|env -i A=1 B=2 /bin/env
+true|true
+false|false
+testf|/bin/test -f fruit.txt
+testd|/bin/test -d fruit.txt
+yes|yes hi | head -n 3
+tee|echo teed | tee tee.out
+split|~split -l 700 big.txt part.

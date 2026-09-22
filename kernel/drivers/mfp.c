@@ -27,6 +27,7 @@
  * of magnitude of headroom, which is the right kind of margin for
  * something with no way to complain.
  */
+#include "../random.h"
 #include "ptregs.h"
 #include "dev.h"
 #include "timer.h"
@@ -106,6 +107,10 @@ void mfp_dispatch(u32 vector, struct pt_regs *regs)
      */
     irq_regs = regs;
     counts[ch]++;
+    /* When it came, to the timer's count within the tick: entropy for
+     * random.c. The tick's own reading barely varies (an eighth of a
+     * bit is credited); anything else arrives at an unrelated moment. */
+    random_interrupt(MMIO8(MFP_TDDR), (u32)ch, ch == MFPCH_TIMERD ? 1 : 8);
     if (irqs[ch].handler) {
         irqs[ch].handler(irqs[ch].arg);
     } else {

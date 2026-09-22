@@ -57,6 +57,9 @@ int  signal_procmask(int how, const u32 *set, u32 *old);
 u32  signal_pending_set(void);
 int  signal_pause(void);
 int  signal_suspend(u32 mask);
+
+/* sigaltstack(): set and/or report the alternate signal stack. */
+int  signal_altstack(const stack_t *ss, stack_t *old);
 s32  signal_return(struct pt_regs *regs);
 s32  signal_rt_return(struct pt_regs *regs);
 

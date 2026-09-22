@@ -186,6 +186,9 @@ static time_t clock_now(void)
     return (time_t)tv.tv_sec;
 }
 
+/* The host name: sethostname() sets it, uname() reports it. */
+char hostname[HOST_NAME_MAX + 1] = "sage040";
+
 static int do_uname(struct utsname *u)
 {
     if (!u) {
@@ -196,6 +199,7 @@ static int do_uname(struct utsname *u)
     strcpy(u->release, kernel_version);
     strcpy(u->machine, "m68040");
     strcpy(u->version, kernel_build);
+    strcpy(u->nodename, hostname);
     return 0;
 }
 
@@ -1378,12 +1382,16 @@ static int do_setpgid(int pid, int pgid)
     if (pgid < 0) {
         return -EINVAL;
     }
+    /* POSIX: within one session only, and never a session's leader. */
+    if (t->sid != current->sid || t->sid == t->pid) {
+        return -EPERM;
+    }
     if (pgid == 0) {
         pgid = t->pid;
     }
     if (pgid != t->pid) {
         for (i = 0; (m = task_nth(i)) != 0; i++) {
-            if (m->pgid == pgid && m->state != TASK_ZOMBIE) {
+            if (m->pgid == pgid && m->sid == t->sid && m->state != TASK_ZOMBIE) {
                 break;
             }
         }

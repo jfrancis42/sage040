@@ -1,0 +1,31 @@
+picolibc 1.8.12: waitpid() and wait3() store the status through their
+pointer without checking it, and POSIX lets it be null -- "just reap
+it" -- which every shell and posix_spawn does. A bus error at address
+0. Not specific to m68k. (wait3.c here is after 06-wait3-rusage.patch.)
+
+diff -ru a/libos/linux/wait3.c b/libos/linux/wait3.c
+--- a/libos/linux/wait3.c	2026-09-22 10:59:44.130525818 -0600
++++ b/libos/linux/wait3.c	2026-09-22 10:59:44.133342109 -0600
+@@ -64,7 +64,8 @@
+             kstatus = __W_EXITCODE(0, _signal_from_linux(WTERMSIG(kstatus)));
+         else if (WIFSTOPPED(kstatus))
+             kstatus = __W_EXITCODE(_signal_from_linux(WSTOPSIG(kstatus)), 0x7f);
+-        *wstatus = kstatus;
++        if (wstatus)
++            *wstatus = kstatus;
+         if (rusage) {
+             memset(rusage, 0, sizeof(*rusage));
+             rusage->ru_utime.tv_sec = kusage.utime_sec;
+diff -ru a/libos/linux/waitpid.c b/libos/linux/waitpid.c
+--- a/libos/linux/waitpid.c	2026-09-22 10:59:44.128115587 -0600
++++ b/libos/linux/waitpid.c	2026-09-22 10:59:44.133271815 -0600
+@@ -53,7 +53,8 @@
+     if (ret != (pid_t)-1) {
+         if (WIFSIGNALED(kstatus))
+             kstatus = __W_EXITCODE(0, _signal_from_linux(WTERMSIG(kstatus)));
+-        *wstatus = kstatus;
++        if (wstatus)
++            *wstatus = kstatus;
+     }
+     return ret;
+ }

@@ -1,0 +1,80 @@
+picolibc 1.8.12: struct tm has neither tm_gmtoff nor tm_zone, which
+POSIX 2024 made standard and every other C library has had for decades
+(sbase's touch uses them; so does Python's time module when present).
+Added, and filled in by gmtime_r, localtime_r, mktime and timegm. And
+<sys/stat.h> defines major() and minor() but not makedev(), so a
+program following the BSD convention -- "if major is defined, the rest
+is" -- finds no makedev (sbase's tar). Not specific to m68k.
+
+THIS CHANGES THE SIZE OF struct tm: everything that uses one must be
+rebuilt against these headers.
+
+diff -ru a/libc/include/sys/stat.h b/libc/include/sys/stat.h
+--- a/libc/include/sys/stat.h	2026-09-22 11:07:29.497940939 -0600
++++ b/libc/include/sys/stat.h	2026-09-22 11:07:29.526896474 -0600
+@@ -106,6 +106,7 @@
+ #define major(d)         ((d) >> _major_dev_shift)
+ #define minor(d)         ((d) & (((dev_t)1 << _major_dev_shift) - 1))
+ #define __make_dev(a, i) ((dev_t)(a) << _major_dev_shift | (i))
++#define makedev(a, i)    __make_dev(a, i)
+ #endif
+ 
+ #define st_atime st_atim.tv_sec
+diff -ru a/libc/include/time.h b/libc/include/time.h
+--- a/libc/include/time.h	2026-09-22 11:07:29.492193972 -0600
++++ b/libc/include/time.h	2026-09-22 11:07:29.526826632 -0600
+@@ -79,6 +79,8 @@
+     int tm_wday;
+     int tm_yday;
+     int tm_isdst;
++    long        tm_gmtoff;  /* seconds east of UTC (POSIX 2024) */
++    const char *tm_zone;    /* abbreviation of the zone (POSIX 2024) */
+ };
+ 
+ #if __POSIX_VISIBLE
+diff -ru a/libc/time/gmtime_r.c b/libc/time/gmtime_r.c
+--- a/libc/time/gmtime_r.c	2026-09-22 11:07:29.503203116 -0600
++++ b/libc/time/gmtime_r.c	2026-09-22 11:07:29.526953212 -0600
+@@ -119,6 +119,8 @@
+     res->tm_mday = day;
+ 
+     res->tm_isdst = 0;
++    res->tm_gmtoff = 0;
++    res->tm_zone = "GMT";
+ 
+     return (res);
+ }
+diff -ru a/libc/time/lcltime_r.c b/libc/time/lcltime_r.c
+--- a/libc/time/lcltime_r.c	2026-09-22 11:07:29.507971256 -0600
++++ b/libc/time/lcltime_r.c	2026-09-22 11:07:29.526999351 -0600
+@@ -62,6 +62,9 @@
+         res->tm_isdst = 0;
+ 
+     offset = (res->tm_isdst == 1 ? __tzinfo.rule[1].offset : __tzinfo.rule[0].offset);
++    /* The rules' offsets are seconds WEST; tm_gmtoff is seconds east. */
++    res->tm_gmtoff = -offset;
++    res->tm_zone = tzname[res->tm_isdst == 1];
+ 
+     hours = (int)(offset / SECSPERHOUR);
+     offset = offset % SECSPERHOUR;
+diff -ru a/libc/time/mktime.c b/libc/time/mktime.c
+--- a/libc/time/mktime.c	2026-09-22 11:07:29.512797906 -0600
++++ b/libc/time/mktime.c	2026-09-22 11:07:29.527123500 -0600
+@@ -343,6 +343,8 @@
+         offset = (time_t)__tzinfo.rule[1].offset;
+     else /* otherwise assume std time */
+         offset = (time_t)__tzinfo.rule[0].offset;
++    tim_p->tm_gmtoff = -(long)offset;
++    tim_p->tm_zone = tzname[isdst == 1];
+ 
+     __LIBC_UNLOCK();
+ 
+@@ -372,6 +374,8 @@
+ 
+     /* The time is always UTC, so there is no daylight saving time. */
+     tim_p->tm_isdst = 0;
++    tim_p->tm_gmtoff = 0;
++    tim_p->tm_zone = "GMT";
+ 
+     set_tm_wday(days, tim_p);
+ 

@@ -44,7 +44,8 @@ OBJS="vi ex lbuf mot sbuf ren dir syn reg led uc term rset rstr regex cmd
 CFLAGS="-mcpu=68040 -O2 -Wall -Wno-format-truncation -nostdinc -nostdlib \
         -isystem $SAGE_LIBC/include -isystem $("$CC" -print-file-name=include) \
         -ffunction-sections -fdata-sections -D_GNU_SOURCE"
-mkdir -p "$SRC/sage040"
+. "$HERE/../cross.sh"
+libc_fresh "$SRC/sage040" || true   # rebuilt whole if picolibc's headers changed
 objs=
 for f in $OBJS; do
     o="$SRC/sage040/$f.o"

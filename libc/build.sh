@@ -59,14 +59,18 @@ fi
 cp -r "$HERE"/picolibc/. "$SRC"/
 
 # And fixes to picolibc itself, each a bug found here that is not about
-# m68k -- see the head of each patch. Applied once: a patch that already
-# reverses cleanly is in.
+# m68k -- see the head of each patch. In the order of their numbers, and
+# each once: the ones applied are listed in the source tree. (Asking a
+# patch whether it reverses is not enough -- once a later patch changes
+# the lines around it, it no longer does, and it was applied twice.)
+applied=$SRC/.sage040-patches
+touch "$applied"
 for p in "$HERE"/patches/*.patch; do
     [ -f "$p" ] || continue
-    if patch -d "$SRC" -p1 -R --dry-run -s -f < "$p" >/dev/null 2>&1; then
-        continue
-    fi
+    name=$(basename "$p")
+    grep -qxF "$name" "$applied" && continue
     patch -d "$SRC" -p1 -N -s < "$p"
+    echo "$name" >> "$applied"
 done
 
 # The cross file, with this machine's compiler in it.
@@ -99,6 +103,8 @@ EOF
 #                         plain global and there is no TLS to set up
 #   single-thread         no locking, for the same reason
 #   io-long-long          %lld in printf, which real programs use
+#   io-long-double        %Lf and %Le: bash's printf converts every
+#                         floating-point argument as a long double
 #   stdio-exit-flush      stdout flushed at exit, as everyone expects
 #   fstat-bufsiz          stdio buffers sized from st_blksize
 #   mb-capable            multibyte locales, so a program can ask for
@@ -121,6 +127,7 @@ if [ ! -f "$BUILD/build.ninja" ]; then
         -Dthread-local-storage=false \
         -Dsingle-thread=true \
         -Dio-long-long=true \
+        -Dio-long-double=true \
         -Dmb-capable=true \
         -Dstdio-exit-flush=true \
         -Dfstat-bufsiz=true \
@@ -148,7 +155,15 @@ cp -r "$HERE/net/include/." "$PREFIX/include/"
 # And the headers the m68k backend adds that meson does not know to
 # install (the overlay puts them where the build finds them).
 cp "$HERE/picolibc/libc/include/sys/utsname.h" "$PREFIX/include/sys/"
-cp "$HERE/picolibc/libc/include/stdio_ext.h" "$PREFIX/include/"
+cp "$HERE/picolibc/libc/include/stdio_ext.h" "$HERE/picolibc/libc/include/syslog.h" "$PREFIX/include/"
+cp "$HERE/picolibc/libc/include/sys/random.h" "$HERE/picolibc/libc/include/sys/sysmacros.h" \
+    "$PREFIX/include/sys/"
+
+# A fingerprint of every installed header, for ports/cross.sh's
+# libc_fresh: a change in a header can change the size of a structure
+# (struct tm did), and a program built against the old one is wrong.
+(cd "$PREFIX/include" && find . -type f | LC_ALL=C sort | xargs cat | sha256sum |
+    cut -d' ' -f1) > "$PREFIX/lib/.headers-sum"
 NET_OBJS=
 for src in "$HERE"/net/src/*.c; do
     obj="$BUILD/net-$(basename "$src" .c).o"
@@ -190,6 +205,7 @@ if [ ! -f "$BUILD_PIC/build.ninja" ]; then
         -Dthread-local-storage=false \
         -Dsingle-thread=true \
         -Dio-long-long=true \
+        -Dio-long-double=true \
         -Dmb-capable=true \
         -Dstdio-exit-flush=true \
         -Dfstat-bufsiz=true \

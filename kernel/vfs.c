@@ -616,6 +616,48 @@ int vfs_dir_path(struct file *f, char *out, u32 size)
     return r;
 }
 
+int vfs_utime(const char *path, u32 mtime, u32 atime)
+{
+    int r;
+
+    if (resolve_dev(path)) {
+        return 0;               /* a device has no time to keep */
+    }
+    if (!mounted_fs || !mounted_fs->utime) {
+        return -ENOSYS;
+    }
+    fs_lock();
+    r = mounted_fs->utime(path, mtime, atime);
+    fs_unlock();
+    return r;
+}
+
+int vfs_futime(int fd, u32 mtime, u32 atime)
+{
+    struct file *f = fd_get(fd);
+    int r;
+
+    if (!f) {
+        return -EBADF;
+    }
+    if (vfs_is_dir_file(f)) {
+        char path[PATH_MAX];
+
+        r = vfs_dir_path(f, path, sizeof(path));
+        return r < 0 ? r : vfs_utime(path, mtime, atime);
+    }
+    if (!f->fs) {
+        return 0;               /* a device, a pipe: nothing to keep */
+    }
+    if (!mounted_fs || !mounted_fs->futime) {
+        return -ENOSYS;
+    }
+    fs_lock();
+    r = mounted_fs->futime(f, mtime, atime);
+    fs_unlock();
+    return r;
+}
+
 int vfs_fchdir(int fd)
 {
     struct file *f = fd_get(fd);
@@ -1456,6 +1498,34 @@ int vfs_sync(void)
 u32 vfs_cwd_ino(void)
 {
     return current ? current->cwd_ino : 0;
+}
+
+u32 vfs_root_ino(void)
+{
+    return current ? current->root_ino : 0;
+}
+
+/* chroot(): absolute paths start at `path` from now on, for this task
+ * and what it starts. The working directory does not move, as on Linux. */
+int vfs_chroot(const char *path)
+{
+    u32 ino;
+    int err;
+
+    if (!current) {
+        return -EPERM;
+    }
+    if (!mounted_fs || !mounted_fs->dir_ino) {
+        return -ENOSYS;
+    }
+    fs_lock();
+    err = mounted_fs->dir_ino(path, &ino);
+    fs_unlock();
+    if (err < 0) {
+        return err;
+    }
+    current->root_ino = ino;
+    return 0;
 }
 
 void vfs_cwd_set(u32 ino, const char *path)

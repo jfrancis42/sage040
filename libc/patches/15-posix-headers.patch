@@ -1,0 +1,94 @@
+picolibc 1.8.12: POSIX constants its headers lack or give other values
+than the kernel's, each met porting the standard tools to Linux's ABI:
+
+- NZERO (<limits.h>), which nice and renice are written in terms of.
+- UTIME_NOW and UTIME_OMIT (<sys/stat.h>), without which utimensat and
+  futimens, which it declares, cannot be used; Linux's values.
+- cfsetspeed, which libos/linux defines, declared (<termios.h>).
+- _SC_NPROCESSORS_CONF/_ONLN and _SC_PHYS_PAGES/_AVPHYS_PAGES
+  (<unistd.h>), which programs use for sizing.
+- The SI_ codes with Linux's values: si_code comes through from the
+  kernel unchanged, so SI_USER as 1 meant a kill() never looked like
+  one.
+
+diff -ru a/libc/include/limits.h b/libc/include/limits.h
+--- a/libc/include/limits.h	2026-09-22 10:42:47.875743646 -0600
++++ b/libc/include/limits.h	2026-09-22 10:42:47.933007014 -0600
+@@ -20,6 +20,13 @@
+ #define NL_ARGMAX 32
+ #endif
+ 
++#if __XSI_VISIBLE || __POSIX_VISIBLE
++/* The default process priority, nice(), as Linux's. */
++#ifndef NZERO
++#define NZERO 20
++#endif
++#endif
++
+ #if __POSIX_VISIBLE
+ #ifndef SSIZE_MAX
+ #define SSIZE_MAX __SSIZE_MAX__
+diff -ru a/libc/include/signal.h b/libc/include/signal.h
+--- a/libc/include/signal.h	2026-09-22 10:42:47.910543259 -0600
++++ b/libc/include/signal.h	2026-09-22 10:42:47.933578513 -0600
+@@ -75,11 +75,13 @@
+ /* Signal Actions, P1003.1b-1993, p. 64 */
+ /* si_code values, p. 66 */
+ 
+-#define SI_USER    1 /* Sent by a user. kill(), abort(), etc */
+-#define SI_QUEUE   2 /* Sent by sigqueue() */
+-#define SI_TIMER   3 /* Sent by expiration of a timer_settime() timer */
+-#define SI_ASYNCIO 4 /* Indicates completion of asycnhronous IO */
+-#define SI_MESGQ   5 /* Indicates arrival of a message at an empty queue */
++/* Linux's values: libos/linux passes si_code through from the kernel. */
++#define SI_USER    0    /* Sent by a user. kill(), abort(), etc */
++#define SI_QUEUE   (-1) /* Sent by sigqueue() */
++#define SI_TIMER   (-2) /* Sent by expiration of a timer_settime() timer */
++#define SI_MESGQ   (-3) /* Indicates arrival of a message at an empty queue */
++#define SI_ASYNCIO (-4) /* Indicates completion of asycnhronous IO */
++#define SI_KERNEL  0x80 /* Sent by the kernel */
+ 
+ /*
+  * The per-signal si_code values POSIX defines, with Linux's numbers:
+diff -ru a/libc/include/sys/stat.h b/libc/include/sys/stat.h
+--- a/libc/include/sys/stat.h	2026-09-22 10:42:47.883335779 -0600
++++ b/libc/include/sys/stat.h	2026-09-22 10:42:47.933108706 -0600
+@@ -177,6 +177,12 @@
+ int mknod(const char *__path, mode_t __mode, dev_t __dev);
+ #endif
+ 
++#if __POSIX_VISIBLE >= 200809
++/* utimensat()/futimens() tv_nsec values: Linux's. */
++#define UTIME_NOW  ((1L << 30) - 1L)
++#define UTIME_OMIT ((1L << 30) - 2L)
++#endif
++
+ #if __ATFILE_VISIBLE
+ int fchmodat(int, const char *, mode_t, int);
+ int fstatat(int, const char * __restrict, struct stat * __restrict, int);
+diff -ru a/libc/include/sys/termios.h b/libc/include/sys/termios.h
+--- a/libc/include/sys/termios.h	2026-09-22 10:42:47.890449334 -0600
++++ b/libc/include/sys/termios.h	2026-09-22 10:42:47.933199699 -0600
+@@ -202,6 +202,7 @@
+ speed_t cfgetospeed(const struct termios *);
+ int     cfsetispeed(struct termios *, speed_t);
+ int     cfsetospeed(struct termios *, speed_t);
++int     cfsetspeed(struct termios *, speed_t);
+ int     tcdrain(int);
+ int     tcflow(int, int);
+ int     tcflush(int, int);
+diff -ru a/libc/include/sys/unistd.h b/libc/include/sys/unistd.h
+--- a/libc/include/sys/unistd.h	2026-09-22 10:42:47.900790617 -0600
++++ b/libc/include/sys/unistd.h	2026-09-22 10:42:47.933382510 -0600
+@@ -533,6 +533,11 @@
+ #define _SC_LEVEL4_CACHE_ASSOC           135
+ #define _SC_LEVEL4_CACHE_LINESIZE        136
+ #define _SC_POSIX_26_VERSION             137
++/* Not POSIX, but in every C library a portable program meets. */
++#define _SC_NPROCESSORS_CONF             138
++#define _SC_NPROCESSORS_ONLN             139
++#define _SC_PHYS_PAGES                   140
++#define _SC_AVPHYS_PAGES                 141
+ 
+ /*
+  *  pathconf values per IEEE Std 1003.1, 2008 Edition

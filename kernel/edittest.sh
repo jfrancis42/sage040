@@ -109,7 +109,7 @@ mcopy -o -i "$MIMG" ../apps/napper ::/NAPPER
     while [ $i -le 300 ]; do echo "echo long-script-line-$i"; i=$((i + 1)); done
 } > "$SCRATCH/long.tmp"
 {
-    printf 'echo %0200d\n' 0
+    printf 'echo %01100d\n' 0   # past the shell's 1024
     echo "echo after-the-long-line"
 } > "$SCRATCH/wide.tmp"
 mmd -i "$MIMG" ::/BIN 2>/dev/null || true

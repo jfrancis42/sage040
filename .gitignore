@@ -86,8 +86,12 @@ apps/fsstress
 system/nvram
 libc/test/inettest
 libc/test/posixtest
+libc/test/cryptest
+libc/test/cryptest.c
 apps/fbmap
 apps/udpwait
 ports/awk/awk
 ports/sed/sed
 ports/grep/grep
+ports/sbase/bin/
+ports/sbase/share/

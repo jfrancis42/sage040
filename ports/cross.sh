@@ -55,3 +55,21 @@ cross_configure() {             # cross_configure SRCDIR [configure args...]
         LDFLAGS="$STATIC_LDFLAGS" LIBS="$STATIC_LIBS" \
         "$@"
 }
+
+# libc_fresh DIR: empty DIR if the C library's headers have changed since
+# what is in it was built against them, and note the ones it is being
+# built against now. Returns 1 if it emptied it. A header change can
+# change a structure's size -- struct tm grew -- and an object built with
+# the old one is silently wrong; nothing else here notices.
+libc_fresh() {
+    local sum
+    sum=$(cat "$SAGE_LIBC/lib/.headers-sum" 2>/dev/null || echo none)
+    if [ -d "$1" ] && [ "$(cat "$1/.libc-headers" 2>/dev/null)" = "$sum" ]; then
+        return 0
+    fi
+    rm -rf "$1"
+    mkdir -p "$1"
+    echo "$sum" > "$1/.libc-headers"
+    return 1
+}
+

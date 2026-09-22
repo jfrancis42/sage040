@@ -1,0 +1,47 @@
+sbase: od -t took the size after a type -- the 1 in x1, the C in xC --
+without stepping past it, so the next time round the loop saw it as a
+type of its own and printed the usage: `od -t x1`, POSIX's, never
+worked. The size is now consumed with its type.
+
+--- a/od.c	2026-09-22 11:26:00.572567384 -0600
++++ b/od.c	2026-09-22 11:26:13.549779536 -0600
+@@ -259,29 +259,37 @@
+ 			case 'd':
+ 			case 'o':
+ 			case 'u':
+-			case 'x':
++			case 'x': {
++				char type = *s;
++
+ 				/* todo: allow multiple digits */
+ 				if (*(s+1) > '0' && *(s+1) <= '9') {
+ 					len = *(s+1) - '0';
++					s++;	/* the size is part of this type */
+ 				} else {
+ 					switch (*(s+1)) {
+ 					case 'C':
+ 						len = sizeof(char);
++						s++;
+ 						break;
+ 					case 'S':
+ 						len = sizeof(short);
++						s++;
+ 						break;
+ 					case 'I':
+ 						len = sizeof(int);
++						s++;
+ 						break;
+ 					case 'L':
+ 						len = sizeof(long);
++						s++;
+ 						break;
+ 					default:
+ 						len = sizeof(int);
+ 					}
+ 				}
+-				addtype(*s, len);
++				addtype(type, len);
++			}
+ 				break;
+ 			default:
+ 				usage();

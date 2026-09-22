@@ -1,0 +1,42 @@
+picolibc 1.8.12: three functions nothing declares -- renameat (POSIX,
+<stdio.h>), utime (POSIX, <utime.h>, whose header here is a stub with
+the struct alone) and getloadavg (the BSDs' and glibc's, <stdlib.h>).
+Declared; they are defined in this system's backend (machine/m68k).
+Applies after progname-decl.patch.
+
+diff -ru a/libc/include/stdio.h b/libc/include/stdio.h
+--- a/libc/include/stdio.h	2026-09-22 10:45:13.228443742 -0600
++++ b/libc/include/stdio.h	2026-09-22 10:45:13.255796407 -0600
+@@ -492,6 +492,9 @@
+ void  perror(const char *s) __picolibc_export;
+ int   remove(const char *pathname) __picolibc_export;
+ int   rename(const char *oldpath, const char *newpath) __picolibc_export;
++#if __ATFILE_VISIBLE
++int   renameat(int, const char *, int, const char *) __picolibc_export;
++#endif
+ void  rewind(FILE *stream) __nonnull((1)) __picolibc_export;
+ void  setbuf(FILE *stream, char *buf) __nonnull((1)) __picolibc_export;
+ void  setbuffer(FILE *stream, char *buf, size_t size) __nonnull((1)) __picolibc_export;
+diff -ru a/libc/include/stdlib.h b/libc/include/stdlib.h
+--- a/libc/include/stdlib.h	2026-09-22 10:45:13.233164398 -0600
++++ b/libc/include/stdlib.h	2026-09-22 10:45:13.255896978 -0600
+@@ -108,6 +108,7 @@
+ #endif
+ #if __BSD_VISIBLE
+ const char *getprogname(void) __picolibc_export;
++int         getloadavg(double[], int) __picolibc_export;
+ void        setprogname(const char *) __picolibc_export;
+ __uint32_t arc4random(void) __picolibc_export;
+ __uint32_t arc4random_uniform(__uint32_t) __picolibc_export;
+diff -ru a/libc/include/sys/utime.h b/libc/include/sys/utime.h
+--- a/libc/include/sys/utime.h	2026-09-22 10:45:13.238373833 -0600
++++ b/libc/include/sys/utime.h	2026-09-22 10:45:13.255972078 -0600
+@@ -48,6 +48,8 @@
+     time_t modtime;
+ };
+ 
++int utime(const char *, const struct utimbuf *);
++
+ _END_STD_C
+ 
+ #endif /* _SYS_UTIME_H */

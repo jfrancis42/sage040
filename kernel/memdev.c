@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 Jeff Francis */
 /*
- * memdev.c - /dev/null, /dev/zero and /dev/full.
+ * memdev.c - /dev/null, /dev/zero, /dev/full, /dev/random, /dev/urandom.
  *
  * The devices every Unix has that are not hardware, as Linux's
  * drivers/char/mem.c has them:
@@ -9,17 +9,17 @@
  *   null   reads end at once; writes are accepted and discarded
  *   zero   reads give zero bytes, as many as asked; writes discarded
  *   full   reads give zero bytes; writes fail with ENOSPC
- *
- * There is deliberately no /dev/random or /dev/urandom: the kernel's
- * generator (random.c) is xorshift, fine for getrandom()'s everyday
- * uses and not a cryptographic source, and a device of that name
- * promises one.
+ *   random, urandom
+ *          the kernel's generator (random.c). urandom never waits;
+ *          random waits until the pool is ready, then is the same --
+ *          Linux's behaviour since 5.6. Writes are mixed in, uncredited.
  */
 #include "dev.h"
 #include "memdev.h"
 #include "uapi.h"
 #include "errno.h"
 #include "string.h"
+#include "random.h"
 
 static s32 null_read(struct file *f, void *buf, u32 len)
 {
@@ -68,6 +68,30 @@ static int mem_fstat(struct file *f, struct stat *st)
     return 0;
 }
 
+static s32 urandom_read(struct file *f, void *buf, u32 len)
+{
+    (void)f;
+    random_get(buf, len);
+    return (s32)len;
+}
+
+static s32 random_read(struct file *f, void *buf, u32 len)
+{
+    int err = random_wait((f->flags & O_NONBLOCK) != 0);
+
+    if (err < 0) {
+        return err;
+    }
+    return urandom_read(f, buf, len);
+}
+
+static s32 random_dev_write(struct file *f, const void *buf, u32 len)
+{
+    (void)f;
+    random_write(buf, len);
+    return (s32)len;
+}
+
 #define MEM_OPS(name, rd, wr)                                            \
     static const struct file_ops name = {                                \
         rd, wr, mem_lseek,                                               \
@@ -81,10 +105,14 @@ static int mem_fstat(struct file *f, struct stat *st)
 MEM_OPS(null_ops, null_read, sink_write);
 MEM_OPS(zero_ops, zero_read, sink_write);
 MEM_OPS(full_ops, zero_read, full_write);
+MEM_OPS(random_ops, random_read, random_dev_write);
+MEM_OPS(urandom_ops, urandom_read, random_dev_write);
 
 static struct chardev null_dev = { "null", &null_ops, 0, 0 };
 static struct chardev zero_dev = { "zero", &zero_ops, 0, 0 };
 static struct chardev full_dev = { "full", &full_ops, 0, 0 };
+static struct chardev random_dev = { "random", &random_ops, 0, 0 };
+static struct chardev urandom_dev = { "urandom", &urandom_ops, 0, 0 };
 
 int memdev_init(void)
 {
@@ -95,6 +123,12 @@ int memdev_init(void)
     }
     if (err == 0) {
         err = dev_register_char(&full_dev);
+    }
+    if (err == 0) {
+        err = dev_register_char(&random_dev);
+    }
+    if (err == 0) {
+        err = dev_register_char(&urandom_dev);
     }
     return err;
 }

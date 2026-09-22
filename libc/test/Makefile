@@ -9,7 +9,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-PROGS := libctest inettest posixtest
+PROGS := libctest inettest posixtest cryptest
 
 include $(TOPDIR)/libc/libc.mk
 
@@ -39,6 +39,15 @@ sotest: sotest.c libsot.so $(DYN_DEPS)
 	$(CC) $(CFLAGS) $(DYN_LDFLAGS) $(LIBC_DIR)/crt0-dyn.s $< -L. -lsot $(DYN_LDLIBS) -o $@
 	@$(SIZE) $@
 
+# The kernel's ChaCha20 and BLAKE2s against the RFC vectors, on the
+# 68040 itself: cryptotest.sh checks them on the host, which is
+# little-endian and so cannot catch a byte-order mistake.
+cryptest.c: ../../kernel/cryptotest.c
+	cp $< $@
+cryptest: cryptest.c ../../kernel/crypto.c ../../kernel/crypto.h
+	$(CC) $(CFLAGS) -iquote ../../kernel $(STATIC_LDFLAGS) $(LIBC_DIR)/crt0.s \
+	    cryptest.c ../../kernel/crypto.c $(STATIC_LDLIBS) -o $@
+
 clean: clean-so
 clean-so:
-	rm -f libsot.so libsot2.so libsot3.so sotest libctest.dyn
+	rm -f libsot.so libsot2.so libsot3.so sotest libctest.dyn cryptest cryptest.c

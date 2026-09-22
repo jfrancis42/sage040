@@ -29,6 +29,7 @@ if [ ! -d "$SRC" ]; then
     tar -C "$SRCDIR" -xf "$tarball"
 fi
 
+libc_fresh "$BUILD" || true   # reconfigured if picolibc's headers changed
 if [ ! -f "$BUILD/Makefile" ]; then
     mkdir -p "$BUILD"
     (cd "$BUILD" && cross_configure "$SRC" --disable-nls --disable-acl \

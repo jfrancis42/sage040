@@ -1,0 +1,18 @@
+picolibc 1.8.12: <sys/wait.h> has WCONTINUED but not WIFCONTINUED to
+test for it -- bash does not compile without it. Linux, whose status
+words libos/linux passes through, reports a continued child as 0xffff,
+which none of the other macros takes for exited, signalled or stopped.
+Not specific to m68k.
+
+diff -ru a/libc/include/sys/_wait.h b/libc/include/sys/_wait.h
+--- a/libc/include/sys/_wait.h	2026-09-22 11:33:49.886053801 -0600
++++ b/libc/include/sys/_wait.h	2026-09-22 11:33:49.904127863 -0600
+@@ -52,6 +52,8 @@
+ #define WIFEXITED(w)       (WTERMSIG(w) == 0)
+ #define WIFSIGNALED(w)     (((signed char)(((w) & 0x7f) + 1) >> 1) > 0)
+ #define WIFSTOPPED(w)      (((w) & 0xff) == 0x7f)
++/* A stopped child continued (WCONTINUED): Linux reports 0xffff. */
++#define WIFCONTINUED(w)    ((w) == 0xffff)
+ #define __W_EXITCODE(e, s) (((e) << 8) | (s))
+ 
+ #endif

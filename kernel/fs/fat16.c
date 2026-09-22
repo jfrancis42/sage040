@@ -1256,7 +1256,7 @@ static int path_walk(const struct dir *start, const char *path,
     out_name[0] = '\0';
 
     if (*p == '/') {
-        d = ROOT_DIR;
+        d.cluster = vfs_root_ino();     /* the root, or a chroot's */
         while (*p == '/') {
             p++;
         }
@@ -1306,7 +1306,8 @@ static int path_walk(const struct dir *start, const char *path,
                 return 0;
             }
             if (comp[0] == '.' && comp[1] == '.' && comp[2] == '\0') {
-                if (d.cluster) {
+                /* ".." at the root -- or a chroot's root -- is the root. */
+                if (d.cluster && d.cluster != vfs_root_ino()) {
                     static const char dd[11] = {
                         '.', '.', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '
                     };
@@ -1336,7 +1337,7 @@ static int path_walk(const struct dir *start, const char *path,
         if (comp[0] == '.' && comp[1] == '\0') {
             /* stay where we are */
         } else if (comp[0] == '.' && comp[1] == '.' && comp[2] == '\0') {
-            if (d.cluster) {
+            if (d.cluster && d.cluster != vfs_root_ino()) {
                 /* The 8.3 form of "..", space padded and NOT
                  * NUL terminated -- a directory entry's name is
                  * eleven bytes with no terminator at all. */
@@ -1450,7 +1451,7 @@ static int fat_chdir(const char *path)
         strncpy(cwd_path + n, path, sizeof(cwd_path) - n - 1);
         cwd_path[sizeof(cwd_path) - 1] = '\0';
     }
-    if (!cwd.cluster) {
+    if (cwd.cluster == vfs_root_ino()) {
         strcpy(cwd_path, "/");
     }
 
@@ -2705,7 +2706,7 @@ static int fat_dir_path(u32 ino, char *out, u32 size)
         return -ENODEV;
     }
     buf[pos] = '\0';
-    while (cur != 0) {
+    while (cur != vfs_root_ino()) {
         struct dir d, parent;
         u8 ent[DIRENT_SIZE];
         char name[NAME_MAX + 1];
@@ -2714,6 +2715,9 @@ static int fat_dir_path(u32 ino, char *out, u32 size)
 
         if (++depth > PATH_MAX / 2) {
             return -ELOOP;          /* a corrupt volume, not a deep one */
+        }
+        if (cur == 0) {
+            return -ENOENT;         /* outside this task's chroot */
         }
         d.cluster = cur;
         err = dir_read_in(&d, 1, ent);
@@ -3246,6 +3250,87 @@ static int priv_to_handle(struct file *f)
     return (int)(u32)f->priv - 1;
 }
 
+/*
+ * SETTING A FILE'S TIME (utimensat). FAT keeps a modification date and
+ * time, to two seconds, and a last-access date. An open handle with
+ * unwritten metadata stamps "now" when it is flushed, so any such handle
+ * is flushed FIRST -- otherwise its flush would overwrite the time just
+ * set. `mtime`/`atime` of (u32)-1 leave that one as it is.
+ */
+static int set_times_at(const struct dir *d, u32 idx, u32 mtime, u32 atime)
+{
+    u8 ent[DIRENT_SIZE];
+    struct tm t;
+    int i, err;
+
+    for (i = 0; i < FAT_MAX_OPEN; i++) {
+        if (files[i].used && files[i].node->dir.cluster == d->cluster &&
+            files[i].node->dir_index == idx && files[i].node->dirty) {
+            err = file_sync(&files[i]);
+            if (err != 0) {
+                return err;
+            }
+        }
+    }
+    err = dir_read_in(d, idx, ent);
+    if (err != 0) {
+        return err;
+    }
+    if (mtime != 0xffffffffUL) {
+        gmtime_r((time_t)mtime, &t);
+        if (tm_to_fat_date(&t) == 0) {
+            return -EINVAL;             /* before 1980: FAT cannot say it */
+        }
+        put_le16(&ent[22], tm_to_fat_time(&t));
+        put_le16(&ent[24], tm_to_fat_date(&t));
+    }
+    if (atime != 0xffffffffUL) {
+        gmtime_r((time_t)atime, &t);
+        if (tm_to_fat_date(&t) != 0) {
+            put_le16(&ent[18], tm_to_fat_date(&t));
+        }
+    }
+    err = dir_write_in(d, idx, ent);
+    return err != 0 ? err : fat_flush_all();
+}
+
+static int fat_utime(const char *path, u32 mtime, u32 atime)
+{
+    struct dir cwd = cwd_of_current();
+    struct dir d;
+    char nm[NAME_MAX + 1];
+    u8 ent[DIRENT_SIZE];
+    int idx, err, last_is_dir;
+
+    if (!mounted) {
+        return -ENODEV;
+    }
+    err = path_walk(&cwd, path, &d, nm, &last_is_dir);
+    if (err != 0) {
+        return err;
+    }
+    if (last_is_dir) {
+        /* The root, which no entry describes: nothing to set, as a Linux
+         * FAT mount also keeps no time for it. */
+        return 0;
+    }
+    idx = dir_find(&d, nm, ent, 0);
+    if (idx < 0) {
+        return idx;
+    }
+    return set_times_at(&d, (u32)idx, mtime, atime);
+}
+
+static int fat_futime(struct file *f, u32 mtime, u32 atime)
+{
+    struct fat_file *ff = handle(priv_to_handle(f));
+
+    if (!ff) {
+        return -EBADF;
+    }
+    return set_times_at(&ff->node->dir, ff->node->dir_index, mtime, atime);
+}
+
 static s32 fat_file_read(struct file *f, void *buf, u32 len)
 {
     return fat_handle_read(priv_to_handle(f), buf, len);
@@ -3703,6 +3788,8 @@ static struct fs_type fat16_type = {
     fat_readdir_in,
     fat_dir_ino,
     fat_dir_path,
+    fat_utime,
+    fat_futime,
     fat_check,
     fat_bmap,
     0

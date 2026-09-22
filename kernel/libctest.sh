@@ -65,6 +65,7 @@ mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
 mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
 mcopy -o -i "$MIMG" ../libc/test/libctest ::/LIBCTEST
 mcopy -o -i "$MIMG" ../libc/test/posixtest ::/POSIXTST
+mcopy -o -i "$MIMG" ../libc/test/cryptest ::/CRYPTEST
 mmd -i "$MIMG" ::/BIN
 
 rm -f "$SCRATCH/in.fifo"
@@ -97,6 +98,9 @@ printf 'libctest > /LCOUT.TXT\r' >&3
 sleep 8
 # From a directory other than the root: a program starts where the
 # shell is standing (spawn did not pass the working directory on).
+printf '/CRYPTEST\r' >&3
+wait_for "cryptotest: "
+sleep 0.3
 printf 'mkdir /PTSTART\r' >&3
 printf 'cd /PTSTART\r' >&3
 printf '/POSIXTST\r' >&3
@@ -123,9 +127,9 @@ while IFS= read -r line; do
         "  ok   "*)   check "${line#  ok   }" 0 ;;
         "  FAIL "*)   check "${line#  FAIL }" 1 ;;
     esac
-done < <(sed '/^posixtest:/,$d' "$SCRATCH/clean.tmp" | grep -E '^  (ok  |FAIL) ')
+done < <(sed '/\/CRYPTEST$/,$d' "$SCRATCH/clean.tmp" | grep -E '^  (ok  |FAIL) ')
 
-test "$(sed '/^posixtest:/,$d' "$SCRATCH/clean.tmp" | grep -cE '^  ok   ')" -ge 60
+test "$(sed '/\/CRYPTEST$/,$d' "$SCRATCH/clean.tmp" | grep -cE '^  ok   ')" -ge 60
 check "libctest ran all of its checks" $?
 
 grep -qx "libctest: 0 failed" "$SCRATCH/clean.tmp"
@@ -163,6 +167,19 @@ grep -qx "posixtest: 0 failed" "$SCRATCH/clean.tmp"
 check "posixtest ran to the end" $?
 grep -qx "posixtest: started in /PTSTART" "$SCRATCH/clean.tmp"
 check "a program starts in the shell's working directory, not the root" $?
+# The time utimensat set, read by mtools: FAT's own date and time fields.
+mdir -i "$MIMG" ::/TIMES.TMP 2>/dev/null | grep -q "2001-02-03 *4:05"
+check "the file time set on the machine is the one the host reads from the disk" $?
+
+echo "=== checks: ChaCha20 and BLAKE2s on the 68040, against the RFC vectors ==="
+while IFS= read -r line; do
+    case "$line" in
+        "  ok   "*)   check "${line#  ok   }" 0 ;;
+        "  FAIL "*)   check "${line#  FAIL }" 1 ;;
+    esac
+done < <(sed -n '/CRYPTEST/,/^cryptotest: /p' "$SCRATCH/clean.tmp" | grep -E '^  (ok  |FAIL) ')
+grep -qx "cryptotest: 0 failed" "$SCRATCH/clean.tmp"
+check "cryptotest ran to the end on the machine" $?
 
 echo
 echo "  passed: $pass"

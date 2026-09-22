@@ -1,0 +1,28 @@
+sbase (since 3de61ef, 2024-12-19, "rev, tail: replace hardcoded code by
+UTF8_POINT macro"): the test was `(c & 0xC0) == 0x80`, "is a UTF-8
+continuation byte", and UTF8_POINT(c) is the opposite -- "starts a code
+point". So rev printed every line unreversed, and tail -m counted
+continuation bytes instead of characters. Negated back.
+
+--- a/rev.c	2026-09-22 11:19:40.869768271 -0600
++++ b/rev.c	2026-09-22 11:19:40.872526766 -0600
+@@ -25,7 +25,7 @@
+ 		lf = n && line[n - 1] == '\n';
+ 		i = n -= lf;
+ 		for (n = 0; i--;) {
+-			if (UTF8_POINT(line[i])) {
++			if (!UTF8_POINT(line[i])) {
+ 				n++;
+ 			} else {
+ 				fwrite(line + i, 1, n + 1, stdout);
+--- a/tail.c	2026-09-22 11:19:40.869817431 -0600
++++ b/tail.c	2026-09-22 11:19:40.873841234 -0600
+@@ -122,7 +122,7 @@
+ 		case 'm':  /* runes */
+ 			for (p = buf + len - 1, left = count; p >= buf; p--) {
+ 				/* skip utf-8 continuation bytes */
+-				if (UTF8_POINT(*p))
++				if (!UTF8_POINT(*p))
+ 					continue;
+ 				left--;
+ 				if (!left)

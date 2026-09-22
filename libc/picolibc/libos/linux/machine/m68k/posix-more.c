@@ -113,9 +113,8 @@ open_flags_to_linux(int flags)
 
 /*
  * The kernel's uname has this system's own shape (the one lib/ulib
- * uses), like its stat and getdents: four fields and no host name. It
- * is widened here to POSIX's. There is no sethostname, so the node
- * name is the machine's.
+ * uses), like its stat and getdents, with the host name last. It is
+ * widened here to POSIX's.
  */
 int
 uname(struct utsname *u)
@@ -125,6 +124,8 @@ uname(struct utsname *u)
         char release[16];
         char machine[16];
         char version[32];
+        char nodename[65];
+        char pad[3];
     } k;
     int ret = syscall(LINUX_SYS_uname, &k);
 
@@ -133,7 +134,8 @@ uname(struct utsname *u)
     /* The kernel's fields need not end in a NUL; POSIX's must. */
     memset(u, 0, sizeof(*u));
     memcpy(u->sysname, k.sysname, sizeof(k.sysname));
-    strcpy(u->nodename, "sage040");
+    memcpy(u->nodename, k.nodename, sizeof(k.nodename));
+    u->nodename[sizeof(u->nodename) - 1] = '\0';
     memcpy(u->release, k.release, sizeof(k.release));
     memcpy(u->version, k.version, sizeof(k.version));
     memcpy(u->machine, k.machine, sizeof(k.machine));
@@ -229,10 +231,23 @@ link(const char *from, const char *to)
     return syscall(LINUX_SYS_link, from, to);
 }
 
+/* picolibc's dev_t (major in the upper half) to Linux's 32-bit one
+ * (12 bits of major, 20 of minor, split around the old 8:8 layout). */
+unsigned __sage040_linux_dev(dev_t dev);
+
+unsigned
+__sage040_linux_dev(dev_t dev)
+{
+    unsigned long long maj = dev >> ((sizeof(dev_t) >> 1) << 3);
+    unsigned long long min = dev & (((dev_t)1 << ((sizeof(dev_t) >> 1) << 3)) - 1);
+
+    return (unsigned)(((maj & 0xfff) << 8) | (min & 0xff) | ((min & 0xfff00) << 12));
+}
+
 int
 mknod(const char *path, mode_t mode, dev_t dev)
 {
-    return syscall(LINUX_SYS_mknod, path, mode, (unsigned)dev);
+    return syscall(LINUX_SYS_mknod, path, mode, __sage040_linux_dev(dev));
 }
 
 int
@@ -407,6 +422,27 @@ sysconf(int name)
         return 100;                     /* HZ, kernel/uapi.h */
     case _SC_PAGESIZE:
         return 4096;
+    case _SC_NPROCESSORS_CONF:
+    case _SC_NPROCESSORS_ONLN:
+        return 1;
+    case _SC_PHYS_PAGES:
+    case _SC_AVPHYS_PAGES: {
+        struct {
+            __int32_t  uptime;
+            __uint32_t loads[3];
+            __uint32_t totalram, freeram, sharedram, bufferram;
+            __uint32_t totalswap, freeswap;
+            __uint16_t procs, pad;
+            __uint32_t totalhigh, freehigh, mem_unit;
+            char       f[8];
+        } si;
+
+        if (syscall(LINUX_SYS_sysinfo, &si) < 0)
+            return -1;
+        return (long)(((unsigned long long)(name == _SC_PHYS_PAGES ? si.totalram
+                                                                   : si.freeram) *
+                       si.mem_unit) / 4096);
+    }
     case _SC_NGROUPS_MAX:
         return 0;                       /* no supplementary groups */
     case _SC_HOST_NAME_MAX:
