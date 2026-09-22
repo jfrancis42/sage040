@@ -11,9 +11,12 @@
 #             getopts -- run by bash on the machine and by bash on the
 #             host, and the two compared. Nothing in it may depend on
 #             where it runs.
-#   bash's own test suite (tests/), run on the machine: each tests/NAME
-#             is run by the shell and its output compared, ON THE HOST,
-#             with the NAME.right that upstream ships.
+#   suite     a subset of bash's own test suite (tests/), run on the
+#             machine: each NAME.tests is run by the shell and its
+#             output compared, ON THE HOST, with the NAME.right upstream
+#             ships. A subset because one test takes minutes at 25 MHz;
+#             BASH_TESTS names others, and `make bashsuite` runs all 83
+#             (hours).
 #
 # sbase's utilities are on the disk: the suite uses them throughout.
 
@@ -38,6 +41,10 @@ rm -rf "$WORK"
 mkdir -p "$WORK/got"
 BOOT_WAIT=${BOOT_WAIT:-4}
 DISK_MB=${BASH_DISK_MB:-32}
+# Which of bash's own tests to run. One takes minutes on a 25 MHz 68040,
+# so this is a subset that covers the language; `make bashsuite` runs
+# every one of the 83.
+BASH_TESTS=${BASH_TESTS:-"arith array braces case comsub func glob quote strip type varenv"}
 
 pass=0
 fail=0
@@ -59,6 +66,10 @@ make -s -C ../ldso || exit 1
 # The four helper programs its own suite uses.
 BASHBUILD=${SAGE_SRC:-$HOME/m68k/src}/build-bash-sage040
 BASHSRC=${SAGE_SRC:-$HOME/m68k/src}/bash-5.3
+# BASH_TESTS=all: every one of them, which takes hours.
+if [ "$BASH_TESTS" = all ]; then
+    BASH_TESTS=$(cd "$BASHSRC/tests" && ls *.tests | sed 's/\.tests$//' | tr '\n' ' ')
+fi
 make -s -C "$BASHBUILD" recho zecho printenv xcase >/dev/null 2>&1 || true
 
 # What the host's bash makes of the same script.
@@ -83,6 +94,9 @@ mcopy -o -i "$MIMG" ../ports/bash/tests/lang.sh ::/BT/
 # bash's own test suite, and the helpers it runs.
 mmd -i "$MIMG" ::/BT/tests
 mcopy -o -i "$MIMG" "$BASHSRC"/tests/* ::/BT/tests/ 2>/dev/null
+mcopy -o -i "$MIMG" ../ports/bash/tests/runsuite.sh ::/BT/tests/
+# Its own runners invoke the shell as ./bash as well as $THIS_SH.
+mcopy -o -i "$MIMG" ../ports/bash/bash ::/BT/tests/bash
 for h in recho zecho printenv xcase; do
     [ -x "$BASHBUILD/$h" ] && mcopy -o -i "$MIMG" "$BASHBUILD/$h" "::/BT/tests/$h"
 done
@@ -122,9 +136,13 @@ run 'bash lang.sh > lang.out 2>&1; echo status $? >> lang.out' lang 1800
 # the same thing with diff, which this system has none of yet -- the
 # outputs are compared here.
 run 'cd /BT/tests' cdtests
+# What its own runners set: the shell under test, by name and by path.
 run 'export PATH=.:/bin' pathset
 run 'export TMPDIR=/tmp' tmpset
-run 'bash -c "for f in *.tests; do bash ./$f > ${f%.tests}.out 2>&1; done"' suite 9000
+run 'export THIS_SH=/BT/tests/bash' thissh
+run 'export BASH=/BT/tests/bash' bashvar
+run "export BASH_TESTS='$BASH_TESTS'" whichtests
+run 'bash runsuite.sh > runsuite.out 2>&1' suite 20000
 run 'cd /BT' cdback
 run 'halt' halt
 
@@ -154,8 +172,7 @@ grep -qx "== done" "$WORK/lang.expect"
 check "  (the host's own run got there too)" $?
 echo "=== checks: bash's own test suite ==="
 ran=0
-for t in "$BASHSRC"/tests/*.tests; do
-    n=$(basename "$t" .tests)
+for n in $BASH_TESTS; do
     [ -f "$WORK/suite/$n.out" ] || continue
     ran=$((ran + 1))
     cmp -s "$WORK/suite/$n.out" "$BASHSRC/tests/$n.right"
@@ -164,8 +181,8 @@ for t in "$BASHSRC"/tests/*.tests; do
     [ $r -ne 0 ] && diff "$BASHSRC/tests/$n.right" "$WORK/suite/$n.out" 2>&1 | head -6 |
         sed 's/^/        /'
 done
-[ "$ran" -ge 80 ]
-check "every test in the suite ran ($ran)" $?
+[ "$ran" -eq "$(echo $BASH_TESTS | wc -w)" ]
+check "every test asked for ran ($ran of $(echo $BASH_TESTS | wc -w))" $?
 
 ! grep -q "panic\|exception" "$SCRATCH/bash-clean.tmp"
 check "no panic, no kernel exception" $?

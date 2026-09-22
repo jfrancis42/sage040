@@ -78,7 +78,7 @@ static void test_machine(void)
     memset(&u, 0x55, sizeof(u));
     report("uname", uname(&u) == 0);
     report("  names the system, and every field is terminated",
-           strcmp(u.sysname, "Sage040") == 0 && strlen(u.release) < sizeof(u.release) &&
+           strcmp(u.sysname, "SuckOS") == 0 && strlen(u.release) < sizeof(u.release) &&
            strlen(u.version) < sizeof(u.version) && strlen(u.machine) < sizeof(u.machine));
     report("  the machine is the kernel's answer, a 68040", strcmp(u.machine, "m68040") == 0);
 
@@ -855,6 +855,86 @@ static void test_misc(void)
     }
 }
 
+/* --- time zones ------------------------------------------------------ */
+
+/*
+ * The clock in this machine keeps UTC, as a machine's clock should. A
+ * TIME ZONE is a property of the program's environment, not of the
+ * hardware: TZ says how to turn the one into the other, and tzset reads
+ * it. There is no zoneinfo database here -- a POSIX TZ string carries
+ * its own rules, which is what that format is for.
+ */
+static void test_timezones(void)
+{
+    time_t t = 1600000000;      /* 2020-09-13 12:26:40 UTC, a Sunday */
+    struct tm utc, local;
+    char buf[64];
+    long off;
+
+    unsetenv("TZ");
+    tzset();
+    gmtime_r(&t, &utc);
+    localtime_r(&t, &local);
+    report("with no TZ the local time is UTC",
+           utc.tm_hour == local.tm_hour && utc.tm_min == local.tm_min &&
+           local.tm_isdst == 0);
+
+    /* Mountain time, with the United States' daylight saving rules
+     * written out: second Sunday in March to the first in November. */
+    setenv("TZ", "MST7MDT,M3.2.0,M11.1.0", 1);
+    tzset();
+    localtime_r(&t, &local);
+    report("TZ moves the local time (MST7MDT in September: UTC-6)",
+           local.tm_hour == (utc.tm_hour + 24 - 6) % 24);
+    report("  and says it is daylight saving time", local.tm_isdst == 1);
+    report("  and names the zone", strcmp(tzname[1], "MDT") == 0 &&
+                                   strcmp(tzname[0], "MST") == 0);
+
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M %Z", &local);
+    report("strftime prints the zone name", strstr(buf, "MDT") != 0 &&
+                                            strncmp(buf, "2020-09-13", 10) == 0);
+
+    off = local.tm_gmtoff;
+    report("tm_gmtoff is the offset in seconds", off == -6 * 3600);
+
+    /* In January the same zone is standard time: the rules are applied,
+     * not a fixed offset. A test that only looked at one date could not
+     * tell those two apart. */
+    {
+        time_t winter = 1580000000;     /* 2020-01-26 UTC */
+        struct tm w;
+
+        localtime_r(&winter, &w);
+        report("  and in January the same zone is standard time",
+               w.tm_isdst == 0 && w.tm_gmtoff == -7 * 3600);
+    }
+
+    /* mktime is localtime backwards, and has to agree with it. */
+    {
+        struct tm again = local;
+        time_t back;
+
+        again.tm_isdst = -1;    /* let mktime work it out */
+        back = mktime(&again);
+        report("mktime turns a local time back into the same instant",
+               back == t);
+    }
+
+    /* A zone east of Greenwich, and a half-hour one, because an
+     * implementation that only handles whole hours passes everything
+     * above. */
+    setenv("TZ", "IST-5:30", 1);
+    tzset();
+    localtime_r(&t, &local);
+    report("a half-hour zone east of UTC (IST-5:30)",
+           local.tm_gmtoff == 5 * 3600 + 1800 &&
+           local.tm_hour == (utc.tm_hour + 5) % 24 &&
+           local.tm_min == (utc.tm_min + 30) % 60);
+
+    unsetenv("TZ");
+    tzset();
+}
+
 int main(int argc, char **argv)
 {
     char where[256];
@@ -886,6 +966,7 @@ int main(int argc, char **argv)
     test_glob();
     test_spawn(argc > 0 && argv[0][0] == '/' ? argv[0] : "/POSIXTST");
     test_chroot();
+    test_timezones();
     test_misc();
     printf("posixtest: %d failed\n", fails);
     printf("posixtest: done\n");

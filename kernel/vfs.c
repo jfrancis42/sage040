@@ -274,10 +274,10 @@ static struct chardev *resolve_dev(const char *path)
 
 struct file *fd_get(int fd)
 {
-    if (fd < 0 || fd >= OPEN_MAX || !current || !current->fds[fd]) {
+    if (fd < 0 || fd >= OPEN_MAX || !current || !current->files->fd[fd]) {
         return 0;
     }
-    return current->fds[fd];
+    return current->files->fd[fd];
 }
 
 /* An open file, not a descriptor. */
@@ -460,7 +460,7 @@ static int fd_alloc(void)
     int i;
 
     for (i = 0; i < OPEN_MAX; i++) {
-        if (!current->fds[i]) {
+        if (!current->files->fd[i]) {
             return i;
         }
     }
@@ -482,11 +482,11 @@ int fd_bind(int fd, const struct file_ops *ops, void *priv, int flags)
     f->priv = priv;
     f->flags = flags & ~O_CLOEXEC;
 
-    if (current->fds[fd]) {
-        file_put(current->fds[fd]);
+    if (current->files->fd[fd]) {
+        file_put(current->files->fd[fd]);
     }
-    current->fds[fd] = f;
-    current->fd_flags[fd] = (flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
+    current->files->fd[fd] = f;
+    current->files->flags[fd] = (flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
     return fd;
 }
 
@@ -505,8 +505,8 @@ int fd_install(const struct file_ops *ops, void *priv, int flags)
     f->ops = ops;
     f->priv = priv;
     f->flags = flags & ~O_CLOEXEC;
-    current->fds[fd] = f;
-    current->fd_flags[fd] = (flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
+    current->files->fd[fd] = f;
+    current->files->flags[fd] = (flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
     return fd;
 }
 
@@ -827,8 +827,8 @@ int fd_open(const char *path, int flags)
             f->used = 0;
             return err;
         }
-        current->fds[fd] = f;
-        current->fd_flags[fd] = (flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
+        current->files->fd[fd] = f;
+        current->files->flags[fd] = (flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
     }
     if (flags & O_TRUNC) {
         textcache_forget_fd(fd);
@@ -843,8 +843,8 @@ int fd_close(int fd)
     if (!f) {
         return -EBADF;
     }
-    current->fds[fd] = 0;
-    current->fd_flags[fd] = 0;
+    current->files->fd[fd] = 0;
+    current->files->flags[fd] = 0;
     file_put(f);
     return 0;
 }
@@ -864,14 +864,14 @@ static int dup_from(int fd, int min)
     if (min < 0 || min >= OPEN_MAX) {
         return -EINVAL;
     }
-    for (n = min; n < OPEN_MAX && current->fds[n]; n++) {
+    for (n = min; n < OPEN_MAX && current->files->fd[n]; n++) {
     }
     if (n == OPEN_MAX) {
         return -EMFILE;
     }
     file_get(f);
-    current->fds[n] = f;
-    current->fd_flags[n] = 0;
+    current->files->fd[n] = f;
+    current->files->flags[n] = 0;
     return n;
 }
 
@@ -891,9 +891,9 @@ int fd_fcntl(int fd, int cmd, u32 arg)
     case F_DUPFD:
         return dup_from(fd, (int)arg);
     case F_GETFD:
-        return current->fd_flags[fd];
+        return current->files->flags[fd];
     case F_SETFD:
-        current->fd_flags[fd] = (u8)(arg & FD_CLOEXEC);
+        current->files->flags[fd] = (u8)(arg & FD_CLOEXEC);
         return 0;
     case F_GETFL:
         return f->flags;
@@ -921,13 +921,68 @@ int fd_dup2(int oldfd, int newfd)
     if (oldfd == newfd) {
         return newfd;
     }
-    if (current->fds[newfd]) {
-        file_put(current->fds[newfd]);
+    if (current->files->fd[newfd]) {
+        file_put(current->files->fd[newfd]);
     }
     file_get(f);
-    current->fds[newfd] = f;
-    current->fd_flags[newfd] = 0;
+    current->files->fd[newfd] = f;
+    current->files->flags[newfd] = 0;
     return newfd;
+}
+
+/* --- the descriptor table ------------------------------------------- */
+
+/*
+ * A static pool: a table belongs to a task, and there cannot be more
+ * tasks than TASK_MAX. Allocating one cannot therefore fail for any
+ * reason a new task would not have failed for anyway.
+ */
+static struct fdtable fdtables[TASK_MAX];
+
+struct fdtable *fdtable_alloc(void)
+{
+    int i, j;
+
+    for (i = 0; i < TASK_MAX; i++) {
+        if (fdtables[i].refs == 0) {
+            for (j = 0; j < OPEN_MAX; j++) {
+                fdtables[i].fd[j] = 0;
+                fdtables[i].flags[j] = 0;
+            }
+            fdtables[i].refs = 1;
+            return &fdtables[i];
+        }
+    }
+    return 0;
+}
+
+void fdtable_get(struct fdtable *ft)
+{
+    if (ft) {
+        ft->refs++;
+    }
+}
+
+/*
+ * One holder fewer. At zero every descriptor still open is closed --
+ * which is what makes the last thread of a process the one that closes
+ * its files, rather than the first to exit.
+ */
+void fdtable_put(struct fdtable *ft)
+{
+    int i;
+
+    if (!ft || --ft->refs > 0) {
+        return;
+    }
+    for (i = 0; i < OPEN_MAX; i++) {
+        if (ft->fd[i]) {
+            file_put(ft->fd[i]);
+            ft->fd[i] = 0;
+        }
+        ft->flags[i] = 0;
+    }
+    ft->refs = 0;
 }
 
 /*
@@ -945,12 +1000,12 @@ void fd_inherit(struct task *child, struct task *parent)
     /* spawn is fork and exec in one, so a close-on-exec descriptor is
      * one the child never gets. */
     for (i = 0; i < OPEN_MAX; i++) {
-        if (parent->fd_flags[i] & FD_CLOEXEC) {
-            child->fds[i] = 0;
+        if (parent->files->flags[i] & FD_CLOEXEC) {
+            child->files->fd[i] = 0;
             continue;
         }
-        child->fds[i] = parent->fds[i];
-        file_get(child->fds[i]);
+        child->files->fd[i] = parent->files->fd[i];
+        file_get(child->files->fd[i]);
     }
 }
 
@@ -961,9 +1016,9 @@ void fd_fork(struct task *child, struct task *parent)
     int i;
 
     for (i = 0; i < OPEN_MAX; i++) {
-        child->fds[i] = parent->fds[i];
-        child->fd_flags[i] = parent->fd_flags[i];
-        file_get(child->fds[i]);
+        child->files->fd[i] = parent->files->fd[i];
+        child->files->flags[i] = parent->files->flags[i];
+        file_get(child->files->fd[i]);
     }
 }
 
@@ -973,11 +1028,11 @@ void fd_exec(struct task *t)
     int i;
 
     for (i = 0; i < OPEN_MAX; i++) {
-        if (t->fds[i] && (t->fd_flags[i] & FD_CLOEXEC)) {
-            file_put(t->fds[i]);
-            t->fds[i] = 0;
+        if (t->files->fd[i] && (t->files->flags[i] & FD_CLOEXEC)) {
+            file_put(t->files->fd[i]);
+            t->files->fd[i] = 0;
         }
-        t->fd_flags[i] = 0;
+        t->files->flags[i] = 0;
     }
 }
 
@@ -986,11 +1041,11 @@ void fd_close_all(struct task *t)
     int i;
 
     for (i = 0; i < OPEN_MAX; i++) {
-        if (t->fds[i]) {
-            file_put(t->fds[i]);
-            t->fds[i] = 0;
+        if (t->files->fd[i]) {
+            file_put(t->files->fd[i]);
+            t->files->fd[i] = 0;
         }
-        t->fd_flags[i] = 0;
+        t->files->flags[i] = 0;
     }
 }
 
@@ -1524,19 +1579,46 @@ int vfs_chroot(const char *path)
     if (err < 0) {
         return err;
     }
-    current->root_ino = ino;
+    {   /* chroot moves the process, threads and all -- see vfs_cwd_set. */
+        struct task *t;
+        int i;
+
+        for (i = 0; (t = task_nth(i)) != 0; i++) {
+            if (t->tgid == current->tgid) {
+                t->root_ino = ino;
+            }
+        }
+    }
     return 0;
 }
 
+/*
+ * Move the working directory -- of every thread of this process.
+ *
+ * A working directory belongs to a PROCESS, so a thread that chdirs
+ * moves all of them (that is what CLONE_FS means). Rather than another
+ * shared, reference-counted structure, it is written through to each
+ * task in the group: there are at most 64 of them, chdir is rare, and
+ * a task inside a system call cannot be preempted, so nothing can see
+ * half of the change.
+ */
 void vfs_cwd_set(u32 ino, const char *path)
 {
+    struct task *t;
+    int i;
+
     if (!current) {
         return;
     }
-    current->cwd_ino = ino;
-    if (path) {
-        strncpy(current->cwd_path, path, PATH_MAX - 1);
-        current->cwd_path[PATH_MAX - 1] = '\0';
+    for (i = 0; (t = task_nth(i)) != 0; i++) {
+        if (t->tgid != current->tgid) {
+            continue;
+        }
+        t->cwd_ino = ino;
+        if (path) {
+            strncpy(t->cwd_path, path, PATH_MAX - 1);
+            t->cwd_path[PATH_MAX - 1] = '\0';
+        }
     }
 }
 

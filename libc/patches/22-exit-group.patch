@@ -1,0 +1,34 @@
+picolibc 1.8.12's libos/linux _exit() calls SYS_exit, which on Linux ends
+only the CALLING THREAD. POSIX says a return from main, or exit(), ends
+the whole program: every other thread goes too. Without this a program
+that returns from main leaves its threads running, belonging to a
+process that has finished.
+
+Not specific to m68k. glibc, musl and every other Linux C library call
+exit_group here.
+
+diff -ru a/libos/linux/_exit.c b/libos/linux/_exit.c
+--- a/libos/linux/_exit.c	2026-09-22 14:50:51.950407668 -0600
++++ b/libos/linux/_exit.c	2026-09-22 14:50:51.967423440 -0600
+@@ -35,9 +35,20 @@
+ 
+ #include "local-linux.h"
+ 
++/*
++ * exit_group, not exit: this ends the PROCESS.
++ *
++ * POSIX says a return from main, or exit(), ends the program and every
++ * thread in it. syscall(exit) ends only the calling thread, so a
++ * program whose last act was to return from main left its threads
++ * running with nothing to run for -- visible as tasks belonging to a
++ * process that had finished. Linux's C libraries all call exit_group
++ * here for this reason; pthread_exit is the call that ends one thread.
++ */
+ void
+ _exit(int status)
+ {
+-    syscall(LINUX_SYS_exit, status);
++    syscall(LINUX_SYS_exit_group, status);
++    syscall(LINUX_SYS_exit, status);    /* a kernel without it */
+     __builtin_unreachable();
+ }

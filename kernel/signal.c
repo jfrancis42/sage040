@@ -212,6 +212,29 @@ int signal_kill(int pid, int sig)
 
     t = task_find(pid);
 
+    /*
+     * A signal is sent to a PROCESS. task_find answers with the thread
+     * group leader, because its pid is the tgid, and that is the thread
+     * it is delivered to: this system does not choose among threads,
+     * and a program that wants a particular one says so with tgkill.
+     * CPython, which handles every signal on its main thread, wants
+     * exactly this.
+     *
+     * SIGKILL is the exception, because it ends the process rather than
+     * being handled by it: every thread gets it.
+     */
+    if (t && sig == SIGKILL && t->tgid == t->pid) {
+        struct task *o;
+        int i;
+
+        for (i = 0; (o = task_nth(i)) != 0; i++) {
+            if (o != t && o->tgid == t->tgid && o->as &&
+                o->state != TASK_ZOMBIE) {
+                signal_send(o, SIGKILL);
+            }
+        }
+    }
+
     if (t && !t->as && t->state != TASK_ZOMBIE) {
         return -EPERM;          /* see signal_send: it would do nothing */
     }
@@ -271,6 +294,24 @@ int signal_set_action(int sig, const struct sigaction *act,
     }
     t->sigact[sig] = *act;
     t->sigact[sig].sa_mask &= ~SIG_UNBLOCKABLE;
+
+    /*
+     * A DISPOSITION BELONGS TO THE PROCESS, not to the thread that set
+     * it: CLONE_SIGHAND, and POSIX. So every thread of this one gets it
+     * too. The MASK is per thread and stays that way, which is the
+     * split POSIX draws and what lets a program keep signals out of its
+     * worker threads by blocking them there.
+     */
+    if (t->tgid != t->pid || task_group_count(t) > 1) {
+        struct task *o;
+        int i;
+
+        for (i = 0; (o = task_nth(i)) != 0; i++) {
+            if (o != t && o->tgid == t->tgid) {
+                o->sigact[sig] = t->sigact[sig];
+            }
+        }
+    }
 
     /* Setting a signal to be ignored discards one already pending. */
     if (is_ignored(t, sig)) {

@@ -152,6 +152,15 @@ struct addrspace {
     int used;
 
     /*
+     * How many TASKS are using it. One for an ordinary process; one per
+     * thread for a threaded one, because CLONE_VM shares the space
+     * rather than copying it. vm_destroy() at anything above one is a
+     * thread letting go, not the space being torn down -- which is what
+     * makes the LAST thread out the one that frees the memory.
+     */
+    int refs;
+
+    /*
      * Still being built -- by exec, before it is anybody's. Reclaim
      * leaves such a space alone: its pages are being filled through
      * their physical addresses, and one evicted from under the loader
@@ -178,6 +187,9 @@ struct addrspace *vm_create(void);
  * memory; nothing is left allocated in that case.
  */
 struct addrspace *vm_clone(struct addrspace *src);
+
+/* One more task is using this space. Returns it, for convenience. */
+struct addrspace *vm_share(struct addrspace *as);
 
 /* Give back every page it owns, including the pages mapped into it. */
 void vm_destroy(struct addrspace *as);

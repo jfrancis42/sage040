@@ -9,7 +9,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-PROGS := libctest inettest posixtest cryptest
+PROGS := libctest inettest posixtest cryptest threadtest
 
 include $(TOPDIR)/libc/libc.mk
 

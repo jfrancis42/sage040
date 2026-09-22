@@ -140,7 +140,7 @@ check "atexit handlers run" $?
 
 echo "=== checks: stdout to a file, read on the host ==="
 
-grep -qx "libctest: picolibc on Sage040" "$SCRATCH/lcout.tmp"
+grep -qx "libctest: picolibc on SuckOS" "$SCRATCH/lcout.tmp"
 check "the redirected output reached the file" $?
 
 grep -qx "libctest: atexit handler ran" "$SCRATCH/lcout.tmp"

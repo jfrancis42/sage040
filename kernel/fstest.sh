@@ -266,7 +266,7 @@ check "a missing file is reported, not a crash" $?
 contains "$LOG" "Saturday, 3 February 2001"
 check "the clock was set, and the weekday derived from the date" $?
 
-contains "$LOG" "Sage040 0."
+contains "$LOG" "SuckOS 0."
 check "uname reported the kernel version" $?
 
 contains "$LOG" "no such device"

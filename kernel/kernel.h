@@ -21,7 +21,8 @@
  * captured serial log says which kernel produced it -- with several
  * builds on the disk at once, that stops being obvious immediately.
  */
-#define KERNEL_NAME           "Sage040"
+#define KERNEL_NAME           "SuckOS"    /* the system */
+#define MACHINE_NAME          "Sage040"   /* the machine it runs on */
 #define KERNEL_VERSION_MAJOR  0
 #define KERNEL_VERSION_MINOR  3
 #define KERNEL_VERSION        "0.3"

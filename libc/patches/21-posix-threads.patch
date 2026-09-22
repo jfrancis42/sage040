@@ -1,0 +1,45 @@
+picolibc 1.8.12 advertises _POSIX_THREADS only for RTEMS and XMK, so on
+every other target <sched.h> hides sched_yield, <limits.h> hides the
+thread limits, and anything that asks whether threads exist is told no.
+This system HAS threads -- clone(2), futexes and the pthread layer in
+libos/linux/machine/m68k -- so it says so, under a define the build
+sets (-D__PICOLIBC_HAS_THREADS__).
+
+Not specific to m68k: any libos/linux target with a thread
+implementation wants the same.
+
+diff -ru a/libc/include/sys/features.h b/libc/include/sys/features.h
+--- a/libc/include/sys/features.h	2026-09-22 14:28:38.261890847 -0600
++++ b/libc/include/sys/features.h	2026-09-22 14:28:38.296204743 -0600
+@@ -401,6 +401,31 @@
+ #define __SSP_FORTIFY_LEVEL 0
+ #endif
+ 
++/*
++ * Threads, where the C library has them. SuckOS builds picolibc with a
++ * pthread implementation over clone(2) and futexes, so the declarations
++ * these guard -- sched_yield, the PTHREAD_* limits, the thread-safe
++ * function set -- have something behind them.
++ *
++ * What is NOT claimed is as deliberate as what is: no
++ * _POSIX_THREAD_PRIORITY_SCHEDULING (one policy, and nice(2) is how a
++ * program asks for less of the processor), no _POSIX_THREAD_PRIO_INHERIT
++ * or _PRIO_PROTECT (no priorities to inherit), and no
++ * _POSIX_THREAD_PROCESS_SHARED (one process's threads share everything
++ * already, and nothing is shared between processes).
++ */
++#ifdef __PICOLIBC_HAS_THREADS__
++#define _POSIX_THREADS                    1
++#define _POSIX_SEMAPHORES                 1
++#define _POSIX_BARRIERS                   200112L
++#define _POSIX_READER_WRITER_LOCKS        200112L
++#define _POSIX_SPIN_LOCKS                 200112L
++#define _POSIX_THREAD_ATTR_STACKADDR      1
++#define _POSIX_THREAD_ATTR_STACKSIZE      1
++#define _POSIX_THREAD_SAFE_FUNCTIONS      1
++#define _UNIX98_THREAD_MUTEX_ATTRIBUTES   1
++#endif
++
+ /* RTEMS adheres to POSIX -- 1003.1b with some features from annexes.  */
+ 
+ #ifdef __rtems__

@@ -2029,7 +2029,10 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         return 0;
 
     case __NR_getpid:
-        return current->pid;
+        /* The PROCESS, not the thread: every thread of one program
+         * agrees about what getpid() says, and gettid() is what tells
+         * them apart. For a process of one they are the same number. */
+        return current->tgid;
 
     case __NR_getppid:
         return current->parent ? current->parent->pid : 0;

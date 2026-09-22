@@ -1233,6 +1233,38 @@ struct sigcontext {
 #define __NR_lstat         107  /* this system's struct stat, like stat */
 #define __NR_wait4         114
 #define __NR_clone         120
+#define __NR_gettid        221
+#define __NR_tkill         222
+#define __NR_futex         235
+#define __NR_exit_group    247
+#define __NR_set_tid_address 253
+#define __NR_tgkill        265
+#define __NR_set_robust_list 304
+
+/*
+ * clone() flags, Linux's values. A thread is
+ * CLONE_VM|FS|FILES|SIGHAND|THREAD: one address space, one working
+ * directory, one descriptor table, one set of signal handlers, and one
+ * process as far as getpid() and wait() are concerned. Anything else is
+ * a combination this kernel does not implement and refuses, rather than
+ * quietly doing something close to it.
+ */
+#define CLONE_VM             0x00000100
+#define CLONE_FS             0x00000200
+#define CLONE_FILES          0x00000400
+#define CLONE_SIGHAND        0x00000800
+#define CLONE_PTRACE         0x00002000
+#define CLONE_VFORK          0x00004000
+#define CLONE_PARENT         0x00008000
+#define CLONE_THREAD         0x00010000
+#define CLONE_NEWNS          0x00020000
+#define CLONE_SYSVSEM        0x00040000
+#define CLONE_SETTLS         0x00080000
+#define CLONE_PARENT_SETTID  0x00100000
+#define CLONE_CHILD_CLEARTID 0x00200000
+#define CLONE_DETACHED       0x00400000
+#define CLONE_CHILD_SETTID   0x01000000
+#define CLONE_CSIGNAL        0x000000ff
 #define __NR_fchdir        133
 #define __NR_flock         143
 #define __NR_swapon         87      /* swapon(path, flags)             */

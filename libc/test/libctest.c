@@ -575,7 +575,7 @@ int main(int argc, char **argv)
         return atoi(argv[2]);
     }
 
-    printf("libctest: picolibc on Sage040\n");
+    printf("libctest: picolibc on SuckOS\n");
     test_format();
     test_memory();
     test_control();

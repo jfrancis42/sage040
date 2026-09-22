@@ -47,9 +47,9 @@
 static void banner(void)
 {
     kputs("\n\n");
-    kputs(KERNEL_NAME " kernel ");
+    kputs(KERNEL_NAME " ");
     kputs(kernel_version);
-    kputs("  (built ");
+    kputs(" on " MACHINE_NAME "  (built ");
     kputs(kernel_build);
     kputs(")\n");
     kputs("Copyright (C) 2026 Jeff Francis.  GPL-3.0-or-later.\n\n");

@@ -539,6 +539,7 @@ struct addrspace *vm_create(void)
         return 0;
     }
     as->used = 1;
+    as->refs = 1;               /* the task that asked for it */
     as->busy = 1;               /* until vm_ready(): see vm.h */
 
     /*
@@ -1070,11 +1071,28 @@ struct addrspace *vm_clone(struct addrspace *src)
     return as;
 }
 
+struct addrspace *vm_share(struct addrspace *as)
+{
+    if (as) {
+        as->refs++;
+    }
+    return as;
+}
+
+/*
+ * One task fewer is using this space, and everything in it goes when
+ * the last one does. A thread calling this is letting go; the process's
+ * memory outlives it, because its siblings are still running in it.
+ */
 void vm_destroy(struct addrspace *as)
 {
     u32 va, pg;
 
     if (!as || !as->used) {
+        return;
+    }
+    if (as->refs > 1) {
+        as->refs--;
         return;
     }
 

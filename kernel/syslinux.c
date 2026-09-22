@@ -28,6 +28,7 @@
 #include "syscall.h"
 #include "vfs.h"
 #include "task.h"
+#include "futex.h"
 #include "signal.h"
 #include "timer.h"
 #include "random.h"
@@ -809,7 +810,16 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
     case __NR_umask: {
         u32 old = current->umask;
 
-        current->umask = a1 & 0777;
+        {   /* the process's, not the thread's: CLONE_FS again */
+            struct task *t;
+            int i;
+
+            for (i = 0; (t = task_nth(i)) != 0; i++) {
+                if (t->tgid == current->tgid) {
+                    t->umask = a1 & 0777;
+                }
+            }
+        }
         return (s32)old;
     }
 
@@ -869,18 +879,81 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
     /*
      * vfork is fork: the child gets a copy rather than borrowing the
      * parent's memory, which is always a correct implementation of it.
-     * clone only as fork, with nothing shared and SIGCHLD at exit.
      */
-    case __NR_vfork:
-    case __NR_clone: {
-        struct task *t;
+    case __NR_vfork: {
+        struct task *t = task_fork(regs);
 
-        if (nr == __NR_clone && (a1 != SIGCHLD || a2 != 0)) {
-            return -EINVAL;
-        }
-        t = task_fork(regs);
         return t ? t->pid : (task_count() >= TASK_MAX ? -EAGAIN : -ENOMEM);
     }
+
+    /*
+     * clone: fork, or a thread. m68k passes the arguments in the order
+     * Linux/m68k's own sys_clone reads them -- flags, the child's stack,
+     * the parent's tid word, the child's tid word, then the TLS pointer.
+     * task_clone says which combinations are implemented and refuses the
+     * rest; see the note there.
+     */
+    case __NR_clone: {
+        struct task *t;
+        int err = 0;
+
+        t = task_clone(regs, a1, a2, a3, a4, a5, &err);
+        return t ? t->pid : err;
+    }
+
+    /* The THREAD's id, where getpid() gives the process's. */
+    case __NR_gettid:
+        return current->pid;
+
+    /*
+     * The word to clear and wake when this thread ends, which is what a
+     * joiner sleeps on. Returns the caller's own tid, as Linux does.
+     */
+    case __NR_set_tid_address:
+        current->clear_child_tid = a1;
+        return current->pid;
+
+    /* Sleep unless this word has changed, and wake whoever is asleep on
+     * one. Everything a thread library waits on is built out of these. */
+    case __NR_futex:
+        return futex_call(a1, (int)a2, a3, a4, a5, a6);
+
+    /*
+     * exit_group(): the whole process, threads and all. This is what a
+     * C library's exit() calls, so a threaded program that returns from
+     * main takes its threads with it rather than leaving them running
+     * with nothing to run for.
+     */
+    case __NR_exit_group:
+        task_group_kill(current);
+        task_exit((int)a1 & 0xff);
+        return 0;               /* not reached */
+
+    /* A signal to ONE thread, rather than to the process. */
+    case __NR_tkill:
+    case __NR_tgkill: {
+        int tid = (nr == __NR_tkill) ? (int)a1 : (int)a2;
+        int sig = (nr == __NR_tkill) ? (int)a2 : (int)a3;
+        struct task *t = task_find(tid);
+
+        if (!t || !t->as || t->state == TASK_ZOMBIE) {
+            return -ESRCH;
+        }
+        if (nr == __NR_tgkill && t->tgid != (int)a1) {
+            return -ESRCH;
+        }
+        return sig ? signal_send(t, sig) : 0;
+    }
+
+    /*
+     * Robust futexes -- a list the kernel walks to release the locks a
+     * thread died holding. Accepted and not kept: nothing here dies
+     * holding a lock without the process ending too, and pretending to
+     * support it would be worse than saying so. Returns 0 because
+     * glibc-shaped startup code calls it once and carries on.
+     */
+    case __NR_set_robust_list:
+        return 0;
 
     /* --- time, limits, randomness --- */
     case __NR_clock_gettime:

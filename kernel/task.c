@@ -22,6 +22,8 @@
 #include "console.h"
 #include "errno.h"
 #include "string.h"
+#include "uaccess.h"
+#include "futex.h"
 
 extern void switch_context(u32 *save_sp, u32 new_sp);
 extern void fpu_save(u32 *area);
@@ -147,7 +149,12 @@ static struct task *alloc_task(const char *name)
             struct task *t = &tasks[i];
 
             memset(t, 0, sizeof(*t));
+            t->files = fdtable_alloc();
+            if (!t->files) {
+                return 0;       /* one table per task: cannot happen */
+            }
             t->pid = next_pid++;
+            t->tgid = t->pid;   /* its own thread group, until cloned */
             strncpy(t->name, name, TASK_NAME_MAX - 1);
             t->name[TASK_NAME_MAX - 1] = '\0';
             t->slice = TASK_SLICE;
@@ -364,6 +371,193 @@ struct task *task_fork(struct pt_regs *regs)
 
     t->state = TASK_READY;
     return t;
+}
+
+/*
+ * clone(): what fork() is a special case of, and how a thread is made.
+ *
+ * A THREAD IS A TASK THAT SHARES. Everything the scheduler, the signal
+ * code and the system call gate do is unchanged; what changes is that
+ * three things this task would have had copies of are pointers to the
+ * caller's instead -- the address space, the descriptor table and the
+ * working directory -- and that it reports the caller's process id.
+ *
+ * It starts on the stack it is given, returning 0 from this very system
+ * call, exactly as a forked child returns 0 from fork. So the C library
+ * writes the new thread's entry point and argument onto that stack
+ * before calling, and what runs first in the new thread is the few
+ * instructions after the trap.
+ *
+ * WHAT IS REFUSED, and why it is refused rather than approximated:
+ * CLONE_SETTLS, because this system has no thread register and its
+ * pthread layer finds a thread's own block from its stack pointer;
+ * CLONE_PARENT, CLONE_PTRACE, CLONE_VFORK and the namespace flags,
+ * because none of them mean anything here. A combination that is not
+ * fork and is not a thread gets -EINVAL, which is a great deal better
+ * than a thread that shares three things out of five.
+ */
+#define CLONE_THREAD_SET (CLONE_VM | CLONE_FS | CLONE_FILES | \
+                          CLONE_SIGHAND | CLONE_THREAD)
+#define CLONE_OPTIONAL   (CLONE_PARENT_SETTID | CLONE_CHILD_SETTID | \
+                          CLONE_CHILD_CLEARTID | CLONE_DETACHED | \
+                          CLONE_SYSVSEM)
+
+struct task *task_clone(struct pt_regs *regs, u32 flags, u32 child_stack,
+                        u32 ptid, u32 ctid, u32 tls, int *err)
+{
+    struct task *p = current;
+    struct task *t;
+    u32 top;
+    struct pt_regs *cr;
+
+    *err = 0;
+
+    /* Plain fork, however it was spelled. */
+    if (!(flags & CLONE_VM)) {
+        if (flags & ~(u32)(CLONE_CSIGNAL | CLONE_OPTIONAL)) {
+            *err = -EINVAL;
+            return 0;
+        }
+        t = task_fork(regs);
+        if (!t) {
+            *err = (task_count() >= TASK_MAX) ? -EAGAIN : -ENOMEM;
+        }
+        return t;
+    }
+
+    if (tls) {
+        *err = -EINVAL;         /* no thread register: see above */
+        return 0;
+    }
+    if ((flags & CLONE_THREAD_SET) != CLONE_THREAD_SET ||
+        (flags & ~(u32)(CLONE_THREAD_SET | CLONE_OPTIONAL | CLONE_CSIGNAL))) {
+        *err = -EINVAL;
+        return 0;
+    }
+    if (!p->as || !child_stack) {
+        *err = -EINVAL;         /* a thread of what, on what stack? */
+        return 0;
+    }
+
+    t = alloc_task(p->name);
+    if (!t) {
+        *err = -EAGAIN;
+        return 0;
+    }
+    t->kstack = kstack_alloc(&top);
+    if (!t->kstack) {
+        fdtable_put(t->files);
+        t->files = 0;
+        t->state = TASK_UNUSED;
+        *err = -ENOMEM;
+        return 0;
+    }
+
+    /* The three things it shares rather than copies. */
+    t->as = vm_share(p->as);
+    fdtable_put(t->files);      /* the empty one alloc_task just made */
+    t->files = p->files;
+    fdtable_get(t->files);
+    task_cwd_inherit(t, p);
+
+    /*
+     * One process. getpid() answers the group, gettid() the task, and
+     * wait() skips it entirely -- a thread is joined, not waited for.
+     * Its parent is nobody, so the scheduler reaps its slot when it
+     * ends, whether or not anything joined it.
+     */
+    t->tgid = p->tgid;
+    t->parent = 0;
+    t->pgid = p->pgid;
+    t->sid = p->sid;
+    t->nice = p->nice;
+    memcpy(t->cmd, p->cmd, sizeof(t->cmd));
+
+    /* Handlers are the process's, so a thread starts with the ones the
+     * process has. A later sigaction updates every thread; see
+     * signal.c. Its own mask starts as the caller's, as POSIX says. */
+    memcpy(t->sigact, p->sigact, sizeof(t->sigact));
+    t->sig_blocked = p->sig_blocked;
+
+    /* Its registers are the caller's, on its own stack, returning 0. */
+    build_stack(t, top, regs->pc, child_stack, 1);
+    cr = (struct pt_regs *)(top - sizeof(struct pt_regs));
+    memcpy(cr->d, regs->d, sizeof(cr->d));
+    memcpy(cr->a, regs->a, sizeof(cr->a));
+    cr->d[0] = 0;
+    cr->sr = regs->sr;
+    cr->pc = regs->pc;
+    cr->format = 0;
+
+    fpu_save(p->fpu);
+    memcpy(t->fpu, p->fpu, sizeof(t->fpu));
+
+    if (flags & CLONE_CHILD_CLEARTID) {
+        t->clear_child_tid = ctid;
+    }
+    if (flags & CLONE_CHILD_SETTID) {
+        (void)copy_to_user(ctid, &t->pid, sizeof(t->pid));
+    }
+    if (flags & CLONE_PARENT_SETTID) {
+        (void)copy_to_user(ptid, &t->pid, sizeof(t->pid));
+    }
+
+    t->state = TASK_READY;
+    return t;
+}
+
+int task_group_count(struct task *t)
+{
+    int i, n = 0;
+
+    if (!t) {
+        return 0;
+    }
+    for (i = 0; i < TASK_MAX; i++) {
+        if (tasks[i].state != TASK_UNUSED && tasks[i].tgid == t->tgid) {
+            n++;
+        }
+    }
+    return n;
+}
+
+/*
+ * End every other thread of this process and wait for them to go.
+ *
+ * SIGKILL rather than reaching into them: a thread may be anywhere --
+ * asleep on a futex, inside a disk read, halfway through a write to the
+ * terminal -- and the only place it is safe to unwind a task is the one
+ * the signal path already uses, on the way back to user mode. So this
+ * asks, and then waits for each of them to arrive there.
+ *
+ * The wait is bounded. A thread that cannot be killed is a kernel bug,
+ * and hanging exit_group() while looking for it would hide it.
+ */
+void task_group_kill(struct task *t)
+{
+    u32 deadline;
+    int i;
+
+    if (!t || task_group_count(t) <= 1) {
+        return;
+    }
+    for (i = 0; i < TASK_MAX; i++) {
+        struct task *o = &tasks[i];
+
+        if (o != t && o->state != TASK_UNUSED && o->tgid == t->tgid) {
+            o->exiting = 1;
+            signal_send(o, SIGKILL);
+        }
+    }
+
+    deadline = timer_jiffies() + 5 * HZ;
+    while (task_group_count(t) > 1) {
+        if ((s32)(timer_jiffies() - deadline) >= 0) {
+            kputs("task: a thread would not die\n");
+            return;
+        }
+        schedule();
+    }
 }
 
 /* --- the table ------------------------------------------------------- */
@@ -686,13 +880,26 @@ void task_exit(int status)
     t->exit_status = status;
     t->exiting = 1;
 
-    /* Its descriptors go now; its kernel stack cannot, because this is
-     * still standing on it. */
-    for (i = 0; i < OPEN_MAX; i++) {
-        if (t->fds[i]) {
-            file_put(t->fds[i]);
-            t->fds[i] = 0;
-        }
+    /*
+     * It lets go of its descriptors now; its kernel stack cannot go,
+     * because this is still standing on it. The table is only emptied
+     * if this was its last holder -- the other threads of the same
+     * process are still using it.
+     */
+    fdtable_put(t->files);
+    t->files = 0;
+
+    /*
+     * A thread that has finished tells whoever is joining it, the way
+     * Linux does: the kernel zeroes the word the thread registered and
+     * wakes anything waiting on that address. That IS pthread_join.
+     */
+    if (t->clear_child_tid && t->as) {
+        u32 zero = 0;
+
+        (void)copy_to_user(t->clear_child_tid, &zero, sizeof(zero));
+        futex_wake_at(t->as, t->clear_child_tid, 0x7fffffff);
+        t->clear_child_tid = 0;
     }
 
     /*
@@ -706,7 +913,8 @@ void task_exit(int status)
      */
     if (t->as) {
         vm_switch(0);
-        vm_destroy(t->as);
+        vm_destroy(t->as);       /* the last thread's copy is the one
+                                  * that actually frees it */
         t->as = 0;
     }
 
@@ -769,6 +977,12 @@ void task_reap(struct task *t)
 static int wait_matches(struct task *t, int pid)
 {
     if (t->state == TASK_UNUSED || t->parent != current) {
+        return 0;
+    }
+    /* A thread is not a child. Its parent is nobody, so this cannot
+     * match one anyway -- but say it, because a thread that ever does
+     * get a parent must still not be something wait() can collect. */
+    if (t->tgid != t->pid) {
         return 0;
     }
     if (pid > 0) {
@@ -885,6 +1099,18 @@ void task_init(void)
     strcpy(current->cwd_path, "/");
     current->pgid = current->pid;
     current->sid = current->pid;
+    current->tgid = current->pid;
+    /*
+     * ITS DESCRIPTOR TABLE, and this is not optional: tty_init() binds
+     * 0, 1 and 2 in whatever task exists when the terminal comes up,
+     * which is this one. Without a table that write goes through a null
+     * pointer into the vector table -- which is mapped and writable, so
+     * it does not fault. The machine boots, prints its banner, and dies
+     * at the first exception with a program counter that makes no
+     * sense. Task 0 is built by hand rather than by alloc_task(), so
+     * everything alloc_task() does has to be said here too.
+     */
+    current->files = fdtable_alloc();
     idle = current;
 }
 

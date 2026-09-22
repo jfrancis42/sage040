@@ -704,6 +704,15 @@ int exec_replace(const char *path, int argc, char **argv, char **envp,
     if (!old) {
         return -EPERM;          /* a kernel task is not a program */
     }
+
+    /*
+     * EXEC ENDS EVERY OTHER THREAD, which POSIX requires and which this
+     * has to do BEFORE anything is replaced: the image about to go is
+     * the one they are running in. After this the process is one thread
+     * again, and the address space below has a single holder.
+     */
+    task_group_kill(current);
+
     as = vm_create();
     if (!as) {
         return -ENOMEM;

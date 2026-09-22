@@ -85,15 +85,43 @@ struct task {
     u32   kstack;               /* base of the block, guard page first */
 
     struct addrspace *as;       /* null for a kernel task              */
-    struct file *fds[OPEN_MAX]; /* its own descriptors                 */
-    u8    fd_flags[OPEN_MAX];   /* FD_CLOEXEC: per descriptor, not per
-                                 * open file -- see fcntl() in vfs.c    */
+
+    /*
+     * Its descriptors -- a table that may be SHARED. A process has one
+     * of its own; the threads of one process all point at the same one,
+     * because POSIX says a descriptor opened by any thread is a
+     * descriptor every thread has. fork() takes a copy, clone() with
+     * CLONE_FILES takes a reference. See fdtable in vfs.h.
+     */
+    struct fdtable *files;
 
     int   exit_status;
     int   signalled;            /* the signal that ended it, or 0      */
     struct task *parent;
     int   pgid;                 /* process group: what ctrl-C reaches  */
     int   sid;                  /* session: the groups a login holds   */
+
+    /*
+     * THREADS. A task is a thread; a process is every task sharing a
+     * thread group id. For a process of one -- which is all there was
+     * before, and still most of them -- tgid == pid and none of the
+     * rest of this matters.
+     *
+     * getpid() reports the tgid and gettid() the pid, which is Linux's
+     * split and the reason a threaded program's every thread agrees
+     * about what process it is. A non-leader is never a child as far
+     * as wait() is concerned: a thread is not something its parent
+     * waits for, its joiner waits for it.
+     */
+    int   tgid;                 /* the process this thread belongs to  */
+
+    /*
+     * The word to zero and wake when this task ends, set by clone with
+     * CLONE_CHILD_CLEARTID and by set_tid_address. This IS pthread_join:
+     * the joiner sleeps on that address in a futex, and the dying
+     * thread's last act in the kernel is to clear it and wake.
+     */
+    u32   clear_child_tid;
 
     /*
      * Signals. A bitmask each, signal N in bit N-1 (SIGMASK), because
@@ -196,6 +224,24 @@ struct addrspace;
 /* fork(): a copy of the current task. Null if there is not the memory. */
 struct pt_regs;
 struct task *task_fork(struct pt_regs *regs);
+
+/*
+ * clone(): fork's general form, and how a thread is made.
+ *
+ * With CLONE_VM|CLONE_THREAD (and the rest of the thread set) the new
+ * task shares this one's address space, descriptors, working directory
+ * and signal handlers, starts on the stack it is given, and belongs to
+ * the same thread group. Returns the new task, or null with *err set.
+ */
+struct task *task_clone(struct pt_regs *regs, u32 flags, u32 child_stack,
+                        u32 ptid, u32 ctid, u32 tls, int *err);
+
+/* How many tasks share this one's thread group, itself included. */
+int  task_group_count(struct task *t);
+
+/* End every OTHER thread of this task's process, and wait for them to
+ * be gone. exit_group() and execve() both need it. */
+void task_group_kill(struct task *t);
 
 /* Made by exec.c, which builds the address space and user stack first. */
 struct task *task_create_user(const char *name, u32 entry, u32 usp,

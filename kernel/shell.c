@@ -868,6 +868,8 @@ static void cmd_uname(int argc, char **args)
     out_puts(u.sysname);
     if (argc > 1 && strcmp(args[1], "-a") == 0) {
         out_putc(' ');
+        out_puts(u.nodename);
+        out_putc(' ');
         out_puts(u.release);
         out_putc(' ');
         out_puts(u.machine);
@@ -2875,6 +2877,18 @@ void shell(void)
     env_set("HOME", "/");
     env_set("SHELL", "/bin/sh");
     env_set("TERM", "vt102");   /* what fbcon.c is, and any serial terminal can be */
+
+    /*
+     * The clock keeps UTC, as a machine's clock should, and TZ is how a
+     * program turns that into a local time. UTC0 is the honest default:
+     * a machine that has not been told where it is should not guess.
+     *
+     * There is no zoneinfo database here and does not need to be -- a
+     * POSIX TZ string carries its own rules, which is what the format
+     * is for. `export TZ=MST7MDT,M3.2.0,M11.1.0` in /etc/rc is a
+     * machine in Colorado, daylight saving included.
+     */
+    env_set("TZ", "UTC0");
 
     /*
      * /etc/rc, if there is one. Not an error if there is not: a machine

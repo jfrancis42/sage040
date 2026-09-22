@@ -21,7 +21,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: all boot run test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest libc cube programs clean distclean
+.PHONY: all boot run test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest libc cube programs clean distclean
 
 all:
 	$(MAKE) -C bootrom
@@ -56,7 +56,7 @@ programs:
 run:
 	$(MAKE) -C kernel run
 
-test: tests cryptotest fstest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest
+test: tests cryptotest fstest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest
 
 tests:
 	$(MAKE) -C tests run
@@ -120,6 +120,17 @@ greptest:
 
 sbasetest:
 	cd kernel && ./sbasetest.sh
+
+bashtest:
+	cd kernel && ./bashtest.sh
+
+# Threads: clone(2), futexes and the pthread layer over them.
+threadtest:
+	cd kernel && ./threadtest.sh
+
+# Every one of bash's own 83 tests, not the subset: hours, not minutes.
+bashsuite:
+	cd kernel && BASH_TESTS=all ./bashtest.sh
 
 # picolibc, built and installed outside the tree (libc/README.md). Once.
 libc:

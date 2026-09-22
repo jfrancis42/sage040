@@ -135,7 +135,29 @@ int  fd_dup(int fd);
 int  fd_fcntl(int fd, int cmd, u32 arg);
 int  fd_dup2(int oldfd, int newfd);
 
+/*
+ * A DESCRIPTOR TABLE, which is not the same thing as a process.
+ *
+ * A process has one; the threads of one process share one, because a
+ * descriptor opened by any thread is a descriptor every thread has
+ * (POSIX, and what CLONE_FILES means). Reference counted like an open
+ * file, and for the same reason: the last holder closes what is left.
+ *
+ * The tables come from a static pool of TASK_MAX, because a table is
+ * only ever wanted by a task and there cannot be more tasks than that.
+ */
+struct fdtable {
+    int refs;                   /* 0 when the entry is free            */
+    struct file *fd[OPEN_MAX];
+    u8    flags[OPEN_MAX];      /* FD_CLOEXEC: per descriptor, not per
+                                 * open file -- see fcntl() in vfs.c    */
+};
+
 struct task;
+struct fdtable *fdtable_alloc(void);   /* a new empty table, or null   */
+void fdtable_get(struct fdtable *ft);  /* one more holder              */
+void fdtable_put(struct fdtable *ft);  /* one fewer; closes at zero    */
+
 void fd_inherit(struct task *child, struct task *parent);
 void fd_fork(struct task *child, struct task *parent);
 void fd_exec(struct task *t);

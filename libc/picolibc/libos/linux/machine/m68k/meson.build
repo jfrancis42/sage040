@@ -37,6 +37,8 @@ subdir('linux')
 srcs_os_linux_machine = [
   'sa-restore.S',
   'syscall.S',
+  'clone.S',
+  'pthread.c',
   'posix-extra.c',
   'posix-more.c',
   'stdio-ext.c',
