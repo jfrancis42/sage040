@@ -425,13 +425,56 @@ arguments, which C23 refuses).
 `/usr/lib`, with `crt0.o`, `crt0-dyn.o`, `sage040.ld` and `libgcc.a`
 beside it. Nothing needed that while every program was cross-compiled.
 
-**What is left, and why the chain is longer than it looks:** GCC 15 is
-written in C++, so a compiler that runs on this machine needs a C++
-standard library that runs on this machine. And the existing cross
-toolchain is C-only -- there is no cross `g++` at all. So the order is
-a cross g++ (into a separate prefix, so the working C compiler
-everything depends on is never at risk), then libstdc++ against
-picolibc, then the native gcc, then gdb.
+**The chain is longer than it looks, and all but the last link is
+done.** GCC 15 is written in C++, so a compiler that runs on this
+machine needs a C++ standard library that runs on this machine -- and
+the existing cross toolchain is C-only, with no cross `g++` at all. So:
+
+1. **a cross g++**, gcc 15.2.0 with `c,c++`, into
+   `~/m68k/install-cxx` -- a prefix of its own, so the C compiler
+   everything else depends on is never at risk. **Done.**
+2. **libstdc++ for the target**, `ports/libstdcxx`, 1.5 MB. **Done.**
+3. **the native gcc**, `ports/gcc`. **Building.**
+4. gdb, which is also C++ and additionally wants `ptrace` in the
+   kernel. Not started.
+
+**What the Canadian cross needed, beyond the three triplets** -- each
+of these failed in a way that named something else:
+
+- **`--without-isl`**: isl is configured before gmp is anywhere it can
+  find it, and says "gmp.h header not found". Nothing here needs
+  polyhedral loop transformation.
+- **`ports/gcc/patches/01`, dropping the bundled gettext.** gcc 15
+  carries gettext in its tree and configures it whatever
+  `--disable-nls` says. Its gnulib decides `uselocale()` is usable and
+  then calls `uselocale(NULL)` where this `locale_t` is not a pointer,
+  and reaches for C23's `ckd_add`. Each stopped the build in a library
+  that nothing in this configuration will ever call.
+- **tools under the target's own name.** `--target=m68k-unknown-elf`
+  makes the build look for `m68k-unknown-elf-gcc` when it wants to
+  compile something for the target; the cross tools are installed as
+  `m68k-elf-*`. Without a directory of symlinks it linked `xgcc` and
+  then died on "command not found". The gcc one must point at the
+  **C++-capable** cross compiler, because the build runs it on gcc's
+  own C++ self-test and the C-only one answers "language c++ not
+  recognized".
+- **`all-host`, not `all`.** `all` goes on to build the target
+  libgcc, which means running the compiler just built -- an m68k
+  program, on this workstation. There is nothing to build there
+  anyway: libgcc for this target already exists, same version, same
+  source.
+- **`extern "C"` in every network header.** This one was a real bug
+  rather than a build-system quirk: nothing in this tree had ever been
+  written in C++, so `libc/net`'s headers had no guards and a C++
+  translation unit gave `getaddrinfo` and friends mangled names. gcc's
+  own `c++tools` is C++ and found it immediately.
+
+**`kernel/nativetest.sh` is written and waiting for the compiler.** Its
+last check is the one that matters: the same source compiled here by
+the cross compiler and there by the native one, and the object files
+compared byte for byte. Same version, same flags, same target -- if
+they agree, the native compiler is not merely a compiler that runs,
+it is the same compiler.
 
 ### 45, 46. libiconv and gettext -- ports written, not yet built
 
