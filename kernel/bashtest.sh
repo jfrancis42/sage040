@@ -135,7 +135,14 @@ mkdir -p "$HELPERS"
 for h in recho zecho printenv xcase; do
     [ -f "$HELPERS/$h" ] && fsimg put -m 755 "$HELPERS/$h" /BT/tests/$h
 done
-[ -x ../ports/grep/grep ] && fsimg put -m 755 ../ports/grep/grep /bin/grep
+# The utilities bash's own tests shell out to. sbase has none of these
+# three, and without them the cases that use them do not fail loudly --
+# they produce output with a "command not found" where the filtered
+# text should be, which then differs from upstream's .right file in a
+# way that reads as a fault in the shell.
+for u in grep sed awk; do
+    [ -x "../ports/$u/$u" ] && fsimg put -m 755 "../ports/$u/$u" /bin/$u
+done
 
 rm -f "$SCRATCH/bash.fifo"
 mkfifo "$SCRATCH/bash.fifo"
