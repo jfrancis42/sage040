@@ -274,28 +274,19 @@ static int smc_send(struct netdev *n, const void *frame, u32 len)
     smc_tx_reclaim();
 
     /*
-     * A GRANT LEFT OVER FROM AN EARLIER ATTEMPT IS STILL OURS, and
-     * taking it is what stops this driver killing the card.
+     * TAKE A GRANT THAT IS ALREADY WAITING; DO NOT ASK TWICE.
      *
-     * The allocation is a request, not a question: when no page is
-     * free the chip REMEMBERS the request and satisfies it the moment
-     * one is released, raising ALLOC then. A driver that gave up on
-     * the timeout and later asked again would abandon that page --
-     * the new allocate command clears ALLOC and starts a fresh
-     * request, and the page granted to the old one is never given
-     * back by anybody. The chip has four. Four abandoned grants and
-     * it can neither send nor receive, for ever.
+     * The allocation is a standing REQUEST, not a question. When no
+     * page is free the chip remembers the request and satisfies it as
+     * soon as one is released, raising ALLOC then. Issuing a second
+     * allocate command clears ALLOC and starts a fresh request, which
+     * abandons the page granted to the first -- and nothing ever
+     * releases it. The chip has four, shared with the receiver, so
+     * four abandoned grants leave it unable to send or receive at
+     * all. See design.md, "The LAN91C111's four pages".
      *
-     * That is exactly what happened: the machine served one ssh
-     * connection, then transmitted nothing again -- no data, no ACKs,
-     * not even a SYN-ACK for a new connection -- while the receive
-     * ring stayed empty and netd polled twenty thousand times to no
-     * effect. Resetting the MMU (`ifconfig eth0 down; ifconfig eth0
-     * up`) freed all four and bought about nineteen more packets.
-     *
-     * So: if ALLOC is already up on the way in, the page named in the
-     * result register is one we asked for and never collected. Use
-     * it, and ask for nothing.
+     * So: ALLOC already up on the way in means the page named in the
+     * result register is one we asked for and never collected.
      */
     packet = -1;
     if (MMIO8(SMC_B2_INT) & SMC_INT_ALLOC) {
@@ -322,8 +313,8 @@ static int smc_send(struct netdev *n, const void *frame, u32 len)
         }
         if (!(MMIO8(SMC_B2_INT) & SMC_INT_ALLOC)) {
             /*
-             * No page free. The request STANDS -- the chip will grant
-             * one when a page is released -- and the next call through
+             * No page free. The request stands, the chip will grant
+             * one when a page is released, and the next call through
              * here collects it above. Nothing is abandoned.
              */
             return -ENOMEM;

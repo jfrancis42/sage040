@@ -25,7 +25,7 @@ is the machine, and the decisions behind it.
 | Timers, interrupts, 2nd serial | Motorola **MC68901 MFP** | The classic 68k companion chip; one part gives timers, a vectored interrupt controller, a parallel port and a USART |
 | Console | National **NS16550A** | The most thoroughly documented UART ever made; a working console is ~20 lines |
 | Disk | **ATA taskfile** (WD1003 lineage) | Eight registers, polled PIO, no DMA or descriptors — ~60 lines for read and write |
-| Ethernet | SMSC **LAN91C111** | On-chip packet FIFO with **no descriptor rings in host memory**, which is what makes it far easier than a SONIC or LANCE |
+| Ethernet | SMSC **LAN91C111** | On-chip packet FIFO with **no descriptor rings in host memory**, which is what makes it far easier than a SONIC or LANCE. **Four pages, shared between transmit and receive** -- see below |
 | Video | Silicon Motion **SM501** | Plain linear framebuffer in 16 MiB of its own memory |
 | Keyboard | Intel **8042** | The PC/AT controller, memory mapped; two registers and a scancode stream |
 | Clock, NVRAM | ST **M48T59** TIMEKEEPER | Directly memory-mapped byte registers, no index/data port pair, and 8 KiB of battery-backed SRAM alongside |
@@ -46,6 +46,25 @@ port pair, and it brings 8 KiB of non-volatile RAM — the only storage on
 this machine that survives a power cycle without going through the disk.
 
 ---
+
+### The LAN91C111's four pages
+
+The chip holds frames in an on-chip pool of **four pages**, and
+transmit and receive draw on the same four. Two consequences follow
+and neither is optional:
+
+- **Received frames must be taken off the chip promptly.** A frame
+  left there holds its page, and four held pages mean the chip can no
+  longer send. `net_drain()` runs from the timer interrupt for this
+  reason rather than waiting for a task to get round to it.
+- **A transmit allocation is a standing REQUEST, not a question.**
+  When no page is free the chip remembers the request and grants one
+  as soon as a page is released, raising ALLOC then. A driver that
+  gives up and asks again abandons that grant -- the new command
+  clears the old request, and nothing ever releases the page it was
+  given. Four abandonments and the chip is dead in both directions.
+  `smc_send()` therefore takes a grant that is already waiting rather
+  than issuing a second request.
 
 ## 2. Memory map
 

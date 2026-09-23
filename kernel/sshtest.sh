@@ -9,25 +9,16 @@
 # That is the point: the protocol is either right or it is not, and no
 # code in this tree gets a vote.
 #
-# THE FIRST CHECK IS THE ONE THAT MATTERS, and it is here because of
-# what it caught. TEN successive connections, not one. The machine
-# served exactly one ssh session and then transmitted nothing ever
-# again -- no data, no ACKs, not even a SYN-ACK for a new connection --
-# and a suite that made one connection and called ssh working would
-# have passed on a machine whose network died the moment it was used.
+# TEN CONNECTIONS, NOT ONE. A machine can serve its first ssh session
+# perfectly and be unable to send anything afterwards -- the card has
+# four packet pages and loses them permanently if a transmit
+# allocation is abandoned (design.md, "The LAN91C111's four pages").
+# A suite that connected once would pass against a machine whose
+# network dies the moment it is used.
 #
-# The cause was the LAN91C111's transmit allocation. Asking the chip
-# for a page is a REQUEST, not a question: when none is free it
-# remembers and grants one as soon as a page is released. The driver
-# used to give up on the timeout and ask again later, and the second
-# request clears the first -- so the page granted to the abandoned
-# request was never given back by anybody. The chip has four. Four
-# abandoned grants and it can neither send nor receive.
-#
-# ping is here for the same reason it was useful in finding that:
-# net_wait() pumps the stack from the CALLING task, so ping works even
-# when netd does not, and a difference between the two says where to
-# look.
+# ping is here because net_wait() pumps the stack from the CALLING
+# task: ping works even when netd does not, so a difference between
+# the two says which of them to look at.
 
 set -u
 

@@ -24,51 +24,17 @@ reading the rest of this file. Dated, because it goes stale.
 
 ### Broken, or not working
 
-**Nothing known.** The one-connection network failure described here
-is fixed; see "The network died after one connection" below.
-`kernel/sshtest.sh` covers it: ten successive ssh connections, ping
-afterwards, zero transmit errors, scp both ways and rsync over ssh.
-
-### The network died after one connection -- fixed 2026-09-23
-
-The machine served exactly one ssh session and then transmitted
-nothing again: no data, no ACKs, not even a SYN-ACK for a new
-connection. `ifconfig` showed **TX 89 packets, 87 errors**.
-
-**The LAN91C111's transmit allocation is a REQUEST, not a question.**
-When no page is free the chip remembers the request and grants one the
-moment a page is released, raising ALLOC then. The driver gave up on
-its timeout and asked again on the next send -- and a new allocate
-command clears ALLOC and starts a fresh request, so the page granted
-to the abandoned one was never given back by anybody. The chip has
-four pages, shared between transmit and receive. Four abandoned grants
-and it can neither send nor receive, for ever.
-
-`smc_send()` now takes a grant that is already waiting instead of
-asking again. TX went from 89 packets with 87 errors to **1010 packets
-with none**.
-
-Two other things were fixed on the way, both worth keeping:
-
-- **`ifconfig up` never called the driver.** It set a flag. So
-  `ifconfig eth0 down; ifconfig eth0 up` could not reinitialise a
-  wedged card, which is the one thing somebody types it for. It calls
-  `dev->up()`/`dev->down()` now, masked, since the driver owns chip
-  registers the timer interrupt also reaches for.
-- **A failed transmit left no retransmit timer.** `send_data()` armed
-  `rexmit_at` only after a SUCCESSFUL send, and `tcp_timer()` skips
-  any connection whose `rexmit_at` is 0 -- so one failed frame left a
-  connection with data queued and nothing anywhere that would try
-  again. It arms the timer on failure too. This did not fix the bug
-  above on its own, and is right regardless.
+**Nothing known.** `kernel/sshtest.sh` covers what was the last known
+failure: ten successive ssh connections, a ping afterwards, a transmit
+error count of zero, scp in both directions and rsync over ssh.
 
 ### Unverified -- believed working, not proven
 
 | | |
 |---|---|
-| **A clean end-to-end regression** | There has been no single run of `make test` in which every suite completed. `make` stops at the first failing suite, and the last run stopped at `bashtest`, so the eleven suites after it did not run in that pass. Each of them passed when run on its own. **This is the first thing to do.** |
-| **`bashtest`'s `array` case** | Failed once, in a run made while a gcc rebuild was using the whole machine. The log shows QEMU was KILLED moments after `runsuite.sh` started, with the preceding test (`arith`) passing -- so the harness timed out and `array` is simply the test that was in flight. Almost certainly load, not bash. Confirm on an idle machine. |
-| **ssh, on a loaded machine** | The ssh and rsync results were obtained on a quiet machine and are real. A later run under heavy load never got an address at all (`NEVER BECAME READY`). The suites have no readiness wait; they `sleep` and hope. Worth fixing before anything else is concluded from them. |
+| **A clean end-to-end regression** | No single run of `make test` has had every suite complete: `make` stops at the first failure, and the last run stopped part way. Every suite passes when run on its own. **Do this first.** |
+| **`bashtest`'s `array` case** | Failed once, under heavy load, with the emulator killed mid-suite and the preceding test passing -- the signature of a harness timeout rather than a fault. Re-run on an idle machine to settle it. |
+| **The suites' tolerance of load** | Most suites `sleep` a fixed time and assume the machine is ready. Under load it is not, and the failure looks like the thing being tested. `kernel/sshtest.sh` polls until the machine answers; the others do not. |
 
 ### Needs a decision -- yours, not mine
 
@@ -110,46 +76,13 @@ These are properties of the machine, written up in `design.md` and
 - **`xz` at its default preset will not run**: `-6` wants about 94 MB
   and the machine has 64. `-1` works.
 
-### Things I got wrong, and how
+### Where the traps are written down
 
-Kept because a wrong conclusion that looked well-evidenced is worth
-more as a warning than as a deletion.
-
-- **`scp`, three times, and it was never broken.**
-  1. "It fails guest-side, because `scp -f FILE` exits 1 on the
-     machine." `-f` is the source half of the scp protocol and reads
-     from a peer; exiting 1 with no peer is correct. The probe could
-     not have shown anything.
-  2. "The ssh-based tests show it failing." They were racing the
-     guest's startup under load, and one readiness check ran `true` on
-     an image that had no `true` on it, so it reported the machine
-     unreachable when it was fine.
-  3. **`scp` spells the port `-P`, and every test passed it `-p`** --
-     which to scp means "preserve modification times", so the port
-     number became an extra SOURCE FILE. Two sources into a target
-     that is not a directory produces "local/path: No such file or
-     directory", which is precisely the error that was read for hours
-     as evidence of a broken scp. It had never opened a connection.
-
-  Run as the first connection of a session, scp fetches a file off the
-  machine byte-for-byte correct. What broke the later attempts is the
-  one-connection bug above.
-
-  The lesson is not about scp. Three times a test was believed over
-  the system, and each time the test was wrong. The static-binary
-  route (`qemu-m68k`) settled it in minutes once it was used: scp,
-  run there with a correct protocol byte, emits exactly
-  `C0644 10 greet.txt` and the file, and exits 0.
-- **`-DB_ENDIAN` in OpenSSL.** Written up as load-bearing, on the
-  reasoning that a generic target must assume little-endian. Rebuilt
-  the whole of OpenSSL without it: identical, correct digests. The
-  flag stays because it is true, not because anything depends on it.
-- **Two test expectations**, where the machine was right and the test
-  was wrong: `apitest` still expected `PATH` without `/usr/bin`, and
-  `nativetest` expected `H(10)` where the program prints `1 + H(10)`.
-- **A stale marker file** read as a build result, concluding a healthy
-  build had failed and starting a second `make` in the same tree. Two
-  makes raced over the same objects and the tree was thrown away.
+Facts about this machine that cost time to learn live where somebody
+will meet them again, not in a list here: properties of the hardware
+in `design.md`, properties of the system in `os.md`, and the reason a
+particular line of code is the way it is in the comment above that
+line.
 
 ---
 
