@@ -33,7 +33,7 @@ error count of zero, scp in both directions and rsync over ssh.
 | | |
 |---|---|
 | **A clean end-to-end regression** | Every suite has now been run and passes, but not in ONE run of `make test` -- they were run in batches. `make` stops at the first failure, so a single clean pass is still owed. |
-| **`sshtest`'s ten connections** | Nine of ten succeeded in a back-to-back batch, and the ping after them failed. Re-run alone on an idle machine to settle whether that is the network or the harness; every other network suite (`nettest`, `tcptest`, `lotest`, `dnstest`) passes. |
+| **Nothing.** | `sshtest` lost one of its ten connections when run back-to-back with other suites and passed all ten on an idle machine -- which is the load sensitivity below, not a fault. |
 | **`bashtest`'s `array` case** | Failed once, under heavy load, with the emulator killed mid-suite and the preceding test passing -- the signature of a harness timeout rather than a fault. Re-run on an idle machine to settle it. |
 | **The suites' tolerance of load** | Most suites `sleep` a fixed time and assume the machine is ready. Under load it is not, and the failure looks like the thing being tested. `kernel/sshtest.sh` polls until the machine answers; the others do not. |
 
@@ -69,7 +69,7 @@ Every suite in the tree has been run on ext2 and passes:
 `dnstest` (57) · `pagetest` · `logtest` · `cryptotest` · `uemacstest` ·
 `vitest` · `lesstest` · `curstest` · `sedtest` (21) · `awktest` ·
 `apitest` · `greptest` · `sbasetest` · `dftest` · `libctest` ·
-`nativetest` (15) · `qemutest` (8) · `pylibtest`
+`nativetest` (15) · `qemutest` (8) · `pylibtest` · `sshtest`
 
 Three of those were finding faults that had nothing to do with the
 filesystem and had been there all along:
