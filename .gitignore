@@ -100,3 +100,11 @@ libc/test/threadtest
 system/klogd
 system/dmesg
 libc/test/ptytest
+
+# Core dumps. qemu-m68k's user-mode emulation drops them in the
+# working directory when a program it is running faults, which is
+# exactly what happens while porting something -- and they are ten
+# megabytes each. Three of them reached a public repository once.
+*.core
+core
+core.*
