@@ -21,16 +21,17 @@
  * means this loader will work unchanged when the payload stops being a
  * demo and becomes a kernel.
  *
- * Disk layout. The disk is a real MS-DOS disk, so the host can read and
- * write it with ordinary tools — mtools, mount -t vfat, fdisk, fsck.fat:
+ * Disk layout. The disk is an ordinary PC disk carrying an ordinary
+ * ext2 filesystem, so the host can read and write it with e2fsprogs —
+ * mke2fs, e2fsck, debugfs — on the plain image file:
  *
  *     LBA 0             MBR partition table
  *     LBA 64            optional raw kernel, in the boot gap
- *     LBA 2048          partition 1, FAT16 filesystem
+ *     LBA 2048          partition 1, type 0x83, ext2
  *
  * The normal path is to find KERNEL.ROM in the root directory of that
- * filesystem and load it. That is the point of using a real DOS format:
- * replacing the kernel is `mcopy kernel.rom ::/`, not `dd`.
+ * filesystem and load it. That is the point of using a real format:
+ * replacing the kernel is a file copy, not a dd to a sector number.
  *
  * If there is no filesystem, or no KERNEL.ROM in it, the loader falls
  * back to reading a raw image from LBA 64 — the gap between the
@@ -39,9 +40,16 @@
  * filesystem-less disk bootable.
  *
  * Only what is needed to find one file in the root directory is
- * implemented: FAT16, 8.3 names, no subdirectories, no long names, read
- * only. Everything in FAT is little-endian and this machine is not, so
- * every multi-byte field goes through le16()/le32().
+ * implemented: the superblock, group 0's descriptor, one inode, and a
+ * block map of direct and singly indirect blocks — which reaches 4 MB at
+ * the 4 KB block size the disk is made with, so a kernel never needs
+ * double indirection here. Everything in ext2 is little-endian and this
+ * machine is not, so every multi-byte field goes through le16()/le32().
+ *
+ * FAT16 is NOT read here. The kernel still mounts a FAT volume, so a
+ * disk from a machine that has never heard of this one is still
+ * readable once the kernel is up; what the ROM has to find is this
+ * machine's own kernel, and that lives on this machine's own disk.
  */
 #include "sage040.h"
 
@@ -186,39 +194,50 @@ static u32 partition_start(void)
 }
 
 /* ---------------------------------------------------------------- */
-/* FAT16, read only, enough to find one file in the root directory   */
+/* ext2, read only, enough to find one file in the root directory    */
 /* ---------------------------------------------------------------- */
 
-/* BPB field offsets within the partition's first sector. */
-#define BPB_BYTES_PER_SEC   11
-#define BPB_SEC_PER_CLUS    13
-#define BPB_RSVD_SEC_CNT    14
-#define BPB_NUM_FATS        16
-#define BPB_ROOT_ENT_CNT    17
-#define BPB_FAT_SZ16        22
+#define EXT2_SUPER_OFF      1024        /* bytes into the filesystem   */
+#define EXT2_SUPER_MAGIC    0xef53
+#define EXT2_ROOT_INO       2
+#define EXT2_MAX_BLOCK      4096
 
-#define DIR_ENTRY_SIZE      32
-#define DIR_NAME            0
-#define DIR_ATTR            11
-#define DIR_FST_CLUS_LO     26
-#define DIR_FILE_SIZE       28
+/* Superblock fields, from the start of the superblock. */
+#define SB_LOG_BLOCK_SIZE   24
+#define SB_BLOCKS_PER_GROUP 32
+#define SB_INODES_PER_GROUP 40
+#define SB_MAGIC            56
+#define SB_REV_LEVEL        76
+#define SB_INODE_SIZE       88
+#define SB_FIRST_DATA_BLOCK 20
 
-#define ATTR_VOLUME_ID      0x08
-#define ATTR_DIRECTORY      0x10
-#define ATTR_LONG_NAME      0x0f
+/* Group descriptor. */
+#define GD_INODE_TABLE       8
 
-#define FAT16_EOC           0xfff8      /* >= this ends a chain */
+/* Inode. */
+#define IN_SIZE              4
+#define IN_BLOCK            40
+#define EXT2_NDIR_BLOCKS    12
+#define EXT2_IND_BLOCK      12
 
-static u8 secbuf[SECTOR_SIZE];          /* BPB and directory sectors */
-static u8 fatbuf[SECTOR_SIZE];          /* one cached FAT sector     */
-static u32 fat_cached = 0xffffffffUL;
+/* Directory entry. */
+#define DE_INODE             0
+#define DE_REC_LEN           4
+#define DE_NAME_LEN          6
+#define DE_NAME              8
 
-struct fat_info {
-    u32 fat_start;          /* LBA of the first FAT                */
-    u32 root_start;         /* LBA of the root directory           */
-    u32 data_start;         /* LBA of cluster 2                    */
-    u32 root_entries;
-    u32 sec_per_clus;
+static u8 secbuf[SECTOR_SIZE];          /* superblock, descriptors     */
+static u8 blkbuf[EXT2_MAX_BLOCK];       /* one filesystem block        */
+static u8 indbuf[EXT2_MAX_BLOCK];       /* the indirect block          */
+
+struct ext2_info {
+    u32 part_lba;
+    u32 block_size;
+    u32 sectors_per_block;
+    u32 inode_size;
+    u32 inodes_per_group;
+    u32 first_data_block;
+    u32 gd_block;
 };
 
 static u16 le16(const u8 *p)
@@ -226,123 +245,201 @@ static u16 le16(const u8 *p)
     return (u16)((u32)p[0] | ((u32)p[1] << 8));
 }
 
-static int fat_mount(u32 part_lba, struct fat_info *fi)
+/* Read one filesystem block into `dst`. */
+static int ext2_read_block(const struct ext2_info *fi, u32 blk, u8 *dst)
 {
-    u32 bps, rsvd, nfats, fatsz, root_sectors;
+    u32 lba = fi->part_lba + blk * fi->sectors_per_block;
+    u32 i;
 
-    if (ata_read_sector(part_lba, secbuf) != 0) {
-        return -1;
+    for (i = 0; i < fi->sectors_per_block; i++) {
+        if (ata_read_sector(lba + i, dst + i * SECTOR_SIZE) != 0) {
+            return -1;
+        }
     }
-
-    bps   = le16(&secbuf[BPB_BYTES_PER_SEC]);
-    rsvd  = le16(&secbuf[BPB_RSVD_SEC_CNT]);
-    nfats = secbuf[BPB_NUM_FATS];
-    fatsz = le16(&secbuf[BPB_FAT_SZ16]);
-
-    fi->sec_per_clus = secbuf[BPB_SEC_PER_CLUS];
-    fi->root_entries = le16(&secbuf[BPB_ROOT_ENT_CNT]);
-
-    /* Only the shape this loader can actually handle. */
-    if (bps != SECTOR_SIZE || fi->sec_per_clus == 0 ||
-        rsvd == 0 || nfats == 0 || fatsz == 0 || fi->root_entries == 0) {
-        return -1;
-    }
-
-    root_sectors = (fi->root_entries * DIR_ENTRY_SIZE + bps - 1) / bps;
-
-    fi->fat_start  = part_lba + rsvd;
-    fi->root_start = fi->fat_start + nfats * fatsz;
-    fi->data_start = fi->root_start + root_sectors;
     return 0;
 }
 
-/* Next cluster in the chain, with a one-sector cache for sequential runs. */
-static u16 fat_next(const struct fat_info *fi, u16 clus)
+static int ext2_mount(u32 part_lba, struct ext2_info *fi)
 {
-    u32 off = (u32)clus * 2;
-    u32 sec = fi->fat_start + off / SECTOR_SIZE;
+    u32 log_bs;
 
-    if (sec != fat_cached) {
-        if (ata_read_sector(sec, fatbuf) != 0) {
-            return FAT16_EOC;
-        }
-        fat_cached = sec;
+    /* The superblock is at byte 1024 of the filesystem, whatever the
+     * block size is -- the third 512-byte sector. */
+    if (ata_read_sector(part_lba + 2, secbuf) != 0) {
+        return -1;
     }
-    return le16(&fatbuf[off % SECTOR_SIZE]);
-}
-
-/* Compare a directory entry's 8.3 field against a padded 11-byte name. */
-static int name_matches(const u8 *entry, const char *want11)
-{
-    int i;
-
-    for (i = 0; i < 11; i++) {
-        if (entry[DIR_NAME + i] != (u8)want11[i]) {
-            return 0;
-        }
+    if (le16(&secbuf[SB_MAGIC]) != EXT2_SUPER_MAGIC) {
+        return -1;
     }
-    return 1;
+    log_bs = le32(&secbuf[SB_LOG_BLOCK_SIZE]);
+    if (log_bs > 2) {
+        return -1;                      /* larger than 4096            */
+    }
+    fi->part_lba = part_lba;
+    fi->block_size = 1024UL << log_bs;
+    fi->sectors_per_block = fi->block_size / SECTOR_SIZE;
+    fi->inodes_per_group = le32(&secbuf[SB_INODES_PER_GROUP]);
+    fi->first_data_block = le32(&secbuf[SB_FIRST_DATA_BLOCK]);
+    fi->inode_size = (le32(&secbuf[SB_REV_LEVEL]) == 0) ? 128 :
+                     le16(&secbuf[SB_INODE_SIZE]);
+    if (fi->inodes_per_group == 0 || fi->inode_size < 128) {
+        return -1;
+    }
+    fi->gd_block = fi->first_data_block + 1;
+    return 0;
 }
 
 /*
- * Find a file in the root directory. Returns its first cluster, or 0 if
- * it is not there; *size is set to the file length.
+ * Copy inode `ino` into `dst` (at least inode_size bytes).  Only group 0
+ * is reachable here, which is all the root directory and a kernel next
+ * to it ever need.
  */
-static u16 fat_find(const struct fat_info *fi, const char *name11, u32 *size)
+static int ext2_read_inode(const struct ext2_info *fi, u32 ino, u8 *dst)
 {
-    u32 per_sector = SECTOR_SIZE / DIR_ENTRY_SIZE;
-    u32 sectors = (fi->root_entries + per_sector - 1) / per_sector;
-    u32 s, e;
+    u32 g = (ino - 1) / fi->inodes_per_group;
+    u32 idx = (ino - 1) % fi->inodes_per_group;
+    u32 per_block = fi->block_size / 32;
+    u32 table, blk, off, i;
 
-    for (s = 0; s < sectors; s++) {
-        if (ata_read_sector(fi->root_start + s, secbuf) != 0) {
+    if (ext2_read_block(fi, fi->gd_block + g / per_block, blkbuf) != 0) {
+        return -1;
+    }
+    table = le32(&blkbuf[(g % per_block) * 32 + GD_INODE_TABLE]);
+    blk = table + (idx * fi->inode_size) / fi->block_size;
+    off = (idx * fi->inode_size) % fi->block_size;
+    if (ext2_read_block(fi, blk, blkbuf) != 0) {
+        return -1;
+    }
+    for (i = 0; i < fi->inode_size; i++) {
+        dst[i] = blkbuf[off + i];
+    }
+    return 0;
+}
+
+/*
+ * The disk block behind file block `n` of an inode: twelve direct
+ * entries, then one indirect block.  Anything past that returns 0, which
+ * a 4 MB ceiling at a 4 KB block size puts well out of a kernel's way.
+ */
+static u32 ext2_bmap(const struct ext2_info *fi, const u8 *ino, u32 n)
+{
+    u32 ind;
+
+    if (n < EXT2_NDIR_BLOCKS) {
+        return le32(&ino[IN_BLOCK + 4 * n]);
+    }
+    n -= EXT2_NDIR_BLOCKS;
+    if (n >= fi->block_size / 4) {
+        return 0;
+    }
+    ind = le32(&ino[IN_BLOCK + 4 * EXT2_IND_BLOCK]);
+    if (ind == 0) {
+        return 0;
+    }
+    if (ext2_read_block(fi, ind, indbuf) != 0) {
+        return 0;
+    }
+    return le32(&indbuf[4 * n]);
+}
+
+static int name_matches(const u8 *ent, const char *want)
+{
+    u32 n = ent[DE_NAME_LEN];
+    u32 i;
+
+    for (i = 0; i < n; i++) {
+        if (want[i] == '\0' || ent[DE_NAME + i] != (u8)want[i]) {
             return 0;
         }
-        for (e = 0; e < per_sector; e++) {
-            const u8 *d = &secbuf[e * DIR_ENTRY_SIZE];
-            u8 attr = d[DIR_ATTR];
+    }
+    return want[n] == '\0';
+}
 
-            if (d[DIR_NAME] == 0x00) {
-                return 0;               /* end of directory */
+/*
+ * Find `name` in the root directory. Returns its inode number, or 0.
+ *
+ * Entries are walked by rec_len, never by a fixed step: rec_len is the
+ * whole slot and a deleted entry is absorbed into the one before it, so
+ * anything else desynchronises on the first directory that has ever had
+ * a file removed from it.
+ */
+static u32 ext2_find(const struct ext2_info *fi, const char *name, u32 *size)
+{
+    u8 rootino[256];
+    u32 dsize, off;
+
+    if (fi->inode_size > sizeof(rootino)) {
+        return 0;
+    }
+    if (ext2_read_inode(fi, EXT2_ROOT_INO, rootino) != 0) {
+        return 0;
+    }
+    dsize = le32(&rootino[IN_SIZE]);
+
+    for (off = 0; off < dsize; off += fi->block_size) {
+        u32 blk = ext2_bmap(fi, rootino, off / fi->block_size);
+        u32 p = 0;
+
+        if (blk == 0) {
+            continue;
+        }
+        if (ext2_read_block(fi, blk, blkbuf) != 0) {
+            return 0;
+        }
+        while (p + DE_NAME <= fi->block_size) {
+            u32 rec = le16(&blkbuf[p + DE_REC_LEN]);
+            u32 ino = le32(&blkbuf[p + DE_INODE]);
+
+            if (rec < DE_NAME || p + rec > fi->block_size) {
+                break;
             }
-            if (d[DIR_NAME] == 0xe5) {
-                continue;               /* deleted */
+            if (ino != 0 && name_matches(&blkbuf[p], name)) {
+                u8 fino[256];
+
+                if (ext2_read_inode(fi, ino, fino) != 0) {
+                    return 0;
+                }
+                *size = le32(&fino[IN_SIZE]);
+                return ino;
             }
-            if ((attr & ATTR_LONG_NAME) == ATTR_LONG_NAME) {
-                continue;               /* long-name fragment */
-            }
-            if (attr & (ATTR_VOLUME_ID | ATTR_DIRECTORY)) {
-                continue;
-            }
-            if (name_matches(d, name11)) {
-                *size = (u32)le16(&d[DIR_FILE_SIZE]) |
-                        ((u32)le16(&d[DIR_FILE_SIZE + 2]) << 16);
-                return le16(&d[DIR_FST_CLUS_LO]);
-            }
+            p += rec;
         }
     }
     return 0;
 }
 
-/* Walk the cluster chain, copying the file to dst. Returns bytes read. */
-static u32 fat_load(const struct fat_info *fi, u16 clus, u32 size, u8 *dst)
+/* Copy the file to dst, block by block. Returns bytes read. */
+static u32 ext2_load(const struct ext2_info *fi, u32 ino, u32 size, u8 *dst)
 {
-    u32 done = 0;
+    u8 fino[256];
+    u32 done = 0, n = 0;
 
-    while (clus >= 2 && clus < FAT16_EOC && done < size) {
-        u32 lba = fi->data_start + (u32)(clus - 2) * fi->sec_per_clus;
+    if (fi->inode_size > sizeof(fino)) {
+        return 0;
+    }
+    if (ext2_read_inode(fi, ino, fino) != 0) {
+        return 0;
+    }
+    while (done < size) {
+        u32 blk = ext2_bmap(fi, fino, n);
         u32 i;
 
-        for (i = 0; i < fi->sec_per_clus && done < size; i++) {
-            if (done + SECTOR_SIZE > LOAD_LIMIT - LOAD_ADDR) {
-                return done;            /* would run past the load window */
-            }
-            if (ata_read_sector(lba + i, dst + done) != 0) {
+        if (done + fi->block_size > LOAD_LIMIT - LOAD_ADDR) {
+            return done;                /* would run past the window   */
+        }
+        if (blk == 0) {
+            return done;                /* a hole: a kernel has none   */
+        }
+        /* Straight into place, not through blkbuf -- which ext2_bmap
+         * uses for the indirect block and would otherwise overwrite. */
+        for (i = 0; i < fi->sectors_per_block; i++) {
+            if (ata_read_sector(fi->part_lba + blk * fi->sectors_per_block + i,
+                                dst + done + i * SECTOR_SIZE) != 0) {
                 return done;
             }
-            done += SECTOR_SIZE;
         }
-        clus = fat_next(fi, clus);
+        done += fi->block_size;
+        n++;
     }
     return done > size ? size : done;
 }
@@ -389,7 +486,7 @@ int main(void)
 {
     volatile u32 *image = (volatile u32 *)load_base;
     u8 *load = (u8 *)load_base;
-    struct fat_info fi;
+    struct ext2_info fi;
     u32 sp, pc, fs_start, loaded = 0;
     int i;
 
@@ -412,18 +509,18 @@ int main(void)
         uart_puthex8(mbr[MBR_PART0 + MBR_PART_TYPE]);
         uart_puts("\n");
 
-        if (fat_mount(fs_start, &fi) == 0) {
+        if (ext2_mount(fs_start, &fi) == 0) {
             u32 size = 0;
-            u16 clus = fat_find(&fi, "KERNEL  ROM", &size);
+            u32 ino = ext2_find(&fi, "KERNEL.ROM", &size);
 
-            if (clus) {
+            if (ino) {
                 uart_puts("KERNEL.ROM  ");
                 uart_putdec(size);
-                uart_puts(" bytes, first cluster ");
-                uart_putdec(clus);
+                uart_puts(" bytes, inode ");
+                uart_putdec(ino);
                 uart_puts("\n");
 
-                loaded = fat_load(&fi, clus, size, load);
+                loaded = ext2_load(&fi, ino, size, load);
                 if (loaded < size) {
                     uart_puts("BOOT: short read (");
                     uart_putdec(loaded);
@@ -436,7 +533,7 @@ int main(void)
                 uart_puts("no KERNEL.ROM in the root directory\n");
             }
         } else {
-            uart_puts("partition is not a FAT16 filesystem"
+            uart_puts("partition is not an ext2 filesystem"
                       " this loader understands\n");
         }
     } else {

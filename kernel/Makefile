@@ -57,7 +57,8 @@ SRCS := main.c version.c console.c trap.c syscall.c syslinux.c sysuser.c vfs.c d
  drivers/mfp.c drivers/sm501.c drivers/i8042.c \
  drivers/smc91c111.c \
  net/net.c net/arp.c net/ip.c net/icmp.c net/udp.c net/dhcp.c net/tcp.c net/socket.c \
- fs/fat16.c
+ fs/fat16.c \
+ fs/ext2.c
 
 # Every header, by wildcard. The list used to be written out and had
 # fallen well behind -- task.h, signal.h and most of the rest were not
@@ -120,7 +121,7 @@ run: kernel.elf $(DISK)
 
 # Put the kernel on the disk where the boot ROM will find it.
 install: kernel.rom $(DISK)
-	@mcopy -o -i $(MIMG) kernel.rom ::/KERNEL.ROM
+	@$(FSIMG) put kernel.rom /KERNEL.ROM
 	@echo "KERNEL.ROM: $$(stat -c%s kernel.rom) bytes -> $(DISK) partition 1"
 
 # The real thing: the boot ROM finds KERNEL.ROM on the filesystem and runs it.

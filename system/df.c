@@ -145,16 +145,30 @@ int main(int argc, char **argv)
 
     if (inodes) {
         /*
-         * FAT has no inode table: a directory entry IS the inode, and
-         * there is no fixed number of them. Saying so is more use than
-         * printing zeroes as though they were a measurement.
+         * A filesystem with a fixed inode table answers with numbers;
+         * one without reports zero of them, and saying so is more use
+         * than printing zeroes as though they were a measurement. FAT
+         * is the second kind -- a directory entry IS the inode there,
+         * and there is no fixed number of them -- and ext2 the first.
          */
-        puts("filesystem      inodes   used   free  use%\n");
+        u32 ifree = sf.f_ffree;
+        u32 iused = sf.f_files - ifree;
+
+        puts("filesystem      inodes       used       free  use%\n");
         puts(name);
-        for (n = (int)strlen(name); n < 16; n++) {
+        for (n = (int)strlen(name); n < 12; n++) {
             putch(' ');
         }
-        puts("     -      -      -     -   (fat16 has no inode table)\n");
+        if (sf.f_files == 0) {
+            puts("        -          -          -     -"
+                 "   (no inode table)\n");
+            return 0;
+        }
+        pad_dec(sf.f_files, 10);
+        pad_dec(iused, 11);
+        pad_dec(ifree, 11);
+        pad_dec((u32)(((u64)iused * 100 + sf.f_files / 2) / sf.f_files), 5);
+        puts("%\n");
         return 0;
     }
 

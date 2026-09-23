@@ -288,6 +288,10 @@ struct fb_palette {
 #define S_IFBLK       0060000
 #define S_IFIFO       0010000
 #define S_IFSOCK      0140000
+/* ext2 can hold one and a host tool can make one; nothing here creates
+ * or follows one yet, so a symlink is reported as what it is rather
+ * than mistaken for a short regular file. */
+#define S_IFLNK       0120000
 #define S_IRUSR       0000400
 #define S_IWUSR       0000200
 
@@ -296,6 +300,7 @@ struct fb_palette {
 #define S_ISCHR(m)    (((m) & S_IFMT) == S_IFCHR)
 #define S_ISFIFO(m)   (((m) & S_IFMT) == S_IFIFO)
 #define S_ISSOCK(m)   (((m) & S_IFMT) == S_IFSOCK)
+#define S_ISLNK(m)    (((m) & S_IFMT) == S_IFLNK)
 
 /* access() modes, Linux's values. */
 #define F_OK          0
@@ -866,17 +871,30 @@ struct fslabel {
 struct fsck_report {
     u32 was_dirty;              /* not cleanly unmounted last time    */
     u32 files, dirs;
-    u32 clusters_used, clusters_free, cluster_bytes;
-    /* What was wrong. */
-    u32 fat_mismatch;           /* FAT sectors the copies disagree on */
-    u32 bad_chains;             /* a link out of range, free or bad   */
-    u32 cross_linked;           /* two chains, or a loop, sharing one */
-    u32 size_fixed;             /* a size and its chain disagreeing   */
-    u32 dot_entries;            /* "." or ".." pointing wrong         */
-    u32 orphan_lfn;             /* long-name entries with no owner    */
-    u32 lost_clusters;          /* allocated and reachable from nothing */
-    u32 too_deep;               /* directories below the depth limit  */
-    u32 fixed;                  /* repairs made                       */
+    u32 blocks_used, blocks_free, block_bytes;
+    /*
+     * What was wrong. The vocabulary is deliberately the filesystem's
+     * own idea of each thing rather than FAT's or ext2's: a "block" is
+     * a FAT cluster or an ext2 block, and a "chain" of pointers is a
+     * FAT chain or an ext2 block map. A filesystem leaves at zero what
+     * it has no equivalent of.
+     */
+    u32 meta_mismatch;          /* copies of the metadata disagreeing:
+                                 * FAT's two tables, ext2's counts     */
+    u32 bad_blocks;             /* a pointer out of range or not free  */
+    u32 cross_linked;           /* two files, or a loop, sharing one   */
+    u32 size_fixed;             /* a size and its blocks disagreeing   */
+    u32 dot_entries;            /* "." or ".." pointing wrong          */
+    u32 orphan_names;           /* a name with nothing behind it: FAT's
+                                 * long-name run with no 8.3 entry,
+                                 * ext2's entry for a free inode       */
+    u32 lost_blocks;            /* allocated and reachable from nothing */
+    u32 too_deep;               /* directories below the depth limit   */
+    u32 bad_links;              /* a link count unequal to the names
+                                 * that reach it (ext2)                */
+    u32 unattached;             /* an in-use inode no name reaches     */
+    u32 count_mismatch;         /* free counts unequal to the bitmaps  */
+    u32 fixed;                  /* repairs made                        */
 };
 
 /*

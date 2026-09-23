@@ -130,7 +130,7 @@ static u32  sectors_per_fat;
 static u32  root_entries;
 static u32  root_sectors;
 static u32  total_clusters;     /* highest valid cluster is this + 1  */
-static u32  cluster_bytes;
+static u32  block_bytes;
 static u8   sectors_per_cluster;
 static u8   num_fats;
 static u16  bytes_per_sector;
@@ -530,7 +530,7 @@ static u32 dir_entries(const struct dir *d)
         return root_entries;
     }
     for (cl = d->cluster; cluster_valid(cl); ) {
-        n += cluster_bytes / DIRENT_SIZE;
+        n += block_bytes / DIRENT_SIZE;
         if (fat_get(cl, &next) != 0) {
             break;
         }
@@ -553,7 +553,7 @@ static int dir_entry_lba_of(const struct dir *d, u32 index, u32 *lba)
     }
 
     {
-        u32 per_cluster = cluster_bytes / DIRENT_SIZE;
+        u32 per_cluster = block_bytes / DIRENT_SIZE;
         u32 skip = index / per_cluster;
         u32 within = index % per_cluster;
         u32 cl = d->cluster;
@@ -1739,7 +1739,7 @@ static int fat_mount_dev(void)
 
     data_sectors = total_sectors - (data_start - part_lba);
     total_clusters = data_sectors / sectors_per_cluster;
-    cluster_bytes  = (u32)sectors_per_cluster * bytes_per_sector;
+    block_bytes  = (u32)sectors_per_cluster * bytes_per_sector;
 
     /* FAT16 is defined by the cluster count, not by anything written on
      * the disk.  Refusing FAT12 and FAT32 here is better than misreading
@@ -1773,12 +1773,12 @@ static const char *fat_label(void)
 
 static u32 fat_cluster_bytes(void)
 {
-    return mounted ? cluster_bytes : 0;
+    return mounted ? block_bytes : 0;
 }
 
 static u32 fat_total_bytes(void)
 {
-    return mounted ? total_clusters * cluster_bytes : 0;
+    return mounted ? total_clusters * block_bytes : 0;
 }
 
 static u32 fat_free_bytes(void)
@@ -1798,7 +1798,7 @@ static u32 fat_free_bytes(void)
             free_clusters++;
         }
     }
-    return free_clusters * cluster_bytes;
+    return free_clusters * block_bytes;
 }
 
 /* ---------------------------------------------------------------- */
@@ -2141,7 +2141,7 @@ static s32 fat_handle_read(int fd, void *buf, u32 len)
 
     while (done < len && f->pos < f->node->size) {
         u32 cl, lba, off, n, avail;
-        int err = chain_seek(f, f->pos / cluster_bytes, 0, &cl);
+        int err = chain_seek(f, f->pos / block_bytes, 0, &cl);
 
         if (err < 0) {
             return err;
@@ -2150,7 +2150,7 @@ static s32 fat_handle_read(int fd, void *buf, u32 len)
             break;              /* the chain is shorter than the size */
         }
 
-        off = f->pos % cluster_bytes;
+        off = f->pos % block_bytes;
         lba = cluster_lba(cl) + off / bytes_per_sector;
         off = off % bytes_per_sector;
 
@@ -2193,7 +2193,7 @@ static s32 fat_handle_write(int fd, const void *buf, u32 len)
 
     while (done < len) {
         u32 cl, lba, off, n;
-        int err = chain_seek(f, f->pos / cluster_bytes, 1, &cl);
+        int err = chain_seek(f, f->pos / block_bytes, 1, &cl);
 
         if (err < 0) {
             /* Out of space partway through is a short write, not a
@@ -2204,7 +2204,7 @@ static s32 fat_handle_write(int fd, const void *buf, u32 len)
             return err;
         }
 
-        off = f->pos % cluster_bytes;
+        off = f->pos % block_bytes;
         lba = cluster_lba(cl) + off / bytes_per_sector;
         off = off % bytes_per_sector;
 
@@ -2623,8 +2623,8 @@ static int fat_stat(const char *name, struct stat *st)
     st->st_size = de.d_size;
     st->st_mtime = de.d_mtime;
     st->st_ino = de.d_ino;
-    st->st_blocks = cluster_bytes ?
-                    (de.d_size + cluster_bytes - 1) / cluster_bytes : 0;
+    st->st_blocks = block_bytes ?
+                    (de.d_size + block_bytes - 1) / block_bytes : 0;
     return 0;
 }
 
@@ -2877,7 +2877,7 @@ static int fsck_chain(u32 first, int repair, struct fsck_report *r,
         }
         if (bad) {
             if (bad == 1) {
-                r->bad_chains++;
+                r->bad_blocks++;
             }
             if (!prev) {
                 *cut_first = 1;
@@ -2949,7 +2949,7 @@ static int fsck_dir(const struct walk_dir *w, struct walk_dir *stack,
                         !lfn_name(&scan_acc, ent, scan_long, 0))) {
             /* A long-name run with no owner after it. */
 orphan:
-            r->orphan_lfn += run_len;
+            r->orphan_names += run_len;
             if (repair) {
                 u32 k;
                 u8 e[DIRENT_SIZE];
@@ -3017,7 +3017,7 @@ orphan:
                 if (!first || cut) {
                     /* A directory with no clusters of its own cannot be
                      * entered; nothing can be saved from it. */
-                    r->bad_chains++;
+                    r->bad_blocks++;
                     if (repair) {
                         lfn_delete(&d, owner_first, i);
                         ent[0] = 0xe5;
@@ -3049,8 +3049,8 @@ orphan:
                         changed = 1;
                     }
                 }
-                have = (u32)len * cluster_bytes;
-                need = (size + cluster_bytes - 1) / cluster_bytes;
+                have = (u32)len * block_bytes;
+                need = (size + block_bytes - 1) / block_bytes;
 
                 /*
                  * The size has to fit the chain. Claiming more than the
@@ -3095,7 +3095,7 @@ orphan:
         }
     }
     if (run_len) {
-        r->orphan_lfn += run_len;   /* a run at the very end */
+        r->orphan_names += run_len;   /* a run at the very end */
         if (repair) {
             u32 k;
             u8 e[DIRENT_SIZE];
@@ -3140,7 +3140,7 @@ static int fat_check(int flags, struct fsck_report *r)
         return err;
     }
     memset(seen, 0, sizeof(seen));
-    r->cluster_bytes = cluster_bytes;
+    r->block_bytes = block_bytes;
 
     /* The FAT copies, straight off the disk. */
     if (num_fats > 1) {
@@ -3157,7 +3157,7 @@ static int fat_check(int flags, struct fsck_report *r)
                 b[3] = a[3];
             }
             if (memcmp(a, b, SECTOR_SIZE) != 0) {
-                r->fat_mismatch++;
+                r->meta_mismatch++;
             }
         }
     }
@@ -3181,19 +3181,19 @@ static int fat_check(int flags, struct fsck_report *r)
             return -EIO;
         }
         if (v != 0 && v != FAT_BAD && !seen_test(c)) {
-            r->lost_clusters++;
+            r->lost_blocks++;
             if (repair) {
                 fat_set(c, 0);
                 v = 0;
             }
         }
         if (v == 0) {
-            r->clusters_free++;
+            r->blocks_free++;
         } else if (v != FAT_BAD) {
-            r->clusters_used++;
+            r->blocks_used++;
         }
     }
-    if (repair && r->lost_clusters) {
+    if (repair && r->lost_blocks) {
         r->fixed++;
     }
 
@@ -3204,7 +3204,7 @@ static int fat_check(int flags, struct fsck_report *r)
 
     /* The second copy made the same as the first, which fb_flush has
      * kept every write the check made in step with. */
-    if (repair && r->fat_mismatch && num_fats > 1) {
+    if (repair && r->meta_mismatch && num_fats > 1) {
         static u8 a[SECTOR_SIZE];
 
         for (s = 0; s < sectors_per_fat; s++) {
@@ -3378,8 +3378,8 @@ static int fat_file_fstat(struct file *f, struct stat *st)
                  (ff->node->dir_index & 0xffffUL);
     st->st_size = ff->node->size;
     st->st_mtime = 0;
-    st->st_blocks = cluster_bytes
-                    ? (ff->node->size + cluster_bytes - 1) / cluster_bytes : 0;
+    st->st_blocks = block_bytes
+                    ? (ff->node->size + block_bytes - 1) / block_bytes : 0;
     return 0;
 }
 
@@ -3406,7 +3406,7 @@ static int fat_file_truncate(struct file *f, u32 len)
     n = ff->node;
 
     if (len < n->size) {
-        u32 need = (len + cluster_bytes - 1) / cluster_bytes;
+        u32 need = (len + block_bytes - 1) / block_bytes;
 
         if (need == 0) {
             if (n->first) {
@@ -3692,7 +3692,7 @@ static int fat_rmdir(const char *path)
 
 static int fat_statfs(struct statfs *s)
 {
-    u32 cb = cluster_bytes ? cluster_bytes : 1;
+    u32 cb = block_bytes ? block_bytes : 1;
 
     if (!mounted) {
         return -ENODEV;
@@ -3771,7 +3771,7 @@ static int fat_bmap(struct file *f, u32 off, u32 *lba, struct blockdev **bd)
     if (off >= ff->node->size || !ff->node->first) {
         return -EINVAL;
     }
-    index = off / cluster_bytes;
+    index = off / block_bytes;
     /* The same node AND the same chain: a node is reused for another
      * file once this one is closed. */
     if (last_node == ff->node && last_first == ff->node->first &&
@@ -3795,7 +3795,7 @@ static int fat_bmap(struct file *f, u32 off, u32 *lba, struct blockdev **bd)
     last_first = ff->node->first;
     last_index = index;
     last_cluster = cl;
-    *lba = cluster_lba(cl) + (off % cluster_bytes) / 512;
+    *lba = cluster_lba(cl) + (off % block_bytes) / 512;
     *bd = dev;
     return 0;
 }

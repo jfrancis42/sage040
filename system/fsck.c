@@ -54,22 +54,26 @@ int main(int argc, char **argv)
     puts(" files, ");
     putdec(r.dirs + 1);
     puts(" directories, ");
-    putdec(r.clusters_used);
-    puts(" clusters used, ");
-    putdec(r.clusters_free);
+    putdec(r.blocks_used);
+    puts(" blocks used, ");
+    putdec(r.blocks_free);
     puts(" free\n");
 
-    line("FAT sectors where the two copies disagree", r.fat_mismatch);
-    line("chains with a bad link", r.bad_chains);
-    line("chains crossing another, or themselves", r.cross_linked);
-    line("sizes that did not fit their chain", r.size_fixed);
+    line("copies of the metadata that disagree", r.meta_mismatch);
+    line("pointers out of range or not free", r.bad_blocks);
+    line("blocks shared by two files, or by a loop", r.cross_linked);
+    line("sizes that did not fit their blocks", r.size_fixed);
     line("wrong . or .. entries", r.dot_entries);
-    line("long-name entries with no file", r.orphan_lfn);
-    line("lost clusters", r.lost_clusters);
+    line("names with nothing behind them", r.orphan_names);
+    line("blocks nothing reaches", r.lost_blocks);
+    line("link counts unequal to the names found", r.bad_links);
+    line("in-use inodes no name reaches", r.unattached);
+    line("free counts unequal to the bitmaps", r.count_mismatch);
     line("directories too deep to check", r.too_deep);
 
-    found = r.fat_mismatch + r.bad_chains + r.cross_linked + r.size_fixed +
-            r.dot_entries + r.orphan_lfn + r.lost_clusters;
+    found = r.meta_mismatch + r.bad_blocks + r.cross_linked + r.size_fixed +
+            r.dot_entries + r.orphan_names + r.lost_blocks + r.bad_links +
+            r.unattached + r.count_mismatch;
     if (found == 0) {
         puts("fsck: clean\n");
         return 0;

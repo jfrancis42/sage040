@@ -394,6 +394,13 @@ static void mount_root(void)
 
     status("root");
 
+    err = ext2_init();
+    if (err < 0 && err != -EEXIST) {
+        kputs("could not register the filesystem type: ");
+        kputs(strerror(err));
+        kputc('\n');
+        return;
+    }
     err = fat16_init();
     if (err < 0 && err != -EEXIST) {
         kputs("could not register the filesystem type: ");
@@ -407,12 +414,23 @@ static void mount_root(void)
         return;
     }
 
-    err = vfs_mount("fat16", dev_first_block()->name);
+    /*
+     * Which filesystem the disk carries is asked of the disk, not
+     * assumed: each type's mount() recognises its own superblock and
+     * returns -EINVAL for anything else, so trying them in turn is the
+     * whole of the probe. ext2 is first because it is what this machine
+     * is installed on; FAT16 stays because a FAT disk is still how
+     * files come in from a machine that has never heard of this one.
+     */
+    err = vfs_mount("ext2", dev_first_block()->name);
+    if (err < 0) {
+        err = vfs_mount("fat16", dev_first_block()->name);
+    }
     if (err < 0) {
         kputs("mount failed: ");
         kputs(strerror(err));
-        kputs("\n            the disk is readable but carries no FAT16 "
-              "volume this kernel can use\n");
+        kputs("\n            the disk is readable but carries no ext2 or "
+              "FAT16 volume this kernel can use\n");
         return;
     }
 
@@ -430,7 +448,7 @@ static void mount_root(void)
         kputdec((sf.f_bfree * sf.f_bsize) / 1024);
         kputs(" KB free, ");
         kputdec(sf.f_bsize);
-        kputs(" byte clusters");
+        kputs(" byte blocks");
     }
     kputc('\n');
 
@@ -449,9 +467,9 @@ static void mount_root(void)
             kputs(strerror(err));
             kputc('\n');
         } else if (r.was_dirty) {
-            u32 found = r.fat_mismatch + r.bad_chains + r.cross_linked +
-                        r.size_fixed + r.dot_entries + r.orphan_lfn +
-                        r.lost_clusters;
+            u32 found = r.meta_mismatch + r.bad_blocks + r.cross_linked +
+                        r.size_fixed + r.dot_entries + r.orphan_names +
+                        r.lost_blocks;
 
             status("fsck");
             kputs("not cleanly unmounted; checked ");

@@ -204,6 +204,7 @@ int  vfs_sync(void);
  */
 u32  vfs_cwd_ino(void);
 u32  vfs_root_ino(void);                /* where "/" is for this task */
+void vfs_cred(u32 *uid, u32 *gid);      /* the caller's effective ids */
 int  vfs_chroot(const char *path);
 void vfs_cwd_set(u32 ino, const char *path);
 const char *vfs_cwd_path(void);

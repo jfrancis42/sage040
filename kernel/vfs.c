@@ -1605,6 +1605,15 @@ u32 vfs_root_ino(void)
     return current ? current->root_ino : 0;
 }
 
+/* Who is asking, for a filesystem that records an owner on the file it
+ * is about to create. Here for the same reason vfs_cwd_ino() is: fs/
+ * does not include task.h. */
+void vfs_cred(u32 *uid, u32 *gid)
+{
+    *uid = current ? current->euid : 0;
+    *gid = current ? current->egid : 0;
+}
+
 /* chroot(): absolute paths start at `path` from now on, for this task
  * and what it starts. The working directory does not move, as on Linux. */
 int vfs_chroot(const char *path)

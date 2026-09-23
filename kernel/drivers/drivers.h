@@ -63,5 +63,6 @@ struct chardev *i8042_device(void);
 void smc91c111_init(void);  /* ethernet          -> net device "eth0"      */
 
 int fat16_init(void);       /* not a driver: registers the filesystem type */
+int ext2_init(void);        /* likewise                                    */
 
 #endif /* DRIVERS_H */
