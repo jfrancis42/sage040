@@ -1221,6 +1221,39 @@ static int do_netctl(int cmd, u32 arg, u32 p)
         } else if (arg != 0 || !n->dev) {
             return -ENODEV;
         }
+        /*
+         * THE DRIVER IS TOLD, not just the flag set.
+         *
+         * This used to set n->up and nothing else, so `ifconfig eth0
+         * down` followed by `ifconfig eth0 up` changed a boolean and
+         * never touched the hardware -- which means it could not
+         * recover a card that had got itself stuck, and that is the
+         * one thing somebody types it for. smc_up() resets the packet
+         * MMU, which is what hands back every page the chip is
+         * holding.
+         *
+         * Masked, because the driver owns the chip's bank and pointer
+         * registers and net_drain() reaches for the same ones from the
+         * timer interrupt. net_tx() masks for exactly this reason.
+         */
+        if (n->dev) {
+            u16 sr = irq_save();
+            int err = 0;
+
+            if (cmd == NETCTL_UP) {
+                if (n->dev->up) {
+                    err = n->dev->up(n->dev);
+                }
+            } else {
+                if (n->dev->down) {
+                    err = n->dev->down(n->dev);
+                }
+            }
+            irq_restore(sr);
+            if (err < 0) {
+                return err;
+            }
+        }
         /* Down, a card's frames are left on it and its sends refused
          * (net_drain, net_tx); lo's sends are refused (net_loopback). */
         n->up = cmd == NETCTL_UP;

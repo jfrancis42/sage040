@@ -274,32 +274,65 @@ static int smc_send(struct netdev *n, const void *frame, u32 len)
     smc_tx_reclaim();
 
     /*
-     * Ask for a page.  The allocate command clears ALLOC on its way in,
-     * so the bit seen after it is this request's answer and not a stale
-     * one from the previous frame.
+     * A GRANT LEFT OVER FROM AN EARLIER ATTEMPT IS STILL OURS, and
+     * taking it is what stops this driver killing the card.
+     *
+     * The allocation is a request, not a question: when no page is
+     * free the chip REMEMBERS the request and satisfies it the moment
+     * one is released, raising ALLOC then. A driver that gave up on
+     * the timeout and later asked again would abandon that page --
+     * the new allocate command clears ALLOC and starts a fresh
+     * request, and the page granted to the old one is never given
+     * back by anybody. The chip has four. Four abandoned grants and
+     * it can neither send nor receive, for ever.
+     *
+     * That is exactly what happened: the machine served one ssh
+     * connection, then transmitted nothing again -- no data, no ACKs,
+     * not even a SYN-ACK for a new connection -- while the receive
+     * ring stayed empty and netd polled twenty thousand times to no
+     * effect. Resetting the MMU (`ifconfig eth0 down; ifconfig eth0
+     * up`) freed all four and bought about nineteen more packets.
+     *
+     * So: if ALLOC is already up on the way in, the page named in the
+     * result register is one we asked for and never collected. Use
+     * it, and ask for nothing.
      */
-    if (smc_mmu(SMC_MMU_ALLOC_TX) < 0) {
-        return -EIO;
-    }
-    for (spin = 0; spin < SMC_SPIN; spin++) {
-        if (MMIO8(SMC_B2_INT) & SMC_INT_ALLOC) {
-            break;
+    packet = -1;
+    if (MMIO8(SMC_B2_INT) & SMC_INT_ALLOC) {
+        int granted = MMIO8(SMC_B2_PNR + 1);
+
+        if (!(granted & ALLOC_FAILED)) {
+            packet = granted;
         }
     }
-    if (!(MMIO8(SMC_B2_INT) & SMC_INT_ALLOC)) {
-        /*
-         * ALLOC is raised on success only -- a failed allocation says
-         * so in the result register and never interrupts -- so a
-         * timeout here means the pages are all still in flight, not
-         * that the chip is stuck.
-         */
-        return -ENOMEM;
-    }
 
-    /* Allocation result, the high byte of the packet number register. */
-    packet = MMIO8(SMC_B2_PNR + 1);
-    if (packet & ALLOC_FAILED) {
-        return -ENOMEM;
+    if (packet < 0) {
+        /*
+         * Ask for a page.  The allocate command clears ALLOC on its way in,
+         * so the bit seen after it is this request's answer and not a stale
+         * one from the previous frame.
+         */
+        if (smc_mmu(SMC_MMU_ALLOC_TX) < 0) {
+            return -EIO;
+        }
+        for (spin = 0; spin < SMC_SPIN; spin++) {
+            if (MMIO8(SMC_B2_INT) & SMC_INT_ALLOC) {
+                break;
+            }
+        }
+        if (!(MMIO8(SMC_B2_INT) & SMC_INT_ALLOC)) {
+            /*
+             * No page free. The request STANDS -- the chip will grant
+             * one when a page is released -- and the next call through
+             * here collects it above. Nothing is abandoned.
+             */
+            return -ENOMEM;
+        }
+
+        packet = MMIO8(SMC_B2_PNR + 1);
+        if (packet & ALLOC_FAILED) {
+                return -ENOMEM;
+        }
     }
 
     MMIO8(SMC_B2_PNR) = (u8)packet;

@@ -21,7 +21,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: all boot run world toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest nativetest qemutest libc cube programs clean distclean
+.PHONY: all boot run world toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest sshtest nativetest qemutest libc cube programs clean distclean
 
 all:
 	$(MAKE) -C bootrom
@@ -151,7 +151,7 @@ world: programs ports python toolchain
 run:
 	$(MAKE) -C kernel run
 
-test: tests cryptotest fstest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest qemutest
+test: tests cryptotest fstest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest sshtest qemutest
 
 tests:
 	$(MAKE) -C tests run
@@ -267,6 +267,12 @@ dftest:
 # absence of file ownership is honest rather than accidental.
 usertest:
 	cd kernel && ./usertest.sh
+
+# ssh, scp and rsync against the workstation's own OpenSSH -- and TEN
+# successive connections, because the machine once served exactly one
+# and then transmitted nothing ever again.
+sshtest:
+	cd kernel && ./sshtest.sh
 
 # The toolchain running on the machine: gcc and as and ld, compiling
 # and linking programs that then run -- and the object files compared

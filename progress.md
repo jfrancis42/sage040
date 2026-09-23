@@ -24,13 +24,43 @@ reading the rest of this file. Dated, because it goes stale.
 
 ### Broken, or not working
 
-| | |
-|---|---|
-| **The ssh server serves ONE connection.** | The first connection works completely. The second returns nothing and every one after it fails with "Connection timed out during banner exchange". This is the machine's, not Dropbear's: `netstat` on the machine shows the second connection **ESTABLISHED with 1404 bytes sitting in the transmit queue** -- the server wrote its banner and the data never left. TCP has the data, the window is open (cwnd 3314, rtt 10ms), and it does not go. Suspect the LAN91C111's transmit buffer pool, which is shared with reception and which `os.md` already records as the thing that stops the machine SENDING when it is not drained. **This is the real bug behind everything that was blamed on scp.** |
+**Nothing known.** The one-connection network failure described here
+is fixed; see "The network died after one connection" below.
+`kernel/sshtest.sh` covers it: ten successive ssh connections, ping
+afterwards, zero transmit errors, scp both ways and rsync over ssh.
 
-**`scp` is NOT broken.** It works: fetched a file off the machine
-byte-for-byte correct as the first connection of a session. Every
-earlier report to the contrary was a fault in the test -- see below.
+### The network died after one connection -- fixed 2026-09-23
+
+The machine served exactly one ssh session and then transmitted
+nothing again: no data, no ACKs, not even a SYN-ACK for a new
+connection. `ifconfig` showed **TX 89 packets, 87 errors**.
+
+**The LAN91C111's transmit allocation is a REQUEST, not a question.**
+When no page is free the chip remembers the request and grants one the
+moment a page is released, raising ALLOC then. The driver gave up on
+its timeout and asked again on the next send -- and a new allocate
+command clears ALLOC and starts a fresh request, so the page granted
+to the abandoned one was never given back by anybody. The chip has
+four pages, shared between transmit and receive. Four abandoned grants
+and it can neither send nor receive, for ever.
+
+`smc_send()` now takes a grant that is already waiting instead of
+asking again. TX went from 89 packets with 87 errors to **1010 packets
+with none**.
+
+Two other things were fixed on the way, both worth keeping:
+
+- **`ifconfig up` never called the driver.** It set a flag. So
+  `ifconfig eth0 down; ifconfig eth0 up` could not reinitialise a
+  wedged card, which is the one thing somebody types it for. It calls
+  `dev->up()`/`dev->down()` now, masked, since the driver owns chip
+  registers the timer interrupt also reaches for.
+- **A failed transmit left no retransmit timer.** `send_data()` armed
+  `rexmit_at` only after a SUCCESSFUL send, and `tcp_timer()` skips
+  any connection whose `rexmit_at` is 0 -- so one failed frame left a
+  connection with data queued and nothing anywhere that would try
+  again. It arms the timer on failure too. This did not fix the bug
+  above on its own, and is right regardless.
 
 ### Unverified -- believed working, not proven
 

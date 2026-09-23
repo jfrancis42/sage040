@@ -773,6 +773,33 @@ static void send_data(struct tcpcb *t)
         (void)offset;
 
         if (send_range(t, t->snd_nxt, n) < 0) {
+            /*
+             * THE FRAME DID NOT GO, AND THE TIMER STILL HAS TO BE
+             * ARMED. This used to be a bare `break`, and rexmit_at is
+             * set only after a SUCCESSFUL send further down -- so one
+             * failed transmit left a connection with data queued, no
+             * retransmit timer, and nothing anywhere that would try
+             * again. tcp_timer() skips every connection whose
+             * rexmit_at is 0, so it skipped this one for ever: the
+             * connection sat ESTABLISHED, idle, with its data in the
+             * send queue, until something closed it.
+             *
+             * That is exactly what made the ssh server appear to serve
+             * one connection and then stop. The second session's
+             * banner -- 1404 bytes -- was queued, the card had no
+             * transmit page free at that instant, and the send was
+             * never retried. `netstat` on the machine showed
+             * ESTABLISHED with Tx-Q 1404, a window of 3314 and a round
+             * trip of 10ms: everything ready, nothing moving.
+             *
+             * A transmit failure is a transient condition -- the card
+             * gets its pages back as frames are drained -- so the
+             * right response is the same as for a lost segment: wait
+             * the retransmit timeout and try again.
+             */
+            if (!t->rexmit_at) {
+                t->rexmit_at = timer_jiffies() + (t->rto_ms * HZ) / 1000;
+            }
             break;
         }
         /*
