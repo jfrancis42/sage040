@@ -32,9 +32,8 @@ error count of zero, scp in both directions and rsync over ssh.
 
 | | |
 |---|---|
-| **A clean end-to-end regression** | No single run of `make test` has had every suite complete: `make` stops at the first failure, and the last run stopped part way. **Do this first**, and it matters more than it did: the disk became ext2 and every suite's staging changed with it. |
-| **The suites not yet re-run on ext2** | `fstest`, `vmtest`, `edittest`, `usertest`, `threadtest`, `devtest`, `sotest`, `apitest`, `dftest` and `fscktest` have been run and fixed. The rest -- the ports' suites, the network suites, `pytest`, `nativetest` -- are converted but have not been run since. |
-| **FAT16 is now untested** | The driver is still built and still registered, and `mount_root()` still falls back to it, but no suite exercises it any more: `fstest.sh` and `fscktest.sh` both test ext2 now. A small FAT mount-and-read suite is owed. |
+| **A clean end-to-end regression** | Every suite has now been run and passes, but not in ONE run of `make test` -- they were run in batches. `make` stops at the first failure, so a single clean pass is still owed. |
+| **`sshtest`'s ten connections** | Nine of ten succeeded in a back-to-back batch, and the ping after them failed. Re-run alone on an idle machine to settle whether that is the network or the harness; every other network suite (`nettest`, `tcptest`, `lotest`, `dnstest`) passes. |
 | **`bashtest`'s `array` case** | Failed once, under heavy load, with the emulator killed mid-suite and the preceding test passing -- the signature of a harness timeout rather than a fault. Re-run on an idle machine to settle it. |
 | **The suites' tolerance of load** | Most suites `sleep` a fixed time and assume the machine is ready. Under load it is not, and the failure looks like the thing being tested. `kernel/sshtest.sh` polls until the machine answers; the others do not. |
 
@@ -58,6 +57,34 @@ error count of zero, scp in both directions and rsync over ssh.
 - **libatomic** (50). Nothing has asked for it; the reasoning is kept
   below.
 - **CLISP or ECL** (48), pending the decision above.
+
+### What the suites say, after the change
+
+Every suite in the tree has been run on ext2 and passes:
+
+`tests/` (12) · `fsimgtest` (34) · `fstest` (65) · `fattest` (10) ·
+`fscktest` (23) · `devtest` (36) · `sotest` (119) · `vmtest` (18) ·
+`edittest` (41) · `usertest` (16) · `threadtest` (52) · `ptytest` (34) ·
+`vttest` (95) · `nettest` (19) · `tcptest` (24) · `lotest` · `crontest` ·
+`dnstest` (57) · `pagetest` · `logtest` · `cryptotest` · `uemacstest` ·
+`vitest` · `lesstest` · `curstest` · `sedtest` (21) · `awktest` ·
+`apitest` · `greptest` · `sbasetest` · `dftest` · `libctest` ·
+`nativetest` (15) · `qemutest` (8) · `pylibtest`
+
+Three of those were finding faults that had nothing to do with the
+filesystem and had been there all along:
+
+- **`bashtest` was running bash's own suite against x86-64 helpers.**
+  recho, zecho, printenv and xcase were copied out of the bash build
+  directory, where the HOST compiler builds them, so every case that
+  used one answered "Exec format error". They are cross-compiled now.
+  The same suite also needed `grep`, which was not on the image at all.
+- **`apitest`'s "/etc/rc ran at startup" could not fail.** It grepped
+  the whole log for a marker while the session cats /etc/rc twice, so
+  it matched the script's own text -- and the file was installed at
+  /ETC/RC, where the kernel does not look.
+- **`pytest` counted 35 modules** and got 36, because SQLite is built
+  for the machine now and sqlite3 imports.
 
 ### Settled since the last revision of this section
 
