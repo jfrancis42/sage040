@@ -852,13 +852,15 @@ The calls this system has always had:
 |---|---|
 | `exit` 1, `read` 3, `write` 4, `open` 5, `close` 6 | the usual |
 | `unlink` 10, `rename` 38, `stat` 106, `getdents` 141 | files |
-| `lseek` 19, `fsync` 118, `sync` 36, `statfs` 99 | more files |
+| `lseek` 19, `fsync` 118, `fdatasync` 148, `sync` 36, `statfs` 99 | more files |
 | `mkdir` 39, `rmdir` 40, `chdir` 12, `getcwd` 183 | directories |
 | `time` 13, `stime` 25, `times` 43, `nanosleep` 162 | time |
 | `getpid` 20, `kill` 37, `waitpid` 7, `sched_yield` 158 | tasks |
+| `getuid` 24, `setuid` 23, `setreuid` 70, `setresuid` 164, and the gid and 32-bit forms | who a task belongs to |
+| `cacheflush` 123 | m68k's own -- see below |
 | `socket` 356 … `shutdown` 370 | sockets: `socketpair`, `accept4`, the socket options, names, `sendmsg`/`recvmsg` |
 | `ioctl` 54, `uname` 122, `sysinfo` 116, `reboot` 88 | the rest |
-| `spawn` 1000, `jobctl` 1001, `netctl` 1002 | **not Linux** — see below |
+| `spawn` 1000, `jobctl` 1001, `netctl` 1002, `fsctl` 1003, `memctl` 1004, `kstat` 1005 | **not Linux** — see below |
 
 Beside them are the rest of Linux's interface, the calls a C library
 makes -- `statx`, `getdents64`, `openat` and the other `*at` calls,
@@ -868,7 +870,24 @@ makes -- `statx`, `getdents64`, `openat` and the other `*at` calls,
 (141) have Linux's numbers and this system's own simpler structures;
 `statx` and `getdents64` are the Linux-shaped ones.
 
-The three at 1000 are local because Linux has nothing to match. They
+**`cacheflush(addr, scope, cache, len)` is number 123 and exists on
+m68k and nowhere else.** The 68040 has separate data and instruction
+caches, so a program that writes instructions into memory and then
+jumps to them has stored bytes that may still be in the data cache
+while the instruction cache holds what used to be there. Only the
+supervisor can do anything about that, so the program has to ask.
+libffi's closures are the caller. `kernel/cache.c` is honest that the
+caches are off today and that QEMU decodes `cpusha` as a no-op, so it
+cannot be observed to work by running it.
+
+**`statfs` is Linux's structure now**, and was not: it used to be this
+system's own five fields behind Linux's number, one of which was a
+`const char *` pointing at a string **in the kernel** -- readable by
+the kernel's own shell and an access fault for a program. `f_type` is
+`MSDOS_SUPER_MAGIC`. The volume label, which Linux's `statfs` has no
+field for, is `fsctl(FSCTL_LABEL, 0, &label)`.
+
+The ones at 1000 and above are local because Linux has nothing to match. They
 were at 400-402 until it turned out Linux/m68k gives those to `msgsnd`,
 `msgrcv` and `msgctl`.
 `spawn` takes a path and an argument vector and creates a task directly,
