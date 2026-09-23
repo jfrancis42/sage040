@@ -971,9 +971,10 @@ Giving the system real TLS means PT_TLS in `ld.so`, a per-thread block
 and that function in the C library. Software that uses `__thread` for an
 optimisation -- bfd does, for one variable -- falls back to a global.
 
-**`scp` does not work**, though ssh and rsync over ssh do. The binary
-builds and `scp -f FILE` exits 1 immediately with no output, locally,
-with no network involved.
+**`scp` did not work in the one test made of it**, though `ssh` and
+`rsync` over the same transport did. The cause is not known; see
+`progress.md`, which also records that the first diagnosis of it was
+drawn from an invalid test.
 
 **A fault's own signal cannot be caught.** `SIGSEGV` from an access fault
 ends the program: the 68040's access-fault frame cannot be redirected to a

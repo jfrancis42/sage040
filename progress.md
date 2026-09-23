@@ -670,13 +670,27 @@ verified by reading it back. rsync also copies locally, byte-for-byte.
 `-a` asks for ownership to be preserved and there is nowhere to record
 it. `-rlt` is the flag set that matches this filesystem.
 
-**scp does not work and is the open item.** The binary builds and
-installs, prints its usage, and `scp -f FILE` -- the source mode the
-remote end runs -- exits 1 immediately with no output, on the machine,
-with no network involved. So it is not the ssh transport: something in
-scp's startup fails against this C library. It was left there rather
-than guessed at. Note also that a modern OpenSSH client needs `scp -O`
-to talk the old protocol at all, Dropbear having no sftp-server.
+**scp did not work in the one test made of it, and the cause is NOT
+known.** What is known: the binary builds, installs and prints its
+usage; `scp -O root@machine:/ST/file local` from an OpenSSH client
+failed with "local/path: No such file or directory" while `ssh` and
+`rsync` over the same transport, in the same session, worked.
+
+**A correction, because the first version of this note drew the wrong
+conclusion from a bad test.** It said the failure was guest-side,
+because `scp -f FILE` run on the machine exits 1 immediately. That
+proves nothing: `-f` is the source half of the scp protocol and the
+first thing it does is `response()`, which reads a byte from a peer
+that is supposed to be speaking scp. Run from a shell prompt with no
+peer, exiting 1 is correct behaviour, not a fault. The probe was
+invalid and the conclusion drawn from it was wrong.
+
+Two things are worth knowing for whoever picks this up. A modern
+OpenSSH client needs `scp -O` to use the old protocol at all, Dropbear
+having no sftp-server. And a program built for this machine can now be
+run under `qemu-m68k` (see below), which makes scp cheap to debug --
+though only when linked statically, since a dynamic one asks for
+`/lib/ld.so` and that loader reads the stack the kernel's way.
 
 ### 48a. The libraries CPython is built against -- done
 
