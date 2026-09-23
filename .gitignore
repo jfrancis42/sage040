@@ -3,6 +3,14 @@
 *.bin
 *.o
 
+# Programs built from the .c beside them. They have no extension on
+# purpose -- exec.c decides what is executable from a file's first four
+# bytes, not from its name -- so they cannot be caught by one. system/df
+# and system/id had been committed by accident and were being carried as
+# stale binaries in a public repository.
+/system/df
+/system/id
+
 # Everything the test suites write: disk images, logs, fifos. One
 # directory rather than scattered through the tree, removed by
 # `make clean`. hd.img at the top level is deliberately NOT here -- it
