@@ -987,7 +987,7 @@ There is no flattening step. The kernel loads ELF directly, which is why
 ### Getting it onto the disk, and running it
 
 ```bash
-make install            # mcopy, uppercasing the name: myprog -> MYPROG
+make install            # onto the disk, under its own name: myprog
 ```
 
 ```
@@ -996,9 +996,9 @@ sage$ myprog one two
 
 Anything the shell does not recognise as a builtin is looked up on the
 disk and run. **Programs carry no extension** — the kernel decides what
-is executable by reading the first four bytes of the file, not its name,
-because a FAT16 volume has no execute permission bit to consult. A text
-file named `CUBE.EXE` is still refused.
+is executable by reading the first four bytes of the file, not its name
+and not its mode. A text file named `CUBE.EXE` is still refused. (ext2
+has an execute bit and the disk records one; nothing consults it yet.)
 
 ### Limits, the NVRAM, and interrupts
 
@@ -1034,7 +1034,8 @@ sage$ free                  # shows the swap line
 sage$ swapoff /swap         # brings every page back first, or refuses
 ```
 
-Make the file on the host (`dd` of zeroes, then `mcopy`); the kernel
+Make the file on the host (`dd` of zeroes, then `tools/fsimg.sh IMG put`);
+the kernel
 refuses to use a file it would have to grow, and while it is on the
 file cannot be written, truncated, renamed or deleted -- `ETXTBSY`.
 A program that touches more than memory and swap can hold is killed
@@ -1214,9 +1215,11 @@ close(fd);
 the way POSIX has it, so **`O_RDONLY` is zero** and testing for it with
 `&` does not work — use `(flags & O_ACCMODE)`.
 
-The volume is FAT16 with subdirectories and **VFAT long names** -- up to
-255 characters, stored as UTF-16 and handed to programs as UTF-8, case
-preserved and looked up case-insensitively (in ASCII).
+The volume is **ext2**. A name is up to 255 bytes and those bytes are
+what is stored and what comes back -- UTF-8 or anything else, case
+preserved and **case-SENSITIVE**: `Makefile` and `makefile` are two
+files. (FAT16 folded case; a program that relied on that will not find
+its file here.)
 `chdir`, `getcwd`, `mkdir` and `rmdir` all work, a path may be absolute
 or relative, and the working directory belongs to the task.
 
@@ -1251,15 +1254,21 @@ marked, and the next boot runs the check and repairs what it finds.
 `fsck` checks on demand, `fsck -y` repairs; repair is refused while a
 file is open.
 
-**Inode numbers are made up**, because FAT has none: a directory is its
-first cluster, a file is where its entry sits. They are nonzero, stable,
-and the same from `stat` and `readdir` -- but renaming a file moves its
-entry and so changes its number.
+**Inode numbers are real.** A file keeps its number for its whole life,
+across renames and across moves between directories, and `stat` and
+`readdir` agree about it. A number that has been given up IS handed out
+again to the next file created, so a cache keyed on the inode number
+alone will confuse a new file with the one that freed it -- compare
+something else as well.
 
-A name that is already an upper-case 8.3 name is stored as one alone;
-anything else also gets an 8.3 alias for DOS -- itself upper-cased if
-that is free (`readme.txt` is `README.TXT`), otherwise `NAME~1`.
-Trailing dots and spaces are dropped, as Windows and Linux's vfat do.
+**A file has an owner, a group and a mode**, and one you create belongs
+to you. Nothing enforces any of it yet: no open, no unlink and no
+directory search consults a mode bit. Write code as though it did.
+
+**Times run to 2106.** A date after 2038-01-19 is stored the way ext4
+stores it, so Linux and e2fsprogs read back what this kernel meant.
+picolibc still shows a post-2038 time as negative, because it
+sign-extends a 32-bit `tv_sec` exactly as 32-bit Linux does.
 
 ### The terminal
 
@@ -1649,7 +1658,7 @@ loop, which is only ever right on the machine it was tuned on.
   handler would have to return to the faulting instruction, and nothing
   has made the page.
 - **Open a FIFO, a symbolic link or a second link to a file**, or own a
-  file: FAT holds none of those, so `mknod`, `link`, `symlink`, `chown`
+  file: nothing creates one yet, so `mknod`, `link`, `symlink`, `chown`
   and `chmod` answer `EPERM` and every id is 0.
 - **Open a pseudo-terminal**, or `/dev/fd`.
 

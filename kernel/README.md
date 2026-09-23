@@ -1,7 +1,7 @@
 # The SuckOS kernel
 
 A small kernel: Linux-shaped system calls, a device driver model, a VFS,
-a read/write FAT16 filesystem with subdirectories, an MMU giving every
+a read/write ext2 filesystem with subdirectories, an MMU giving every
 program an address space of its own, a preemptive round-robin scheduler,
 signals and job control, a TCP/IP stack, a terminal with a line
 discipline, a clock, a 100 Hz tick, a framebuffer, a text console on it,
@@ -18,7 +18,7 @@ It is loaded from the disk by the [boot ROM](../bootrom/), which finds
 $ make boot
 Sage040 boot ROM
 partition 1 at LBA 2048, type 0x06
-KERNEL.ROM  205424 bytes, first cluster 2
+KERNEL.ROM  236804 bytes, inode 12
 image SSP = 0x003FFFF0  PC = 0x00000400
 starting
 
@@ -41,7 +41,7 @@ Copyright (C) 2026 Jeff Francis.  GPL-3.0-or-later.
   network : eth0, 52:54:00:12:34:56
   console : output to ttyS0 fbcon, input from ttyS0 fbcon kbd0
   net     : eth0 up, ethernet + ARP, no address yet (try `ifconfig`)
-  root    : fat16 on /dev/hda 'SAGE040', 101158 KB, 100884 KB free, 2048 byte clusters
+  root    : ext2 on /dev/hda 'SAGE040', 523264 KB, 490248 KB free, 4096 byte blocks
 
 kernel ready.  'help' lists commands.
 
@@ -61,7 +61,7 @@ drw            BIN         0  2026-09-21 14:53
 11 files, 196974 bytes
 /$ df
 volume          type   1K-blocks       used      avail  use%
-SAGE040         fat16      101158        274     100884    0%
+SAGE040         ext2       523264      33016     490248    6%
 ```
 
 `booted from /etc/rc` is the startup script running, and the prompt is
@@ -100,7 +100,7 @@ takes. The disk image lives in the project root — see
           uaccess.c    vm.c        a program's pointers, and its address space
        vfs.c  task.c  signal.c     descriptors; tasks, jobs and signals
         +-----------+-----------+
-     fs/fat16.c           dev.c    filesystem types, device registries
+     fs/ext2.c fs/fat16.c dev.c    filesystem types, device registries
         |                   |
    struct blockdev     chardev / netdev / rtcdev / timerdev / fbdev
         |                   |
@@ -248,7 +248,7 @@ is behind that address in the kernel's map and the same mistake faults in
 the first test that touches it.
 
 **They carry no extension**, and that follows from how executability is
-decided. Linux uses a permission bit; a FAT16 volume has none to consult,
+decided. Linux uses a permission bit; nothing here consults one yet,
 so the only thing left is the file itself. The first four bytes say
 whether it is a program, which is what Unix has always done. An extension
 would be decoration that could lie.
@@ -917,62 +917,60 @@ instead.
 
 ## Directories
 
-FAT16 has subdirectories and this kernel now uses them: `mkdir`,
-`rmdir`, `cd`, `pwd`, and paths like `/etc/rc` that walk the tree.
+`mkdir`, `rmdir`, `cd`, `pwd`, and paths like `/etc/rc` that walk the
+tree.
 
-**A directory is one of two things, and both have to be carried.** The
-root is a fixed run of sectors, laid down when the volume was made and
-unable to grow. Every other directory is an ordinary cluster chain,
-exactly like a file, whose contents happen to be directory entries.
-FAT32 abolished the distinction by making the root a chain too; FAT16
-did not. `struct dir` with a cluster of 0 meaning the root is how that
-is said, and a subdirectory that fills up gets another cluster chained
-on while a full root is full for good.
+**`.` and `..` are not decoration.** `..` is the record of a directory's
+parent -- a path walk hitting `..` reads it from there, and so does
+`pwd`, which walks up to the root and finds each directory's name in its
+parent. A directory made without them cannot be left.
 
-**`.` and `..` are not decoration.** A FAT directory entry records
-nothing about where it lives, so `..` is the only record of a
-directory's parent anywhere on the volume -- a path walk hitting `..`
-reads it from there. A directory made without them cannot be left. The
-parent of a directory in the root is written as cluster 0, which is how
-FAT spells "the root".
-
-**Long names are VFAT's, in UTF-8** (task 14). The startup script is
-`/etc/rc` because `rc.local` was not a legal 8.3 name when it was
-chosen; it would be now.
+**Names are bytes.** No 8.3, no aliases, no case folding: `Makefile` and
+`makefile` are two files, and a program installed as `winchtest` is
+called `winchtest`. The startup script is `/etc/rc` because `rc.local`
+was not a legal 8.3 name back when the disk was FAT; nothing limits a
+name now, and the name stayed.
 
 **The working directory belongs to the task** (`struct task`, reached
 through `vfs_cwd_*()`), so a `chdir()` moves only the task that made it.
 
 ## The filesystem
 
-FAT16, read and write, registered as the type `fat16` and mounted on
-`/dev/hda`. The volume is a genuine MS-DOS one, so the host can put a
-file on it with `mcopy` and the kernel reads it, and anything the kernel
-writes comes back off the image without the kernel running.
+ext2, read and write, registered as the type `ext2` and mounted on
+`/dev/hda`. The volume is a genuine ext2 one, so the host can put a file
+on it with `debugfs` and the kernel reads it, anything the kernel writes
+comes back off the image without the kernel running, and `e2fsck` --
+which shares no line of code with this driver -- will say whether what
+the kernel left behind is consistent.
 
-Limits, none of which change a single call: FAT16 alone, no
-permissions or links.
-"The root directory only" was one of them and is not any more — see
-**Directories** above. Long names are read and written (the "long
-names" section of `fs/fat16.c`): `dir_find` looks a name up by its long
-form or its 8.3 one, `dir_create_named` writes a long-name run and an
-alias when a name needs them, and `lfn_delete` frees a run with its
-file. FAT12 and FAT32 are refused at mount rather than misread as
-FAT16.
+`fs/fat16.c` is still built and still registered. `mount_root()` in
+`main.c` tries ext2 first and falls back to it, because each type's
+`mount()` recognises its own superblock and refuses anything else, so
+trying them in turn is the whole of the probe. A FAT disk from somewhere
+else is still readable; this machine's own disk is ext2.
 
-Two things to know before editing `fs/fat16.c`:
+Three things to know before editing `fs/ext2.c`:
 
-- **Every multi-byte field on a FAT disk is little-endian and this CPU
+- **Every multi-byte field on an ext2 disk is little-endian and this CPU
   is not.** Nothing is read by casting a pointer; it all goes through
   `le16()`/`le32()`, which work a byte at a time and so are indifferent
   to alignment as well.
-- **A FAT16 volume carries two copies of the table.** Updating only the
-  first leaves a disk that works until something checks it. Every FAT
-  write goes to all copies.
+- **A directory entry's `rec_len` is the whole slot**, not the length of
+  the name in it, and a deleted entry is absorbed into the one before
+  it. Walking by a fixed step works on a fresh directory and
+  desynchronises on the first deletion.
+- **`i_blocks` is in 512-byte units**, always, whatever the block size
+  is. And a zero block pointer is a hole that reads as zeroes, not an
+  error -- allocating one on the read path would fill the disk with a
+  sparse file.
 
-Files get bare LF line endings. The system is Unix-flavoured and happens
-to store its files on an MS-DOS volume; the volume decides the directory
-format, not the contents.
+The driver keeps a sixteen-block write-back cache (64 KB), which is
+enough to hold a bitmap, an inode table block, an indirect block and a
+directory block through one operation. A file unlinked while it is still
+open goes on the superblock's orphan list and is freed at the next
+mount, so stopping the machine with a deleted file open leaks nothing.
+
+Files get bare LF line endings.
 
 ## The clock
 
@@ -1012,7 +1010,7 @@ on a scratch image and drives a console session over the serial line:
 | `./vmtest.sh` | 15 | what a program cannot touch, and that a bad pointer is an error |
 | `./nettest.sh` | 13 | ARP, DHCP, ICMP and a TCP transfer bigger than the receive buffer |
 
-`fstest.sh` then checks the result with `mdir`, `mtype` and `fsck.fat`,
+`fstest.sh` then checks the result with `debugfs` and `e2fsck`,
 and that second half is the part that matters: a filesystem only the
 kernel can read would prove nothing.
 

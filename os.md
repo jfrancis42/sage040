@@ -13,10 +13,10 @@ grep, the one true awk, uEmacs, vi, and 98 of suckless's utilities all run
 on it, built from their own unmodified sources against picolibc -- and so
 does **CPython 3.14**, with its standard library on the disk.
 
-It is not a Unix clone and it is not a Linux. It has one user, root, and a
-FAT filesystem that cannot record who owns a file. **What it is not**, at
-the end of this document, says where the edges are; `progress.md` is what
-is still to be built.
+It is not a Unix clone and it is not a Linux. Its filesystem records who
+owns a file and what may be done with it, and nothing checks either yet.
+**What it is not**, at the end of this document, says where the edges are;
+`progress.md` is what is still to be built.
 
 ---
 
@@ -101,7 +101,7 @@ matching is that it stops being a decision.
 ## Booting
 
 The boot ROM (`bootrom/`) is not part of the OS. It sizes memory, finds the
-IDE disk, reads the partition table, loads `/KERNEL.ROM` from the FAT16
+IDE disk, reads the partition table, loads `/KERNEL.ROM` from the ext2
 filesystem and jumps to it. The kernel can also be loaded directly with
 QEMU's `-kernel`, which is faster to iterate on and skips the ROM
 entirely; `make run` does that and `make boot` goes through the ROM.
@@ -507,8 +507,13 @@ not move when the root does, as on Linux.
 
 ### File times
 
-FAT records a modification time to two seconds and a last-access date, and
-`utimensat`/`futimens` set them, which is what `touch` and `make` need. A
+ext2 records a modification, a change and a last-access time to the second,
+and `utimensat`/`futimens` set them, which is what `touch` and `make` need.
+Dates run to 2106, not 2038: this kernel's `time_t` is an unsigned 32-bit
+count and ext2's is a signed one, so a date past 2038-01-19 is stored as the
+same 32 bits with the inode's spare "extra" word marking the later epoch --
+which is how ext4 spells it, and what makes Linux read back the date this
+kernel meant. A
 file that is open and has unwritten metadata is flushed before its time is
 set, so that closing it afterwards does not stamp over what was asked for.
 
@@ -523,32 +528,62 @@ inherited by *both* is a bug's worth of experience: a shell created without
 them ran perfectly and silently, because it had no stdout, and that reads
 as a broken context switch for a surprisingly long time.
 
+### ext2
+
+`fs/ext2.c`, about 3,500 lines, and the filesystem the machine keeps itself
+on. Read and write, create and delete, subdirectories, names that are just
+bytes, modes and ownership, sparse files, and a consistency check of its
+own.
+
+ext2 was chosen so the host can read, write and above all **check** the disk
+image with e2fsprogs -- no loop device, no root -- which is what makes
+`make write` a one-liner and what makes the test suites able to verify the
+guest's writes with the *host's* tools rather than by reading them back with
+the same code that wrote them. `e2fsck` is the strongest thing any test here
+can say: it recomputes every link count, every bitmap and every directory's
+`.` and `..` from the disk alone.
+
+The volume is made with 4 KB blocks (so twelve direct pointers and one
+indirect block reach 4 MB, and the boot ROM needs no double indirection),
+256-byte inodes (room for the extra word that carries a post-2038 date), and
+without `dir_index` -- a hashed directory is readable by a driver that
+cannot maintain the hash, but writing into one would leave an index that no
+longer finds the names underneath it, so the driver refuses to mount a
+volume that has the feature.
+
+Three structural facts it is easy to get wrong:
+
+**A directory entry's `rec_len` is the whole slot**, which may be larger
+than the name in it, and a deleted entry is absorbed into the one before
+it. Walking by a fixed step works on a fresh directory and desynchronises
+on the first deletion.
+
+**`i_blocks` is in 512-byte units**, always, whatever the block size is.
+
+**A zero block pointer is a hole**, which reads as zeroes. It is not an
+error and must not be allocated on the read path, or reading a sparse file
+fills the disk.
+
+A file unlinked while a program still has it open cannot be freed and is
+reachable from no directory, so the superblock keeps the head of a list
+threaded through the inodes' own `i_dtime` fields. Mounting walks it and
+frees what is on it, so a machine that stopped with a deleted file open
+leaks nothing.
+
 ### FAT16
 
-`fs/fat16.c`, about 2,000 lines, and the only filesystem. Read and write,
-create and delete, subdirectories, VFAT long names in UTF-8, one partition.
+`fs/fat16.c` is still here and still registered: the mount probes ext2
+first and falls back to it, because a disk from a machine that has never
+heard of this one is a FAT disk. Read and write, VFAT long names in UTF-8,
+one partition. Two structural facts of ITS format, kept because they are
+the sort of thing that is rediscovered painfully: a FAT16 root directory is
+a fixed run of sectors that cannot grow while every other directory is a
+cluster chain, and `.` and `..` are the only record of a directory's
+parent anywhere on the volume.
 
-FAT16 was chosen so the host can read and write the disk image with
-`mtools` — no loop device, no root — which is what makes `make write` a
-one-liner and what makes the test suites able to verify the guest's writes
-with the *host's* tools rather than by reading them back with the same code
-that wrote them.
-
-Two structural facts it is easy to get wrong:
-
-**A directory is one of two things, and both have to be carried.** The root
-is a fixed run of sectors that cannot grow; every other directory is an
-ordinary cluster chain. FAT32 abolished the distinction, FAT16 did not.
-`struct dir` with `cluster == 0` meaning the root is how this is said.
-
-**`.` and `..` are the only record of a directory's parent.** A FAT
-directory entry says nothing about where it lives, so `mkdir` must write
-both or the directory cannot be left. The parent of a directory in the root
-is recorded as cluster 0.
-
-The startup script is `/etc/rc` because `rc.local` was not a valid 8.3
-name when it was chosen -- a five-character extension. Long names have
-made it legal since (task 14); the name stayed.
+The startup script is `/etc/rc` because `rc.local` was not a valid 8.3 name
+when the disk was FAT and the name was chosen. Nothing limits a name now;
+the name stayed.
 
 ---
 
@@ -657,7 +692,7 @@ checks by taking every one, closing them, and taking them all again.
 
 A task has a real, effective and saved user id and the same three group
 ids. They are inherited by `fork` and kept across `exec` -- there is no
-set-user-id bit on a FAT volume to change them -- and moved by `setuid`,
+set-user-id bit to change them -- and moved by `setuid`,
 `setgid`, `setreuid`, `setregid`, `setresuid` and `setresgid` under the
 rules POSIX gives: root may become anybody, and anybody else may only
 move between the identities they already hold, which is exactly enough to
@@ -786,7 +821,7 @@ building's network is not a test.
 ## Programs
 
 A program is an ELF executable with no extension. **`exec.c` decides what
-is executable from the file's first four bytes**, because FAT16 has no
+is executable from the file's first four bytes**, because the disk had no
 permission bit — do not "tidy" this by adding `.EXE` or by matching on
 names.
 
@@ -874,7 +909,7 @@ line.
 |---|---|---|
 | `tests/` | 12 programs | the devices: CPU and FPU, UART, ATA, MFP and its timers, MMU, SM501, RTC, keyboard |
 | `kernel/cryptotest.sh` | 4 | ChaCha20 and BLAKE2s against the RFCs, built for the host |
-| `kernel/fstest.sh` | 59 | the filesystem, long names included, verified with the host's mtools and fsck.fat |
+| `kernel/fstest.sh` | 65 | the filesystem, names of any shape included, and a file past what one indirect block reaches -- verified with the host's debugfs and e2fsck |
 | `kernel/apitest.sh` | 368 | the system call surface a ported program expects |
 | `kernel/edittest.sh` | 41 | the line editor, history, job control, command lists, scripts, shutdown |
 | `kernel/vmtest.sh` | 18 | what a program cannot touch |
@@ -886,8 +921,10 @@ line.
 | `kernel/vttest.sh` | 95 | the VT102 console, checked against screenshots |
 | `kernel/devtest.sh` | 36 | interrupts, the filesystem under concurrency, the limits, the NVRAM, `mmap` of the framebuffer |
 | `kernel/libctest.sh` | 232 | picolibc and the POSIX layer added to it |
-| `kernel/sotest.sh` | 117 | shared libraries, `ld.so`, and the sharing of their pages |
-| `kernel/fscktest.sh` | 23 | `fsck`, against damage made on the host |
+| `kernel/sotest.sh` | 119 | shared libraries, `ld.so`, and the sharing of their pages |
+| `kernel/fscktest.sh` | 23 | `fsck`, against seven kinds of damage made on the host, each repaired and then agreed with by e2fsck |
+| `kernel/fattest.sh` | 11 | the FAT16 fallback, which is no longer the machine's own filesystem |
+| `tools/fsimgtest.sh` | 34 | the host's end of the disk, which every other suite stages its files through |
 | `kernel/uemacstest.sh` `kernel/vitest.sh` | 9, 9 | the two editors |
 | `kernel/awktest.sh` | 40 | awk's own regression tests, and eleven more against the host's awk |
 | `kernel/sedtest.sh` | 21 | sed, against the same sed built for the host |
@@ -933,26 +970,35 @@ seconds later" landed before the program existed and went to the shell.
 
 Named, so that nobody has to discover them by trying.
 
-**Users exist and protect nothing.** A task carries a real, effective and
-saved uid and gid; they are inherited across fork and exec, `setuid` and
-its relatives move them under POSIX's rules, and `/etc/passwd` turns them
-into names -- `id`, `whoami` and `~user` all work. What no user id can do
-is decide whether anybody may read a file, because a FAT directory entry
-has nowhere to record an owner. So this is **identity without
-authority**, which is worth having by itself -- it is what a login
-authenticates into, and ssh does -- but it is not protection, and
-`kernel/usertest.sh` ends with a check that reads root's file as anybody
-and passes, so that nobody mistakes it for protection.
+**Users exist and protect nothing -- but the disk now remembers them.** A
+task carries a real, effective and saved uid and gid; they are inherited
+across fork and exec, `setuid` and its relatives move them under POSIX's
+rules, and `/etc/passwd` turns them into names -- `id`, `whoami` and
+`~user` all work. Since the filesystem became ext2, a file also carries an
+owner, a group and a mode, and a file created by a user belongs to that
+user. What is still missing is the part that *checks* any of it: no open,
+no unlink and no directory search consults a mode bit. So this remains
+**identity without authority** -- it is what a login authenticates into,
+and ssh does -- and `kernel/usertest.sh` ends with a check that reads
+root's file as anybody and passes, so that nobody mistakes it for
+protection.
 
-**No permissions.** FAT has nowhere to put them. `chmod` succeeds and
-changes nothing; what is executable is decided by a file's first four
+Storing them faithfully first is what makes enforcement possible later
+without rewriting every file on the disk; enforcement itself touches every
+system call and is its own piece of work.
+
+**`chmod` is still a no-op**, for the same reason: the mode is recorded and
+nothing reads it. What is executable is decided by a file's first four
 bytes, which is also how `exec` decides. There are no passwords and no
 `/etc/shadow`: ssh authenticates by public key, and verifying a password
 would need `crypt(3)`, which the C library has not got.
 
-**No links, no FIFOs, no device nodes on disk.** `link`, `symlink`,
-`mkfifo` and `mknod` answer `EPERM`. A FIFO could live in the VFS instead
-of on the disk, and does not yet.
+**No links, no symlinks, no FIFOs, no device nodes on disk.** `link`,
+`symlink`, `mkfifo` and `mknod` answer `EPERM`. ext2 holds hard links and
+symlinks perfectly well -- `stat` already reports `S_IFLNK` for one a host
+tool made, rather than mistaking it for a short regular file -- so what is
+missing is the VFS and system-call side, not the filesystem. A FIFO could
+live in the VFS instead of on the disk, and does not yet.
 
 **No `/dev/fd`, and so no process substitution in bash.** `<(...)` needs
 either that or a FIFO.
@@ -983,7 +1029,7 @@ Linux/m68k's `siginfo` and `ucontext`, and `sigaltstack`.
 
 **One filesystem, one partition, one network interface.** The static
 limits that were constants are larger now -- 64 tasks, 64 descriptors
-each, 128 open FAT files -- but these three are structure.
+each, 256 open files -- but these three are structure.
 
 **Swap is a file, one at a time**, and there is no swap cache: a page read
 back in gives up its slot, so evicting it again writes it again. When

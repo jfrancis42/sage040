@@ -296,117 +296,203 @@ the one DHCP gave. `host`, `ping`, `fetch` and `ntpdate` take names.
 
 ## 8. Filesystem
 
-**Decided and partly built: a real MS-DOS disk.** Not a FAT-like format of our
-own, but a genuine partitioned FAT16 volume that the host reads and writes
-with ordinary tools — `mtools`, `mount -t vfat`, `fdisk`, `fsck.fat`.
+**Decided and built: ext2, the real one.** Not an ext2-like format of our
+own, but a genuine partitioned ext2 volume that the host reads, writes and
+checks with e2fsprogs — `mke2fs`, `e2fsck`, `debugfs`, `dumpe2fs` — on the
+plain image file.
 
 ### Why
 
-Host interoperability is the whole point. Putting a kernel on the disk is
-`mcopy kernel.rom ::/`, not `dd` at a magic offset, and anything else on the
-machine's disk can be inspected or edited from Linux without the guest
-running. Every alternative means writing a host-side tool before a single
-file can be placed.
+The same reason the disk was a real MS-DOS disk before it was this: a
+filesystem only this kernel can read proves nothing. Being able to hand the
+image to somebody else's code is what makes a test a test. `e2fsck` is worth
+more here than any assertion the driver could make about itself, because it
+recomputes every link count, every bitmap and every directory's `.` and `..`
+from the disk alone — so a driver that keeps a filesystem *it* is happy with
+still fails.
 
-It also has genuine 68k heritage — the Atari ST's GEMDOS filesystem is FAT
-with quirks — and it is small: read-only FAT16 with 8.3 names came to about
-200 lines.
+What ext2 buys over FAT16, and why the machine's own disk moved:
 
-FAT16 rather than 12 or 32. On a 99 MB partition with 2 KB clusters that is
-50,579 data clusters, comfortably inside FAT16's range, with a 200-sector FAT.
-FAT12 would mean unpacking 12-bit entries that straddle byte boundaries for no
-benefit; FAT32 adds FSINFO and a cluster-chained root directory for capacity
-that is not needed.
+- **Permissions and ownership.** A file has a mode, a uid and a gid. `ls -l`
+  means something, and `/etc/passwd` describing users that files can belong
+  to is no longer a fiction.
+- **Names are bytes.** No 8.3, no aliases, no case folding, no upper-casing
+  on the way in. `winchtest` is `winchtest` and not `WINCHTES`, and
+  `Makefile` and `makefile` are two files.
+- **An inode number that identifies a file for its whole life**, rather than
+  a number derived from the directory slot it happens to sit in.
+- **Hard links**, sparse files, and a free-space map that is a bitmap rather
+  than a chain to be walked.
+- **Timestamps to 2106** rather than 2038 — see below.
+
+FAT16 has NOT been removed. `kernel/fs/fat16.c` is still built and still
+registered, and the mount probes ext2 first and falls back to it, because a
+disk from a machine that has never heard of this one is still a FAT disk.
+What changed is which filesystem this machine keeps its own system on.
 
 ### Layout
 
 ```
 LBA 0          MBR partition table
-LBA 64         optional raw image, in the boot gap
-LBA 2048       partition 1, type 0x06, FAT16, volume SAGE040
+LBA 64         optional raw kernel image, in the boot gap
+LBA 2048       partition 1, type 0x83, ext2, volume SAGE040
 ```
 
-Sector 0 belongs to the partition table, so the kernel cannot live there. The
-boot ROM reads the partition table, mounts the filesystem, finds
-**`KERNEL.ROM`** in the root directory, follows its cluster chain to address 0
-and jumps to it via the image's own 68000 reset vectors.
+Made with 4 KB blocks and 256-byte inodes:
 
-If there is no filesystem, or no `KERNEL.ROM` in it, it falls back to a raw
-image at LBA 64 — the gap between the partition table and the first partition,
-nearly a megabyte — so a disk with no filesystem still boots. All three paths
-are exercised: file found, file missing with a raw image present, and neither.
-
-The disk is built with the host's own tools and needs no root:
-
+```bash
+mke2fs -t ext2 -b 4096 -I 256 -O ^dir_index,^resize_inode -L SAGE040 \
+       -E offset=1048576 hd.img
 ```
-sfdisk        write the MBR
-mkfs.fat -F 16 --offset 2048
-mcopy -i hd.img@@1048576 kernel.rom ::/KERNEL.ROM
+
+Each of those is load-bearing.
+
+**4 KB blocks.** Twelve direct pointers reach 48 KB and one indirect block
+reaches 4 MB, so the boot ROM needs no double indirection to load a kernel.
+At 1 KB it would.
+
+**256-byte inodes** leave room for the inode's "extra" word, which is what
+carries a date past 2038. This kernel's `time_t` is an unsigned 32-bit count
+and ext2's `i_mtime` is a signed one; a date after 2038-01-19 is stored as
+the same 32 bits with the extra word's epoch bits set to 1, which is how
+ext4 spells it and what makes Linux and e2fsprogs read back the date this
+kernel meant.
+
+**`^dir_index`.** A hashed directory is *readable* by a driver that knows
+nothing about it — the interior nodes are shaped like empty entries on
+purpose — but writing into one without maintaining the hash tree leaves an
+index that no longer finds the names underneath it. The driver refuses to
+mount a volume with the feature rather than quietly corrupt one.
+
+**`^resize_inode`.** Nothing here resizes a volume, and the reserved
+descriptor blocks would be metadata the driver has to step over for nothing.
+
+The three feature words are checked at mount and anything outside what the
+driver implements stops the mount. It honours `filetype` (an entry carries
+the type, so readdir needs no inode read) and `sparse_super`, and accepts
+`large_file` and `ext_attr`.
+
+### Reaching it from the host
+
+e2fsprogs takes a `?offset=` suffix on the device name, and every one of its
+tools understands it. That is the whole trick, and it is why no partition is
+ever extracted with `dd` and nothing needs root or a loop device:
+
+```bash
+debugfs -w "hd.img?offset=1048576"
+e2fsck  -fn "hd.img?offset=1048576"
 ```
+
+`tools/fsimg.sh` is the one place that knows this. Makefiles and test suites
+call it (`$(FSIMG) put kernel.rom /KERNEL.ROM`) rather than spelling out an
+offset each, and `tools/fsimgtest.sh` tests it — including that its exit
+status is right, because a command that did its work and exited 1 anyway
+stops every caller chaining on `&&`.
+
+One thing it knows that is easy to get wrong: **`e2fsck -fn` reports a
+superblock whose free counts disagree with the bitmaps and still exits 0.**
+A test judging by exit status alone calls that volume clean, which is
+exactly the fault a driver that miscounts would leave. `fsimg fsck` treats
+"clean" as status 0 *and* nothing said.
 
 ### What is implemented
 
-Twice over, because the two have different jobs.
+**In the boot ROM** (`bootrom/bootrom.c`), read-only and about 200 lines:
+the superblock, group 0's descriptor, one inode, and a block map of direct
+and singly indirect blocks — enough to find `KERNEL.ROM` in the root
+directory and copy it to address 0.
 
-**In the boot ROM**, read-only and only as much as finding one file requires:
-BPB parsing, the FAT16 cluster chain with a one-sector FAT cache, and a root
-directory scan that skips deleted entries, long-name fragments, the volume
-label and subdirectories.
+**In the kernel** (`kernel/fs/ext2.c`), read *and* write over a real block
+device, behind the same `struct fs_type` FAT16 sits behind: open, read,
+write, truncate, unlink, rename, mkdir, rmdir, chdir, getcwd, readdir,
+stat, statfs, utime, bmap, and a consistency check of its own.
 
-**In the kernel** (`kernel/fs/fat16.c`), read *and* write over a real block
-layer (`kernel/drivers/ata.c`): open, read, write, seek, create, truncate,
-append, delete, rename, stat and a directory walk — **subdirectories**, with
-`mkdir`, `rmdir`, a per-task working directory, `chdir` and `getcwd` —
-**long names**, VFAT's UTF-16 encoded from the UTF-8 a program uses — and a
-`fsck` of its own, with the clean-unmount flag in the boot sector that says
-when one is needed.
+Underneath it is a sixteen-block write-back cache, least-recently-used —
+64 KB, enough to keep a bitmap, an inode table block, an indirect block and
+a directory block all resident through one operation.
 
-Two structural facts about FAT16 make that more than a loop change. **A
-directory is one of two things**: the root is a fixed run of sectors that
-cannot grow, and every other directory is an ordinary cluster chain. FAT32
-abolished the distinction; FAT16 did not, so `struct dir` carries a cluster
-number with 0 meaning the root. And **`.` and `..` are the only record of a
-directory's parent** — a FAT directory entry says nothing about where it
-lives — so `mkdir` must write both or the directory cannot be left. The
-parent of a directory in the root is recorded as cluster 0.
+Three things in the format are easy to get wrong and are handled explicitly:
 
-Free-cluster allocation uses a rolling
-hint so a sequential write walks the table once instead of restarting from
-cluster 2 on every extension, and every FAT update is written to **both**
-copies of the table.
+**A directory entry's `rec_len` is the whole slot**, which may be bigger
+than the name in it, and a deleted entry is absorbed into the one before it.
+Walking by anything else — a fixed step, say — works on a fresh directory
+and desynchronises on the first deletion.
 
-`fsck.fat` reports the result clean after the kernel has written to it, and
-`kernel/fstest.sh` checks exactly that: a file the kernel wrote comes back
-byte for byte through `mtype`, a file the host wrote is what the kernel
-printed, and `fsck.fat` finds nothing afterwards. A filesystem only the
-kernel can read would prove nothing.
+**`i_blocks` is in 512-byte units**, always, whatever the block size is.
+That is not a quirk of the driver; it is the format.
 
-### What FAT cannot hold
+**A zero block pointer is a hole**, not an error. It reads as zeroes and
+must not be allocated on the read path, or reading a sparse file fills the
+disk.
 
-- **Permissions, ownership, links and FIFOs.** There is nowhere to put any
-  of them: `ls -l` shows a mode because `stat` synthesises one, and `link`,
-  `symlink` and `mknod` answer `EPERM` as a Linux FAT mount does. Making
-  the system genuinely multi-user is therefore a filesystem change as much
-  as a kernel one (§9).
-- **FAT12 and FAT32.** Refused at mount rather than misread as FAT16.
-- **A journal.** Writes go out as they are made. Pulling the plug mid-write
-  leaves what MS-DOS would have left — lost clusters and cross-links — and
-  the volume is marked dirty, so the next boot checks it. `mount` sets that
-  flag and only an orderly `halt`, `reboot` or `shutdown` clears it.
+**The check** (`fsck` in the guest, `FSCTL_CHECK`) is not a summary of
+what the driver believes; it recomputes everything from the disk. What
+it finds and puts right: blocks nothing reaches, a block claimed twice,
+a pointer out of range, an inode no name reaches, a link count unequal
+to the names that reach it, a wrong `.` or `..`, and free counts that
+disagree with the bitmaps. Four things about it are easy to get wrong
+and each cost a run to find:
 
-### The byte-order trap, for whoever writes the kernel side
+- **`FSCK_IF_DIRTY` is not advisory.** `main.c` calls the check at boot
+  with `FSCK_IF_DIRTY|FSCK_REPAIR` and prints nothing when the volume
+  was clean. A check that ignored the flag would silently repair a
+  clean volume at every boot -- which is how damage planted for a test
+  came to be gone before the test could look for it.
+- **The inode TABLE is the authority, not the inode bitmap.** An inode
+  with a link count and no deletion time holds a file whatever the
+  bitmap says. Trusting the bitmap alone means walking past it,
+  deciding the blocks it points at are reached by nothing, and freeing
+  them out from under a live file. e2fsck reads the table for the same
+  reason.
+- **The per-group free counts are their own fact.** Fixing the
+  superblock's totals does not fix them, and e2fsck reports them
+  separately ("Free inodes count wrong for group #0").
+- **`i_blocks` has to follow a pointer that is cut off**, or the volume
+  still does not check. The walk counts every block it reaches, data
+  and indirect alike, which is exactly what `i_blocks` means.
 
-**FAT is little-endian in every field and this machine is big-endian.** Every
-BPB field, every FAT entry, every directory entry's cluster number and size
-goes through `le16()`/`le32()`. Sector *data*, by contrast, is a byte stream
-and needs no swapping at all.
+There is one thing here that FAT had no equivalent of. **A file unlinked
+while a program still has it open** cannot be freed yet and is reachable
+from no directory, so the superblock keeps the head of a list threaded
+through the inodes' own `i_dtime` fields — which is what ext2 has always
+used the field for in this state. Mounting walks the list and frees what is
+on it, so a machine that stopped with a deleted file open leaks nothing and
+does not need `e2fsck` to notice.
 
-That distinction already caused one bug: `t3-ata` swapped sector bytes in both
-directions, which is self-consistent and passed its own round-trip test while
-writing a byte-swapped image to the media. It surfaced only when the boot ROM
-first tried to load something the host had written. Test against images the
-host made and can still read afterwards; `fsck.fat` and `mdir` are the
-verification that a round trip cannot give you.
+### What is deliberately not there
+
+- **Symlinks.** ext2 holds them and `stat` reports `S_IFLNK` rather than
+  mistaking one for a short regular file, but nothing creates or follows
+  one: that is a VFS and system-call change (`symlink`, `readlink`,
+  `O_NOFOLLOW`, following during a path walk), not a filesystem one.
+- **Permission enforcement.** Modes, uids and gids are stored faithfully and
+  reported, and nothing checks them on open yet. Enforcement touches every
+  system call and is its own piece of work; storing them right first is what
+  makes it possible later without rewriting every file on the disk.
+- **Hashed directories**, for the reason above.
+- **Updating the superblock backups.** The primary is written; e2fsck
+  reconciles. Linux does not update them either, except on resize.
+
+### The byte-order trap, for whoever works on the kernel side
+
+**ext2 is little-endian in every field and this machine is big-endian.**
+Every superblock field, every block pointer, every inode number and every
+directory entry's `rec_len` goes through `le16()`/`le32()` and their write
+counterparts, which work a byte at a time and so are indifferent to
+alignment as well. Nothing is read by casting a pointer.
+
+Sector *data*, by contrast, needs no swap at all: a big-endian store of each
+word reproduces the media byte for byte. Byte streams and word values want
+opposite code, and getting it backwards is self-consistent — it passes a
+write-then-read-back test in both directions while writing a byte-swapped
+image to the media. That already happened once here (`t3-ata`), and it
+surfaced only when the boot ROM tried to load something the host had
+written. Test against images the host made and can still read afterwards;
+`e2fsck` and `debugfs` are the verification a round trip cannot give you.
+
+
+---
+
 
 ---
 

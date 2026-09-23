@@ -32,7 +32,7 @@ nothing uses yet).
 
 The kernel has its own test, [`../kernel/fstest.sh`](../kernel/), which
 drives a console session and then checks the result with the host's own
-`mdir`, `mtype` and `fsck.fat` — 31 checks.
+`debugfs` and `e2fsck` — 63 checks.
 
 Requires the cross toolchain at `~/m68k/install` (see `../toolchain.md`) and the
 patched QEMU at `~/m68k/sage040-qemu` (see `../qemu-patch/`).

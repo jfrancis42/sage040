@@ -16,7 +16,7 @@ break that must make it fail.
 
 ---
 
-## STATE OF THINGS, 2026-09-23
+## STATE OF THINGS, 2026-09-23 (afternoon)
 
 Everything that is broken, unfinished, unverified or waiting on a
 decision, in one place, so that none of it has to be discovered by
@@ -32,7 +32,9 @@ error count of zero, scp in both directions and rsync over ssh.
 
 | | |
 |---|---|
-| **A clean end-to-end regression** | No single run of `make test` has had every suite complete: `make` stops at the first failure, and the last run stopped part way. Every suite passes when run on its own. **Do this first.** |
+| **A clean end-to-end regression** | No single run of `make test` has had every suite complete: `make` stops at the first failure, and the last run stopped part way. **Do this first**, and it matters more than it did: the disk became ext2 and every suite's staging changed with it. |
+| **The suites not yet re-run on ext2** | `fstest`, `vmtest`, `edittest`, `usertest`, `threadtest`, `devtest`, `sotest`, `apitest`, `dftest` and `fscktest` have been run and fixed. The rest -- the ports' suites, the network suites, `pytest`, `nativetest` -- are converted but have not been run since. |
+| **FAT16 is now untested** | The driver is still built and still registered, and `mount_root()` still falls back to it, but no suite exercises it any more: `fstest.sh` and `fscktest.sh` both test ext2 now. A small FAT mount-and-read suite is owed. |
 | **`bashtest`'s `array` case** | Failed once, under heavy load, with the emulator killed mid-suite and the preceding test passing -- the signature of a harness timeout rather than a fault. Re-run on an idle machine to settle it. |
 | **The suites' tolerance of load** | Most suites `sleep` a fixed time and assume the machine is ready. Under load it is not, and the failure looks like the thing being tested. `kernel/sshtest.sh` polls until the machine answers; the others do not. |
 
@@ -40,22 +42,47 @@ error count of zero, scp in both directions and rsync over ssh.
 
 | | |
 |---|---|
-| **The stdint deviation** | `m68k-elf` takes its integer types from gcc's `newlib-stdint.h`, where `uint32_t` is `long unsigned int`; Linux/m68k uses `glibc-stdint.h`, where it is `unsigned int`. This system's ABI is Linux/m68k's everywhere else, so this is a real deviation, and it has broken four builds so far (zstd, OpenSSL, bfd, libsframe), each needing its own patch. **Rebuilding the cross gcc would end the whole class permanently and is ABI-safe** -- `int` and `long` are both 32 bits here with the same alignment and passing, so no existing binary changes. It was not done unattended overnight. See "The stdint deviation" below. |
 | **CLISP, or ECL** | CLISP's last release is 2.49, from **2010**, and does not build with a current gcc even on an ordinary Linux machine. It is a porting project rather than one more port. ECL is actively maintained and compiles Lisp to C -- which this machine can now compile. The bootstrap problem that made either hard is solved (see task 48). |
-| **Task 36, a filesystem with ownership** | Deferred by you on 2026-09-22. Worth knowing what it now gates: users, `/etc/passwd` and ssh are all built and working, and **none of it enforces anything**, because FAT records no owner. It is the only thing standing between identity and protection. |
+| **Permission enforcement** | The filesystem is ext2 now, so a file HAS an owner, a group and a mode, and a file a user creates belongs to that user. Nothing checks any of it: no open, no unlink, no directory search consults a mode bit. Storing them right was the prerequisite and is done; the enforcement itself touches every system call and is a task of its own. |
+| **Symlinks** | ext2 holds them and `stat` reports `S_IFLNK` rather than mistaking one for a short file, but nothing creates or follows one. That needs `symlink`, `readlink`, `O_NOFOLLOW` and following during a path walk -- VFS and system-call work, not filesystem work. |
 
 ### Unfinished, and nothing is blocking them
 
 - **Task 30's remainder**: FIFOs, `/dev/fd`, a listable `/dev`, and
-  `diff`. A FIFO has to live in the VFS, a FAT directory entry having
-  nowhere to hold one. Between them FIFOs and `/dev/fd` are what
-  bash's `<(...)` needs.
+  `diff`. A FIFO still has to live in the VFS -- ext2 could hold one,
+  but nothing creates a device node or a FIFO on disk yet. Between them
+  FIFOs and `/dev/fd` are what bash's `<(...)` needs.
 - **gdb**, native. It is C++ and libstdc++ now exists, so the
   remaining obstacle is `ptrace` in the kernel -- which does not exist
   at all. Without it a debugger cannot stop, inspect or step anything.
 - **libatomic** (50). Nothing has asked for it; the reasoning is kept
   below.
 - **CLISP or ECL** (48), pending the decision above.
+
+### Settled since the last revision of this section
+
+- **The gcc integer-type deviation is fixed at the root.**
+  `ports/gcc/patches/02-m68k-linux-integer-types.patch` makes
+  `m68k-elf` take its integer types from gcc's `glibc-stdint.h`, as
+  `m68k-linux` does, and sets `SIZE_TYPE`/`PTRDIFF_TYPE` to match. So
+  `uint32_t` is `unsigned int`, `uint32_t *` is compatible with
+  `unsigned *`, `size_t` is `unsigned int` and `PRIu32` is `"u"`. The
+  whole class of incompatible-pointer build failures (zstd, OpenSSL,
+  bfd, libsframe) is gone, and it is ABI-neutral: `int` and `long` are
+  both 32 bits here with the same alignment and passing. The cross
+  compiler, picolibc and the native toolchain (binutils, gmp, mpfr,
+  mpc, libstdc++, gcc) are all rebuilt against it.
+
+  Two things it makes possible and nobody has done yet: the per-port
+  workaround patches (`ports/binutils/patches/01`, `02`,
+  `ports/openssl/patches/01`) can come out one at a time, each with a
+  rebuild to confirm; and `ZSTD_LEGACY_SUPPORT` in
+  `ports/zstd/build.sh` was set to 0 only because of this, and can go
+  back to 1. Neither is urgent -- they are working as they are.
+- **The filesystem is ext2** (see `design.md` §8). The machine boots
+  from it, the boot ROM reads it, `e2fsck` checks what the kernel
+  wrote, and `tools/fsimg.sh` replaced every mtools call in the
+  Makefiles and the suites.
 
 ### Known limitations, accepted rather than outstanding
 
@@ -69,7 +96,8 @@ These are properties of the machine, written up in `design.md` and
   and `__m68k_read_tp`, all three.
 - **No `crypt(3)`**, so no ssh password authentication. Public keys
   work.
-- **Users protect nothing** -- see task 36 above.
+- **Users protect nothing** -- the disk records owners and modes now;
+  nothing enforces them. See "Needs a decision" above.
 - **Object files built on the machine are not byte-reproducible.** The
   native assembler leaves uninitialised bytes in section padding where
   the cross one leaves zeroes. Every section a tool reads is identical.
@@ -93,10 +121,11 @@ home directories, users and `/etc/passwd` (33, 34, 35), then ssh with
 scp and rsync (41, 42), then the remaining POSIX gaps (30), then
 libiconv/gettext/libatomic (45, 46, 50), and **CLISP last** (48).
 
-**Explicitly deferred**: task 36, a filesystem that can hold owners,
-groups and permissions -- and only the parts of 34/35 that need it.
-Users and `/etc/passwd` are being built on FAT; what cannot be done
-without a better filesystem is ENFORCEMENT, and that waits.
+**Task 36 was deferred here and its first half has since been done**:
+the filesystem is ext2 (task 52), so a file now HAS an owner, a group
+and a mode, and one a user creates belongs to that user. What is still
+open is ENFORCEMENT -- no open, no unlink and no directory search
+consults a mode bit yet.
 
 | # | Task | Why here | State |
 |---|------|----------|-------|
@@ -110,7 +139,7 @@ without a better filesystem is ENFORCEMENT, and that waits.
 | 37 | **cron** | needs the clock, a daemon, and somewhere to log | **done** |
 | 43 | **`/var`, and `/var/log`**: the kernel's log to `/var/log/syslog` | asked for 2026-09-22 | **done** |
 | 44 | **`/bin/less`** | asked for 2026-09-22; wants terminfo (39) | **done** |
-| 51 | **`df` and `du`** | asked for 2026-09-22 | **done** -- `du` is sbase's (`-k -h -a -s -d -x`); `df` is new, with `-h`, `-k` and `-i`. 14 checks, numbers verified against the host's own `mdir` |
+| 51 | **`df` and `du`** | asked for 2026-09-22 | **done** -- `du` is sbase's (`-k -h -a -s -d -x`); `df` is new, with `-h`, `-k` and `-i`. 14 checks, numbers verified against the host's own tools |
 | 49 | **A native toolchain** | asked for 2026-09-22 | **done** -- binutils AND gcc 15.2.0 run on the machine; 15 checks, and the code it generates is identical to the cross compiler's |
 | 41 | **ssh, client and server, with scp** | asked for 2026-09-22 | **mostly done** -- Dropbear 2026.94. A real OpenSSH client authenticates into the machine by public key and runs commands. `scp` builds and does not work; see below |
 | 42 | **rsync** | asked for 2026-09-22 | **done** -- 3.4.1, over ssh, verified both locally and from another machine |
@@ -123,6 +152,7 @@ without a better filesystem is ENFORCEMENT, and that waits.
 | 48a | **The libraries CPython wants** | asked for 2026-09-22 | **done**, and **CPython is rebuilt against them**: 90 built-in modules where there were 87 |
 | 48 | **CLISP**, a Common Lisp | asked for 2026-09-22 | **not started, deliberately** -- the bootstrap is solved but the release is from 2010 and does not build with a current compiler. See below; ECL is the likely answer |
 | 50 | **libatomic** | for a configure script that tests for `-latomic` by name | not done; nothing has asked for it |
+| 52 | **ext2**, in place of FAT16 | permissions, ownership, real names, real inode numbers -- everything task 36 needs, and a filesystem the host can CHECK | **done** -- `kernel/fs/ext2.c`, the boot ROM reads it, `tools/fsimg.sh` replaced every mtools call, `fstest.sh` is 63 checks ending in `e2fsck` |
 
 **What is left**, and none of it is blocked on anything:
 
@@ -153,7 +183,7 @@ Left for later, and not started:
 | # | Task | Why here |
 |---|------|----------|
 | 23 | Regression tests throughout | ongoing, never finished |
-| 36 | Multi-user for real: owners, groups and permissions | needs a filesystem that can hold them -- FAT cannot. **Deferred on purpose** (2026-09-22). The users exist (33-35); this is the enforcement |
+| 36 | Multi-user for real: owners, groups and permissions | the filesystem can hold them now (52), and does: a file has a uid, a gid and a mode, and a file a user creates belongs to that user. What is left is the ENFORCEMENT -- every system call that opens, unlinks or walks a path has to consult one |
 
 Tasks 1-22 built the system itself -- the address space, memory, signals,
 pipes, subprocesses, sockets, the VT102 console, the C library, long file
@@ -405,10 +435,10 @@ during the run. It must not fire, or the matching matches everything.
 `-h`, `-k` and `-i`. `kernel/dftest.sh`, 14 checks.
 
 **The numbers are checked against the host's**, not against
-themselves. `mdir` reports the free space on the same image before the
-machine boots, and the two agreed to the kilobyte (62836 K each way).
+themselves. `fsimg df` reports the free space on the same image before the
+machine boots, and the two agreed to the kilobyte.
 The file sizes are deliberately awkward -- 300,000 and 70,000 bytes,
-which are a whole number of neither kilobytes nor clusters -- so a
+which are a whole number of neither kilobytes nor blocks -- so a
 `du` that rounded the wrong way could not come out right by accident.
 
 **The negative control** is the last check: `/bin/df` is moved aside

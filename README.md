@@ -13,8 +13,8 @@ whole thing together. It is **not a reproduction of any real hardware** — the
 Sage name is an homage and a design sensibility, not a claim of accuracy.
 
 **SuckOS** is the operating system written for it: protected address spaces,
-preemptive multitasking, demand paging and swap, signals and job control, a
-FAT filesystem with long names, a TCP/IP stack, a framebuffer console, and a
+preemptive multitasking, demand paging and swap, signals and job control, an
+ext2 filesystem, a TCP/IP stack, a framebuffer console, and a
 C library that ordinary POSIX programs build against, with threads,
 pseudo-terminals, users and a real terminfo database. **CPython 3.14**
 runs on it -- with TLS, SQLite, compression and readline behind it -- and
@@ -138,7 +138,7 @@ matches the CPU.
 the ELF entry point with SP at the top of RAM, supervisor mode, interrupts
 masked. No ROM, no bootloader, and deliberately no bootinfo block — the system
 is expected to know its own machine. `bootrom/` is a boot ROM that mounts the
-FAT filesystem, finds `KERNEL.ROM` and runs it, which is how the machine
+ext2 filesystem, finds `KERNEL.ROM` and runs it, which is how the machine
 boots from disk.
 
 **Interrupts** all arrive through the MFP, which drives IPL 6 and supplies its
@@ -159,7 +159,8 @@ interrupts directly.
 system calls (the numbers, the errnos and the `trap #0` convention are
 Linux/m68k's), a preemptive scheduler where `nice` sets the length of a turn,
 per-process address spaces with demand paging and a swap file, signals with
-job control and sessions, a VFS over a read/write FAT16 with VFAT long names,
+job control and sessions, a VFS over a read/write ext2 (FAT16 is still there,
+for a disk from somewhere else),
 a terminal with several input sources and output sinks, a VT102 framebuffer
 console, a TCP/IP stack written out rather than imported, and a cryptographic
 random generator.
@@ -274,13 +275,23 @@ make clean      # build artifacts, keeping the disk
 make distclean  # also remove the disk image
 ```
 
-The disk is a genuine MS-DOS-formatted image, so the host reads and writes it
-with ordinary tools and no root:
+The disk is a genuine ext2 image, so the host reads and writes it with
+e2fsprogs and no root -- `tools/fsimg.sh` is the one place that knows how to
+reach the filesystem inside the partition:
 
 ```bash
-mcopy -i hd.img@@1M kernel.rom ::/KERNEL.ROM
-mdir  -i hd.img@@1M ::/
-fsck.fat -n -v hd.img@@1M
+tools/fsimg.sh hd.img put kernel.rom /KERNEL.ROM
+tools/fsimg.sh hd.img ls-l /
+tools/fsimg.sh hd.img fsck
+```
+
+Underneath, that is e2fsprogs' `?offset=` suffix on the device name, which
+every one of its tools understands, so nothing is ever extracted with `dd`
+and nothing needs a loop device:
+
+```bash
+debugfs "hd.img?offset=1048576"
+e2fsck -fn "hd.img?offset=1048576"
 ```
 
 ### Networking
@@ -320,7 +331,9 @@ is a 25 MHz 68040, and one of the suites waits for the wall clock.
 | `make bashsuite` | every one of bash's own 83 tests (hours, not minutes) |
 
 Two habits run through all of them. **Check against something
-independent**: a file the machine wrote is read back with the host's mtools,
+independent**: a file the machine wrote is read back with the host's debugfs
+and the whole volume is checked with `e2fsck`, which shares no line of code
+with the driver;
 a checksum is compared with the host's `sha256sum`, awk's and grep's own
 upstream test tables are the answers, and a ported program's output is
 compared with the same source built for the host. And **every fix gets a
