@@ -34,13 +34,33 @@
  */
 #ifndef _LINUX_RESOURCE_H_
 #define _LINUX_RESOURCE_H_
-#define LINUX_RLIMIT_CPU      0
-#define LINUX_RLIMIT_FSIZE    1
-#define LINUX_RLIMIT_DATA     2
-#define LINUX_RLIMIT_STACK    3
-#define LINUX_RLIMIT_CORE     4
-#define LINUX_RLIMIT_NOFILE   7
-#define LINUX_RLIMIT_AS       9
+/*
+ * Linux/m68k's resource numbers -- ALL of them. The set here used to be
+ * the seven picolibc's <sys/resource.h> declared, with a switch mapping
+ * picolibc's numbers onto them and answering -1 for anything else. Now
+ * that the header's numbers ARE Linux's (libc/patches/27, which fixed
+ * getrlimit(RLIMIT_NOFILE) asking the kernel about the resident set
+ * size), the map is the identity and what is left to do is bounds
+ * checking: a resource this kernel has never heard of should come back
+ * EINVAL, and one it has should not.
+ */
+#define LINUX_RLIMIT_CPU        0
+#define LINUX_RLIMIT_FSIZE      1
+#define LINUX_RLIMIT_DATA       2
+#define LINUX_RLIMIT_STACK      3
+#define LINUX_RLIMIT_CORE       4
+#define LINUX_RLIMIT_RSS        5
+#define LINUX_RLIMIT_NPROC      6
+#define LINUX_RLIMIT_NOFILE     7
+#define LINUX_RLIMIT_MEMLOCK    8
+#define LINUX_RLIMIT_AS         9
+#define LINUX_RLIMIT_LOCKS      10
+#define LINUX_RLIMIT_SIGPENDING 11
+#define LINUX_RLIMIT_MSGQUEUE   12
+#define LINUX_RLIMIT_NICE       13
+#define LINUX_RLIMIT_RTPRIO     14
+#define LINUX_RLIMIT_RTTIME     15
+#define LINUX_RLIM_NLIMITS      16
 #define LINUX_RLIM_INFINITY   4294967295U
 #define LINUX_RLIM64_INFINITY 4294967295U
 #define LINUX_RLIM_SAVED_MAX  4294967295U
@@ -49,23 +69,9 @@
 static inline int
 _rlimit_to_linux(int resource)
 {
-    switch (resource) {
-    case RLIMIT_CPU:
-        return LINUX_RLIMIT_CPU;
-    case RLIMIT_FSIZE:
-        return LINUX_RLIMIT_FSIZE;
-    case RLIMIT_DATA:
-        return LINUX_RLIMIT_DATA;
-    case RLIMIT_STACK:
-        return LINUX_RLIMIT_STACK;
-    case RLIMIT_CORE:
-        return LINUX_RLIMIT_CORE;
-    case RLIMIT_NOFILE:
-        return LINUX_RLIMIT_NOFILE;
-    case RLIMIT_AS:
-        return LINUX_RLIMIT_AS;
-    default:
+    if (resource < 0 || resource >= LINUX_RLIM_NLIMITS) {
         return -1;
     }
+    return resource;
 }
 #endif /* _LINUX_RESOURCE_H_ */

@@ -855,6 +855,12 @@ static void test_misc(void)
         report("getrlimit(RLIMIT_NOFILE) is this system's 64",
                getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur == 64);
         report("  and getdtablesize agrees", getdtablesize() == 64);
+        /*
+         * A resource picolibc's own table did not know: it mapped the
+         * seven it declared onto Linux's and answered EINVAL for the
+         * rest, so NPROC -- which the kernel answers perfectly well --
+         * failed in the C library before it ever got there.
+         */
         report("getrlimit(RLIMIT_NPROC) is the task table's 64",
                getrlimit(RLIMIT_NPROC, &rl) == 0 && rl.rlim_cur == 64);
         report("getrlimit refuses a resource that does not exist",
