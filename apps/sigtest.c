@@ -95,7 +95,7 @@ static void test_gate(void)
 
 /* ---------------------------------------------------------------- */
 
-static char *self = "/SIGTEST";
+static char *self = "/sigtest";
 
 static void utoa(char *out, u32 v)
 {

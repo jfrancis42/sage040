@@ -67,17 +67,21 @@ all: $(PROGS)
 	    -x c $(LIB)/ulib.c $(LIB)/malloc.c $(LIB)/resolv.c $< -lgcc -o $@
 	@$(SIZE) $@
 
+# A program keeps its own name. It used to be upper-cased on the way in,
+# because FAT16 has no lower case in a short name and `winchtest` became
+# WINCHTES; on ext2 a name is just bytes, so `cat` is installed as `cat`
+# and typed as `cat`.
 install: $(PROGS) $(DISK)
 	@if [ -n "$(INSTALL_DIR)" ]; then \
-	    mmd -i $(MIMG) ::$(INSTALL_DIR) 2>/dev/null || true; \
+	    $(FSIMG) mkdir $(INSTALL_DIR); \
 	 fi
 	@for p in $(PROGS); do \
-	   mcopy -o -i $(MIMG) $$p ::$(INSTALL_DIR)/$$(echo $$p | tr a-z A-Z); \
-	   echo "$$p -> $(DISK) as $(INSTALL_DIR)/$$(echo $$p | tr a-z A-Z)"; \
+	   $(FSIMG) put -m 755 $$p $(INSTALL_DIR)/$$p; \
+	   echo "$$p -> $(DISK) as $(INSTALL_DIR)/$$p"; \
 	 done
 
 list: $(DISK)
-	@mdir -i $(MIMG) ::$(INSTALL_DIR)/
+	@$(FSIMG) ls-l $(INSTALL_DIR)/
 
 disasm-%: %
 	$(OBJDUMP) -d $<

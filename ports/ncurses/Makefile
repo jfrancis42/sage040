@@ -24,24 +24,24 @@ SAGE_LIBC ?= $(HOME)/m68k/sage040-libc
 all:
 	./build.sh
 
-# The database, directory by directory. mmd -D s leaves an existing one
-# alone; mcopy -o replaces the files.
+# The database, directory by directory. mkdir leaves an existing one
+# alone; put replaces the files.
 install-db: all $(DISK)
-	@mmd -D s -i $(MIMG) ::/usr 2>/dev/null || true
-	@mmd -D s -i $(MIMG) ::/usr/share 2>/dev/null || true
-	@mmd -D s -i $(MIMG) ::/usr/share/terminfo 2>/dev/null || true
+	@$(FSIMG) mkdir /usr
+	@$(FSIMG) mkdir /usr/share
+	@$(FSIMG) mkdir /usr/share/terminfo
 	@for d in $(NCOUT)/terminfo/*/; do \
 	    n=$$(basename $$d); \
-	    mmd -D s -i $(MIMG) ::/usr/share/terminfo/$$n 2>/dev/null || true; \
-	    mcopy -o -i $(MIMG) $$d* ::/usr/share/terminfo/$$n/ ; \
+	    $(FSIMG) mkdir /usr/share/terminfo/$$n; \
+	    $(FSIMG) put $$d* /usr/share/terminfo/$$n/ ; \
 	done
 	@echo "terminfo: $$(find $(NCOUT)/terminfo -type f | wc -l) terminals on $(DISK)"
 
 install-progs: all $(DISK)
-	@mmd -D s -i $(MIMG) ::/BIN 2>/dev/null || true
+	@$(FSIMG) mkdir /bin
 	@for p in tput tset infocmp clear tabs; do \
 	    [ -x $(NCOUT)/bin/$$p ] && \
-	    mcopy -o -i $(MIMG) $(NCOUT)/bin/$$p ::/BIN/$$p ; \
+	    $(FSIMG) put -m 755 $(NCOUT)/bin/$$p /bin/$$p ; \
 	done
 	@echo "ncurses programs: tput tset infocmp clear tabs"
 
@@ -66,8 +66,8 @@ $(CURSTEST): test/curstest.c all
 curstest: $(CURSTEST)
 
 install-test: $(CURSTEST) $(DISK)
-	@mmd -D s -i $(MIMG) ::/BIN 2>/dev/null || true
-	mcopy -o -i $(MIMG) $(CURSTEST) ::/BIN/curstest
+	@$(FSIMG) mkdir /bin
+	$(FSIMG) put -m 755 $(CURSTEST) /bin/curstest
 
 test:
 	cd $(TOPDIR)/kernel && ./curstest.sh

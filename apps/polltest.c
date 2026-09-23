@@ -63,7 +63,7 @@ static void test_basics(void)
     report("poll with nothing to watch waits out its timeout",
            r == 0 && took >= 290 && took < 600);
 
-    fd = open("/POLLTEST", O_RDONLY);
+    fd = open("/polltest", O_RDONLY);
     p[0].fd = fd;
     p[0].events = POLLIN | POLLOUT;
     p[1].fd = -1;               /* ignored */
@@ -117,12 +117,12 @@ static void test_basics(void)
 
         signal(SIGUSR1, on_usr1);
         utoa(pid, (u32)getpid());
-        argv[0] = "/SIGTEST";
+        argv[0] = "/sigtest";
         argv[1] = "poke";
         argv[2] = pid;
         argv[3] = "10";
         argv[4] = "200";
-        child = spawn("/SIGTEST", 5, argv, 0);
+        child = spawn("/sigtest", 5, argv, 0);
         t0 = now_ms();
         r = poll(0, 0, 3000);
         took = now_ms() - t0;

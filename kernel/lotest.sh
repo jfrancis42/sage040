@@ -34,7 +34,12 @@ SCRATCH=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}
 mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-lo.img"
 PART_LBA=2048
-MIMG="$DISK@@$((PART_LBA * 512))"
+OFFSET=$((PART_LBA * 512))
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/lotest.log"
 WIRE="$SCRATCH/lowire.hex"
 rm -f "$LOG" "$WIRE"
@@ -63,15 +68,14 @@ make -s -C ../system || exit 1
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=16 status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mcopy -o -i "$MIMG" ../apps/udpwait ::/UDPWAIT
-mmd -i "$MIMG" ::/BIN 2>/dev/null || true
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg put -m 755 ../apps/udpwait /udpwait
+fsimg mkdir /bin
 for p in ifconfig ping; do
-    mcopy -o -i "$MIMG" "../system/$p" "::/BIN/$(echo $p | tr a-z A-Z)"
+    fsimg put -m 755 "../system/$p" "/bin/$p"
 done
 
 for port in "$RXPORT" "$TXPORT"; do
@@ -116,7 +120,7 @@ run() {
 nlisten=0
 inject() {                      # inject TAG BINDADDR PORT SRC DST
     nlisten=$((nlisten + 1))
-    printf '/UDPWAIT %s %s 3\r' "$2" "$3" >&3
+    printf '/udpwait %s %s 3\r' "$2" "$3" >&3
     printf 'echo DONE-%s\r' "$1" >&3
     wait_for "udpwait: listening" "$nlisten"
     python3 wire.py send "$RXPORT" "$MAC" "$4" "$5" "$3" "HELLO-$1"
@@ -219,13 +223,13 @@ between 'ping 127.0.0.1 1; echo PINGRC=$?' pingup | grep -q 'reply from 127.0.0.
 check "ifconfig lo up brings it back" $?
 
 echo "=== checks: 127/8 arriving from the wire ==="
-between '/UDPWAIT 0.0.0.0 7001' wire | grep -q "from 10.9.9.1: HELLO-wire"
+between '/udpwait 0.0.0.0 7001' wire | grep -q "from 10.9.9.1: HELLO-wire"
 check "an ordinary datagram put on the wire arrives (the control)" $?
-between '/UDPWAIT 127.0.0.1 7002' todst | grep -q 'udpwait: nothing'
+between '/udpwait 127.0.0.1 7002' todst | grep -q 'udpwait: nothing'
 check "  the same to 127.0.0.1 is dropped, even with a listener bound there" $?
-between '/UDPWAIT 0.0.0.0 7003' tolo2 | grep -q 'udpwait: nothing'
+between '/udpwait 0.0.0.0 7003' tolo2 | grep -q 'udpwait: nothing'
 check "  to 127.0.0.2, anywhere in 127/8, dropped" $?
-between '/UDPWAIT 0.0.0.0 7004' fromlo | grep -q 'udpwait: nothing'
+between '/udpwait 0.0.0.0 7004' fromlo | grep -q 'udpwait: nothing'
 check "  FROM 127.0.0.1 to this machine, dropped" $?
 [ "${e2:-0}" -eq 0 ]
 check "  and none of it was answered on the wire (eth0 TX $e2)" $?

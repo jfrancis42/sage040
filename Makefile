@@ -21,7 +21,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: all boot run world toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest sshtest nativetest qemutest libc cube programs clean distclean
+.PHONY: fsimgtest fattest all boot run world toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest sshtest nativetest qemutest libc cube programs clean distclean
 
 all:
 	$(MAKE) -C bootrom
@@ -151,7 +151,14 @@ world: programs ports python toolchain
 run:
 	$(MAKE) -C kernel run
 
-test: tests cryptotest fstest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest sshtest qemutest
+test: fsimgtest tests cryptotest fstest fattest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest sshtest qemutest
+
+# The host's end of the disk, before anything that uses it: every suite
+# below stages its files through tools/fsimg.sh, so a fault in it does
+# not look like a fault in it -- it looks like a program that was never
+# installed.
+fsimgtest:
+	./tools/fsimgtest.sh
 
 tests:
 	$(MAKE) -C tests run
@@ -161,6 +168,12 @@ cryptotest:
 
 fstest:
 	cd kernel && ./fstest.sh
+
+# FAT16 is no longer the machine's filesystem, only the fallback for a
+# disk from somewhere else. Untested code in the kernel is worse than
+# no code, so the fallback has a suite of its own.
+fattest:
+	cd kernel && ./fattest.sh
 
 edittest:
 	cd kernel && ./edittest.sh

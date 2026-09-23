@@ -37,7 +37,12 @@ SCRATCH=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}
 mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-ssh.img"
 PART_LBA=2048
-MIMG="$DISK@@$((PART_LBA * 512))"
+OFFSET=$((PART_LBA * 512))
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/sshtest.log"
 WORK="$SCRATCH/ssh.tmp"
 PORT=${SSH_TEST_PORT:-2242}
@@ -73,31 +78,30 @@ ssh-keygen -t ed25519 -N '' -f "$KEY" -q
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=64 status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (64 * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mmd -i "$MIMG" ::/BIN ::/lib ::/etc ::/ST ::/root ::/root/.ssh
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg mkdir /bin; fsimg mkdir /lib; fsimg mkdir /etc; fsimg mkdir /ST; fsimg mkdir /root; fsimg mkdir /root/.ssh
 for p in sh ifconfig ping netstat; do
-    mcopy -o -i "$MIMG" "../system/$p" "::/BIN/$p"
+    fsimg put -m 755 "../system/$p" /bin/$p
 done
-mcopy -o -i "$MIMG" ../ldso/ld.so ::/lib/ld.so
-mcopy -o -i "$MIMG" "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" ::/lib/libc.so
-mcopy -o -i "$MIMG" ../system/passwd ::/etc/passwd
-mcopy -o -i "$MIMG" ../system/group ::/etc/group
+fsimg put ../ldso/ld.so /lib/ld.so
+fsimg put "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" /lib/libc.so
+fsimg put -m 755 ../system/passwd /etc/passwd
+fsimg put -m 755 ../system/group /etc/group
 for b in dropbear scp dropbearkey; do
-    mcopy -o -i "$MIMG" "$DBOUT/bin/$b" "::/BIN/$b"
+    fsimg put "$DBOUT/bin/$b" /bin/$b
 done
-mcopy -o -i "$MIMG" "$RSOUT/bin/rsync" ::/BIN/rsync
+fsimg put "$RSOUT/bin/rsync" /bin/rsync
 # The whole of sbase: a missing `true` once made a readiness check
 # report the machine unreachable when it was perfectly well.
 for p in $(ls ../ports/sbase/bin); do
-    mcopy -o -i "$MIMG" "../ports/sbase/bin/$p" "::/BIN/$p" 2>/dev/null
+    fsimg put "../ports/sbase/bin/$p" /bin/$p 2>/dev/null
 done
-mcopy -o -i "$MIMG" "$KEY.pub" ::/root/.ssh/authorized_keys
+fsimg put "$KEY.pub" /root/.ssh/authorized_keys
 printf 'hello from the machine\n' > "$WORK/greet.txt"
-mcopy -o -i "$MIMG" "$WORK/greet.txt" ::/ST/greet.txt
+fsimg put "$WORK/greet.txt" /ST/greet.txt
 
 rm -f "$SCRATCH/ssh.fifo"; mkfifo "$SCRATCH/ssh.fifo"
 "$QEMU" -M sage040 -cpu m68040 -m "$RAM_MB" \
@@ -157,7 +161,7 @@ tr -d '\r' < "$LOG" | grep -q "3 sent, 3 received"
 check "  and the machine can still ping out afterwards" $?
 
 send 'ifconfig > /ST/if.out' 5
-mcopy -n -o -i "$MIMG" ::/ST/if.out "$WORK/if.out" 2>/dev/null
+fsimg get /ST/if.out $WORK/if.out 2>/dev/null
 awk '/^eth0/,0 {if (/TX [0-9]+ packets/) {for(i=1;i<=NF;i++) if ($i=="errors") print $(i-1)}}' \
     "$WORK/if.out" 2>/dev/null | head -1 | grep -qx "0"
 check "  with no transmit errors at all" $?

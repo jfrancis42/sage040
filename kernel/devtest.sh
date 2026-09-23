@@ -11,7 +11,7 @@
 #   polling. Six processes in the filesystem at once, with every disk
 #   request slowed (a test knob) so that they really are asleep inside
 #   it while the others work -- every byte checked, and the volume
-#   checked afterwards with the host's fsck.fat.
+#   checked afterwards with the host's e2fsck.
 #   Every static limit filled and then passed. Settings written to the
 #   NVRAM, the machine reset -- this QEMU runs WITHOUT -no-reboot, so
 #   `shutdown` resets it -- and the settings read back, and an interface
@@ -35,7 +35,11 @@ mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-dev.img"
 PART_LBA=2048
 OFFSET=$((PART_LBA * 512))
-MIMG="$DISK@@$OFFSET"
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/devtest.log"
 # Gone before QEMU starts, so a run that never reaches the guest has no
 # log to grade -- rather than silently grading the last run's.
@@ -64,18 +68,17 @@ make -s -C ../apps || exit 1
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=16 status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mmd -i "$MIMG" ::/BIN
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg mkdir /bin
 for p in irqs nvram ifconfig shutdown; do
-    mcopy -o -i "$MIMG" ../system/$p ::/BIN/$(echo $p | tr a-z A-Z)
+    fsimg put -m 755 ../system/$p "/bin/$p"
 done
-mcopy -o -i "$MIMG" ../apps/fsstress ::/FSSTRESS
-mcopy -o -i "$MIMG" ../apps/limits ::/LIMITS
-mcopy -o -i "$MIMG" ../apps/fbmap ::/FBMAP
+fsimg put -m 755 ../apps/fsstress /fsstress
+fsimg put -m 755 ../apps/limits /limits
+fsimg put -m 755 ../apps/fbmap /fbmap
 
 rm -f "$SCRATCH/in.fifo" "$MON"
 mkfifo "$SCRATCH/in.fifo"
@@ -120,13 +123,13 @@ run 'irqs' irq0
 type_keys e c h o spc k b d minus o k ret
 sleep 1
 run 'irqs' irq1
-run '/FSSTRESS 15' stress
+run '/fsstress 15' stress
 run 'irqs' irq2
-run '/LIMITS' limits
+run '/limits' limits
 # The console off the screen first: its own output scrolls the whole
 # screen up, and ten lines of fbmap's results carry the boxes off the top.
 run 'console fbcon off' conser
-run '/FBMAP' fbmap
+run '/fbmap' fbmap
 # What reached the screen, not what the program believes it wrote.
 printf 'screendump %s\n' "$SCRATCH/fbmap.ppm" | socat - "unix:$MON" >/dev/null
 sleep 1
@@ -194,7 +197,7 @@ between irqs irq2 | grep -q 'spurious 0, input overruns 0'
 check "  with no interrupt nobody asked for, and no input lost" $?
 
 echo "=== checks: the filesystem, four processes at once ==="
-between '/FSSTRESS' stress | grep -qx "fsstress: every byte of every file intact"
+between '/fsstress' stress | grep -qx "fsstress: every byte of every file intact"
 check "three writers and three churners in one directory, each disk request slowed to 15 ms: every byte intact" $?
 
 echo "=== checks: the limits ==="
@@ -203,8 +206,8 @@ while IFS= read -r line; do
         "  ok   "*)   check "${line#  ok   }" 0 ;;
         "  FAIL "*)   check "${line#  FAIL }" 1 ;;
     esac
-done < <(between '/LIMITS' limits | grep -E '^  (ok  |FAIL) ')
-between '/LIMITS' limits | grep -qx "limits: 0 failed"
+done < <(between '/limits' limits | grep -E '^  (ok  |FAIL) ')
+between '/limits' limits | grep -qx "limits: 0 failed"
 check "limits ran to the end" $?
 
 echo "=== checks: /dev/fb0 as memory ==="
@@ -213,8 +216,8 @@ while IFS= read -r line; do
         "  ok   "*)   check "${line#  ok   }" 0 ;;
         "  FAIL "*)   check "${line#  FAIL }" 1 ;;
     esac
-done < <(between '/FBMAP' fbmap | grep -E '^  (ok  |FAIL) ')
-between '/FBMAP' fbmap | grep -qx "fbmap: 0 failed"
+done < <(between '/fbmap' fbmap | grep -E '^  (ok  |FAIL) ')
+between '/fbmap' fbmap | grep -qx "fbmap: 0 failed"
 check "fbmap ran to the end" $?
 python3 - "$SCRATCH/fbmap.ppm" > "$SCRATCH/fbpix.tmp" <<'PY'
 import sys
@@ -262,13 +265,14 @@ between 'ifconfig nvram' ifc | grep -q "inet 10.9.8.7  netmask 255.255.255.0"
 check "ifconfig nvram configured the interface from it" $?
 
 echo "=== checks: the volume, on the host ==="
-dd if="$DISK" of="$SCRATCH/devpart.tmp" bs=512 skip="$PART_LBA" status=none
-fsck.fat -n "$SCRATCH/devpart.tmp" > "$SCRATCH/devfsck.tmp" 2>&1
+# No dd: e2fsprogs reaches into the partition by offset, so the
+# filesystem is checked where it lives.
+fsimg fsck > "$SCRATCH/devfsck.tmp" 2>&1
 fsck_rc=$?
 sed 's/^/  | /' "$SCRATCH/devfsck.tmp"
 [ "$fsck_rc" -eq 0 ]
-check "fsck.fat finds nothing wrong after all of that" $?
-rm -f "$SCRATCH/devpart.tmp" "$SCRATCH/devfsck.tmp"
+check "e2fsck finds nothing wrong after all of that" $?
+rm -f "$SCRATCH/devfsck.tmp"
 
 echo
 echo "  passed: $pass"

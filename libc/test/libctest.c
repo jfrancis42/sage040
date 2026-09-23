@@ -236,9 +236,11 @@ static void test_files(void)
             closedir(dd);
         }
         report("  and readdir gives it back, case and all", seen);
-        report("  and stat finds it by another case",
-               stat("/a LONGER name, with case.TXT", &st) == 0 &&
-               st.st_size == 5);
+        /* ext2 keeps names as bytes: a different case is a different
+         * name, and there is no file by it. FAT16 folded case, so this
+         * check used to be that the same file was found either way. */
+        report("  and a different case is a different name",
+               stat("/a LONGER name, with case.TXT", &st) < 0);
         report("  and unlink removes it", unlink(lname) == 0 &&
                                           access(lname, F_OK) < 0);
     }
@@ -355,7 +357,7 @@ static void test_dirs(const char *self)
     while (d && (e = readdir(d)) != 0) {
         if (strcmp(e->d_name, ".") == 0) dot = 1;
         if (strcmp(e->d_name, "..") == 0) dotdot = 1;
-        if (strcmp(e->d_name, "BIN") == 0) bin = 1;
+        if (strcmp(e->d_name, "bin") == 0) bin = 1;
         if (strcasecmp(e->d_name, myname) == 0) me = 1;   /* this program */
         if (e->d_ino == 0) zero_ino = 1;
     }
@@ -367,7 +369,7 @@ static void test_dirs(const char *self)
     report("stat of this program says it is executable",
            stat(self, &st) == 0 && (st.st_mode & S_IXUSR));
     report("opening a directory to write is EISDIR",
-           open("/BIN", O_WRONLY) < 0 && errno == EISDIR);
+           open("/bin", O_WRONLY) < 0 && errno == EISDIR);
     report("O_DIRECTORY on a file is ENOTDIR",
            open(self, O_RDONLY | O_DIRECTORY) < 0 && errno == ENOTDIR);
     {
@@ -554,7 +556,7 @@ static void test_tty(void)
     report("tcgetattr", tcgetattr(0, &t) == 0 && (t.c_lflag & ICANON));
     report("tcgetwinsize gives the terminal's size",
            tcgetwinsize(0, &w) == 0 && w.ws_row == 24 && w.ws_col == 80);
-    report("isatty on a file says no", !isatty(open("/LIBCTEST", O_RDONLY)));
+    report("isatty on a file says no", !isatty(open("/libctest", O_RDONLY)));
     {
         /* ioctl() itself, which is what programs call -- neatvi does. */
         struct winsize w2;
@@ -582,7 +584,7 @@ int main(int argc, char **argv)
     test_files();
     /* This program, by the name it was run as: the static and the
      * dynamic builds are two files, and each must exec itself. */
-    test_dirs(argv[0][0] == '/' ? argv[0] : "/LIBCTEST");
+    test_dirs(argv[0][0] == '/' ? argv[0] : "/libctest");
     test_processes(argv[0][0] == '/' ? argv[0] : "/LIBCTEST");
     test_signals();
     test_time();

@@ -31,7 +31,11 @@ mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-less.img"
 PART_LBA=2048
 OFFSET=$((PART_LBA * 512))
-MIMG="$DISK@@$OFFSET"
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/lesstest.log"
 rm -f "$LOG"
 BOOT_WAIT=${BOOT_WAIT:-4}
@@ -58,23 +62,22 @@ LOUT=$SRCDIR/build-less-sage040/sage040
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=16 status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mmd -i "$MIMG" ::/BIN ::/lib 2>/dev/null || true
-mcopy -o -i "$MIMG" "$LOUT/bin/less" ::/BIN/less
-mcopy -o -i "$MIMG" ../ldso/ld.so ::/lib/ld.so
-mcopy -o -i "$MIMG" "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" ::/lib/libc.so
-mcopy -o -i "$MIMG" ../ports/sbase/bin/wc ::/BIN/wc
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg mkdir /bin; fsimg mkdir /lib
+fsimg put "$LOUT/bin/less" /bin/less
+fsimg put ../ldso/ld.so /lib/ld.so
+fsimg put "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" /lib/libc.so
+fsimg put -m 755 ../ports/sbase/bin/wc /bin/wc
 # The terminfo database, which is where less learns what a vt102 and a
 # dumb terminal can do.
-mmd -i "$MIMG" ::/usr ::/usr/share ::/usr/share/terminfo
+fsimg mkdir /usr; fsimg mkdir /usr/share; fsimg mkdir /usr/share/terminfo
 for d in "$NCOUT"/terminfo/*/; do
     n=$(basename "$d")
-    mmd -i "$MIMG" "::/usr/share/terminfo/$n"
-    mcopy -o -i "$MIMG" "$d"* "::/usr/share/terminfo/$n/"
+    fsimg mkdir "/usr/share/terminfo/$n"
+    fsimg put "$d"* "/usr/share/terminfo/$n/"
 done
 # A file with numbered lines, so that which screenful is showing is
 # visible in the output rather than a matter of counting.
@@ -83,7 +86,7 @@ for i in $(seq 1 200); do
     printf 'line-%03d the quick brown fox jumps over the lazy dog\n' "$i" \
         >> "$SCRATCH/lines.tmp"
 done
-mcopy -o -i "$MIMG" "$SCRATCH/lines.tmp" ::/LINES.TXT
+fsimg put "$SCRATCH/lines.tmp" /LINES.TXT
 
 rm -f "$SCRATCH/less.fifo"
 mkfifo "$SCRATCH/less.fifo"
@@ -178,7 +181,7 @@ check "q quit, and the shell came back" $?
 
 echo "=== checks: not a terminal ==="
 
-mtype -i "$MIMG" ::/PIPED.TXT 2>/dev/null | tr -d '\r' > "$SCRATCH/piped.tmp"
+fsimg cat /PIPED.TXT 2>/dev/null | tr -d '\r' > "$SCRATCH/piped.tmp"
 grep -qE '^ *200$' "$SCRATCH/piped.tmp"
 check "into a pipe, less is cat: all 200 lines went through" $?
 

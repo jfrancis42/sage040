@@ -33,7 +33,12 @@ SCRATCH=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}
 mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-grep.img"
 PART_LBA=2048
-MIMG="$DISK@@$((PART_LBA * 512))"
+OFFSET=$((PART_LBA * 512))
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/greptest.log"
 WORK="$SCRATCH/grep.tmp"
 rm -f "$LOG"
@@ -102,19 +107,18 @@ done
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=16 status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mmd -i "$MIMG" ::/BIN ::/lib ::/GREPT ::/GTAB
-mcopy -o -i "$MIMG" ../system/sh ::/BIN/SH
-mcopy -o -i "$MIMG" ../ports/grep/grep ::/BIN/GREP
-mcopy -o -i "$MIMG" ../ldso/ld.so ::/lib/ld.so
-mcopy -o -i "$MIMG" "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" ::/lib/libc.so
-mcopy -o -s -i "$MIMG" "$WORK"/tests/* ::/GREPT/
-mcopy -o -i "$MIMG" "$WORK"/tables/* ::/GTAB/
-mcopy -o -i "$MIMG" "$WORK/tables.sh" ::/GTAB/TABLES.SH
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg mkdir /bin; fsimg mkdir /lib; fsimg mkdir /GREPT; fsimg mkdir /GTAB
+fsimg put -m 755 ../system/sh /bin/sh
+fsimg put -m 755 ../ports/grep/grep /bin/grep
+fsimg put ../ldso/ld.so /lib/ld.so
+fsimg put "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" /lib/libc.so
+fsimg put "$WORK"/tests/* /GREPT/
+fsimg put "$WORK"/tables/* /GTAB/
+fsimg put "$WORK/tables.sh" /GTAB/TABLES.SH
 
 rm -f "$SCRATCH/grep.fifo"
 mkfifo "$SCRATCH/grep.fifo"
@@ -159,8 +163,8 @@ kill "$qemu_pid" 2>/dev/null
 wait "$qemu_pid" 2>/dev/null
 rm -f "$SCRATCH/grep.fifo"
 
-mcopy -o -n -i "$MIMG" '::/GREPT/*.OUT' "$WORK/got/" 2>/dev/null
-mcopy -o -n -i "$MIMG" ::/GTAB/TABLES.OUT "$WORK/tables.got" 2>/dev/null
+fsimg get -r /GREPT "$WORK/got" 2>/dev/null; mv "$WORK/got/GREPT"/* "$WORK/got/" 2>/dev/null
+fsimg get /GTAB/TABLES.OUT $WORK/tables.got 2>/dev/null
 tr -d '\r' < "$LOG" > "$SCRATCH/grep-clean.tmp"
 tr -d '\r' < "$WORK/tables.got" > "$WORK/tables.got2" 2>/dev/null
 

@@ -22,10 +22,10 @@ all:
 	./build.sh
 
 install: all $(DISK)
-	@mmd -D s -i $(MIMG) ::/BIN 2>/dev/null || true
+	@$(FSIMG) mkdir /bin
 	@for b in $(BINS); do \
 	    if [ -x $(OUT)/bin/$$b ]; then \
-	        mcopy -o -i $(MIMG) $(OUT)/bin/$$b ::/BIN/$$b; \
+	        $(FSIMG) put -m 755 $(OUT)/bin/$$b /bin/$$b; \
 	    fi; \
 	done
 	@echo "zstd is on $(DISK)"

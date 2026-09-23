@@ -36,28 +36,24 @@ include $(TOPDIR)/lib/program.mk
 # grown a log daemon and a time zone. `make etc` replaces it either way.
 install: install-etc
 install-etc: $(DISK)
-	@mmd -D s -i $(MIMG) ::/etc 2>/dev/null || true
-	@mmd -D s -i $(MIMG) ::/root 2>/dev/null || true
-	@mmd -D s -i $(MIMG) ::/home 2>/dev/null || true
-	@mmd -D s -i $(MIMG) ::/home/jfrancis 2>/dev/null || true
-	@mmd -D s -i $(MIMG) ::/var 2>/dev/null || true
-	@mmd -D s -i $(MIMG) ::/var/log 2>/dev/null || true
-	@mmd -D s -i $(MIMG) ::/var/run 2>/dev/null || true
+	@for d in /etc /root /home /home/jfrancis /var /var/log /var/run; do \
+	    $(FSIMG) mkdir $$d; \
+	 done
 	@# /etc/passwd and /etc/group: installed if missing, left alone if
 	@# they are there. Unlike /etc/rc there is no "unedited default" to
 	@# recognise -- a passwd file is a list of people, and replacing one
 	@# because it looked like the shipped version would delete a user.
-	@if ! mdir -i $(MIMG) ::/etc/passwd >/dev/null 2>&1; then \
-	    mcopy -i $(MIMG) passwd ::/etc/passwd && echo "installed /etc/passwd"; \
+	@if ! $(FSIMG) exists /etc/passwd; then \
+	    $(FSIMG) put passwd /etc/passwd && echo "installed /etc/passwd"; \
 	fi
-	@if ! mdir -i $(MIMG) ::/etc/group >/dev/null 2>&1; then \
-	    mcopy -i $(MIMG) group ::/etc/group && echo "installed /etc/group"; \
+	@if ! $(FSIMG) exists /etc/group; then \
+	    $(FSIMG) put group /etc/group && echo "installed /etc/group"; \
 	fi
-	@if ! mdir -i $(MIMG) ::/etc/rc >/dev/null 2>&1; then \
-	    mcopy -i $(MIMG) rc ::/etc/rc && echo "installed /etc/rc"; \
-	elif mtype -i $(MIMG) ::/etc/rc 2>/dev/null | head -1 | \
+	@if ! $(FSIMG) exists /etc/rc; then \
+	    $(FSIMG) put rc /etc/rc && echo "installed /etc/rc"; \
+	elif $(FSIMG) cat /etc/rc 2>/dev/null | head -1 | \
 	     grep -q "SuckOS default"; then \
-	    mcopy -o -i $(MIMG) rc ::/etc/rc && \
+	    $(FSIMG) put rc /etc/rc && \
 	    echo "/etc/rc was the unedited default: brought up to date"; \
 	else \
 	    echo "/etc/rc has been edited, and is yours: not touched"; \
@@ -65,8 +61,8 @@ install-etc: $(DISK)
 
 # Replace /etc/rc whatever it says.
 etc: $(DISK)
-	@mmd -D s -i $(MIMG) ::/etc 2>/dev/null || true
-	mcopy -o -i $(MIMG) rc ::/etc/rc
+	@$(FSIMG) mkdir /etc
+	$(FSIMG) put rc /etc/rc
 	@echo "/etc/rc replaced with the default"
 
 

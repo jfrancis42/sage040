@@ -58,18 +58,16 @@ crt0-dyn.o: crt0-dyn.s
 install: install-usr
 
 install-usr: all crt0.o crt0-dyn.o $(DISK)
-	@mmd -D s -i $(MIMG) ::/usr 2>/dev/null || true
-	@mmd -D s -i $(MIMG) ::/usr/include 2>/dev/null || true
-	@mmd -D s -i $(MIMG) ::/usr/lib 2>/dev/null || true
-	mcopy -s -o -i $(MIMG) $(SAGE_LIBC)/include/* ::/usr/include/
-	mcopy -o -i $(MIMG) $(SAGE_LIBC)/lib/libc.a ::/usr/lib/
-	mcopy -o -i $(MIMG) $(SAGE_LIBC)/lib/libc.so ::/usr/lib/
-	mcopy -o -i $(MIMG) $(SAGE_LIBC)/lib/liblinux.a ::/usr/lib/
-	mcopy -o -i $(MIMG) $(SAGE_LIBC)/lib/libm.a ::/usr/lib/
-	mcopy -o -i $(MIMG) $(SAGE_LIBC)/lib/libtermcap.a ::/usr/lib/
-	mcopy -o -i $(MIMG) $(shell $(CC) -mcpu=68040 -print-libgcc-file-name) ::/usr/lib/
-	mcopy -o -i $(MIMG) crt0.o crt0-dyn.o ::/usr/lib/
-	mcopy -o -i $(MIMG) sage040.ld ::/usr/lib/
+	@$(FSIMG) mkdir /usr/include
+	@$(FSIMG) mkdir /usr/lib
+	$(FSIMG) put -r $(SAGE_LIBC)/include /usr/include
+	@for f in libc.a libc.so liblinux.a libm.a libtermcap.a; do \
+	    $(FSIMG) put $(SAGE_LIBC)/lib/$$f /usr/lib/$$f; \
+	 done
+	$(FSIMG) put $(shell $(CC) -mcpu=68040 -print-libgcc-file-name) /usr/lib/libgcc.a
+	@for f in crt0.o crt0-dyn.o sage040.ld; do \
+	    $(FSIMG) put $$f /usr/lib/$$f; \
+	 done
 	@echo "the C library is on $(DISK) at /usr"
 
 clean:

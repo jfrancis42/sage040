@@ -46,7 +46,7 @@ stage: all
 	@#
 	@# A .pyc normally carries the source's SIZE AND MODIFICATION TIME
 	@# and is used only if both still match. The times here are
-	@# whatever mcopy wrote onto a FAT filesystem, which are not the
+	@# whatever the copy onto the disk image wrote, which are not the
 	@# times the host build saw -- so every module looked stale, and
 	@# the machine recompiled the whole standard library from source,
 	@# on a 25 MHz 68040, at every import. `statistics` alone took
@@ -63,18 +63,18 @@ stage: all
 $$(find $(PYBUILD)/stage -type f | wc -l) files"
 
 install-bin: stage $(DISK)
-	@mmd -D s -i $(MIMG) ::/usr 2>/dev/null || true
-	@mmd -D s -i $(MIMG) ::/usr/local 2>/dev/null || true
-	@mmd -D s -i $(MIMG) ::/usr/local/bin 2>/dev/null || true
-	mcopy -o -i $(MIMG) $(PYBUILD)/stage/bin/python3 ::/usr/local/bin/python3
-	@mmd -D s -i $(MIMG) ::/BIN 2>/dev/null || true
-	mcopy -o -i $(MIMG) $(PYBUILD)/stage/bin/python3 ::/BIN/python3
+	@$(FSIMG) mkdir /usr
+	@$(FSIMG) mkdir /usr/local
+	@$(FSIMG) mkdir /usr/local/bin
+	$(FSIMG) put -m 755 $(PYBUILD)/stage/bin/python3 /usr/local/bin/python3
+	@$(FSIMG) mkdir /bin
+	$(FSIMG) put -m 755 $(PYBUILD)/stage/bin/python3 /bin/python3
 
-# mcopy -s copies a directory tree, which is what the standard library
+# `fsimg put -r` copies a directory tree, which is what the standard library
 # is: about 1,700 files once the test suites are gone.
 install-lib: stage $(DISK)
-	@mmd -D s -i $(MIMG) ::/usr/local/lib 2>/dev/null || true
-	mcopy -o -s -i $(MIMG) $(PYBUILD)/stage/lib/python$(PYVER) ::/usr/local/lib/
+	@$(FSIMG) mkdir /usr/local/lib
+	$(FSIMG) put -r $(PYBUILD)/stage/lib/python$(PYVER) /usr/local/lib
 	@echo "the standard library is on $(DISK)"
 
 install: install-bin install-lib

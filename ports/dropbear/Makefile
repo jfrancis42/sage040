@@ -28,11 +28,11 @@ all:
 	./build.sh
 
 install: all $(DISK)
-	@mmd -D s -i $(MIMG) ::/BIN 2>/dev/null || true
-	@mmd -D s -i $(MIMG) ::/etc 2>/dev/null || true
+	@$(FSIMG) mkdir /bin
+	@$(FSIMG) mkdir /etc
 	@for b in dropbear dbclient ssh scp dropbearkey dropbearconvert; do \
 	    if [ -x $(OUT)/bin/$$b ]; then \
-	        mcopy -o -i $(MIMG) $(OUT)/bin/$$b ::/BIN/$$b; \
+	        $(FSIMG) put -m 755 $(OUT)/bin/$$b /bin/$$b; \
 	    fi; \
 	done
 	@echo "dropbear is on $(DISK): ssh, dropbear, scp, dropbearkey"

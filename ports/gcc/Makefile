@@ -27,24 +27,23 @@ all:
 	./build.sh
 
 # AN ABSOLUTE PATH TO THE IMAGE, because the loop below cd's into the
-# build output and $(MIMG) is relative to the project root -- after the
-# cd it named nothing, and every mcopy failed with "Can't open
-# ../../hd.img". The install reported hundreds of errors and exited 1
+# build output and $(FSIMG) is relative to the project root -- after
+# the cd it named nothing. $(ABS_FSIMG) is the same thing spelled
+# absolutely, which is what a recipe that has moved has to use.
 # while the disk sat there perfectly writable.
-ABS_MIMG := $(abspath $(DISK))@@$(PART_OFFSET)
 
 # share/ is left behind on purpose: it is manual pages and info files
 # and locale catalogues, and this machine has no man, no info and one
 # language. The compiler does not read any of it.
 install: all $(DISK)
-	@mmd -D s -i $(ABS_MIMG) ::/usr 2>/dev/null || true
-	@# Directories first, shallowest first: mcopy will not create the
-	@# tree for us on a FAT volume.
+	@$(FSIMG) mkdir /usr
+	@# Directories first, shallowest first, because a file cannot be
+	@# written into a directory that is not there yet.
 	@cd $(OUT) && find . -type d -not -path './share*' | sed 's|^\./||' | \
 	    grep -v '^\.$$' | sort | \
-	    while read d; do mmd -D s -i $(ABS_MIMG) "::/usr/$$d" 2>/dev/null || true; done
+	    while read d; do $(ABS_FSIMG) mkdir /usr/$$d; done
 	@cd $(OUT) && find . -type f -not -path './share/*' | sed 's|^\./||' | \
-	    while read f; do mcopy -o -i $(ABS_MIMG) "$$f" "::/usr/$$f" || exit 1; done
+	    while read f; do $(ABS_FSIMG) put -m 755 $$f /usr/$$f || exit 1; done
 	@echo "gcc is on $(DISK) at /usr"
 
 clean:

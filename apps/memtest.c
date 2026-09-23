@@ -156,7 +156,7 @@ static void test_mmap(void)
     report("mprotect to read-only works",
            mprotect(a, PAGE, PROT_READ) == 0);
     report("  and the page still reads", a[1] == (u8)(1 ^ 0x55));
-    fd = open("/MEMTEST", O_RDONLY);
+    fd = open("/memtest", O_RDONLY);
     report("  and the kernel will not read() into it",
            read(fd, a, 16) == -EFAULT);
     close(fd);
@@ -226,7 +226,7 @@ static void test_mmap(void)
 
     /* --- files ------------------------------------------------------ */
 
-    fd = open("/MEMTEST", O_RDONLY);
+    fd = open("/memtest", O_RDONLY);
     fstat(fd, &st);
     lseek(fd, 100, SEEK_SET);
     c = mmap(0, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);

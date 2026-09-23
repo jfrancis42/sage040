@@ -40,7 +40,12 @@ SCRATCH=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}
 mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-native.img"
 PART_LBA=2048
-MIMG="$DISK@@$((PART_LBA * 512))"
+OFFSET=$((PART_LBA * 512))
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/nativetest.log"
 WORK="$SCRATCH/native.tmp"
 rm -f "$LOG"; rm -rf "$WORK"; mkdir -p "$WORK"
@@ -125,45 +130,44 @@ done
 echo "=== preparing $DISK ($NATIVE_DISK_MB MB, $NATIVE_RAM_MB MB RAM) ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=$NATIVE_DISK_MB status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (NATIVE_DISK_MB * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mmd -i "$MIMG" ::/BIN ::/lib ::/usr ::/usr/bin ::/usr/lib ::/usr/include ::/ST
-mcopy -o -i "$MIMG" ../system/sh ::/BIN/sh
-mcopy -o -i "$MIMG" ../ldso/ld.so ::/lib/ld.so
-mcopy -o -i "$MIMG" "$SAGE_LIBC/lib/libc.so" ::/lib/libc.so
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg mkdir /bin; fsimg mkdir /lib; fsimg mkdir /usr; fsimg mkdir /usr/bin; fsimg mkdir /usr/lib; fsimg mkdir /usr/include; fsimg mkdir /ST
+fsimg put -m 755 ../system/sh /bin/sh
+fsimg put ../ldso/ld.so /lib/ld.so
+fsimg put "$SAGE_LIBC/lib/libc.so" /lib/libc.so
 for p in ls cat echo cmp od wc; do
     [ -x "../ports/sbase/bin/$p" ] && \
-        mcopy -o -i "$MIMG" "../ports/sbase/bin/$p" "::/BIN/$p"
+        fsimg put -m 755 "../ports/sbase/bin/$p" /bin/$p
 done
 
 echo "    copying the toolchain onto the disk (this takes a minute)"
 for b in "$BINOUT"/bin/*; do
-    mcopy -o -i "$MIMG" "$b" "::/usr/bin/$(basename "$b")"
+    fsimg put "$b" "/usr/bin/$(basename "$b")"
 done
 # gcc: the driver, and libexec's cc1, which is where the compiler is.
 ( cd "$GCCOUT" && find . -type f > "$WORK/gccfiles.txt" )
 while read -r f; do
     d=$(dirname "$f")
-    [ "$d" = "." ] || mmd -D s -i "$MIMG" "::/usr/${d#./}" 2>/dev/null || true
+    [ "$d" = "." ] || fsimg mkdir "/usr/${d#./}"
 done < <(awk -F/ '{for(i=2;i<NF;i++){printf "%s%s", (i==2?"./":"/"), $i}; print ""}' \
          "$WORK/gccfiles.txt" | sort -u)
 ( cd "$GCCOUT" && tar cf - . ) | ( cd "$WORK" && rm -rf gccstage && mkdir gccstage && tar xf - -C gccstage )
-mcopy -s -o -i "$MIMG" "$WORK/gccstage"/* ::/usr/ 2>/dev/null || true
+fsimg put -r "$WORK/gccstage" /usr
 
 # The C library on the machine, which is what a native link needs.
-mcopy -s -o -i "$MIMG" "$SAGE_LIBC/include"/* ::/usr/include/ 2>/dev/null
+fsimg put -r "$SAGE_LIBC/include" /usr/include
 for f in libc.a libc.so liblinux.a libm.a; do
-    mcopy -o -i "$MIMG" "$SAGE_LIBC/lib/$f" ::/usr/lib/
+    fsimg put "$SAGE_LIBC/lib/$f" /usr/lib/
 done
-mcopy -o -i "$MIMG" "$("$CROSS_CC" -mcpu=68040 -print-libgcc-file-name)" ::/usr/lib/
-mcopy -o -i "$MIMG" ../libc/crt0.o ../libc/crt0-dyn.o ::/usr/lib/
-mcopy -o -i "$MIMG" ../libc/sage040.ld ::/usr/lib/
-mcopy -o -i "$MIMG" ../libc/sage040.specs ::/usr/lib/
+fsimg put "$("$CROSS_CC" -mcpu=68040 -print-libgcc-file-name)" /usr/lib/
+fsimg put ../libc/crt0.o ../libc/crt0-dyn.o /usr/lib/
+fsimg put ../libc/sage040.ld /usr/lib/
+fsimg put ../libc/sage040.specs /usr/lib/
 for f in hello maths part1 part2; do
-    mcopy -o -i "$MIMG" "$WORK/$f.c" "::/ST/$f.c"
+    fsimg put "$WORK/$f.c" /ST/$f.c
 done
 
 rm -f "$SCRATCH/native.fifo"; mkfifo "$SCRATCH/native.fifo"
@@ -218,7 +222,7 @@ wait "$qemu_pid" 2>/dev/null
 rm -f "$SCRATCH/native.fifo"
 tr -d '\r' < "$LOG" > "$WORK/session.txt"
 
-get() { mcopy -n -o -i "$MIMG" "::/ST/$1" "$WORK/$1" 2>/dev/null; }
+get() { fsimg get /ST/$1 $WORK/$1 2>/dev/null; }
 for f in ver.out asver.out c1.out c2.out c3.out c4.out c5.out \
          run1.out run2.out run3.out ls.out \
          hello maths parts hello.native.o maths.native.o; do

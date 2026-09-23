@@ -44,7 +44,11 @@ mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-python.img"
 PART_LBA=2048
 OFFSET=$((PART_LBA * 512))
-MIMG="$DISK@@$OFFSET"
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/pytest.log"
 rm -f "$LOG"
 BOOT_WAIT=${BOOT_WAIT:-4}
@@ -183,7 +187,7 @@ time.tzset()
 # A subprocess: fork and exec, from Python.
 import subprocess
 try:
-    r = subprocess.run(["/BIN/echo", "hello-from-subprocess"],
+    r = subprocess.run(["/bin/echo", "hello-from-subprocess"],
                        capture_output=True, text=True, timeout=30)
     say("subprocess", r.stdout.strip())
 except Exception as e:
@@ -195,23 +199,22 @@ PYEOF
 echo "=== preparing $DISK (${DISK_MB} MB) ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count="$DISK_MB" status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" -s 64 "$DISK" \
-    $(( (DISK_MB * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mmd -i "$MIMG" ::/BIN ::/lib
-mcopy -o -i "$MIMG" ../ldso/ld.so ::/lib/ld.so
-mcopy -o -i "$MIMG" "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" ::/lib/libc.so
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg mkdir /bin; fsimg mkdir /lib
+fsimg put ../ldso/ld.so /lib/ld.so
+fsimg put "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" /lib/libc.so
 for p in ../system/sh ../ports/sbase/bin/echo; do
-    [ -x "$p" ] && mcopy -o -i "$MIMG" "$p" "::/BIN/$(basename "$p")"
+    [ -x "$p" ] && fsimg put "$p" "/bin/$(basename "$p")"
 done
 
 echo "    the interpreter and the standard library ($(du -sh "$PYSTAGE" | cut -f1))"
-mmd -i "$MIMG" ::/usr ::/usr/local ::/usr/local/bin ::/usr/local/lib
-mcopy -o -i "$MIMG" "$PYSTAGE/bin/python3" ::/usr/local/bin/python3
-mcopy -o -s -i "$MIMG" "$PYSTAGE/lib/python3.14" ::/usr/local/lib/
-mcopy -o -i "$MIMG" "$SCRATCH/pyprobe.py" ::/PROBE.PY
+fsimg mkdir /usr; fsimg mkdir /usr/local; fsimg mkdir /usr/local/bin; fsimg mkdir /usr/local/lib
+fsimg put "$PYSTAGE/bin/python3" /usr/local/bin/python3
+fsimg put "$PYSTAGE/lib/python3.14" /usr/local/lib/
+fsimg put "$SCRATCH/pyprobe.py" /PROBE.PY
 
 rm -f "$SCRATCH/py.fifo"
 mkfifo "$SCRATCH/py.fifo"

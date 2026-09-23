@@ -37,7 +37,11 @@ mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-so.img"
 PART_LBA=2048
 OFFSET=$((PART_LBA * 512))
-MIMG="$DISK@@$OFFSET"
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/sotest.log"
 # Gone before QEMU starts, so a run that never reaches the guest has no
 # log to grade -- rather than silently grading the last run's.
@@ -73,32 +77,34 @@ test "$(stat -c %s $T/libsot.so)" -eq "$(stat -c %s $T/libsot2.so)" || {
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=16 status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mmd -i "$MIMG" ::/BIN ::/lib ::/opt
-mcopy -o -i "$MIMG" ../ldso/ld.so ::/lib/ld.so
-mcopy -o -i "$MIMG" "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" ::/lib/libc.so
-mcopy -o -i "$MIMG" $T/libsot.so ::/lib/libsot.so
-mcopy -o -i "$MIMG" $T/libsot.so ::/opt/libsot.so
-mcopy -o -i "$MIMG" $T/libsot2.so ::/libsot2.so
-mcopy -o -i "$MIMG" $T/libsot3.so ::/libsot3.so
-mcopy -o -i "$MIMG" $T/libsot2.so ::/victim.so
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg mkdir /bin; fsimg mkdir /lib; fsimg mkdir /opt
+fsimg put ../ldso/ld.so /lib/ld.so
+fsimg put "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" /lib/libc.so
+fsimg put $T/libsot.so /lib/libsot.so
+fsimg put $T/libsot.so /opt/libsot.so
+fsimg put $T/libsot2.so /libsot2.so
+fsimg put $T/libsot3.so /libsot3.so
+fsimg put $T/libsot2.so /victim.so
 # 8.3 names in upper case, so that no long-name entries are made, and
 # moves from ANOTHER directory, which make a new entry in the first free
 # slot: the slot a deleted or replaced file left, and so its inode
-# number. (A rename within one directory keeps the file's own slot.)
-mmd -i "$MIMG" ::/D
-mcopy -o -i "$MIMG" $T/libsot2.so ::/D/A.SO
+# number: on ext2 each of these is a different file and so a different
+# inode, and the last step makes a NEW file take a number just freed.
+fsimg mkdir /D
+fsimg put $T/libsot2.so /D/A.SO
 head -c 8192 /dev/zero | tr '\0' B > "$SCRATCH/bbbb.tmp"
 head -c 8192 /dev/zero | tr '\0' C > "$SCRATCH/cccc.tmp"
-mcopy -o -i "$MIMG" "$SCRATCH/bbbb.tmp" ::/B.SO
-mcopy -o -i "$MIMG" "$SCRATCH/cccc.tmp" ::/C.SO
-rm -f "$SCRATCH/bbbb.tmp" "$SCRATCH/cccc.tmp"
-mcopy -o -i "$MIMG" $T/sotest ::/sotest
-mcopy -o -i "$MIMG" $T/libctest.dyn ::/libctest.dyn
+head -c 8192 /dev/zero | tr '\0' E > "$SCRATCH/eeee.tmp"
+fsimg put "$SCRATCH/bbbb.tmp" /B.SO
+fsimg put "$SCRATCH/cccc.tmp" /C.SO
+fsimg put "$SCRATCH/eeee.tmp" /E.SO
+rm -f "$SCRATCH/bbbb.tmp" "$SCRATCH/cccc.tmp" "$SCRATCH/eeee.tmp"
+fsimg put $T/sotest /sotest
+fsimg put $T/libctest.dyn /libctest.dyn
 
 rm -f "$SCRATCH/in.fifo"
 mkfifo "$SCRATCH/in.fifo"
@@ -145,6 +151,9 @@ run 'mv /B.SO /D/A.SO' mvba
 run '/sotest mapfirst /D/A.SO' mapb
 run 'mv /C.SO /D/A.SO' mvca
 run '/sotest mapfirst /D/A.SO' mapc
+run 'rm /D/A.SO' rmc
+run 'cp /E.SO /D/A.SO' cpe
+run '/sotest mapfirst /D/A.SO' mapd
 run 'export LD_TRACE_LOADED_OBJECTS=1' trset
 run '/sotest' trace
 run 'unset LD_TRACE_LOADED_OBJECTS' trunset
@@ -202,8 +211,25 @@ check "truncated and not written: a mapping shows zeroes, not the old bytes" $?
 ino_a=$(between '/sotest mapfirst' mapa | sed -n 's/^sotest: inode //p')
 ino_b=$(between '/sotest mapfirst' mapb | sed -n 's/^sotest: inode //p')
 ino_c=$(between '/sotest mapfirst' mapc | sed -n 's/^sotest: inode //p')
-[ -n "$ino_a" ] && [ "$ino_a" = "$ino_b" ] && [ "$ino_a" = "$ino_c" ]
-check "  (a file moved into a freed slot does take its inode number: $ino_a)" $?
+ino_d=$(between '/sotest mapfirst' mapd | sed -n 's/^sotest: inode //p')
+# On ext2 an inode number belongs to the FILE, for its whole life: a
+# different file under the same name is a different inode, whatever the
+# directory did. (On FAT the number came from the directory slot, so
+# these three were equal and the cache could not tell them apart.)
+[ -n "$ino_a" ] && [ "$ino_a" != "$ino_b" ] && [ "$ino_b" != "$ino_c" ]
+check "  (each file under the name has its own inode: $ino_a $ino_b $ino_c)" $?
+
+# ...but a number given up IS handed out again, and that is the case a
+# cache keyed on the inode number alone gets wrong. The file below is a
+# new file that took a number one of the others had freed -- the LOWEST
+# free one, which is not necessarily the one freed most recently, so the
+# check is that it is one of them rather than which.
+[ -n "$ino_d" ] &&
+    { [ "$ino_d" = "$ino_a" ] || [ "$ino_d" = "$ino_b" ] ||
+      [ "$ino_d" = "$ino_c" ]; }
+check "  (a freed inode number is handed out again: $ino_d was one of $ino_a $ino_b $ino_c)" $?
+between '/sotest mapfirst' mapd | grep -qx "sotest: first word 45454545"
+check "a NEW file reusing a freed inode number shows its own bytes, not the last file's" $?
 between '/sotest mapfirst' mapa | grep -qx "sotest: first word 7f454c46" &&
     between '/sotest mapfirst' mapb | grep -qx "sotest: first word 42424242"
 check "a file deleted, another moved into its slot: the new one's bytes" $?

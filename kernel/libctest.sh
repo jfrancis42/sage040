@@ -29,7 +29,11 @@ mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-libc.img"
 PART_LBA=2048
 OFFSET=$((PART_LBA * 512))
-MIMG="$DISK@@$OFFSET"
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/libctest.log"
 # Gone before QEMU starts, so a run that never reaches the guest has no
 # log to grade -- rather than silently grading the last run's.
@@ -58,15 +62,14 @@ fi
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=16 status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mcopy -o -i "$MIMG" ../libc/test/libctest ::/LIBCTEST
-mcopy -o -i "$MIMG" ../libc/test/posixtest ::/POSIXTST
-mcopy -o -i "$MIMG" ../libc/test/cryptest ::/CRYPTEST
-mmd -i "$MIMG" ::/BIN
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg put -m 755 ../libc/test/libctest /libctest
+fsimg put -m 755 ../libc/test/posixtest /posixtest
+fsimg put -m 755 ../libc/test/cryptest /cryptest
+fsimg mkdir /bin
 
 rm -f "$SCRATCH/in.fifo"
 mkfifo "$SCRATCH/in.fifo"
@@ -98,12 +101,12 @@ printf 'libctest > /LCOUT.TXT\r' >&3
 sleep 8
 # From a directory other than the root: a program starts where the
 # shell is standing (spawn did not pass the working directory on).
-printf '/CRYPTEST\r' >&3
+printf '/cryptest\r' >&3
 wait_for "cryptotest: "
 sleep 0.3
 printf 'mkdir /PTSTART\r' >&3
 printf 'cd /PTSTART\r' >&3
-printf '/POSIXTST\r' >&3
+printf '/posixtest\r' >&3
 wait_for "posixtest: done"
 sleep 0.3
 printf 'echo LIBC-FINISHED\r' >&3
@@ -116,7 +119,7 @@ wait "$qemu_pid" 2>/dev/null
 rm -f "$SCRATCH/in.fifo"
 
 tr -d '\r' < "$LOG" > "$SCRATCH/clean.tmp"
-mtype -i "$MIMG" ::/LCOUT.TXT 2>/dev/null | tr -d '\r' > "$SCRATCH/lcout.tmp"
+fsimg cat /LCOUT.TXT 2>/dev/null | tr -d '\r' > "$SCRATCH/lcout.tmp"
 
 echo "=== guest session ==="
 sed 's/^/  | /' "$SCRATCH/clean.tmp"
@@ -127,9 +130,9 @@ while IFS= read -r line; do
         "  ok   "*)   check "${line#  ok   }" 0 ;;
         "  FAIL "*)   check "${line#  FAIL }" 1 ;;
     esac
-done < <(sed '/\/CRYPTEST$/,$d' "$SCRATCH/clean.tmp" | grep -E '^  (ok  |FAIL) ')
+done < <(sed '/\/cryptest$/,$d' "$SCRATCH/clean.tmp" | grep -E '^  (ok  |FAIL) ')
 
-test "$(sed '/\/CRYPTEST$/,$d' "$SCRATCH/clean.tmp" | grep -cE '^  ok   ')" -ge 60
+test "$(sed '/\/cryptest$/,$d' "$SCRATCH/clean.tmp" | grep -cE '^  ok   ')" -ge 60
 check "libctest ran all of its checks" $?
 
 grep -qx "libctest: 0 failed" "$SCRATCH/clean.tmp"
@@ -167,8 +170,8 @@ grep -qx "posixtest: 0 failed" "$SCRATCH/clean.tmp"
 check "posixtest ran to the end" $?
 grep -qx "posixtest: started in /PTSTART" "$SCRATCH/clean.tmp"
 check "a program starts in the shell's working directory, not the root" $?
-# The time utimensat set, read by mtools: FAT's own date and time fields.
-mdir -i "$MIMG" ::/TIMES.TMP 2>/dev/null | grep -q "2001-02-03 *4:05"
+# The time utimensat set, read off the inode by the host's own tools.
+fsimg ls /TIMES.TMP 2>/dev/null | grep -q "2001-02-03 *4:05"
 check "the file time set on the machine is the one the host reads from the disk" $?
 
 echo "=== checks: ChaCha20 and BLAKE2s on the 68040, against the RFC vectors ==="
@@ -177,7 +180,7 @@ while IFS= read -r line; do
         "  ok   "*)   check "${line#  ok   }" 0 ;;
         "  FAIL "*)   check "${line#  FAIL }" 1 ;;
     esac
-done < <(sed -n '/CRYPTEST/,/^cryptotest: /p' "$SCRATCH/clean.tmp" | grep -E '^  (ok  |FAIL) ')
+done < <(sed -n '/cryptest/,/^cryptotest: /p' "$SCRATCH/clean.tmp" | grep -E '^  (ok  |FAIL) ')
 grep -qx "cryptotest: 0 failed" "$SCRATCH/clean.tmp"
 check "cryptotest ran to the end on the machine" $?
 

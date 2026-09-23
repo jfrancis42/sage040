@@ -49,7 +49,12 @@ SCRATCH=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}
 mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-pylib.img"
 PART_LBA=2048
-MIMG="$DISK@@$((PART_LBA * 512))"
+OFFSET=$((PART_LBA * 512))
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/pylibtest.log"
 WORK="$SCRATCH/pylib.tmp"
 rm -f "$LOG"
@@ -168,29 +173,28 @@ EOF
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=64 status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (64 * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mmd -i "$MIMG" ::/BIN ::/lib ::/ST
-mcopy -o -i "$MIMG" ../system/sh ::/BIN/sh
-mcopy -o -i "$MIMG" ../ldso/ld.so ::/lib/ld.so
-mcopy -o -i "$MIMG" "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" ::/lib/libc.so
-mcopy -o -i "$MIMG" "$BZOUT/bin/bzip2"    ::/BIN/bzip2
-mcopy -o -i "$MIMG" "$XZOUT/bin/xz"       ::/BIN/xz
-mcopy -o -i "$MIMG" "$ZSTDOUT/bin/zstd"   ::/BIN/zstd
-mcopy -o -i "$MIMG" "$SQLOUT/bin/sqlite3" ::/BIN/sqlite3
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg mkdir /bin; fsimg mkdir /lib; fsimg mkdir /ST
+fsimg put -m 755 ../system/sh /bin/sh
+fsimg put ../ldso/ld.so /lib/ld.so
+fsimg put "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" /lib/libc.so
+fsimg put "$BZOUT/bin/bzip2" /bin/bzip2
+fsimg put "$XZOUT/bin/xz" /bin/xz
+fsimg put "$ZSTDOUT/bin/zstd" /bin/zstd
+fsimg put "$SQLOUT/bin/sqlite3" /bin/sqlite3
 [ -x "$SSLOUT/bin/openssl" ] && \
-    mcopy -o -i "$MIMG" "$SSLOUT/bin/openssl" ::/BIN/openssl
-mcopy -o -i "$MIMG" "$SCRATCH/fficheck" ::/BIN/fficheck
-mcopy -o -i "$MIMG" "$WORK/data.bin" ::/ST/data.bin
-mcopy -o -i "$MIMG" "$WORK/host.bz2" ::/ST/host.bz2
-mcopy -o -i "$MIMG" "$WORK/host.xz"  ::/ST/host.xz
-mcopy -o -i "$MIMG" "$WORK/host.zst" ::/ST/host.zst
-mcopy -o -i "$MIMG" "$WORK/make.sql" ::/ST/make.sql
-mcopy -o -i "$MIMG" "$WORK/read.sql" ::/ST/read.sql
-[ -f "$WORK/host.db" ] && mcopy -o -i "$MIMG" "$WORK/host.db" ::/ST/host.db
+    fsimg put "$SSLOUT/bin/openssl" /bin/openssl
+fsimg put "$SCRATCH/fficheck" /bin/fficheck
+fsimg put "$WORK/data.bin" /ST/data.bin
+fsimg put "$WORK/host.bz2" /ST/host.bz2
+fsimg put "$WORK/host.xz" /ST/host.xz
+fsimg put "$WORK/host.zst" /ST/host.zst
+fsimg put "$WORK/make.sql" /ST/make.sql
+fsimg put "$WORK/read.sql" /ST/read.sql
+[ -f "$WORK/host.db" ] && fsimg put "$WORK/host.db" /ST/host.db
 
 rm -f "$SCRATCH/pylib.fifo"
 mkfifo "$SCRATCH/pylib.fifo"
@@ -272,8 +276,8 @@ echo "=== guest session (tail) ==="
 sed 's/^/  | /' "$WORK/session.txt" | tail -25
 
 # Everything the machine wrote, taken off the disk with the HOST's
-# mtools rather than read back by the machine itself.
-get() { mcopy -n -o -i "$MIMG" "::/ST/$1" "$WORK/$1" 2>/dev/null; }
+# the host's own tools rather than read back by the machine itself.
+get() { fsimg get /ST/$1 $WORK/$1 2>/dev/null; }
 for f in guest.bz2 from-host.bz.bin guest.xz from-host.xz.bin toobig.xz \
          guest.zst from-host.zst.bin guest.db sql-sel.out sql-host.out \
          sql-ver.out md5.out sha1.out sha256.out sha512.out empty.out \

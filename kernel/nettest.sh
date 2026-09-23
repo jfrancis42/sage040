@@ -50,7 +50,11 @@ mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-net.img"
 PART_LBA=2048
 OFFSET=$((PART_LBA * 512))
-MIMG="$DISK@@$OFFSET"
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/nettest.log"
 # Gone before QEMU starts, so a run that never reaches the guest has no
 # log to grade -- rather than silently grading the last run's.
@@ -78,21 +82,20 @@ make -s -C ../system || exit 1
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=16 status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mcopy -o -i "$MIMG" ../apps/fetch ::/FETCH
-mcopy -o -i "$MIMG" ../apps/polltest ::/POLLTEST
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg put -m 755 ../apps/fetch /fetch
+fsimg put -m 755 ../apps/polltest /polltest
 #
 # The network tools are programs now, not shell builtins, so the test
 # has to install them the way a real disk would -- in /bin, which is
 # where PATH looks first.
 #
-mmd -i "$MIMG" ::/BIN 2>/dev/null || true
+fsimg mkdir /bin
 for p in ifconfig ping netstat; do
-    mcopy -o -i "$MIMG" "../system/$p" "::/BIN/$(echo $p | tr a-z A-Z)"
+    fsimg put -m 755 "../system/$p" "/bin/$p"
 done
 
 #

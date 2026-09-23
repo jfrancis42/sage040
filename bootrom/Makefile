@@ -70,7 +70,7 @@ bootrom.elf: bootrom.c $(DEPS)
 # The kernel owns the file it installs, so ask it to.
 write: $(DISK)
 	$(MAKE) -C ../kernel install
-	@mdir -i $(MIMG) ::/ | sed 's/^/  /'
+	@$(FSIMG) ls-l / | sed 's/^/  /'
 
 # The cube in place of the kernel -- the demonstration this ROM was first
 # written against, and a useful way to prove the loader without the kernel
@@ -78,9 +78,9 @@ write: $(DISK)
 write-cube: $(DISK)
 	$(MAKE) -C $(PAYLOAD_DIR) cube.elf
 	$(OBJCOPY) -O binary $(PAYLOAD_ELF) $(PAYLOAD_BIN)
-	@mcopy -o -i $(MIMG) $(PAYLOAD_BIN) ::/KERNEL.ROM
+	@$(FSIMG) put $(PAYLOAD_BIN) /KERNEL.ROM
 	@echo "KERNEL.ROM: $$(stat -c%s $(PAYLOAD_BIN)) bytes (cube) -> $(DISK)"
-	@mdir -i $(MIMG) ::/ | sed 's/^/  /'
+	@$(FSIMG) ls-l / | sed 's/^/  /'
 
 # The fallback path: a raw image in the boot gap, no filesystem involved.
 write-raw: $(DISK)

@@ -13,12 +13,18 @@
 #     TOPDIR := ..
 #     include $(TOPDIR)/disk.mk
 #
-# The layout is a real MS-DOS one, so every host tool below works on the
-# plain image file and none of them needs root or a loop device.
+# The filesystem is ext2 and the layout is an ordinary PC one, so every
+# host tool below works on the plain image file and none of them needs
+# root or a loop device.
 #
 #   LBA 0       MBR partition table
-#   LBA 64      optional raw image, in the boot gap
-#   LBA 2048    partition 1, type 0x06, FAT16
+#   LBA 64      optional raw kernel image, in the boot gap
+#   LBA 2048    partition 1, type 0x83, ext2
+#
+# Reaching the filesystem inside the image is e2fsprogs' "?offset="
+# suffix, and tools/fsimg.sh is the one place that knows it. Use
+# $(FSIMG) rather than calling debugfs: a Makefile that spells out its
+# own offset is a Makefile that breaks when the layout moves.
 
 TOPDIR ?= .
 
@@ -29,13 +35,24 @@ PART_LBA   ?= 2048
 KERNEL_LBA ?= 64
 VOLUME     ?= SAGE040
 
+# 4 KB blocks. Twelve direct pointers then reach 48 KB and one indirect
+# block reaches 4 MB, which is why the boot ROM needs no double
+# indirection to load a kernel; at 1 KB it would.
+FS_BLOCK_SIZE ?= 4096
+
 TOTAL_SECTORS := $(shell expr $(DISK_MB) \* 2048)
 FS_SECTORS    := $(shell expr $(TOTAL_SECTORS) - $(PART_LBA))
-FS_BLOCKS     := $(shell expr $(FS_SECTORS) / 2)
 PART_OFFSET   := $(shell expr $(PART_LBA) \* 512)
 
-# mtools reaches into the partition by byte offset.
-MIMG := $(DISK)@@$(PART_OFFSET)
+# Everything that touches the filesystem goes through this.
+FSIMG := PART_OFFSET=$(PART_OFFSET) FS_BLOCK_SIZE=$(FS_BLOCK_SIZE) \
+         $(TOPDIR)/tools/fsimg.sh $(DISK)
+
+# The same thing in absolute terms, for a recipe that has cd'd into a
+# build directory: $(FSIMG) is relative to the project root and names
+# nothing once the shell has moved.
+ABS_FSIMG := PART_OFFSET=$(PART_OFFSET) FS_BLOCK_SIZE=$(FS_BLOCK_SIZE) \
+         $(abspath $(TOPDIR)/tools/fsimg.sh) $(abspath $(DISK))
 
 .PHONY: disk disk-ls disk-fsck disk-clean
 
@@ -44,19 +61,18 @@ disk: $(DISK)
 $(DISK):
 	@echo "creating $(DISK_MB) MB disk image $(DISK)"
 	@dd if=/dev/zero of=$@ bs=1M count=$(DISK_MB) status=none
-	@printf 'label: dos\nunit: sectors\nstart=$(PART_LBA), type=06\n' \
+	@printf 'label: dos\nunit: sectors\nstart=$(PART_LBA), type=83\n' \
 	    | sfdisk -q $@ >/dev/null
-	@mkfs.fat -F 16 -n $(VOLUME) --offset $(PART_LBA) $@ $(FS_BLOCKS) >/dev/null
-	@echo "partition 1: FAT16 at LBA $(PART_LBA), $(FS_SECTORS) sectors"
+	@$(FSIMG) mkfs $(VOLUME)
+	@echo "partition 1: ext2 at LBA $(PART_LBA), $(FS_SECTORS) sectors"
 
-# Inspect the disk with the host's own DOS tools.
+# Inspect the disk with the host's own tools.
 disk-ls: $(DISK)
 	@sfdisk -l $(DISK) 2>/dev/null | tail -3
-	@mdir -i $(MIMG) ::/
+	@$(FSIMG) ls-l /
 
 disk-fsck: $(DISK)
-	@fsck.fat -n -v $(MIMG) 2>/dev/null \
-	  || echo "(run fsck.fat on the partition offset manually)"
+	@$(FSIMG) fsck
 
 disk-clean:
 	rm -f $(DISK)

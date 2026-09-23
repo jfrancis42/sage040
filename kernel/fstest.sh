@@ -3,13 +3,19 @@
 # Copyright (C) 2026 Jeff Francis
 #
 # fstest.sh - drive the kernel's filesystem from the console, then check
-# the result with the host's own MS-DOS tools.
+# the result with the host's own ext2 tools.
 #
 # The point of the second half is the whole reason the disk is a real
-# FAT16 volume: a filesystem the kernel alone can read proves nothing.
+# ext2 volume: a filesystem the kernel alone can read proves nothing.
 # What is checked here is that a file the kernel wrote comes back byte
-# for byte through mtools, that a file the host wrote is what the kernel
-# printed, and that fsck.fat finds nothing to complain about afterwards.
+# for byte through debugfs, that a file the host wrote is what the
+# kernel printed, and that e2fsck -- which shares no line of code with
+# the driver -- finds nothing to complain about afterwards.
+#
+# e2fsck is the strongest check in this file. It recomputes every link
+# count, every block and inode bitmap and every directory's "." and
+# "..", so a driver that keeps a plausible-looking filesystem the kernel
+# itself is happy with still fails here.
 #
 # Runs on a scratch image, so the machine's own disk is left alone.
 
@@ -46,7 +52,11 @@ mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-test.img"
 PART_LBA=2048
 OFFSET=$((PART_LBA * 512))
-MIMG="$DISK@@$OFFSET"
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/fstest.log"
 # Gone before QEMU starts, so a run that never reaches the guest has no
 # log to grade -- rather than silently grading the last run's.
@@ -78,40 +88,46 @@ make -s -C ../system || exit 1
 
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
-dd if=/dev/zero of="$DISK" bs=1M count=16 status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+dd if=/dev/zero of="$DISK" bs=1M count=32 status=none
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
+fsimg mkfs SAGE040
 
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
+fsimg put kernel.rom /KERNEL.ROM
 
 # A file written by the host, for the kernel to read back.
 printf 'written by the host\nsecond line\n' > "$SCRATCH/hostfile.tmp"
-mcopy -o -i "$MIMG" "$SCRATCH/hostfile.tmp" ::/HOST.TXT
+fsimg put "$SCRATCH/hostfile.tmp" /HOST.TXT
 
 # Something larger than one 2 KB cluster, to make the chain walk matter.
 : > "$SCRATCH/big.tmp"
 for i in $(seq 1 200); do
     printf 'line %03d 0123456789abcdefghijklmnopqrstuvwxyz\n' "$i" >> "$SCRATCH/big.tmp"
 done
-mcopy -o -i "$MIMG" "$SCRATCH/big.tmp" ::/BIG.TXT
+fsimg put "$SCRATCH/big.tmp" /BIG.TXT
 
 # A program, to check that the ELF loader runs one and that its exit
 # status comes back. No extension: the kernel decides what is executable
 # from the file's first four bytes, not from its name.
 # Long names made by the HOST, which the guest has to find by them: one
-# in plain ASCII, one in UTF-8. mtools needs a UTF-8 locale to write
-# the second as Unicode rather than as underscores.
+# in plain ASCII, one in UTF-8. On ext2 a name is just bytes, so the
+# second needs no locale and no special handling at all.
 echo "made on the host" > "$SCRATCH/lfn.tmp"
-LC_ALL=C.UTF-8 mcopy -o -i "$MIMG" "$SCRATCH/lfn.tmp" "::/Host Long Name.txt"
-# Too long for 8.3, so it has to be a long name -- mtools writes a name
-# that fits as a short one with its accent in the OEM code page.
+LC_ALL=C.UTF-8 fsimg put "$SCRATCH/lfn.tmp" "/Host Long Name.txt"
+# Any length, any bytes: there is no short form to fall back to.
 echo "naive, with a diaeresis" > "$SCRATCH/lfn.tmp"
-LC_ALL=C.UTF-8 mcopy -o -i "$MIMG" "$SCRATCH/lfn.tmp" $'::/na\xc3\xafve r\xc3\xa9sum\xc3\xa9.txt'
+LC_ALL=C.UTF-8 fsimg put "$SCRATCH/lfn.tmp" $'/na\xc3\xafve r\xc3\xa9sum\xc3\xa9.txt'
 
-mcopy -o -i "$MIMG" ../apps/hello ::/HELLO
-mcopy -o -i "$MIMG" ../apps/fbtest ::/FBTEST
+# BIGGER THAN ONE INDIRECT BLOCK REACHES. At the 4 KB block size, twelve
+# direct pointers and one indirect block cover 12*4096 + 1024*4096 =
+# 4,243,456 bytes; anything past that needs the DOUBLE indirect block,
+# and nothing else in this suite goes near it. 5 MB does, in both
+# directions: the host writes this one and the guest copies it.
+head -c 5242880 /dev/urandom > "$SCRATCH/huge.tmp"
+fsimg put "$SCRATCH/huge.tmp" /HUGE.BIN
+
+fsimg put -m 755 ../apps/hello /hello
+fsimg put -m 755 ../apps/fbtest /fbtest
 
 echo "=== running the kernel ==="
 printf '%s\n' \
@@ -127,6 +143,7 @@ printf '%s\n' \
   'cat GUEST.TXT' \
   'stat GUEST.TXT' \
   'cp BIG.TXT COPY.TXT' \
+  'cp HUGE.BIN HUGECOPY.BIN' \
   'mv COPY.TXT RENAMED.TXT' \
   'ls -l' \
   'rm HOST.TXT' \
@@ -182,8 +199,11 @@ printf '%s\n' \
   'mv mvdir /tmp/mvdir' \
   'echo long > "A Long File Name.txt"' \
   'echo mixed > MixedCase.c' \
-  'echo LFN-CASE' \
-  'cat "a long file NAME.txt"' \
+  'echo CASE-TEST' \
+  'echo lower > casetest.txt' \
+  'echo UPPER > CASETEST.TXT' \
+  'cat casetest.txt' \
+  'cat CASETEST.TXT' \
   'echo LFN-HOST' \
   'cat "Host Long Name.txt"' \
   $'cat "na\xc3\xafve r\xc3\xa9sum\xc3\xa9.txt"' \
@@ -254,7 +274,7 @@ echo "=== checks: what the guest did ==="
 contains "$LOG" "kernel ready."
 check "kernel reached its shell" $?
 
-contains "$LOG" "fat16 on /dev/hda 'SAGE040'"
+contains "$LOG" "ext2 on /dev/hda 'SAGE040'"
 check "mounted the host-created filesystem" $?
 
 contains "$LOG" "written by the host"
@@ -354,88 +374,122 @@ check "  and stat resolves one from there too" $?
 
 echo "=== checks: what the host sees afterwards ==="
 
-mdir -i "$MIMG" ::/ 2>&1 | grep -q "ETC"
-check "host sees the ETC directory" $?
+# Names are bytes on ext2, so the host looks for exactly what the guest
+# typed -- `mkdir etc` makes "etc", not "ETC". Under FAT16 every one of
+# these was the upper-cased short name, which is why they all changed.
+fsimg ls / | grep -qx "etc"
+check "host sees the etc directory the guest made" $?
 
-mdir -i "$MIMG" ::/ETC 2>&1 | grep -q "SUB      TXT"
+fsimg ls /etc | grep -qx "sub.txt"
 check "host sees the file the guest made inside it" $?
 
-mtype -i "$MIMG" ::/ETC/SUB.TXT 2>/dev/null | grep -q "written in a subdirectory"
+fsimg cat /etc/sub.txt | grep -q "written in a subdirectory"
 check "  and its contents are what the guest wrote" $?
 
-mdir -i "$MIMG" ::/ 2>&1 | grep -q "BIN" && false || true
-check "the empty directory the guest removed is gone" $?
+fsimg ls / | grep -qx "bin"
+check "the empty directory the guest removed is gone" $((1 - $?))
 
-mdir -i "$MIMG" ::/ > "$SCRATCH/dir.tmp" 2>&1
-grep -q "GUEST    TXT" "$SCRATCH/dir.tmp"
+fsimg ls / > "$SCRATCH/dir.tmp" 2>&1
+grep -qx "GUEST.TXT" "$SCRATCH/dir.tmp"
 check "host sees GUEST.TXT" $?
 
-grep -q "RENAMED  TXT" "$SCRATCH/dir.tmp"
+grep -qx "RENAMED.TXT" "$SCRATCH/dir.tmp"
 check "host sees RENAMED.TXT" $?
 
-grep -q "HOST     TXT" "$SCRATCH/dir.tmp"
+grep -qx "HOST.TXT" "$SCRATCH/dir.tmp"
 check "host does not see the deleted HOST.TXT" $((1 - $?))
 
-mtype -i "$MIMG" ::/GUEST.TXT > guest.tmp 2>/dev/null
+fsimg cat /GUEST.TXT > guest.tmp 2>/dev/null
 [ "$(cat guest.tmp)" = "replaced" ]
 check "GUEST.TXT holds exactly what the kernel last wrote" $?
 
-# The kernel writes bare newlines, not CRLF: it is a Unix-flavoured
-# system that happens to store files on an MS-DOS volume.
+# The kernel writes bare newlines, not CRLF.
 [ "$(wc -c < guest.tmp)" -eq 9 ]
 check "the kernel wrote LF line endings, not CRLF" $?
 
-mtype -i "$MIMG" ::/RENAMED.TXT > renamed.tmp 2>/dev/null
+fsimg cat /RENAMED.TXT > renamed.tmp 2>/dev/null
 cmp -s renamed.tmp "$SCRATCH/big.tmp"
 check "the kernel's copy is byte-identical to the original" $?
+
+# The double indirect block, in both directions: the kernel READ 5 MB
+# that the host wrote and WROTE 5 MB the host can read back. Up to
+# 4,243,456 bytes a file needs only direct and singly indirect blocks,
+# so without this the second and third levels of the block map are
+# never executed at all.
+fsimg get /HUGECOPY.BIN "$SCRATCH/hugecopy.tmp" 2>/dev/null
+cmp -s "$SCRATCH/huge.tmp" "$SCRATCH/hugecopy.tmp"
+check "a 5 MB file, past what one indirect block reaches, copies byte for byte" $?
+
+[ "$(fsimg size /HUGECOPY.BIN)" = 5242880 ]
+check "  and its size is right, so the copy did not stop early" $?
 
 # unlink and rename used to look every name up in the ROOT, whatever
 # the path said, and unlink wrote its deletion through a directory
 # pointer it never set. Everything above ran in the root, so none of it
 # showed. These are the cases that would have.
-mtype -i "$MIMG" ::/ETC/MOVED.TXT 2>/dev/null | grep -qx "in tmp" &&
-    ! mdir -i "$MIMG" ::/TMP 2>&1 | grep -q "MOVED    TXT"
+fsimg cat /etc/moved.txt 2>/dev/null | grep -qx "in tmp" &&
+    ! fsimg ls /tmp | grep -qx "moved.txt"
 check "mv between directories moved the file" $?
 
-mtype -i "$MIMG" ::/ETC/OVER.TXT 2>/dev/null | grep -qx "source" &&
-    ! mdir -i "$MIMG" ::/ETC 2>&1 | grep -q "SRC      TXT"
+fsimg cat /etc/over.txt 2>/dev/null | grep -qx "source" &&
+    ! fsimg ls /etc | grep -qx "src.txt"
 check "mv onto an existing file replaced it, as POSIX says" $?
 
-mtype -i "$MIMG" ::/ROOTF.TXT 2>/dev/null | grep -qx "root copy" &&
-    ! mdir -i "$MIMG" ::/ETC 2>&1 | grep -q "ROOTF    TXT"
+fsimg cat /rootf.txt 2>/dev/null | grep -qx "root copy" &&
+    ! fsimg ls /etc | grep -qx "rootf.txt"
 check "rm of a relative name in a subdirectory removed that one, not the root's" $?
 
-! mdir -i "$MIMG" ::/ETC 2>&1 | grep -q "GONE     TXT"
+! fsimg ls /etc | grep -qx "gone.txt"
 check "rm of an absolute path from another directory" $?
 
-mdir -i "$MIMG" ::/TMP 2>&1 | grep -q "MVDIR" &&
-    ! mdir -i "$MIMG" ::/ 2>&1 | grep -q "MVDIR"
+fsimg ls /tmp | grep -qx "mvdir" &&
+    ! fsimg ls / | grep -qx "mvdir"
 check "mv moved a directory into another" $?
 
-# From inside /tmp/mvdir, `ls ..` lists /tmp, which holds MVDIR. Had the
-# ".." still named the root, it would list ETC and TMP and no MVDIR.
-tr -d '\r' < "$LOG" | grep -A2 '^LS-DOTDOT$' | grep -qi 'MVDIR'
+# From inside /tmp/mvdir, `ls ..` lists /tmp, which holds mvdir. Had the
+# ".." still named the root, it would list etc and tmp and no mvdir.
+tr -d '\r' < "$LOG" | grep -A2 '^LS-DOTDOT$' | grep -qi 'mvdir'
 check "  and its .. now leads to its new parent" $?
 
-echo "=== checks: long names ==="
+# A directory moved to a new parent carries its ".." with it, and both
+# parents' link counts follow. Nothing in the guest can see this; it is
+# what e2fsck checks below, and this is the direct form of it.
+[ "$(fsimg ls-l /tmp/mvdir | awk '$NF == ".." { print $1 }')" = \
+  "$(fsimg ls-l / | awk '$NF == "tmp" { print $1 }')" ]
+check "  and the moved directory's .. names the inode of its new parent" $?
 
-# Everything here is read back with the host's mtools, in a UTF-8
-# locale, so what counts is what Windows or Linux would see.
-LC_ALL=C.UTF-8 mdir -i "$MIMG" ::/ > "$SCRATCH/lfn-dir.tmp" 2>&1
+echo "=== checks: names are bytes ==="
+
+LC_ALL=C.UTF-8 fsimg ls / > "$SCRATCH/lfn-dir.tmp" 2>&1
 tr -d '\r' < "$LOG" > "$SCRATCH/lfn-log.tmp"
 
-grep -q "Renamed Long Name.text" "$SCRATCH/lfn-dir.tmp" &&
-    ! grep -q "A Long File Name.txt" "$SCRATCH/lfn-dir.tmp"
-check "a long name the guest made, then renamed, is what the host sees" $?
+grep -qx "Renamed Long Name.text" "$SCRATCH/lfn-dir.tmp" &&
+    ! grep -qx "A Long File Name.txt" "$SCRATCH/lfn-dir.tmp"
+check "a name with spaces, made by the guest and renamed, is what the host sees" $?
 
-LC_ALL=C.UTF-8 mtype -i "$MIMG" "::/Renamed Long Name.text" 2>/dev/null | grep -qx long
+LC_ALL=C.UTF-8 fsimg cat "/Renamed Long Name.text" 2>/dev/null | grep -qx long
 check "  holding what the guest wrote" $?
 
-grep -q " MixedCase.c$" "$SCRATCH/lfn-dir.tmp"
+grep -qx "MixedCase.c" "$SCRATCH/lfn-dir.tmp"
 check "a mixed-case name keeps its case" $?
 
-grep -A2 '^LFN-CASE$' "$SCRATCH/lfn-log.tmp" | grep -qx long
-check "a long name is found whatever the case it is asked for in" $?
+# FAT16 folded case, so "casetest.txt" and "CASETEST.TXT" were ONE file
+# and the guest's second write replaced the first. On ext2 they are two.
+grep -qx "casetest.txt" "$SCRATCH/lfn-dir.tmp" &&
+    grep -qx "CASETEST.TXT" "$SCRATCH/lfn-dir.tmp"
+check "two names differing only in case are two different files" $?
+
+[ "$(fsimg cat /casetest.txt)" = "lower" ] &&
+    [ "$(fsimg cat /CASETEST.TXT)" = "UPPER" ]
+check "  and each holds its own contents" $?
+
+# Between the markers, not a fixed number of lines after one: the shell
+# echoes a prompt and the command itself before each answer, so counting
+# lines makes the check depend on how the prompt is printed.
+awk '/^CASE-TEST$/ { f = 1; next } /^LFN-HOST$/ { f = 0 } f' \
+    "$SCRATCH/lfn-log.tmp" > "$SCRATCH/case.tmp"
+grep -qx lower "$SCRATCH/case.tmp" && grep -qx UPPER "$SCRATCH/case.tmp"
+check "  as the guest reads them back too" $?
 
 grep -A2 '^LFN-HOST$' "$SCRATCH/lfn-log.tmp" | grep -qx "made on the host"
 check "a long name the host made is found by it" $?
@@ -444,10 +498,10 @@ grep -qx "naive, with a diaeresis" "$SCRATCH/lfn-log.tmp"
 check "  and one in UTF-8" $?
 
 grep -q $'caf\xc3\xa9.txt' "$SCRATCH/lfn-dir.tmp"
-check "a UTF-8 name the guest made is Unicode to the host" $?
+check "a UTF-8 name the guest made is the same bytes to the host" $?
 
-LC_ALL=C.UTF-8 mdir -i "$MIMG" "::/Long Directory" 2>&1 | grep -q "file in it.txt" &&
-    LC_ALL=C.UTF-8 mtype -i "$MIMG" "::/Long Directory/file in it.txt" 2>/dev/null |
+LC_ALL=C.UTF-8 fsimg ls "/Long Directory" 2>&1 | grep -qx "file in it.txt" &&
+    LC_ALL=C.UTF-8 fsimg cat "/Long Directory/file in it.txt" 2>/dev/null |
         grep -qx inside
 check "a directory with a long name, and a long-named file in it" $?
 
@@ -455,30 +509,40 @@ grep -A2 '^LFN-PWD$' "$SCRATCH/lfn-log.tmp" | grep -qx "/Long Directory" &&
     grep -qx inside "$SCRATCH/lfn-log.tmp"
 check "  which cd, pwd and a relative name all work in" $?
 
-grep -q "LONGPR~1 TXT.*longprefix1.txt" "$SCRATCH/lfn-dir.tmp" &&
-    grep -q "LONGPR~3 TXT.*longprefix3.txt" "$SCRATCH/lfn-dir.tmp"
-check "names alike in their first six letters get distinct ~N aliases" $?
+grep -qx "longprefix1.txt" "$SCRATCH/lfn-dir.tmp" &&
+    grep -qx "longprefix3.txt" "$SCRATCH/lfn-dir.tmp"
+check "names alike in their first letters are kept whole" $?
 
-! grep -q "longprefix2" "$SCRATCH/lfn-dir.tmp"
+! grep -qx "longprefix2.txt" "$SCRATCH/lfn-dir.tmp"
 check "rm of a long name removes it" $?
 
 awk '/^LFN-LS$/ { f = 1; next } f' "$SCRATCH/lfn-log.tmp" | grep -q "Renamed Long Name.text"
 check "ls shows long names" $?
 
-# fsck.fat has no idea what mtools' @@offset means, so hand it the
-# partition on its own.
-dd if="$DISK" of="$SCRATCH/part.tmp" bs=512 skip="$PART_LBA" status=none
-fsck.fat -n "$SCRATCH/part.tmp" > fsck.tmp 2>&1
-check "fsck.fat reports the filesystem clean" $?
+echo "=== checks: what e2fsck says ==="
+
+# The whole volume, checked by code that has nothing to do with the
+# driver: bitmaps, link counts, "." and "..", every block map.
+fsimg fsck > fsck.tmp 2>&1
+check "e2fsck reports the filesystem clean" $?
 sed 's/^/  | /' fsck.tmp
+
+# A negative control for the check above: damage one link count and
+# make sure e2fsck is actually looking.
+cp "$DISK" "$SCRATCH/damaged.img"
+printf 'sif /etc links_count 7\nquit\n' |
+    debugfs -w "$SCRATCH/damaged.img?offset=$OFFSET" >/dev/null 2>&1
+! e2fsck -fn "$SCRATCH/damaged.img?offset=$OFFSET" >/dev/null 2>&1
+check "  and says so when a link count is wrong, so the check above means something" $?
+rm -f "$SCRATCH/damaged.img"
 
 echo
 echo "  passed: $pass"
 echo "  failed: $fail"
 
-rm -f "$SCRATCH/lfn.tmp" "$SCRATCH/lfn-dir.tmp" "$SCRATCH/lfn-log.tmp"
+rm -f "$SCRATCH/case.tmp" "$SCRATCH/lfn.tmp" "$SCRATCH/huge.tmp" "$SCRATCH/hugecopy.tmp" "$SCRATCH/lfn-dir.tmp" "$SCRATCH/lfn-log.tmp"
 rm -f "$SCRATCH/hostfile.tmp" "$SCRATCH/big.tmp" "$SCRATCH/session.tmp" "$SCRATCH/dir.tmp" guest.tmp renamed.tmp \
-      fsck.tmp "$SCRATCH/part.tmp"
+      fsck.tmp
 
 [ "$fail" -eq 0 ] && echo "RESULT: PASS" || echo "RESULT: FAIL"
 exit "$fail"

@@ -14,9 +14,11 @@ all:
 	./build.sh
 
 install: all $(DISK)
-	mmd -D s -i $(MIMG) ::/BIN ::/share ::/share/misc 2>/dev/null || true
-	mcopy -o -i $(MIMG) bin/* ::/BIN/
-	mcopy -o -i $(MIMG) share/misc/bc.library ::/share/misc/
+	$(FSIMG) mkdir /bin
+	$(FSIMG) mkdir /share
+	$(FSIMG) mkdir /share/misc
+	$(FSIMG) put -m 755 bin/* /bin/
+	$(FSIMG) put share/misc/bc.library /share/misc/
 
 clean:
 	rm -rf bin share

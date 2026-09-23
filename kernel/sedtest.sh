@@ -13,7 +13,7 @@
 # what the SAME sed source prints when built natively for the host -- an
 # independent run of the same program, not the machine agreeing with
 # itself. Files the scripts write (w) are compared the same way, and
-# `sed -i` is checked by reading the edited file back with mtools.
+# `sed -i` is checked by reading the edited file back from the image.
 #
 # sed's own test suite is shell scripts over coreutils and a POSIX sh;
 # it runs once bash and the utilities exist (tasks 28 and 29).
@@ -31,7 +31,12 @@ SCRATCH=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}
 mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-sed.img"
 PART_LBA=2048
-MIMG="$DISK@@$((PART_LBA * 512))"
+OFFSET=$((PART_LBA * 512))
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/sedtest.log"
 WORK="$SCRATCH/sed.tmp"
 rm -f "$LOG"
@@ -92,17 +97,16 @@ done
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=16 status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mmd -i "$MIMG" ::/BIN ::/lib ::/SEDT
-mcopy -o -i "$MIMG" ../system/sh ::/BIN/SH
-mcopy -o -i "$MIMG" ../ports/sed/sed ::/BIN/SED
-mcopy -o -i "$MIMG" ../ldso/ld.so ::/lib/ld.so
-mcopy -o -i "$MIMG" "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" ::/lib/libc.so
-mcopy -o -i "$MIMG" "$WORK"/tests/* ::/SEDT/
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg mkdir /bin; fsimg mkdir /lib; fsimg mkdir /SEDT
+fsimg put -m 755 ../system/sh /bin/sh
+fsimg put -m 755 ../ports/sed/sed /bin/sed
+fsimg put ../ldso/ld.so /lib/ld.so
+fsimg put "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" /lib/libc.so
+fsimg put "$WORK"/tests/* /SEDT/
 
 rm -f "$SCRATCH/sed.fifo"
 mkfifo "$SCRATCH/sed.fifo"
@@ -146,7 +150,7 @@ kill "$qemu_pid" 2>/dev/null
 wait "$qemu_pid" 2>/dev/null
 rm -f "$SCRATCH/sed.fifo"
 
-mcopy -o -n -i "$MIMG" '::/SEDT/*' "$WORK/got/" 2>/dev/null
+fsimg get -r /SEDT "$WORK/got" 2>/dev/null; mv "$WORK/got/SEDT"/* "$WORK/got/" 2>/dev/null
 tr -d '\r' < "$LOG" > "$SCRATCH/sed-clean.tmp"
 
 echo "=== guest session (last 12 lines) ==="

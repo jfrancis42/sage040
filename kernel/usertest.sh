@@ -33,7 +33,12 @@ SCRATCH=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}
 mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-user.img"
 PART_LBA=2048
-MIMG="$DISK@@$((PART_LBA * 512))"
+OFFSET=$((PART_LBA * 512))
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/usertest.log"
 WORK="$SCRATCH/user.tmp"
 rm -f "$LOG"; rm -rf "$WORK"; mkdir -p "$WORK"
@@ -59,26 +64,25 @@ make -s -C ../ldso || exit 1
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=32 status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (32 * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mmd -i "$MIMG" ::/BIN ::/lib ::/etc ::/home ::/home/jfrancis ::/root ::/ST
-mcopy -o -i "$MIMG" ../system/sh ::/BIN/sh
-mcopy -o -i "$MIMG" ../system/id ::/BIN/id
-mcopy -o -i "$MIMG" ../ldso/ld.so ::/lib/ld.so
-mcopy -o -i "$MIMG" "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" ::/lib/libc.so
-mcopy -o -i "$MIMG" ../system/passwd ::/etc/passwd
-mcopy -o -i "$MIMG" ../system/group ::/etc/group
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg mkdir /bin; fsimg mkdir /lib; fsimg mkdir /etc; fsimg mkdir /home; fsimg mkdir /home/jfrancis; fsimg mkdir /root; fsimg mkdir /ST
+fsimg put -m 755 ../system/sh /bin/sh
+fsimg put -m 755 ../system/id /bin/id
+fsimg put ../ldso/ld.so /lib/ld.so
+fsimg put "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" /lib/libc.so
+fsimg put -m 755 ../system/passwd /etc/passwd
+fsimg put -m 755 ../system/group /etc/group
 for p in whoami ls echo cat pwd; do
     [ -x "../ports/sbase/bin/$p" ] && \
-        mcopy -o -i "$MIMG" "../ports/sbase/bin/$p" "::/BIN/$p"
+        fsimg put -m 755 "../ports/sbase/bin/$p" /bin/$p
 done
 echo "belongs to root" > "$WORK/rootfile.txt"
 echo "belongs to jfrancis" > "$WORK/jefffile.txt"
-mcopy -o -i "$MIMG" "$WORK/rootfile.txt" ::/root/rootfile.txt
-mcopy -o -i "$MIMG" "$WORK/jefffile.txt" ::/home/jfrancis/jefffile.txt
+fsimg put "$WORK/rootfile.txt" /root/rootfile.txt
+fsimg put "$WORK/jefffile.txt" /home/jfrancis/jefffile.txt
 
 rm -f "$SCRATCH/user.fifo"; mkfifo "$SCRATCH/user.fifo"
 "$QEMU" -M sage040 -cpu m68040 -m "$RAM_MB" \
@@ -133,7 +137,7 @@ wait "$qemu_pid" 2>/dev/null
 rm -f "$SCRATCH/user.fifo"
 tr -d '\r' < "$LOG" > "$WORK/session.txt"
 
-get() { mcopy -n -o -i "$MIMG" "::/ST/$1" "$WORK/$1" 2>/dev/null; }
+get() { fsimg get /ST/$1 $WORK/$1 2>/dev/null; }
 for f in id.out whoami.out idu.out idun.out home.out tilde.out tj.out \
          tr.out tn.out mid.out quoted.out cat.out pwd.out nofence.out; do
     get "$f"

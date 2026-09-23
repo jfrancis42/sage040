@@ -23,10 +23,10 @@ all:
 	./build.sh
 
 install: all $(DISK)
-	@mmd -D s -i $(MIMG) ::/usr 2>/dev/null || true
-	@mmd -D s -i $(MIMG) ::/usr/bin 2>/dev/null || true
+	@$(FSIMG) mkdir /usr
+	@$(FSIMG) mkdir /usr/bin
 	@for b in $(OUT)/bin/*; do \
-	    mcopy -o -i $(MIMG) $$b ::/usr/bin/$$(basename $$b); \
+	    $(FSIMG) put -m 755 $$b /usr/bin/$$(basename $$b); \
 	done
 	@echo "binutils is on $(DISK) at /usr/bin"
 

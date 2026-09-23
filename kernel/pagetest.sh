@@ -37,7 +37,11 @@ mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-page.img"
 PART_LBA=2048
 OFFSET=$((PART_LBA * 512))
-MIMG="$DISK@@$OFFSET"
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/pagetest.log"
 # Gone before QEMU starts, so a run that never reaches the guest has no
 # log to grade -- rather than silently grading the last run's.
@@ -67,18 +71,17 @@ boot() {
     echo "=== a machine with $ram MB, ${swap_mb:-no} swap ==="
     rm -f "$DISK" "$LOG"
     dd if=/dev/zero of="$DISK" bs=1M count="$disk_mb" status=none
-    printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+    printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
         | sfdisk -q "$DISK" >/dev/null
-    mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-        $(( (disk_mb * 2048 - PART_LBA) / 2 )) >/dev/null
-    mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-    mmd -i "$MIMG" ::/BIN
-    mcopy -o -i "$MIMG" ../apps/pagetest ::/PAGETEST
-    mcopy -o -i "$MIMG" ../system/swapon ::/BIN/SWAPON
-    mcopy -o -i "$MIMG" ../system/swapoff ::/BIN/SWAPOFF
+    fsimg mkfs SAGE040
+    fsimg put kernel.rom /KERNEL.ROM
+    fsimg mkdir /bin
+    fsimg put -m 755 ../apps/pagetest /pagetest
+    fsimg put -m 755 ../system/swapon /bin/swapon
+    fsimg put -m 755 ../system/swapoff /bin/swapoff
     if [ "$swap_mb" -gt 0 ]; then
         dd if=/dev/zero of="$SCRATCH/swap.tmp" bs=1M count="$swap_mb" status=none
-        mcopy -o -i "$MIMG" "$SCRATCH/swap.tmp" ::/SWAP
+        fsimg put "$SCRATCH/swap.tmp" /SWAP
         rm -f "$SCRATCH/swap.tmp"
     fi
     rm -f "$SCRATCH/in.fifo"
@@ -157,10 +160,10 @@ B="$SCRATCH/page-b.tmp"
 # --- the first machine: plenty of memory, no swap --------------------
 boot "$RAM_MB" 16 0
 run 'free' free0
-run '/PAGETEST lazy' lazy
-run '/PAGETEST cow' cow
-run '/PAGETEST hog; echo HOG=$?' hog
-run "/PAGETEST oom $(( RAM_MB * 3 / 4 )); echo OOM=\$?" oom
+run '/pagetest lazy' lazy
+run '/pagetest cow' cow
+run '/pagetest hog; echo HOG=$?' hog
+run "/pagetest oom $(( RAM_MB * 3 / 4 )); echo OOM=\$?" oom
 # When the PARENT is the one killed, its child is orphaned mid-way
 # through touching its memory, and still running when the shell prompts
 # again -- so "every page came back" is only a fair question once the
@@ -182,41 +185,41 @@ boot 12 48 24
 run 'free' sfree0
 run 'swapon /SWAP; echo SWAPON=$?' swapon
 run 'free' sfree1
-run '/PAGETEST fill 16' fill
-run '/PAGETEST pair 8' pair
+run '/pagetest fill 16' fill
+run '/pagetest pair 8' pair
 # Again with a slow disk: every page written out or read back sleeps
 # 5 ms more, so the other process runs while pages are half way out.
-run '/PAGETEST delay 5' delay5
-run '/PAGETEST pair 8' slowpair
-run '/PAGETEST delay 0' delay0
-run '/PAGETEST forkswap 14' forkswap
-run '/PAGETEST pinread 16' pinread
-run '/PAGETEST stats' stats1
+run '/pagetest delay 5' delay5
+run '/pagetest pair 8' slowpair
+run '/pagetest delay 0' delay0
+run '/pagetest forkswap 14' forkswap
+run '/pagetest pinread 16' pinread
+run '/pagetest stats' stats1
 run 'rm /SWAP' rm
-run 'cp /PAGETEST /SWAP' cp
+run 'cp /pagetest /SWAP' cp
 run 'mv /SWAP /S2' mv
-run '/PAGETEST park 14 12 &' park
+run '/pagetest park 14 12 &' park
 sleep 10
 run 'swapoff /SWAP; echo OFF1=$?' off1
 # Its result, and then its exit: it prints a moment before its pages
 # are given back, so what is waited for is the swap file being empty.
 wait_for "park: pages that came back wrong"
-run '/PAGETEST drained' drained
+run '/pagetest drained' drained
 run 'swapoff /SWAP; echo OFF2=$?' off2
 run 'free' sfree2
-run '/PAGETEST stats' stats
+run '/pagetest stats' stats
 finish "$B"
 
 echo "=== checks: demand paging and copy-on-write ==="
-grade '/PAGETEST lazy' lazy "$A"
-grade '/PAGETEST cow' cow "$A"
-between '/PAGETEST hog' hog "$A" | grep -q "mmap refused after MB"
+grade '/pagetest lazy' lazy "$A"
+grade '/pagetest cow' cow "$A"
+between '/pagetest hog' hog "$A" | grep -q "mmap refused after MB"
 check "mmap refuses what memory could never supply" $?
-between '/PAGETEST hog' hog "$A" | grep -qx "HOG=3"
+between '/pagetest hog' hog "$A" | grep -qx "HOG=3"
 check "  and says so, rather than the program being killed" $?
-between '/PAGETEST oom' oom "$A" | grep -q "^out of memory at 0x[0-9a-f]*: killed"
+between '/pagetest oom' oom "$A" | grep -q "^out of memory at 0x[0-9a-f]*: killed"
 check "memory promised twice over and then touched: out of memory, killed" $?
-between '/PAGETEST oom' oom "$A" | grep -qE "^OOM=(0|137)$"
+between '/pagetest oom' oom "$A" | grep -qE "^OOM=(0|137)$"
 check "  by SIGKILL, or the child was and the parent survived" $?
 u0=$(used_of free0 "$A"); u1=$(used_of free1 "$A")
 echo "  used pages: before=${u0:-?} after=${u1:-?}"
@@ -230,16 +233,16 @@ between 'swapon /SWAP' swapon "$B" | grep -qx "SWAPON=0"
 check "swapon" $?
 between free sfree1 "$B" | grep -qE '^swap +6144 +24576 +0 pages in use$'
 check "  and free shows 24 MB of it, none used" $?
-grade '/PAGETEST fill' fill "$B"
-grade '/PAGETEST pair' pair "$B"
-grade '/PAGETEST pair' slowpair "$B"
-grade '/PAGETEST forkswap' forkswap "$B"
-grade '/PAGETEST pinread' pinread "$B"
-between '/PAGETEST stats' stats1 "$B" | grep -qx "pagetest: swap-used 0"
+grade '/pagetest fill' fill "$B"
+grade '/pagetest pair' pair "$B"
+grade '/pagetest pair' slowpair "$B"
+grade '/pagetest forkswap' forkswap "$B"
+grade '/pagetest pinread' pinread "$B"
+between '/pagetest stats' stats1 "$B" | grep -qx "pagetest: swap-used 0"
 check "every slot given back once its processes had gone" $?
 between 'rm /SWAP' rm "$B" | grep -q "text file busy"
 check "the swap file cannot be deleted while in use" $?
-between 'cp /PAGETEST /SWAP' cp "$B" | grep -q "text file busy"
+between 'cp /pagetest /SWAP' cp "$B" | grep -q "text file busy"
 check "  nor overwritten" $?
 between 'mv /SWAP' mv "$B" | grep -q "text file busy"
 check "  nor moved" $?
@@ -248,13 +251,13 @@ between 'swapoff /SWAP; echo OFF1=$?' off1 "$B" | grep -q "not enough memory" &&
 check "swapoff with more out than memory can hold: refused" $?
 grep -q "park: pages that came back wrong: 0" "$B"
 check "  and the parked process's pages are all still intact" $?
-between '/PAGETEST drained' drained "$B" | grep -qx "pagetest: swap drained"
+between '/pagetest drained' drained "$B" | grep -qx "pagetest: swap drained"
 check "  and when it exits, its slots are given back" $?
 between 'swapoff /SWAP; echo OFF2=$?' off2 "$B" | grep -qx "OFF2=0"
 check "swapoff once they have gone" $?
 ! between free sfree2 "$B" | grep -q '^swap'
 check "  and free shows no swap" $?
-out=$(between '/PAGETEST stats' stats "$B" | sed -n 's/^pagetest: pageouts //p')
+out=$(between '/pagetest stats' stats "$B" | sed -n 's/^pagetest: pageouts //p')
 [ "${out:-0}" -gt 0 ]
 check "pages were written out ($out)" $?
 ! grep -q "panic\|exception" "$B"

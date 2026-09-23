@@ -70,7 +70,7 @@ int main(int argc, char **argv)
     report("access(X_OK) says a text file is not executable",
            access(path, X_OK) < 0);
     report("access(X_OK) says a program is",
-           access("/HELLO", X_OK) == 0);
+           access("/hello", X_OK) == 0);
 
     puts("statfs: done\n");
     return 0;

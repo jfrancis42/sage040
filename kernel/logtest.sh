@@ -33,7 +33,11 @@ mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-log.img"
 PART_LBA=2048
 OFFSET=$((PART_LBA * 512))
-MIMG="$DISK@@$OFFSET"
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/logtest.log"
 rm -f "$LOG"
 BOOT_WAIT=${BOOT_WAIT:-4}
@@ -57,17 +61,16 @@ make -s -C ../system klogd dmesg sh || exit 1
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=16 status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mmd -i "$MIMG" ::/BIN ::/etc
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg mkdir /bin; fsimg mkdir /etc
 for p in klogd dmesg sh; do
-    mcopy -o -i "$MIMG" "../system/$p" "::/BIN/$p"
+    fsimg put -m 755 "../system/$p" /bin/$p
 done
 # The machine's own /etc/rc, which is what starts klogd at boot.
-mcopy -o -i "$MIMG" ../system/rc ::/etc/rc
+fsimg put -m 755 ../system/rc /etc/rc
 
 rm -f "$SCRATCH/log.fifo"
 mkfifo "$SCRATCH/log.fifo"
@@ -131,7 +134,7 @@ tr -d '\r' < "$LOG" > "$SCRATCH/log-clean.tmp"
 # /etc/rc is what starts klogd, so renaming it away is how to see the
 # machine without one: dmesg is then the only reader of the ring and
 # gets everything. It is also the check that /etc/rc is what does it.
-mmove -i "$MIMG" ::/etc/rc ::/etc/rc.off
+fsimg mv /etc/rc /etc/rc.off
 LOG2="$SCRATCH/logtest-norc.log"
 rm -f "$LOG2"
 rm -f "$SCRATCH/log.fifo"
@@ -158,15 +161,15 @@ exec 3>&-
 kill "$qemu_pid" 2>/dev/null
 wait "$qemu_pid" 2>/dev/null
 rm -f "$SCRATCH/log.fifo"
-mmove -i "$MIMG" ::/etc/rc.off ::/etc/rc
+fsimg mv /etc/rc.off /etc/rc
 tr -d '\r' < "$LOG2" >> "$SCRATCH/log-clean.tmp"
 
 echo "=== guest session ==="
 sed 's/^/  | /' "$SCRATCH/log-clean.tmp"
 
-mtype -i "$MIMG" ::/SYSLOG.TXT 2>/dev/null | tr -d '\r' > "$SCRATCH/syslog.tmp"
-mtype -i "$MIMG" ::/DMESG1.TXT 2>/dev/null | tr -d '\r' > "$SCRATCH/dmesg1.tmp"
-mtype -i "$MIMG" ::/DMESG2.TXT 2>/dev/null | tr -d '\r' > "$SCRATCH/dmesg2.tmp"
+fsimg cat /SYSLOG.TXT 2>/dev/null | tr -d '\r' > "$SCRATCH/syslog.tmp"
+fsimg cat /DMESG1.TXT 2>/dev/null | tr -d '\r' > "$SCRATCH/dmesg1.tmp"
+fsimg cat /DMESG2.TXT 2>/dev/null | tr -d '\r' > "$SCRATCH/dmesg2.tmp"
 
 echo "=== checks: the log file ==="
 
@@ -188,7 +191,7 @@ check "  including what the kernel said about the disk" $?
 grep -q "eth0" "$SCRATCH/syslog.tmp"
 check "a message printed after klogd started is there too" $?
 
-# The host reads the file the machine wrote: mtools, not the kernel.
+# The host reads the file the machine wrote: debugfs, not the kernel.
 lines=$(wc -l < "$SCRATCH/syslog.tmp")
 test "$lines" -gt 10
 check "the host's tools read $lines lines out of the file" $?

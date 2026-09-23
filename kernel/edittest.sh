@@ -54,7 +54,11 @@ mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-edit.img"
 PART_LBA=2048
 OFFSET=$((PART_LBA * 512))
-MIMG="$DISK@@$OFFSET"
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/edittest.log"
 # Gone before QEMU starts, so a run that never reaches the guest has no
 # log to grade -- rather than silently grading the last run's.
@@ -91,16 +95,15 @@ make -s -C ../system || exit 1
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=16 status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mcopy -o -i "$MIMG" ../apps/cube ::/CUBE
-mcopy -o -i "$MIMG" ../apps/spin ::/SPIN
-mcopy -o -i "$MIMG" ../apps/hello ::/HELLO
-mcopy -o -i "$MIMG" ../system/shutdown ::/SHUTDOWN
-mcopy -o -i "$MIMG" ../apps/napper ::/NAPPER
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg put -m 755 ../apps/cube /cube
+fsimg put -m 755 ../apps/spin /spin
+fsimg put -m 755 ../apps/hello /hello
+fsimg put -m 755 ../system/shutdown /shutdown
+fsimg put -m 755 ../apps/napper /napper
 # A script far past the 4 KB the shell once read -- its last line must
 # run -- and one with a line longer than the shell takes, which must be
 # reported rather than run cut short.
@@ -112,10 +115,10 @@ mcopy -o -i "$MIMG" ../apps/napper ::/NAPPER
     printf 'echo %01100d\n' 0   # past the shell's 1024
     echo "echo after-the-long-line"
 } > "$SCRATCH/wide.tmp"
-mmd -i "$MIMG" ::/BIN 2>/dev/null || true
-mcopy -o -i "$MIMG" ../system/sh ::/BIN/SH
-mcopy -o -i "$MIMG" "$SCRATCH/long.tmp" ::/LONG.SH
-mcopy -o -i "$MIMG" "$SCRATCH/wide.tmp" ::/WIDE.SH
+fsimg mkdir /bin
+fsimg put -m 755 ../system/sh /bin/sh
+fsimg put "$SCRATCH/long.tmp" /LONG.SH
+fsimg put "$SCRATCH/wide.tmp" /WIDE.SH
 
 #
 # The session.

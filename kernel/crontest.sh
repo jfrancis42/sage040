@@ -33,7 +33,11 @@ mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-cron.img"
 PART_LBA=2048
 OFFSET=$((PART_LBA * 512))
-MIMG="$DISK@@$OFFSET"
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/crontest.log"
 rm -f "$LOG"
 BOOT_WAIT=${BOOT_WAIT:-4}
@@ -60,30 +64,29 @@ fi
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=16 status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mmd -i "$MIMG" ::/BIN ::/etc ::/lib ::/var ::/var/log ::/var/run
-mcopy -o -i "$MIMG" ../ldso/ld.so ::/lib/ld.so
-mcopy -o -i "$MIMG" "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" ::/lib/libc.so
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg mkdir /bin; fsimg mkdir /etc; fsimg mkdir /lib; fsimg mkdir /var; fsimg mkdir /var/log; fsimg mkdir /var/run
+fsimg put ../ldso/ld.so /lib/ld.so
+fsimg put "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" /lib/libc.so
 for p in cron echo date cat; do
     [ -x "../ports/sbase/bin/$p" ] && \
-        mcopy -o -i "$MIMG" "../ports/sbase/bin/$p" "::/BIN/$p"
+        fsimg put -m 755 "../ports/sbase/bin/$p" /bin/$p
 done
-mcopy -o -i "$MIMG" ../system/klogd ::/BIN/klogd
-mcopy -o -i "$MIMG" ../system/sh ::/BIN/sh
+fsimg put -m 755 ../system/klogd /bin/klogd
+fsimg put -m 755 ../system/sh /bin/sh
 
 # The crontab: one job every minute, and one at a minute that will not
 # come round while this runs (the control).
 #
 # min hour mday mon wday command
 cat > "$SCRATCH/crontab.tmp" <<'EOF'
-* * * * * /BIN/echo cron-fired >> /CRON.OUT
-30 4 1 1 * /BIN/echo control-fired >> /CRON.OUT
+* * * * * /bin/echo cron-fired >> /CRON.OUT
+30 4 1 1 * /bin/echo control-fired >> /CRON.OUT
 EOF
-mcopy -o -i "$MIMG" "$SCRATCH/crontab.tmp" ::/etc/crontab
+fsimg put "$SCRATCH/crontab.tmp" /etc/crontab
 
 rm -f "$SCRATCH/cron.fifo"
 mkfifo "$SCRATCH/cron.fifo"
@@ -143,8 +146,8 @@ tr -d '\r' < "$LOG" > "$SCRATCH/cron-clean.tmp"
 echo "=== guest session ==="
 sed 's/^/  | /' "$SCRATCH/cron-clean.tmp" | tail -40
 
-mtype -i "$MIMG" ::/CRON.OUT 2>/dev/null | tr -d '\r' > "$SCRATCH/cronout.tmp"
-mtype -i "$MIMG" ::/SYSLOG.TXT 2>/dev/null | tr -d '\r' > "$SCRATCH/cronsyslog.tmp"
+fsimg cat /CRON.OUT 2>/dev/null | tr -d '\r' > "$SCRATCH/cronout.tmp"
+fsimg cat /SYSLOG.TXT 2>/dev/null | tr -d '\r' > "$SCRATCH/cronsyslog.tmp"
 
 echo "=== checks ==="
 
@@ -164,7 +167,7 @@ check "the job for a minute that did not come round did NOT run" $?
 # The job's output is a file the HOST reads, not something the machine
 # printed: cron ran a program that wrote to the disk.
 test -s "$SCRATCH/cronout.tmp"
-check "the job's output is on the disk, read back with mtools" $?
+check "the job's output is on the disk, read back with the host's own tools" $?
 
 grep -qi "cron" "$SCRATCH/cronsyslog.tmp"
 check "cron said what it was doing in /var/log/syslog" $?

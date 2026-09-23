@@ -17,10 +17,10 @@ all:
 	./build.sh
 
 install: all $(DISK)
-	@mmd -D s -i $(MIMG) ::/BIN 2>/dev/null || true
-	mcopy -o -i $(MIMG) $(LOUT)/bin/less ::/BIN/less
+	@$(FSIMG) mkdir /bin
+	$(FSIMG) put -m 755 $(LOUT)/bin/less /bin/less
 	@[ -x $(LOUT)/bin/lesskey ] && \
-	    mcopy -o -i $(MIMG) $(LOUT)/bin/lesskey ::/BIN/lesskey || true
+	    $(FSIMG) put -m 755 $(LOUT)/bin/lesskey /bin/lesskey || true
 	@echo "less is on $(DISK)"
 
 test:

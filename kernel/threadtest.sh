@@ -34,7 +34,11 @@ mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-thread.img"
 PART_LBA=2048
 OFFSET=$((PART_LBA * 512))
-MIMG="$DISK@@$OFFSET"
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/threadtest.log"
 rm -f "$LOG"
 BOOT_WAIT=${BOOT_WAIT:-4}
@@ -61,12 +65,11 @@ fi
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=16 status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mcopy -o -i "$MIMG" ../libc/test/threadtest ::/THREADTS
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg put -m 755 ../libc/test/threadtest /threadtest
 
 rm -f "$SCRATCH/thread.fifo"
 mkfifo "$SCRATCH/thread.fifo"
@@ -97,7 +100,7 @@ sleep 0.5
 printf 'echo PS-BEFORE-DONE\r' >&3
 wait_for "PS-BEFORE-DONE"
 
-printf '/THREADTS\r' >&3
+printf '/threadtest\r' >&3
 # While it is running its last section, a busy thread of its own is
 # alive: ask the kernel what tasks exist. The program is on its own
 # console, so this arrives as input to it and is ignored -- which is

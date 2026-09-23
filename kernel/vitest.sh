@@ -8,7 +8,7 @@
 # on the disk, by keystrokes down the serial line: a line opened below
 # the last, a word inserted mid-line, a line deleted and the deletion
 # undone, an ex substitution across the buffer, :wq. The host reads the
-# file back with mtools, and vcsnap's copy of /dev/vcsa shows what vi
+# file back from the image, and vcsnap's copy of /dev/vcsa shows what vi
 # drew while it was up.
 #
 # Runs on a scratch image.
@@ -29,7 +29,11 @@ mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-vi.img"
 PART_LBA=2048
 OFFSET=$((PART_LBA * 512))
-MIMG="$DISK@@$OFFSET"
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/vitest.log"
 # Gone before QEMU starts, so a run that never reaches the guest has no
 # log to grade -- rather than silently grading the last run's.
@@ -61,20 +65,19 @@ fi
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=16 status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mmd -i "$MIMG" ::/BIN ::/lib
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg mkdir /bin; fsimg mkdir /lib
 # The editor is linked against libc.so: its interpreter and its library.
-mcopy -o -i "$MIMG" ../ldso/ld.so ::/lib/ld.so
-mcopy -o -i "$MIMG" "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" ::/lib/libc.so
-mcopy -o -i "$MIMG" ../ports/vi/vi ::/BIN/VI
-mcopy -o -i "$MIMG" ../apps/vcsnap ::/BIN/VCSNAP
-mcopy -o -i "$MIMG" ../system/stty ::/BIN/STTY
+fsimg put ../ldso/ld.so /lib/ld.so
+fsimg put "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" /lib/libc.so
+fsimg put -m 755 ../ports/vi/vi /bin/vi
+fsimg put -m 755 ../apps/vcsnap /bin/vcsnap
+fsimg put -m 755 ../system/stty /bin/stty
 printf 'the first line\nthe second line\n' > "$SCRATCH/edit.tmp"
-LC_ALL=C.UTF-8 mcopy -o -i "$MIMG" "$SCRATCH/edit.tmp" "::/Notes To Edit.txt"
+LC_ALL=C.UTF-8 fsimg put "$SCRATCH/edit.tmp" "/Notes To Edit.txt"
 
 rm -f "$SCRATCH/in.fifo"
 mkfifo "$SCRATCH/in.fifo"
@@ -131,8 +134,8 @@ wait "$qemu_pid" 2>/dev/null
 rm -f "$SCRATCH/in.fifo"
 
 tr -d '\r' < "$LOG" > "$SCRATCH/clean.tmp"
-LC_ALL=C.UTF-8 mtype -i "$MIMG" "::/Notes To Edit.txt" 2>/dev/null > "$SCRATCH/edited.tmp"
-mtype -i "$MIMG" ::/SNAP.BIN > "$SCRATCH/snap.tmp" 2>/dev/null
+LC_ALL=C.UTF-8 fsimg cat "/Notes To Edit.txt" 2>/dev/null > "$SCRATCH/edited.tmp"
+fsimg cat /SNAP.BIN > "$SCRATCH/snap.tmp" 2>/dev/null
 
 echo "=== guest session (escape sequences shown as ^[) ==="
 sed 's/\x1b/^[/g; s/^/  | /' "$SCRATCH/clean.tmp" | cut -c1-160 | tail -40

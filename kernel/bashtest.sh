@@ -33,7 +33,12 @@ SCRATCH=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}
 mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-bash.img"
 PART_LBA=2048
-MIMG="$DISK@@$((PART_LBA * 512))"
+OFFSET=$((PART_LBA * 512))
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/bashtest.log"
 WORK="$SCRATCH/bash.tmp"
 rm -f "$LOG"
@@ -78,27 +83,26 @@ make -s -C "$BASHBUILD" recho zecho printenv xcase >/dev/null 2>&1 || true
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count="$DISK_MB" status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (DISK_MB * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mmd -i "$MIMG" ::/BIN ::/lib ::/BT ::/tmp ::/share ::/share/misc
-mcopy -o -i "$MIMG" ../system/sh ::/BIN/SH
-mcopy -o -i "$MIMG" ../ports/bash/bash ::/BIN/BASH
-mcopy -o -i "$MIMG" ../ports/sbase/bin/* ::/BIN/
-mcopy -o -i "$MIMG" ../ports/sbase/share/misc/bc.library ::/share/misc/
-mcopy -o -i "$MIMG" ../ldso/ld.so ::/lib/ld.so
-mcopy -o -i "$MIMG" "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" ::/lib/libc.so
-mcopy -o -i "$MIMG" ../ports/bash/tests/lang.sh ::/BT/
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg mkdir /bin; fsimg mkdir /lib; fsimg mkdir /BT; fsimg mkdir /tmp; fsimg mkdir /share; fsimg mkdir /share/misc
+fsimg put -m 755 ../system/sh /bin/sh
+fsimg put -m 755 ../ports/bash/bash /bin/bash
+fsimg put -m 755 ../ports/sbase/bin/* /bin/
+fsimg put -m 755 ../ports/sbase/share/misc/bc.library /share/misc/
+fsimg put ../ldso/ld.so /lib/ld.so
+fsimg put "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" /lib/libc.so
+fsimg put -m 755 ../ports/bash/tests/lang.sh /BT/
 # bash's own test suite, and the helpers it runs.
-mmd -i "$MIMG" ::/BT/tests
-mcopy -o -i "$MIMG" "$BASHSRC"/tests/* ::/BT/tests/ 2>/dev/null
-mcopy -o -i "$MIMG" ../ports/bash/tests/runsuite.sh ::/BT/tests/
+fsimg mkdir /BT/tests
+fsimg put "$BASHSRC"/tests/* /BT/tests/ 2>/dev/null
+fsimg put -m 755 ../ports/bash/tests/runsuite.sh /BT/tests/
 # Its own runners invoke the shell as ./bash as well as $THIS_SH.
-mcopy -o -i "$MIMG" ../ports/bash/bash ::/BT/tests/bash
+fsimg put -m 755 ../ports/bash/bash /BT/tests/bash
 for h in recho zecho printenv xcase; do
-    [ -x "$BASHBUILD/$h" ] && mcopy -o -i "$MIMG" "$BASHBUILD/$h" "::/BT/tests/$h"
+    [ -x "$BASHBUILD/$h" ] && fsimg put "$BASHBUILD/$h" /BT/tests/$h
 done
 
 rm -f "$SCRATCH/bash.fifo"
@@ -150,9 +154,9 @@ exec 3>&-
 kill "$qemu_pid" 2>/dev/null
 wait "$qemu_pid" 2>/dev/null
 rm -f "$SCRATCH/bash.fifo"
-mcopy -o -n -i "$MIMG" '::/BT/*.out' "$WORK/got/" 2>/dev/null
+fsimg get -r /BT "$WORK/got" 2>/dev/null; mv "$WORK/got/BT"/*.out "$WORK/got/" 2>/dev/null
 mkdir -p "$WORK/suite"
-mcopy -o -n -i "$MIMG" '::/BT/tests/*.out' "$WORK/suite/" 2>/dev/null
+fsimg get -r /BT/tests "$WORK/suite" 2>/dev/null; mv "$WORK/suite/tests"/*.out "$WORK/suite/" 2>/dev/null
 tr -d '\r' < "$LOG" > "$SCRATCH/bash-clean.tmp"
 
 echo "=== guest session (last 6 lines) ==="

@@ -49,7 +49,7 @@ What porting it added:
 `kernel/uemacstest.sh` edits a file the host put on the disk, entirely
 with keystrokes down the serial line -- M-> to the end and a line typed,
 M-< to the top and a word inserted mid-line, C-x C-s, C-x C-c -- then
-reads the file back with mtools. While the editor is up, `vcsnap` copies
+reads the file back from the image. While the editor is up, `vcsnap` copies
 `/dev/vcsa` to a file, and the host checks the screen had the text and a
 reverse-video mode line naming the file. Afterwards the terminal's modes
 must be back as they were. The picture above is that session's screen.

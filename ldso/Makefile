@@ -24,10 +24,10 @@ all: ld.so
 # /lib/ld.so, and /lib/libc.so beside it when picolibc has been built
 # (`make libc`): what every dynamically linked program on the disk needs.
 install: ld.so $(DISK)
-	mmd -D s -i $(MIMG) ::/lib 2>/dev/null || true
-	mcopy -o -i $(MIMG) ld.so ::/lib/ld.so
+	@$(FSIMG) mkdir /lib
+	@$(FSIMG) put -m 755 ld.so /lib/ld.so
 	@if [ -f $(SAGE_LIBC)/lib/libc.so ]; then \
-	    mcopy -o -i $(MIMG) $(SAGE_LIBC)/lib/libc.so ::/lib/libc.so; \
+	    $(FSIMG) put -m 755 $(SAGE_LIBC)/lib/libc.so /lib/libc.so; \
 	    echo "installed /lib/ld.so and /lib/libc.so"; \
 	else echo "installed /lib/ld.so; no libc.so -- run 'make libc'"; fi
 

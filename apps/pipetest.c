@@ -263,10 +263,10 @@ static void test_pipes(void)
 /* A child in this group ending with kill(0, ...) -- the group form. */
 static void test_group_kill(void)
 {
-    static char *argv[3] = { "/PIPETEST", "sleepy", 0 };
+    static char *argv[3] = { "/pipetest", "sleepy", 0 };
     int child, st = 0;
 
-    child = spawn("/PIPETEST", 2, argv, 0);
+    child = spawn("/pipetest", 2, argv, 0);
     report("a spawned helper joins its parent's group",
            syscall(__NR_getpgid, child) == getpgrp());
     signal(SIGTERM, SIG_IGN);           /* spare this one */

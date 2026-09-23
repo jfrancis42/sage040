@@ -34,7 +34,11 @@ mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-curs.img"
 PART_LBA=2048
 OFFSET=$((PART_LBA * 512))
-MIMG="$DISK@@$OFFSET"
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/curstest.log"
 rm -f "$LOG"
 BOOT_WAIT=${BOOT_WAIT:-4}
@@ -62,27 +66,26 @@ NCOUT=${SAGE_SRC:-$HOME/m68k/src}/build-ncurses-sage040/sage040
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=16 status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mcopy -o -i "$MIMG" "$NCOUT/bin/curstest" ::/CURSTEST
-mmd -i "$MIMG" ::/BIN
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg put -m 755 "$NCOUT/bin/curstest" /curstest
+fsimg mkdir /bin
 for p in tput infocmp clear; do
-    [ -x "$NCOUT/bin/$p" ] && mcopy -o -i "$MIMG" "$NCOUT/bin/$p" "::/BIN/$p"
+    [ -x "$NCOUT/bin/$p" ] && fsimg put "$NCOUT/bin/$p" /bin/$p
 done
 # The database, as ncurses lays it out.
-mmd -i "$MIMG" ::/usr ::/usr/share ::/usr/share/terminfo
+fsimg mkdir /usr; fsimg mkdir /usr/share; fsimg mkdir /usr/share/terminfo
 for d in "$NCOUT"/terminfo/*/; do
     n=$(basename "$d")
-    mmd -i "$MIMG" "::/usr/share/terminfo/$n"
-    mcopy -o -i "$MIMG" "$d"* "::/usr/share/terminfo/$n/"
+    fsimg mkdir "/usr/share/terminfo/$n"
+    fsimg put "$d"* "/usr/share/terminfo/$n/"
 done
 # ld.so and libc.so, since the program is linked against them.
-mmd -i "$MIMG" ::/lib
-mcopy -o -i "$MIMG" ../ldso/ld.so ::/lib/ld.so
-mcopy -o -i "$MIMG" "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" ::/lib/libc.so
+fsimg mkdir /lib
+fsimg put ../ldso/ld.so /lib/ld.so
+fsimg put "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" /lib/libc.so
 
 rm -f "$SCRATCH/curs.fifo"
 mkfifo "$SCRATCH/curs.fifo"
@@ -107,7 +110,7 @@ wait_for() {
     return 1
 }
 
-printf '/CURSTEST\r' >&3
+printf '/curstest\r' >&3
 wait_for "RESULT: " 1800
 sleep 0.5
 
@@ -154,7 +157,7 @@ echo "=== checks: ncurses's own programs ==="
 grep -qx "80" "$SCRATCH/curs-clean.tmp"
 check "tput -Tvt102 cols says 80" $?
 
-mtype -i "$MIMG" ::/INFO.OUT 2>/dev/null | tr -d '\r' > "$SCRATCH/infocmp.tmp"
+fsimg cat /INFO.OUT 2>/dev/null | tr -d '\r' > "$SCRATCH/infocmp.tmp"
 grep -q "wyse50|" "$SCRATCH/infocmp.tmp"
 check "infocmp printed the wyse50 entry -- from the database" $?
 grep -qE '^\s+cup=' "$SCRATCH/infocmp.tmp"
@@ -175,7 +178,7 @@ check "the shell is still there afterwards" $?
 echo "=== the control: the same program with no database ==="
 LOG2="$SCRATCH/curstest-nodb.log"
 rm -f "$LOG2"
-mmove -i "$MIMG" ::/usr/share/terminfo ::/usr/share/terminfo.off
+fsimg mv /usr/share/terminfo /usr/share/terminfo.off
 
 rm -f "$SCRATCH/curs.fifo"
 mkfifo "$SCRATCH/curs.fifo"
@@ -188,7 +191,7 @@ mkfifo "$SCRATCH/curs.fifo"
 qemu_pid=$!
 exec 3> "$SCRATCH/curs.fifo"
 sleep "$BOOT_WAIT"
-printf '/CURSTEST\r' >&3
+printf '/curstest\r' >&3
 for _ in $(seq 1 1800); do
     grep -qF "RESULT: " "$LOG2" 2>/dev/null && break
     kill -0 "$qemu_pid" 2>/dev/null || break
@@ -199,7 +202,7 @@ exec 3>&-
 kill "$qemu_pid" 2>/dev/null
 wait "$qemu_pid" 2>/dev/null
 rm -f "$SCRATCH/curs.fifo"
-mmove -i "$MIMG" ::/usr/share/terminfo.off ::/usr/share/terminfo
+fsimg mv /usr/share/terminfo.off /usr/share/terminfo
 tr -d '\r' < "$LOG2" > "$SCRATCH/curs-nodb.tmp"
 
 grep -q "^  \[ OK \] setupterm(vt102)" "$SCRATCH/curs-nodb.tmp"

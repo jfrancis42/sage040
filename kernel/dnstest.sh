@@ -33,7 +33,11 @@ mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-dns.img"
 PART_LBA=2048
 OFFSET=$((PART_LBA * 512))
-MIMG="$DISK@@$OFFSET"
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/dnstest.log"
 # Gone before QEMU starts, so a run that never reaches the guest has no
 # log to grade -- rather than silently grading the last run's.
@@ -69,16 +73,15 @@ make -s -C ../libc/test inettest || {
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=16 status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mmd -i "$MIMG" ::/BIN ::/ETC
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg mkdir /bin; fsimg mkdir /ETC
 for p in ifconfig ping host ntpdate; do
-    mcopy -o -i "$MIMG" ../system/$p ::/BIN/$(echo $p | tr a-z A-Z)
+    fsimg put -m 755 ../system/$p "/bin/$p"
 done
-mcopy -o -i "$MIMG" ../libc/test/inettest ::/INETTEST
+fsimg put -m 755 ../libc/test/inettest /inettest
 
 if command -v ss >/dev/null 2>&1 &&
    ss -lnu 2>/dev/null | grep -qE ":($DNS_PORT|$NTP_PORT|$((NTP_PORT + 1))) "; then
@@ -131,7 +134,7 @@ run 'host 10.20.30.40' quad
 run 'host silent.sage.test' silent
 run 'host spoof.sage.test' spoof
 run 'ping gw.sage.test 2' ping
-run '/INETTEST' inet
+run '/inettest' inet
 run "ntpdate -q -p $NTP_PORT ntp.sage.test" ntpq
 run 'date' date1
 run "ntpdate -p $NTP_PORT ntp.sage.test" ntp
@@ -197,8 +200,8 @@ while IFS= read -r line; do
         "  ok   "*)   check "${line#  ok   }" 0 ;;
         "  FAIL "*)   check "${line#  FAIL }" 1 ;;
     esac
-done < <(between '/INETTEST' inet | grep -E '^  (ok  |FAIL) ')
-between '/INETTEST' inet | grep -qx "inettest: 0 failed"
+done < <(between '/inettest' inet | grep -E '^  (ok  |FAIL) ')
+between '/inettest' inet | grep -qx "inettest: 0 failed"
 check "inettest ran to the end" $?
 # host asks once; inettest's getaddrinfo once, and its lookup in capitals
 # and its gethostbyname come from its cache.

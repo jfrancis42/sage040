@@ -210,10 +210,10 @@ static void test_accounting(void)
     report("  and hardly any of it as system time",
            b.tms_stime - a.tms_stime < 5);
 
-    argv[0] = "/TIMETEST";
+    argv[0] = "/timetest";
     argv[1] = "burn";
     argv[2] = ms;
-    child = spawn("/TIMETEST", 3, argv, 0);
+    child = spawn("/timetest", 3, argv, 0);
     waitpid(child, &st, 0);
     times(&b);
     report("a waited-for child's 300 ms arrive in cutime",

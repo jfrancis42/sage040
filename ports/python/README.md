@@ -45,7 +45,7 @@ version here is pinned to what the host has.
   that tests for it directly compiles out.
 - **The `.pyc` files are hash-based and unchecked.** A normal `.pyc`
   carries its source's size and modification time, and the times on a FAT
-  filesystem are whatever mcopy wrote -- so every module looked stale and
+  filesystem are whatever the copy onto the image wrote -- so every module looked stale and
   the machine recompiled the standard library at every import.
   `statistics` alone took minutes.
 

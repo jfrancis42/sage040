@@ -101,7 +101,7 @@ static void test_fork(void)
     close(p[0]);
     waitpid(pid, &st, 0);
 
-    fd = open("/PROCTEST", O_RDONLY);
+    fd = open("/proctest", O_RDONLY);
     pid = fork();
     if (pid == 0) {
         read(fd, c4, 4);
@@ -116,7 +116,7 @@ static void test_fork(void)
 static void test_wait(void)
 {
     int pid, st, pid2;
-    static char *sleepy[3] = { "/PIPETEST", "sleepy", 0 };
+    static char *sleepy[3] = { "/pipetest", "sleepy", 0 };
 
     pid = fork();
     if (pid == 0) {
@@ -126,7 +126,7 @@ static void test_wait(void)
            waitpid(pid, &st, 0) == pid && WIFEXITED(st) &&
            WEXITSTATUS(st) == 7 && !WIFSIGNALED(st));
 
-    pid = spawn("/PIPETEST", 2, sleepy, 0);
+    pid = spawn("/pipetest", 2, sleepy, 0);
     report("WNOHANG returns 0 while the child runs",
            waitpid(pid, &st, WNOHANG) == 0);
     kill(pid, SIGKILL);
@@ -173,7 +173,7 @@ static void test_wait(void)
         act.sa_flags = 0;           /* no SA_RESTART */
         act.sa_restorer = 0;
         sigaction(SIGALRM, &act, 0);
-        pid = spawn("/PIPETEST", 2, sleepy, 0);
+        pid = spawn("/pipetest", 2, sleepy, 0);
         alarm(1);
         report("a signal interrupts waitpid with EINTR",
                waitpid(pid, &st, 0) == -EINTR && alarmed == SIGALRM);
@@ -186,15 +186,15 @@ static void test_wait(void)
 static void test_exec(void)
 {
     int pid, st, p[2];
-    static char *args[4] = { "/PROCTEST", "exec-me", "argument-one", 0 };
+    static char *args[4] = { "/proctest", "exec-me", "argument-one", 0 };
     static char *env[3] = { "PROCVAR=from-execve", "OTHER=x", 0 };
-    static char *hold[3] = { "/PROCTEST", "holdopen", 0 };
-    static char *chk[3] = { "/PROCTEST", "checksig", 0 };
+    static char *hold[3] = { "/proctest", "holdopen", 0 };
+    static char *chk[3] = { "/proctest", "checksig", 0 };
     u32 t0;
 
     pid = fork();
     if (pid == 0) {
-        execve("/PROCTEST", args, env);
+        execve("/proctest", args, env);
         exit(99);                   /* only if execve failed */
     }
     report("execve runs the new program with its arguments and environment",
@@ -209,7 +209,7 @@ static void test_exec(void)
     pid = fork();
     if (pid == 0) {
         close(p[0]);
-        execve("/PROCTEST", hold, 0);
+        execve("/proctest", hold, 0);
         exit(99);
     }
     close(p[1]);
@@ -228,7 +228,7 @@ static void test_exec(void)
     if (pid == 0) {
         signal(SIGUSR1, on_usr1);
         signal(SIGUSR2, SIG_IGN);
-        execve("/PROCTEST", chk, 0);
+        execve("/proctest", chk, 0);
         exit(99);
     }
     report("execve resets caught signals and keeps ignored ones",

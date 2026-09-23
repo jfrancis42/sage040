@@ -8,7 +8,7 @@
 # plausible table while reporting the wrong numbers is worse than one
 # that fails, because nobody checks it twice. So the numbers the
 # machine reports are compared against what the HOST's own tools say
-# about the same image: mdir gives the free space, and the files were
+# about the same image: `fsimg df` gives the free space, and the files were
 # put there by the host, which therefore knows how big they are.
 #
 # The known sizes are chosen to be awkward on purpose. A file of
@@ -35,7 +35,12 @@ SCRATCH=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}
 mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-df.img"
 PART_LBA=2048
-MIMG="$DISK@@$((PART_LBA * 512))"
+OFFSET=$((PART_LBA * 512))
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/dftest.log"
 WORK="$SCRATCH/df.tmp"
 rm -f "$LOG"
@@ -70,27 +75,30 @@ DF_MB=64
 echo "=== preparing $DISK ($DF_MB MB) ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=$DF_MB status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (DF_MB * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mmd -i "$MIMG" ::/BIN ::/lib ::/ST ::/ST/sub
-mcopy -o -i "$MIMG" ../system/sh ::/BIN/sh
-mcopy -o -i "$MIMG" ../system/df ::/BIN/df
-mcopy -o -i "$MIMG" ../ldso/ld.so ::/lib/ld.so
-mcopy -o -i "$MIMG" "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" ::/lib/libc.so
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg mkdir /bin; fsimg mkdir /lib; fsimg mkdir /ST; fsimg mkdir /ST/sub
+fsimg put -m 755 ../system/sh /bin/sh
+fsimg put -m 755 ../system/df /bin/df
+fsimg put ../ldso/ld.so /lib/ld.so
+fsimg put "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" /lib/libc.so
 for p in du ls cat echo mv; do
     [ -x "../ports/sbase/bin/$p" ] && \
-        mcopy -o -i "$MIMG" "../ports/sbase/bin/$p" "::/BIN/$p"
+        fsimg put -m 755 "../ports/sbase/bin/$p" /bin/$p
 done
 head -c $BIG1 /dev/urandom > "$WORK/big1.bin"
 head -c $BIG2 /dev/urandom > "$WORK/big2.bin"
-mcopy -o -i "$MIMG" "$WORK/big1.bin" ::/ST/big1.bin
-mcopy -o -i "$MIMG" "$WORK/big2.bin" ::/ST/sub/big2.bin
+fsimg put "$WORK/big1.bin" /ST/big1.bin
+fsimg put "$WORK/big2.bin" /ST/sub/big2.bin
 
 # What the HOST says about the same volume, before the machine boots.
-host_free=$(mdir -i "$MIMG" ::/ 2>/dev/null | awk '/bytes free/ {gsub(/[^0-9]/,"",$0); print}')
+# AVAILABLE, not free: ext2 reserves a percentage for root, the
+# machine's df reports the available figure in its "avail" column as
+# Linux's does, and comparing that with the raw free space is a
+# 5%-of-the-disk discrepancy that looks like an arithmetic bug.
+host_free=$(fsimg df 2>/dev/null | awk '/^bytes_avail/ {print $2}')
 echo "    the host says $host_free bytes free"
 
 rm -f "$SCRATCH/df.fifo"
@@ -128,7 +136,7 @@ run 'du -h /ST > /ST/duh.out'    duh
 run 'du -sk /ST > /ST/dusk.out'  dusk
 run 'du -ak /ST > /ST/duak.out'  duak
 # The negative control: with no /bin/df, the SHELL must answer.
-run 'mv /BIN/df /BIN/dfmoved'    move
+run 'mv /bin/df /bin/dfmoved'    move
 run 'df > /ST/dfbuilt.out'       builtin
 run 'echo ALL-DONE'              end
 wait_for "ALL-DONE"
@@ -141,7 +149,7 @@ rm -f "$SCRATCH/df.fifo"
 tr -d '\r' < "$LOG" > "$WORK/session.txt"
 
 for f in df.out dfh.out dfi.out duk.out duh.out dusk.out duak.out dfbuilt.out; do
-    mcopy -n -o -i "$MIMG" "::/ST/$f" "$WORK/$f" 2>/dev/null
+    fsimg get /ST/$f $WORK/$f 2>/dev/null
 done
 
 echo "=== what the machine printed ==="
@@ -171,9 +179,9 @@ if [ -n "${mach_avail:-}" ] && [ "$host_avail_k" -gt 0 ]; then
                                        : host_avail_k - mach_avail ))
     # Within 1% of the host's answer.
     test "$diff" -lt $(( host_avail_k / 100 + 64 ))
-    check "  free space agrees with the HOST's mdir ($mach_avail K vs $host_avail_k K)" $?
+    check "  free space agrees with the host's own tools ($mach_avail K vs $host_avail_k K)" $?
 else
-    check "  free space agrees with the host's mdir" 1
+    check "  free space agrees with the host's own tools" 1
 fi
 
 # used + avail must be the total, or the arithmetic is not arithmetic.
@@ -183,8 +191,10 @@ check "  total = used + available" $?
 grep -qE "[0-9]+M" "$WORK/dfh.out" 2>/dev/null
 check "df -h reports megabytes, not raw blocks" $?
 
-grep -qi "no inode table" "$WORK/dfi.out" 2>/dev/null
-check "df -i says FAT has no inodes rather than printing zeroes" $?
+awk 'NR==2 && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ \
+         { exit !($2 == $3 + $4) }
+         NR==2 { exit 1 }' "$WORK/dfi.out" 2>/dev/null
+check "df -i reports the inode table, and used + free is the total" $?
 
 # --- du ---------------------------------------------------------------
 # 300000 bytes is 293 KB; 70000 is 69 KB. du -k must say so.

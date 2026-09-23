@@ -12,7 +12,7 @@
 # with whitespace squeezed, where column widths may fairly differ.
 #
 # Then what only the disk can say: a tar archive the host's tar reads, a
-# dd whose size mtools reports, a date touch set, make rebuilding a file
+# dd whose size the host reports, a date touch set, make rebuilding a file
 # only when its source is newer, ed editing a file in place, directories
 # made and removed.
 #
@@ -32,7 +32,12 @@ SCRATCH=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}
 mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-sbase.img"
 PART_LBA=2048
-MIMG="$DISK@@$((PART_LBA * 512))"
+OFFSET=$((PART_LBA * 512))
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/sbasetest.log"
 WORK="$SCRATCH/sbase.tmp"
 rm -f "$LOG"
@@ -72,19 +77,18 @@ done < "$T/cases.txt"
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=16 status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mmd -i "$MIMG" ::/BIN ::/lib ::/ST ::/tmp
-mcopy -o -i "$MIMG" ../system/sh ::/BIN/SH
-mcopy -o -i "$MIMG" ../ports/sbase/bin/* ::/BIN/
-mmd -i "$MIMG" ::/share ::/share/misc
-mcopy -o -i "$MIMG" ../ports/sbase/share/misc/bc.library ::/share/misc/
-mcopy -o -i "$MIMG" ../ldso/ld.so ::/lib/ld.so
-mcopy -o -i "$MIMG" "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" ::/lib/libc.so
-mcopy -o -i "$MIMG" "$T"/* ::/ST/
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg mkdir /bin; fsimg mkdir /lib; fsimg mkdir /ST; fsimg mkdir /tmp
+fsimg put -m 755 ../system/sh /bin/sh
+fsimg put -m 755 ../ports/sbase/bin/* /bin/
+fsimg mkdir /share; fsimg mkdir /share/misc
+fsimg put -m 755 ../ports/sbase/share/misc/bc.library /share/misc/
+fsimg put ../ldso/ld.so /lib/ld.so
+fsimg put "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" /lib/libc.so
+fsimg put "$T"/* /ST/
 
 rm -f "$SCRATCH/sbase.fifo"
 mkfifo "$SCRATCH/sbase.fifo"
@@ -153,7 +157,7 @@ kill "$qemu_pid" 2>/dev/null
 wait "$qemu_pid" 2>/dev/null
 rm -f "$SCRATCH/sbase.fifo"
 
-mcopy -o -n -s -i "$MIMG" '::/ST/*' "$WORK/got/" 2>/dev/null
+fsimg get -r /ST "$WORK/got" 2>/dev/null; mv "$WORK/got/ST"/* "$WORK/got/" 2>/dev/null
 tr -d '\r' < "$LOG" > "$SCRATCH/sbase-clean.tmp"
 
 echo "=== checks: each utility against the host's ==="
@@ -186,7 +190,7 @@ G=$WORK/got
 check "tar: an archive made on the machine, read by the host's tar" $?
 [ "$(stat -c %s "$G/zero.bin" 2>/dev/null)" = 2048 ] && ! tr -d '\0' < "$G/zero.bin" | grep -q .
 check "dd: 4 blocks of 512 zero bytes" $?
-mdir -i "$MIMG" ::/ST/touched.txt 2>/dev/null | grep -q "2001-02-03 *4:05"
+fsimg ls /ST/touched.txt 2>/dev/null | grep -q "2001-02-03 *4:05"
 check "touch -d: the date the host reads off the disk" $?
 [ "$(cat "$G/out.txt" 2>/dev/null)" = newer ]
 r=$?

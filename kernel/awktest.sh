@@ -35,7 +35,12 @@ SCRATCH=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}
 mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-awk.img"
 PART_LBA=2048
-MIMG="$DISK@@$((PART_LBA * 512))"
+OFFSET=$((PART_LBA * 512))
+# The host's end of the disk: one helper, shared with the Makefiles.
+# Everything that reaches into the image goes through it, so no test
+# carries its own spelling of where the filesystem starts.
+FSIMG_SH="$(cd .. && pwd)/tools/fsimg.sh"
+fsimg() { PART_OFFSET=$OFFSET "$FSIMG_SH" "$DISK" "$@"; }
 LOG="$SCRATCH/awktest.log"
 WORK="$SCRATCH/awk.tmp"
 rm -f "$LOG"
@@ -102,19 +107,18 @@ done
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=16 status=none
-printf 'label: dos\nunit: sectors\nstart=%s, type=06\n' "$PART_LBA" \
+printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
-mkfs.fat -F 16 -n SAGE040 --offset "$PART_LBA" "$DISK" \
-    $(( (16 * 2048 - PART_LBA) / 2 )) >/dev/null
-mcopy -o -i "$MIMG" kernel.rom ::/KERNEL.ROM
-mmd -i "$MIMG" ::/BIN ::/lib ::/AWKT
+fsimg mkfs SAGE040
+fsimg put kernel.rom /KERNEL.ROM
+fsimg mkdir /bin; fsimg mkdir /lib; fsimg mkdir /AWKT
 for p in sh rm echo; do
-    [ -f "../system/$p" ] && mcopy -o -i "$MIMG" "../system/$p" "::/BIN/$(echo $p | tr a-z A-Z)"
+    [ -f "../system/$p" ] && fsimg put -m 755 "../system/$p" "/bin/$p"
 done
-mcopy -o -i "$MIMG" ../ports/awk/awk ::/BIN/AWK
-mcopy -o -i "$MIMG" ../ldso/ld.so ::/lib/ld.so
-mcopy -o -i "$MIMG" "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" ::/lib/libc.so
-mcopy -o -i "$MIMG" "$WORK"/tests/* ::/AWKT/
+fsimg put -m 755 ../ports/awk/awk /bin/awk
+fsimg put ../ldso/ld.so /lib/ld.so
+fsimg put "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" /lib/libc.so
+fsimg put "$WORK"/tests/* /AWKT/
 
 rm -f "$SCRATCH/awk.fifo"
 mkfifo "$SCRATCH/awk.fifo"
@@ -160,7 +164,7 @@ wait "$qemu_pid" 2>/dev/null
 rm -f "$SCRATCH/awk.fifo"
 
 mkdir -p "$WORK/got"
-mcopy -o -n -i "$MIMG" '::/AWKT/*.OUT' "$WORK/got/" 2>/dev/null
+fsimg get -r /AWKT "$WORK/got" 2>/dev/null; mv "$WORK/got/AWKT"/* "$WORK/got/" 2>/dev/null
 tr -d '\r' < "$LOG" > "$SCRATCH/awk-clean.tmp"
 
 echo "=== guest session (last 20 lines) ==="
@@ -168,7 +172,6 @@ tail -20 "$SCRATCH/awk-clean.tmp" | sed 's/^/  | /'
 
 grade() {                       # grade TEST
     local got="$WORK/got/$1.OUT"
-    [ -f "$got" ] || got="$WORK/got/$(echo "$1" | tr a-z A-Z).OUT"
     [ -f "$got" ] || return 1
     cmp -s "$got" "$WORK/expect/$1.ok" && return 0
     [ -f "$WORK/expect/$1.ok2" ] && cmp -s "$got" "$WORK/expect/$1.ok2"

@@ -22,8 +22,8 @@ all:
 	./build.sh
 
 install: all $(DISK)
-	@mmd -D s -i $(MIMG) ::/BIN 2>/dev/null || true
-	mcopy -o -i $(MIMG) $(OUT)/bin/rsync ::/BIN/rsync
+	@$(FSIMG) mkdir /bin
+	$(FSIMG) put -m 755 $(OUT)/bin/rsync /bin/rsync
 	@echo "rsync is on $(DISK)"
 
 clean:

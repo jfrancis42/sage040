@@ -11,6 +11,7 @@
 #include "ulib.h"
 
 static int failures;
+static const char *self = "/limits";
 
 static void report(const char *what, int ok)
 {
@@ -41,7 +42,7 @@ static void test_files(void)
     char c;
 
     while (n < OPEN_MAX) {
-        fds[n] = open("/LIMITS", O_RDONLY);
+        fds[n] = open(self, O_RDONLY);
         if (fds[n] < 0) {
             break;
         }
@@ -49,7 +50,7 @@ static void test_files(void)
     }
     say("descriptors open:", (u32)n);
     report("a task can have OPEN_MAX descriptors (64)", n == OPEN_MAX);
-    last = open("/LIMITS", O_RDONLY);
+    last = open(self, O_RDONLY);
     report("  and one more is EMFILE", last == -EMFILE);
     for (i = 3; i < n; i++) {
         if (read(fds[i], &c, 1) != 1) {
@@ -61,12 +62,12 @@ static void test_files(void)
         close(fds[i]);
     }
     report("  and closing them gives them back",
-           (i = open("/LIMITS", O_RDONLY)) >= 0 && close(i) == 0);
+           (i = open(self, O_RDONLY)) >= 0 && close(i) == 0);
 }
 
 /* The FAT's machine-wide table: children, each holding files, past what
  * any one task may. */
-static void test_fat_handles(void)
+static void test_fs_handles(void)
 {
     int p[2], k, pid[3], st, total = 0;
 
@@ -78,7 +79,7 @@ static void test_fat_handles(void)
             char go;
 
             close(p[0]);
-            while (n < 40 && open("/LIMITS", O_RDONLY) >= 0) {
+            while (n < 40 && open(self, O_RDONLY) >= 0) {
                 n++;
             }
             write(p[1], &n, sizeof(n));
@@ -166,10 +167,14 @@ static void test_sockets(void)
     }
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    if (argc > 0 && argv[0] && argv[0][0]) {
+        self = argv[0];
+    }
+    (void)argc;
     test_files();
-    test_fat_handles();
+    test_fs_handles();
     test_tasks();
     test_sockets();
     puts("limits: ");
