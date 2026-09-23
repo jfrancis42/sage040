@@ -69,7 +69,18 @@ Every suite in the tree has been run on ext2 and passes:
 `dnstest` (57) · `pagetest` · `logtest` · `cryptotest` · `uemacstest` ·
 `vitest` · `lesstest` · `curstest` · `sedtest` (21) · `awktest` ·
 `apitest` · `greptest` · `sbasetest` · `dftest` · `libctest` ·
-`nativetest` (15) · `qemutest` (8) · `pylibtest` · `sshtest`
+`nativetest` (15) · `qemutest` (8) · `pylibtest` · `sshtest` · `pytest`
+
+`bashtest` is 12 of bash's own 15 cases, up from 8. The three that
+remain are named, and none of them is about the shell:
+
+- **`func`** uses process substitution, `<(...)`, which this system
+  does not have: it needs FIFOs and `/dev/fd`, which are task 30's
+  remainder below.
+- **`glob`** wants the `locale` command and a zh_TW.big5 locale, and
+  says so itself in a warning.
+- **`array`** has one line of 259 different, from `ls ${pat[@]}` with
+  a `*.*` glob. Not investigated.
 
 Three of those were finding faults that had nothing to do with the
 filesystem and had been there all along:
