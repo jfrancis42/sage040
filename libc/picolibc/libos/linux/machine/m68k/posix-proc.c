@@ -56,9 +56,162 @@
 #include <sys/random.h>
 #include <sys/wait.h>
 #include <time.h>
+#include <sys/ioctl.h>
+#include <stdio.h>
+#include <termios.h>
 #include <unistd.h>
 
 extern char **environ;
+
+/* --- pseudo-terminals ------------------------------------------------ */
+
+/*
+ * The kernel's numbers, which are Linux's. picolibc's <sys/ioctl.h>
+ * carries the few requests it implements itself and not these.
+ */
+#ifndef TIOCGPTN
+#define TIOCGPTN   0x80045430   /* which /dev/pts/N this master is */
+#endif
+#ifndef TIOCSPTLCK
+#define TIOCSPTLCK 0x40045431   /* unlockpt: nothing to unlock here */
+#endif
+
+/*
+ * A pty is a terminal with a program at each end. Opening /dev/ptmx
+ * allocates a pair and gives back the master; the slave is /dev/pts/N,
+ * and N is what the master's TIOCGPTN says. See kernel/pty.c.
+ *
+ * grantpt and unlockpt exist because System V needed them -- one to fix
+ * the slave's ownership, the other to release a lock held until it had
+ * been fixed. This system has one user and no such lock, so they check
+ * that the descriptor really is a master and then succeed, which is
+ * what a program calling them is entitled to assume.
+ */
+int
+posix_openpt(int flags)
+{
+    return open("/dev/ptmx", flags);
+}
+
+int
+ptsname_r(int fd, char *buf, size_t len)
+{
+    int n;
+
+    if (!buf) {
+        return EINVAL;
+    }
+    if (ioctl(fd, TIOCGPTN, &n) < 0) {
+        return errno == EINVAL ? EINVAL : ENOTTY;
+    }
+    if (snprintf(buf, len, "/dev/pts/%d", n) >= (int)len) {
+        return ERANGE;
+    }
+    return 0;
+}
+
+char *
+ptsname(int fd)
+{
+    static char name[32];       /* as POSIX has it: one per process */
+
+    if (ptsname_r(fd, name, sizeof(name)) != 0) {
+        return NULL;
+    }
+    return name;
+}
+
+int
+grantpt(int fd)
+{
+    int n;
+
+    return ioctl(fd, TIOCGPTN, &n) < 0 ? -1 : 0;
+}
+
+int
+unlockpt(int fd)
+{
+    int zero = 0;
+
+    return ioctl(fd, TIOCSPTLCK, &zero) < 0 ? -1 : 0;
+}
+
+/*
+ * openpty: both ends at once, which is what a program that is about to
+ * fork wants. The BSD interface, and what libutil provides elsewhere.
+ */
+int
+openpty(int *amaster, int *aslave, char *name,
+        const struct termios *termp, const struct winsize *winp)
+{
+    char  path[32];
+    int   m, s;
+
+    m = posix_openpt(O_RDWR | O_NOCTTY);
+    if (m < 0) {
+        return -1;
+    }
+    if (grantpt(m) < 0 || unlockpt(m) < 0 ||
+        ptsname_r(m, path, sizeof(path)) != 0) {
+        close(m);
+        return -1;
+    }
+    s = open(path, O_RDWR | O_NOCTTY);
+    if (s < 0) {
+        close(m);
+        return -1;
+    }
+    if (termp) {
+        tcsetattr(s, TCSANOW, termp);
+    }
+    if (winp) {
+        ioctl(s, TIOCSWINSZ, winp);
+    }
+    if (name) {
+        strcpy(name, path);
+    }
+    *amaster = m;
+    *aslave = s;
+    return 0;
+}
+
+/*
+ * forkpty: a child with the slave as its whole terminal -- stdin,
+ * stdout, stderr -- and its own session, so that the pty is its
+ * controlling terminal and not the one its parent was using.
+ */
+pid_t
+forkpty(int *amaster, char *name, const struct termios *termp,
+        const struct winsize *winp)
+{
+    int   m, s;
+    pid_t pid;
+
+    if (openpty(&m, &s, name, termp, winp) < 0) {
+        return -1;
+    }
+    pid = fork();
+    if (pid < 0) {
+        close(m);
+        close(s);
+        return -1;
+    }
+    if (pid == 0) {
+        close(m);
+        setsid();
+        dup2(s, 0);
+        dup2(s, 1);
+        dup2(s, 2);
+        if (s > 2) {
+            close(s);
+        }
+        return 0;
+    }
+    close(s);
+    *amaster = m;
+    return pid;
+}
 
 /* ---- sessions and the host name ------------------------------------ */
 

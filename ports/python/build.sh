@@ -162,11 +162,12 @@ if [ ! -f "$BUILD/Makefile" ]; then
 fi
 
 # SYSLIBS goes LAST on every link, after Python's own archives; LIBS
-# goes before them. libgcc has to be in the last one: the 68040 has no
-# instruction for "unsigned 64-bit integer to float", so libexpat's
-# calls to __floatundisf are undefined if libgcc was scanned before the
-# archive that needs it, which is what a static link means.
-make -C "$BUILD" -j8 SYSLIBS="-lgcc" "$@" 2>&1 | tail -40
+# goes before them. The C library and libgcc have to be in the last one:
+# a static link scans each archive once, in order, so anything the
+# archives in between need -- libexpat's __floatundisf, ncurses's
+# wcwidth and wcrtomb -- is undefined if libc and libgcc were scanned
+# before the archive that asks for them.
+make -C "$BUILD" -j8 SYSLIBS="$STATIC_LIBS" "$@" 2>&1 | tail -40
 
 mkdir -p "$OUT"
 make -C "$BUILD" install DESTDIR="$OUT" > "$BUILD/install.log" 2>&1 || true

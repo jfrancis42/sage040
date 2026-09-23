@@ -205,7 +205,8 @@ mkdir -p "$PREFIX/include/sys"
 } > "$PREFIX/include/sys/syscall.h"
 
 cp "$HERE/picolibc/libos/linux/machine/m68k/pthread.h" \
-   "$HERE/picolibc/libos/linux/machine/m68k/semaphore.h" "$PREFIX/include/"
+   "$HERE/picolibc/libos/linux/machine/m68k/semaphore.h" \
+   "$HERE/picolibc/libos/linux/machine/m68k/pty.h" "$PREFIX/include/"
 # A PROGRAM does not get the library's own -D, so the installed
 # features.h says outright that this target has threads. Patch 21 is
 # what puts the switch there; this is what throws it.

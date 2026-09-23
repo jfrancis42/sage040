@@ -1,0 +1,33 @@
+picolibc 1.8.12's <stdlib.h> declares grantpt and none of the other
+pseudo-terminal calls. grantpt is the one that does nothing on most
+systems: a program that wants a pty needs posix_openpt to get one,
+ptsname to find the other end and unlockpt before that end may be
+opened. Declaring one of the four is enough to compile a configure test
+and not enough to build the program that follows it.
+
+Not specific to m68k.
+
+diff -ru a/libc/include/stdlib.h b/libc/include/stdlib.h
+--- a/libc/include/stdlib.h	2026-09-22 17:05:53.226493778 -0600
++++ b/libc/include/stdlib.h	2026-09-22 17:05:53.244530478 -0600
+@@ -154,7 +154,19 @@
+ int                            getsubopt(char **, char                            *const *, char **) __picolibc_export;
+ #endif
+ #if __XSI_VISIBLE >= 500
+-int grantpt(int fd) __picolibc_export;
++/*
++ * The pseudo-terminal calls. picolibc declared grantpt alone, which is
++ * the one of the four that does nothing on most systems -- a program
++ * that opens a pty needs posix_openpt to get one, ptsname to find the
++ * other end, and unlockpt before it may be opened. Declaring one of
++ * four is enough to compile a configure test and not enough to build
++ * the program that follows it.
++ */
++int   grantpt(int __fd) __picolibc_export;
++int   unlockpt(int __fd) __picolibc_export;
++char *ptsname(int __fd) __picolibc_export;
++int   ptsname_r(int __fd, char *__buf, size_t __len) __picolibc_export;
++int   posix_openpt(int __flags) __picolibc_export;
+ #endif
+ #if __SVID_VISIBLE || __XSI_VISIBLE >= 4 || __BSD_VISIBLE
+ char *initstate(unsigned, char *, size_t) __picolibc_export;

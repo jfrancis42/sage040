@@ -371,6 +371,8 @@ static const struct {
     { TIOCSCONS,    sizeof(struct console_set),   IO_IN  },
     { TIOCGPGRP,    sizeof(int),                  IO_OUT },
     { TIOCSPGRP,    sizeof(int),                  IO_IN  },
+    { TIOCGPTN,     sizeof(int),                  IO_OUT },
+    { TIOCSPTLCK,   sizeof(int),                  IO_IN  },
     { TIOCGWINSZ,   sizeof(struct winsize),       IO_OUT },
     { TIOCSWINSZ,   sizeof(struct winsize),       IO_IN  },
     { FBIO_GETINFO, sizeof(struct fb_info),       IO_OUT },

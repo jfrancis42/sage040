@@ -99,3 +99,4 @@ ports/bash/bash
 libc/test/threadtest
 system/klogd
 system/dmesg
+libc/test/ptytest

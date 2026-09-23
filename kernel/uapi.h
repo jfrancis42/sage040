@@ -23,8 +23,21 @@
 #include "types.h"
 
 #define NAME_MAX      255       /* bytes of UTF-8: a VFAT long name   */
-#define PATH_MAX      256       /* Linux's is 4096; paths are copied
-                                 * onto a kernel stack of 8 KB        */
+/*
+ * PATH_MAX is 1024, which is what picolibc's <limits.h> says, and the
+ * two HAVE to agree: a program that builds a path up to its own
+ * PATH_MAX and hands it over meets a kernel that refuses anything
+ * longer than its own, and the failure is ENAMETOOLONG for a path that
+ * is legal by the only definition the program can see. Python's
+ * standard library lives under /usr/local/lib/python3.14 and gets
+ * there.
+ *
+ * The cost is stack: a path is copied onto a kernel stack, which is 16
+ * KB (KSTACK_PAGES), and `irqs` reports the high-water mark of the
+ * deepest one. Linux's 4096 would be the next step and wants a bigger
+ * stack first.
+ */
+#define PATH_MAX      1024
 #define OPEN_MAX      64        /* file descriptors per TASK           */
 
 /*
@@ -146,11 +159,18 @@ struct termios2 {
 #define TCSETSF2      0x402C542D
 
 /* c_iflag */
+#define INLCR         0x0040    /* newline arrives as carriage return */
 #define ICRNL         0x0100    /* carriage return arrives as newline */
 
 /* c_oflag */
 #define OPOST         0x0001    /* do output processing at all        */
 #define ONLCR         0x0004    /* newline goes out as CR LF          */
+
+/* c_cflag. Nothing here has a baud rate to set -- the pseudo-terminals
+ * have no wire and the console's speed is the emulator's -- so these
+ * exist to be reported honestly to a program that asks. */
+#define CS8           0x0030    /* eight bits, which is all there is  */
+#define CREAD         0x0080    /* the receiver is enabled            */
 
 /* c_lflag */
 #define ISIG          0x0001    /* INTR and SUSP raise signals        */
@@ -166,6 +186,14 @@ struct termios2 {
 #define VTIME         5
 #define VMIN          6
 #define VSUSP         10
+
+/*
+ * Pseudo-terminal ioctls, Linux's numbers. TIOCGPTN is what ptsname(3)
+ * asks the master for; TIOCSPTLCK is unlockpt(3), which has nothing to
+ * unlock here and says so by succeeding.
+ */
+#define TIOCGPTN      0x80045430
+#define TIOCSPTLCK    0x40045431
 
 /*
  * Framebuffer ioctls, on /dev/fb0.

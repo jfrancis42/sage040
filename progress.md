@@ -31,6 +31,20 @@ this list is something Python wants.
 | 37 | **cron** | needs the clock, a daemon, and somewhere to log | **done** |
 | 43 | **`/var`, and `/var/log`**: the kernel's log to `/var/log/syslog` | asked for 2026-09-22 | **done** |
 | 44 | **`/bin/less`** | asked for 2026-09-22; wants terminfo (39) | **done** |
+| 45 | **libiconv** | CLISP needs it, and so does anything that converts between character sets; picolibc has `iconv` headers but no converters worth the name | |
+| 46 | **gettext** | CLISP needs it; message catalogues, and the `_()` every GNU program is written around | |
+| 47 | **readline** | CLISP needs it, and it is what makes any interactive program's line editing behave; over the terminfo of task 39. **CPython is rebuilt once this exists** -- its `readline` module is what gives the interactive interpreter a line editor, and it is switched off now for want of the library | |
+| 48a | **The libraries CPython and CLISP want**, within reason (asked for 2026-09-22): **OpenSSL** (`ssl`, `hashlib`'s fast paths -- and what anything that speaks TLS needs), **SQLite** (`sqlite3`), **bzip2** and **xz** (`bz2`, `lzma`), **libffi** (`_ctypes`, and the only one that may not be reasonable: it wants a calling-convention trampoline written in m68k assembly, and whether libffi's m68k port still works is to find out) | |
+| 48 | **CLISP**, a Common Lisp | asked for 2026-09-22. GNU CLISP is C plus a bytecode VM and wants its own build Lisp, as CPython wants a build Python; SBCL is out (it compiles to native code and has no m68k backend), ECL is the other candidate (it compiles to C). Depends on 45, 46 and 47 | |
+
+**Not to be built until asked** (2026-09-22): tasks 45-48 -- libiconv,
+gettext, readline, CLISP -- and 48a, the libraries CPython and CLISP
+want. The list is here so the work is decided; the work itself waits.
+
+| # | Task | Why here |
+|---|------|----------|
+| 50 | **libatomic**, GCC's own, built for this target | asked for 2026-09-22. **CPython does not need it any more**: the four 64-bit operations it wanted are implemented in the C library (`atomic64.c` in the m68k backend), over a table of locks, which is exactly what libatomic does on a target whose processor has no 64-bit atomic instruction -- and the 68040 has none. What building the real one would buy is a `-latomic` that EXISTS, for the configure scripts that test for it by linking against it, and the wider set libatomic carries (16-byte operations, the `__atomic_*_16` family) that nothing here has asked for. Small, and worth doing when a port asks for `-latomic` by name |
+| 49 | **A native toolchain: gcc, gas, ld, gdb, objdump, nm, strip, ar, ranlib** -- the whole C and assembler chain running ON the machine, able to build the kernel and every program here without a cross compiler. Asked for 2026-09-22. Plus whatever they need to build and run: make (sbase has one), a shell (bash is here), binutils' and gcc's own dependencies -- GMP, MPFR, MPC, isl, zlib (here), libiconv and gettext (45, 46) | the point at which the machine stops needing another computer to exist. The 68040 is what gcc was written on; the question is memory and time, not capability -- gcc's own build wants a great deal of both, and 64 MB with swap is the constraint to measure first |
 
 Left for later, and not started:
 
@@ -204,7 +218,10 @@ prototype scope, which is a portability bug on any platform whose
 headers do not drag `<sys/time.h>` in first.
 
 Not done: `_ctypes` (no libffi, no dlopen), `ssl`, `sqlite3`, `bz2`,
-`lzma`, `zstd`, `readline`, `tkinter`. `mimalloc` is off because it
+`lzma`, `zstd`, `tkinter`. **`readline` waits for task 47**, and
+CPython is to be rebuilt with it when that lands -- an interactive
+interpreter with no line editing is the one obvious thing missing from
+the port. `mimalloc` is off because it
 wants thread-local storage; pymalloc is used instead.
 
 ---
@@ -308,13 +325,31 @@ assuming.
 Found while porting awk, sed, grep, bash and sbase, and worth closing
 whether or not anything needs them yet.
 
-- `PATH_MAX` is 256 in the kernel and 1024 in picolibc's headers.
+**Done since:** `PATH_MAX` agrees at 1024 (it was 256 in the kernel and
+1024 in the headers, so a program could build a path the kernel would
+refuse as too long); time zones (38); and **pseudo-terminals** --
+/dev/ptmx, /dev/pts/N, `openpty`, `forkpty`, a line discipline with
+canonical mode, erase and kill, ISIG, ECHO to the master, window size
+and a foreground process group. 34 checks in `kernel/ptytest.sh`.
+
+The pty work found three more C library bugs, each now a patch:
+`fcntl(F_SETFL)` passed picolibc's O_NONBLOCK (0x4000) straight to a
+kernel that means 0x800 by it, so a descriptor stayed blocking while
+the program was certain it had not (31); `<stdlib.h>` declared `grantpt`
+and none of the other three pty calls (29); and `<sys/ioctl.h>` had no
+number for the two things a terminal is for beyond reading and writing
+-- which process group is in the foreground, and which pts a master is
+(30).
+
+Still open:
 - `execve` takes at most 256 arguments, which POSIX cannot express
   (ARG_MAX is bytes, 30,712 here); `xargs` builds lines by bytes.
 - FIFOs: FAT cannot hold one; named pipes could live in the VFS.
-- `/dev/fd` (bash's process substitution) and pseudo-terminals
-  (`ptsname`, `openpty`; Python's pty module).
-- Time zones: whether `localtime` honours `TZ` is unchecked.
+- `/dev/fd`, which is what bash's process substitution wants.
+- **`ls /dev` says "no such directory".** /dev is synthetic -- a name
+  lookup, not a directory -- so a person cannot see what devices exist.
+  A listable /dev is a VFS change, and it is the kind of thing somebody
+  types on the first day.
 - grep has no `-P` (no PCRE).
 - No `diff` (POSIX): sbase has none. GNU diffutils (diff, cmp, diff3,
   sdiff) is the obvious port; bash's and sed's test suites use it.

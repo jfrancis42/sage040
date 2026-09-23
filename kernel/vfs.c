@@ -28,6 +28,7 @@
 #include "string.h"
 #include "wait.h"
 #include "signal.h"
+#include "pty.h"
 
 #define DEV_PREFIX     "/dev/"
 #define DEV_PREFIX_LEN 5
@@ -766,7 +767,32 @@ int fd_open(const char *path, int flags)
      * has been looked at. */
     cd = resolve_dev(path);
     if (cd) {
-        return fd_install(cd->ops, cd->priv, flags);
+        int fd = fd_install(cd->ops, cd->priv, flags);
+        struct file *f;
+
+        if (fd < 0) {
+            return fd;
+        }
+        f = fd_get(fd);
+        /*
+         * /dev/ptmx is not a device to open: opening it ALLOCATES a
+         * pseudo-terminal pair and gives back the master of it, so the
+         * descriptor just installed is pointed somewhere else entirely.
+         * A slave, /dev/pts/N, is an ordinary device open -- but the
+         * pty has to be told, so that it knows when the program on the
+         * terminal has gone.
+         */
+        if (f && strcmp(cd->name, "ptmx") == 0) {
+            int err = pty_open_master(f);
+
+            if (err < 0) {
+                fd_close(fd);
+                return err;
+            }
+        } else if (f && strncmp(cd->name, "pts/", 4) == 0) {
+            pty_slave_opened(cd->priv);
+        }
+        return fd;
     }
     if (strncmp(path, DEV_PREFIX, DEV_PREFIX_LEN) == 0) {
         return -ENXIO;          /* under /dev, but no such device */

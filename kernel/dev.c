@@ -42,6 +42,26 @@ int dev_register_char(struct chardev *d)
     return 0;
 }
 
+/*
+ * Take a device out of the registry. Only a device that comes and goes
+ * needs this -- a pseudo-terminal's slave, which exists between the
+ * open of /dev/ptmx and the close of the last descriptor on either end.
+ * Hardware is registered once and stays.
+ */
+int dev_unregister_char(struct chardev *d)
+{
+    struct chardev **pp;
+
+    for (pp = &chars; *pp; pp = &(*pp)->next) {
+        if (*pp == d) {
+            *pp = d->next;
+            d->next = 0;
+            return 0;
+        }
+    }
+    return -ENOENT;
+}
+
 struct chardev *dev_find_char(const char *name)
 {
     struct chardev *d;

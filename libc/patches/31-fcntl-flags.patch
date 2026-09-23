@@ -1,0 +1,75 @@
+picolibc 1.8.12's libos/linux fcntl() passes the argument of F_SETFL and
+the result of F_GETFL through unchanged. Those carry OPEN FLAGS, and
+picolibc's are not Linux's: O_NONBLOCK is 0x4000 here and 0x800 there,
+O_APPEND 0x0008 against 0x0400. open() translates them; these did not.
+
+So fcntl(fd, F_SETFL, O_NONBLOCK) set a bit the kernel does not use, and
+the descriptor stayed blocking while the program was certain it had not
+-- a read that should have returned EAGAIN waited for ever instead.
+
+Not specific to m68k: every libos/linux target has it.
+
+diff -ru a/libos/linux/fcntl.c b/libos/linux/fcntl.c
+--- a/libos/linux/fcntl.c	2026-09-22 17:42:52.859176658 -0600
++++ b/libos/linux/fcntl.c	2026-09-22 17:42:52.876677569 -0600
+@@ -57,12 +57,21 @@
+         op = LINUX_F_SETFD;
+         arg = 1;
+         break;
++    /*
++     * F_GETFL and F_SETFL carry OPEN FLAGS, and picolibc's are not
++     * Linux's: O_NONBLOCK is 0x4000 here and 0x800 there, O_APPEND
++     * 0x0008 against 0x0400. open() translates them and these did not,
++     * so fcntl(fd, F_SETFL, O_NONBLOCK) set a bit the kernel does not
++     * use -- and the descriptor stayed blocking while the program was
++     * certain it had not. A read that should have returned EAGAIN
++     * waited for ever instead, which is as quiet as a bug gets.
++     */
+     case F_GETFL:
+         op = LINUX_F_GETFL;
+         break;
+     case F_SETFL:
+         op = LINUX_F_SETFL;
+-        arg = 1;
++        arg = 2;                /* translate, below */
+         break;
+     case F_SETLK:
+         return 0;
+@@ -71,8 +80,35 @@
+         return -1;
+     }
+     va_start(ap, op);
+-    if (arg)
++    if (arg) {
++        int translate = (arg == 2);
++
+         arg = va_arg(ap, int);
++        if (translate) {
++            int l = 0;
++
++            if (arg & O_NONBLOCK)
++                l |= LINUX_O_NONBLOCK;
++            if (arg & O_APPEND)
++                l |= LINUX_O_APPEND;
++            arg = l;
++        }
++    }
+     va_end(ap);
+-    return syscall(LINUX_SYS_fcntl, fd, op, arg);
++
++    {
++        int ret = syscall(LINUX_SYS_fcntl, fd, op, arg);
++
++        /* And the same translation coming back. */
++        if (ret >= 0 && op == LINUX_F_GETFL) {
++            int f = ret & 3;        /* the access mode: low two bits */
++
++            if (ret & LINUX_O_NONBLOCK)
++                f |= O_NONBLOCK;
++            if (ret & LINUX_O_APPEND)
++                f |= O_APPEND;
++            return f;
++        }
++        return ret;
++    }
+ }

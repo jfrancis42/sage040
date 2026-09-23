@@ -1,0 +1,40 @@
+picolibc's <sys/ioctl.h> carries the four requests its own ioctl()
+translates and nothing else, so a program has nowhere to get the number
+for the two things a terminal is for beyond reading and writing: saying
+which process group is in the foreground, and finding out which
+pseudo-terminal a master belongs to.
+
+These are the system's own numbers, passed through unchanged -- which
+is what ioctl() now does with a request it has not been taught (patch
+25) -- and the comment says so, because the two kinds of constant in
+this header behave differently and that is worth knowing.
+
+diff -ru a/libc/include/sys/ioctl.h b/libc/include/sys/ioctl.h
+--- a/libc/include/sys/ioctl.h	2026-09-22 17:07:44.496014839 -0600
++++ b/libc/include/sys/ioctl.h	2026-09-22 17:07:44.521034546 -0600
+@@ -51,6 +51,25 @@
+ #define TIOCLINUX  (('T' << 8) | 3)
+ #define FIONREAD   (('T' << 8) | 4)   /* bytes waiting to be read: int * */
+ 
++/*
++ * THE REQUESTS ABOVE ARE PICOLIBC'S OWN NUMBERS, translated by ioctl()
++ * into whatever the system underneath calls them. THE ONES BELOW ARE
++ * THE SYSTEM'S, passed through unchanged -- which is what ioctl() does
++ * with any request it has not been taught.
++ *
++ * They are Linux's, because libos/linux's kernel is a Linux one. A
++ * program needs them to do the two things a terminal is for beyond
++ * reading and writing: say which process group is in the foreground
++ * (job control, and which program ctrl-C reaches), and find out which
++ * pseudo-terminal a master belongs to.
++ */
++#define TIOCGPGRP   0x540F  /* the foreground process group: int *   */
++#define TIOCSPGRP   0x5410  /* set it: int *                         */
++#define TIOCSCTTY   0x540E  /* make this the controlling terminal    */
++#define TIOCNOTTY   0x5422  /* give up the controlling terminal      */
++#define TIOCGPTN    0x80045430 /* which /dev/pts/N a master is: int * */
++#define TIOCSPTLCK  0x40045431 /* unlockpt: int *                    */
++
+ _END_STD_C
+ 
+ #endif /* _SYS_IOCTL_H_ */

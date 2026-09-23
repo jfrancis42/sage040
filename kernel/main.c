@@ -40,6 +40,7 @@
 #include "fb.h"
 #include "memdev.h"
 #include "klog.h"
+#include "pty.h"
 #include "fbcon.h"
 #include "tty.h"
 #include "task.h"
@@ -241,6 +242,13 @@ static void start_drivers(void)
      * name, which is why it can happen here rather than first.
      */
     klog_init();
+
+    /*
+     * /dev/ptmx: pseudo-terminals, which is how a program gives another
+     * program a terminal of its own. Nothing here has one until
+     * something asks.
+     */
+    pty_init();
 
     status("video");
     err = sm501_init();

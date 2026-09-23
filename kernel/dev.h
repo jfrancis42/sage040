@@ -106,6 +106,7 @@ struct chardev {
 };
 
 int  dev_register_char(struct chardev *d);
+int  dev_unregister_char(struct chardev *d);
 struct chardev *dev_find_char(const char *name);
 struct chardev *dev_first_char(void);
 
