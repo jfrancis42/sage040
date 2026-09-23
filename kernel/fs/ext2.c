@@ -3529,67 +3529,109 @@ static int fsck_reconnect(u32 ino)
  * checking "." and "..". */
 static int fsck_repairing;      /* set for the length of one check    */
 
+/*
+ * Depth-first over the directory tree, counting the entries that
+ * account for each inode's link count and checking "." and "..".
+ *
+ * It walks a directory's blocks DIRECTLY rather than asking dir_nth()
+ * for entry 0, 1, 2 and so on: dir_nth restarts at the first entry
+ * every time, so using it here is quadratic in the size of each
+ * directory. With the compiler installed that took a hundred seconds
+ * to check the disk at boot -- which reads as a machine that has hung,
+ * because the banner stops after the mount line and nothing else is
+ * printed until it finishes.
+ *
+ * The buffer is fetched again on every entry because the recursion
+ * reads other blocks and may have evicted this one.
+ */
 static void fsck_tree(u32 dino, u32 parent, int depth, struct fsck_report *r)
 {
-    int i, bad_dots = 0;
+    struct einode di;
+    u32 off;
+    int bad_dots = 0;
 
     if (depth > FSCK_MAX_DEPTH) {
         r->too_deep++;
         return;
     }
-    for (i = 0; ; i++) {
-        char name[NAME_MAX + 1];
-        u32 child;
-        u8 type;
-        struct einode ce;
+    if (iread(dino, &di) != 0 || !S_ISDIR(di.mode)) {
+        return;
+    }
 
-        if (dir_nth(dino, i, name, &child, &type) != 0) {
-            break;
-        }
-        if (strcmp(name, ".") == 0) {
-            if (child != dino) {
-                r->dot_entries++;
-                bad_dots = 1;
-            }
-            continue;           /* not a name for counting purposes   */
-        }
-        if (strcmp(name, "..") == 0) {
-            if (child != parent) {
-                r->dot_entries++;
-                bad_dots = 1;
-            }
+    for (off = 0; off < di.size; off += block_size) {
+        u32 blk, p = 0;
+
+        if (bmap(&di, off / block_size, 0, &blk) != 0 || blk == 0) {
             continue;
         }
-        if (child == 0 || child > inodes_count || !inode_in_use(child)) {
-            r->orphan_names++;
-            continue;
-        }
-        if (child < links_cap) {
-            if (links_map[child] < 255) {
+        while (p + DE_MIN_SIZE <= block_size) {
+            struct bbuf *b = bget(blk);
+            char name[NAME_MAX + 1];
+            struct einode ce;
+            u8 *ent;
+            u32 rec, child, nl;
+
+            if (!b) {
+                return;
+            }
+            ent = b->data + p;
+            rec = le16(ent + DE_REC_LEN);
+            if (rec < DE_MIN_SIZE || p + rec > block_size) {
+                break;
+            }
+            child = le32(ent + DE_INODE);
+            nl = ent[DE_NAME_LEN];
+            if (nl > NAME_MAX) {
+                nl = NAME_MAX;
+            }
+            memcpy(name, ent + DE_NAME, nl);
+            name[nl] = '\0';
+            p += rec;           /* advance BEFORE anything may recurse */
+
+            if (child == 0) {
+                continue;
+            }
+            if (nl == 1 && name[0] == '.') {
+                if (child != dino) {
+                    r->dot_entries++;
+                    bad_dots = 1;
+                }
+                continue;       /* not a name for counting purposes   */
+            }
+            if (nl == 2 && name[0] == '.' && name[1] == '.') {
+                if (child != parent) {
+                    r->dot_entries++;
+                    bad_dots = 1;
+                }
+                continue;
+            }
+            if (child > inodes_count || !inode_in_use(child)) {
+                r->orphan_names++;
+                continue;
+            }
+            if (child < links_cap && links_map[child] < 255) {
                 links_map[child]++;
             }
-        }
-        if (iread(child, &ce) != 0) {
-            continue;
-        }
-        if (S_ISDIR(ce.mode)) {
-            r->dirs++;
-            /* Counted HERE, where this directory is already being
-             * walked once, rather than by walking it again per entry
-             * in the sweep below: dir_nth() restarts from the first
-             * entry every time, so counting there is quadratic in the
-             * size of the directory, and /usr on a full disk has
-             * enough entries in it to make that minutes. */
-            if (dino < links_cap && links_map[dino] < 255) {
-                links_map[dino]++;
+            if (iread(child, &ce) != 0) {
+                continue;
             }
-            /* A directory is reached by exactly one name, so a second
-             * visit would be a loop; the link count check catches it. */
-            if (child != dino && child < links_cap && links_map[child] == 1) {
-                fsck_tree(child, dino, depth + 1, r);
+            if (S_ISDIR(ce.mode)) {
+                r->dirs++;
+                /* A subdirectory's ".." is a link back to here, and is
+                 * counted here rather than by walking this directory
+                 * again per entry in the sweep below. */
+                if (dino < links_cap && links_map[dino] < 255) {
+                    links_map[dino]++;
+                }
+                /* Reached by exactly one name, so a second visit would
+                 * be a loop; the link count check catches that. */
+                if (child != dino && child < links_cap &&
+                    links_map[child] == 1) {
+                    fsck_tree(child, dino, depth + 1, r);
+                }
+            } else {
+                r->files++;
             }
-        } else {
-            r->files++;
         }
     }
     if (bad_dots && fsck_repairing) {
@@ -3599,8 +3641,13 @@ static void fsck_tree(u32 dino, u32 parent, int depth, struct fsck_report *r)
 
 static int ext2_check(int flags, struct fsck_report *r)
 {
-    u32 seen_bytes, g, ino, b, used = 0, counted_free;
+    u32 seen_bytes, g, ino, b, used = 0, counted_free = 0;
+    u32 inodes_per_block = block_size / inode_size;
     int repair = (flags & FSCK_REPAIR) != 0;
+    int i, orphan_count = 0;
+    /* Inodes no name reaches, dealt with after the block sweep. A disk
+     * with more than this many is one for e2fsck, not for us. */
+    static u32 orphans[64];
     struct einode ei;
 
     if (!mounted) {
@@ -3667,12 +3714,63 @@ static int ext2_check(int flags, struct fsck_report *r)
         }
     }
 
+    /*
+     * The tree first: it fills links_map, which the ONE pass over the
+     * inode table below needs, and it reads only directories.
+     */
+    r->dirs = 0;
+    r->files = 0;
+    if (links_cap > EXT2_ROOT_INO) {
+        links_map[EXT2_ROOT_INO] = 1;
+    }
+    fsck_repairing = repair;
+    fsck_tree(root_ino(), root_ino(), 0, r);
+    fsck_repairing = 0;
+
     /* Every inode that is in use: its blocks, and its type. */
     for (ino = 1; ino <= inodes_count; ino++) {
         u32 count = 0;
         int in_bitmap;
 
+        /*
+         * A WHOLE TABLE BLOCK THE BITMAP SAYS IS EMPTY IS NOT READ.
+         *
+         * Reading the inode table is what a check costs: 32 MB on the
+         * 512 MB disk, one 4 KB request at a time, and the latency of
+         * eight thousand of those was a minute of boot after an unclean
+         * stop. Almost all of that table is free space on any real
+         * disk.
+         *
+         * What it gives up: an inode holding a live file in a block
+         * where the bitmap has ALL sixteen marked free would not be
+         * seen. One bit wrongly cleared beside an inode that IS in use
+         * still is, which is the shape that damage actually takes here;
+         * a whole block of them is e2fsck's problem, and e2fsck reads
+         * every inode.
+         */
+        if (((ino - 1) % inodes_per_block) == 0) {
+            u32 k, any = 0;
+
+            for (k = 0; k < inodes_per_block && ino + k <= inodes_count; k++) {
+                if (inode_in_use(ino + k)) {
+                    any = 1;
+                    break;
+                }
+            }
+            if (!any) {
+                u32 skip = inodes_per_block;
+
+                if (ino + skip - 1 > inodes_count) {
+                    skip = inodes_count - ino + 1;
+                }
+                counted_free += skip;
+                ino += skip - 1;
+                continue;
+            }
+        }
+
         if (!fsck_inode_live(ino, &ei, &in_bitmap)) {
+            counted_free++;
             continue;
         }
         if (!in_bitmap) {
@@ -3715,17 +3813,43 @@ static int ext2_check(int flags, struct fsck_report *r)
                 r->fixed++;
             }
         }
-    }
 
-    /* The tree: names, "." and "..". */
-    r->dirs = 0;
-    r->files = 0;
-    if (links_cap > EXT2_ROOT_INO) {
-        links_map[EXT2_ROOT_INO] = 1;
+        /*
+         * The link count, in the same pass. Reading the inode table is
+         * what a check costs -- 32 MB of it on the 512 MB disk -- and
+         * doing this in a second loop read the whole table twice, which
+         * was most of the eighty seconds an unclean boot took.
+         */
+        if (ino >= first_ino || ino == EXT2_ROOT_INO) {
+            u32 names = (ino < links_cap) ? links_map[ino] : 0;
+
+            if (S_ISDIR(ei.mode)) {
+                names = names + 1;  /* its own "."; the rest is counted */
+            }
+            if (names == 0) {
+                r->unattached++;
+                if (repair) {
+                    /* Acted on AFTER the block sweep below: giving it a
+                     * name may have to grow /lost+found, and a block
+                     * allocated now is a block the sweep would find
+                     * marked in use and reached by nothing. */
+                    if (orphan_count < (int)(sizeof(orphans) /
+                                             sizeof(orphans[0]))) {
+                        orphans[orphan_count++] = ino;
+                    }
+                }
+            } else if (ei.links != names) {
+                r->bad_links++;
+                if (repair) {
+                    ei.links = (u16)names;
+                    iwrite(&ei);
+                    r->fixed++;
+                }
+            }
+        }
+        /* Inodes below first_ino are the reserved ones; no name
+         * reaches them and none is meant to. */
     }
-    fsck_repairing = repair;
-    fsck_tree(root_ino(), root_ino(), 0, r);
-    fsck_repairing = 0;
 
     /* Blocks: marked in use but reached by nothing, or the reverse. */
     for (b = first_data_block; b < blocks_count; b++) {
@@ -3767,49 +3891,20 @@ static int ext2_check(int flags, struct fsck_report *r)
     r->blocks_used = used;
     r->blocks_free = blocks_count - used;
 
-    /* Inodes: link counts, and anything no name reaches. */
-    counted_free = 0;
-    for (ino = 1; ino <= inodes_count; ino++) {
-        u32 names;
-        int in_bitmap;
+    /*
+     * The orphans, now that the block sweep has finished: each gets a
+     * name in /lost+found, or is freed if it cannot have one.
+     */
+    for (i = 0; i < orphan_count; i++) {
+        struct einode oe;
 
-        if (!fsck_inode_live(ino, &ei, &in_bitmap)) {
-            counted_free++;
+        if (iread(orphans[i], &oe) != 0) {
             continue;
         }
-        if (ino < first_ino && ino != EXT2_ROOT_INO) {
-            continue;           /* reserved: not named by anything     */
+        if ((oe.links == 0 && oe.size == 0) || !fsck_reconnect(orphans[i])) {
+            inode_release(orphans[i]);
         }
-        names = (ino < links_cap) ? links_map[ino] : 0;
-        if (S_ISDIR(ei.mode)) {
-            /* A directory is named once by its parent and once by its
-             * own ".", plus once per subdirectory's "..". The walk
-             * above counted the subdirectories as it went. */
-            names = names + 1;   /* its own "."; the rest is counted */
-        }
-        if (names == 0) {
-            r->unattached++;
-            if (repair) {
-                /* A zero-length inode with no links is the leftover of
-                 * a file that was already being deleted; anything else
-                 * is a file whose name went, and gets one back. */
-                if (ei.links == 0 && ei.size == 0) {
-                    inode_release(ino);
-                } else if (!fsck_reconnect(ino)) {
-                    inode_release(ino);
-                }
-                r->fixed++;
-                continue;
-            }
-        }
-        if (names != 0 && ei.links != names) {
-            r->bad_links++;
-            if (repair) {
-                ei.links = (u16)names;
-                iwrite(&ei);
-                r->fixed++;
-            }
-        }
+        r->fixed++;
     }
 
     /* The counts the superblock keeps, against what the bitmaps say. */

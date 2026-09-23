@@ -545,7 +545,7 @@ check "  and >FILE with no space works" $?
 check "2> caught what a program wrote to stderr" $?
 [ "$(host_file BOTH.TXT)" = "both" ]
 check "2>&1 sent stderr where stdout went" $?
-[ "$(host_file CAT.TXT)" = "$(host_file ETC/RC)" ]
+[ "$(host_file CAT.TXT)" = "$(host_file etc/rc)" ]
 check "a builtin's output was redirected" $?
 grep -q "^echo rc-ran" "$C"
 check "< fed a file to a program's stdin" $?

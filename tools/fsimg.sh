@@ -119,6 +119,20 @@ fs_exists() {
     ! dbg_ro "stat $(q "$1")" 2>/dev/null | grep -q "File not found"
 }
 
+# Copy a host directory's CONTENTS into a directory on the image.
+fs_put_tree() {                 # fs_put_tree SRCDIR DSTDIR
+    local src=$1 dst=${2%/}
+    fs_mkdir_p "$dst"
+    {
+        (cd "$src" && find . -type d ! -name .) |
+            sed "s|^\./|mkdir \"$dst/|; s|$|\"|"
+        (cd "$src" && find . -type f) | while read -r f; do
+            echo "rm \"$dst/${f#./}\""
+            echo "write \"$src/${f#./}\" \"$dst/${f#./}\""
+        done
+    } | debugfs -w -f - "$DEV" >/dev/null 2>&1
+}
+
 fs_mkdir_p() {                  # every component, parents first
     local path=$1 acc=""
     local IFS=/
@@ -156,18 +170,10 @@ put)
         SRC=${1:?put -r: need a source directory}
         DST=${2:?put -r: need a destination directory}
         [ -d "$SRC" ] || die "not a directory: $SRC"
-        DST=${DST%/}
         # One debugfs session for the whole tree: a header directory of
         # 300 files is 300 process starts otherwise, and `make install`
         # does several of them.
-        {
-            (cd "$SRC" && find . -type d ! -name .) |
-                sed "s|^\./|mkdir \"$DST/|; s|$|\"|"
-            (cd "$SRC" && find . -type f) | while read -r f; do
-                echo "rm \"$DST/${f#./}\""
-                echo "write \"$SRC/${f#./}\" \"$DST/${f#./}\""
-            done
-        } | debugfs -w -f - "$DEV" >/dev/null 2>&1
+        fs_put_tree "$SRC" "$DST"
         exit 0
     fi
     if [ "${1:-}" = "-m" ]; then MODE=$2; shift 2; fi
@@ -189,6 +195,23 @@ put)
     cmds=()
     modes=()
     for SRC in "$@"; do
+        #
+        # A DIRECTORY AMONG THE SOURCES IS COPIED, not refused.
+        #
+        # `put DIR/* /X/` is how a caller stages a directory's contents,
+        # and a tree of test data has subdirectories in it. Dying on the
+        # first one aborted the whole staging, and what that looked like
+        # afterwards was every one of grep's thirty cases failing with
+        # "No such file or directory" -- as though grep were broken.
+        #
+        if [ -d "$SRC" ]; then
+            if [ -n "$DSTDIR" ]; then
+                fs_put_tree "$SRC" "$DSTDIR/$(basename "$SRC")"
+            else
+                fs_put_tree "$SRC" "$DST"
+            fi
+            continue
+        fi
         [ -f "$SRC" ] || die "no such file: $SRC"
         if [ -n "$DSTDIR" ]; then
             TARGET="$DSTDIR/$(basename "$SRC")"
