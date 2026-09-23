@@ -26,7 +26,11 @@ reading the rest of this file. Dated, because it goes stale.
 
 | | |
 |---|---|
-| **`scp`** | Does not work, and **the cause is not known**. `ssh` and `rsync` over the same transport do work. Two earlier diagnoses of this were wrong -- see "Things I got wrong" below -- so treat it as unexamined rather than understood. |
+| **The ssh server serves ONE connection.** | The first connection works completely. The second returns nothing and every one after it fails with "Connection timed out during banner exchange". This is the machine's, not Dropbear's: `netstat` on the machine shows the second connection **ESTABLISHED with 1404 bytes sitting in the transmit queue** -- the server wrote its banner and the data never left. TCP has the data, the window is open (cwnd 3314, rtt 10ms), and it does not go. Suspect the LAN91C111's transmit buffer pool, which is shared with reception and which `os.md` already records as the thing that stops the machine SENDING when it is not drained. **This is the real bug behind everything that was blamed on scp.** |
+
+**`scp` is NOT broken.** It works: fetched a file off the machine
+byte-for-byte correct as the first connection of a session. Every
+earlier report to the contrary was a fault in the test -- see below.
 
 ### Unverified -- believed working, not proven
 
@@ -81,12 +85,31 @@ These are properties of the machine, written up in `design.md` and
 Kept because a wrong conclusion that looked well-evidenced is worth
 more as a warning than as a deletion.
 
-- **`scp`, twice.** First "it fails guest-side, because `scp -f FILE`
-  exits 1 on the machine" -- but `-f` is the source half of the scp
-  protocol and reads from a peer, so exiting 1 with no peer is correct
-  behaviour and the probe was meaningless. Then the ssh-based tests
-  that replaced it turned out to have been racing the guest's startup
-  under load.
+- **`scp`, three times, and it was never broken.**
+  1. "It fails guest-side, because `scp -f FILE` exits 1 on the
+     machine." `-f` is the source half of the scp protocol and reads
+     from a peer; exiting 1 with no peer is correct. The probe could
+     not have shown anything.
+  2. "The ssh-based tests show it failing." They were racing the
+     guest's startup under load, and one readiness check ran `true` on
+     an image that had no `true` on it, so it reported the machine
+     unreachable when it was fine.
+  3. **`scp` spells the port `-P`, and every test passed it `-p`** --
+     which to scp means "preserve modification times", so the port
+     number became an extra SOURCE FILE. Two sources into a target
+     that is not a directory produces "local/path: No such file or
+     directory", which is precisely the error that was read for hours
+     as evidence of a broken scp. It had never opened a connection.
+
+  Run as the first connection of a session, scp fetches a file off the
+  machine byte-for-byte correct. What broke the later attempts is the
+  one-connection bug above.
+
+  The lesson is not about scp. Three times a test was believed over
+  the system, and each time the test was wrong. The static-binary
+  route (`qemu-m68k`) settled it in minutes once it was used: scp,
+  run there with a correct protocol byte, emits exactly
+  `C0644 10 greet.txt` and the file, and exits 0.
 - **`-DB_ENDIAN` in OpenSSL.** Written up as load-bearing, on the
   reasoning that a generic target must assume little-endian. Rebuilt
   the whole of OpenSSL without it: identical, correct digests. The
