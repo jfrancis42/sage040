@@ -90,6 +90,22 @@ struct sockaddr_in6 {
  * privileged before allowing it, and needs the number whether or not
  * anybody is stopping it.
  */
+/*
+ * Socket options at the IP level, for setsockopt(fd, IPPROTO_IP, ...).
+ * IP_TOS is the one anything interactive sets -- rsync and ssh both
+ * ask for low delay on a control connection and throughput on a bulk
+ * one. The values are Linux's, which are this system's.
+ */
+#define IP_TOS              1
+#define IP_TTL              2
+#define IP_HDRINCL          3
+#define IP_OPTIONS          4
+#define IP_MULTICAST_IF     32
+#define IP_MULTICAST_TTL    33
+#define IP_MULTICAST_LOOP   34
+#define IP_ADD_MEMBERSHIP   35
+#define IP_DROP_MEMBERSHIP  36
+
 #define IPPORT_RESERVED     1024
 #define IPPORT_USERRESERVED 5000
 

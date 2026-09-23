@@ -129,8 +129,37 @@ for p in "$HERE"/patches/*.patch; do
 done
 
 libc_fresh "$BUILD" || true
+mkdir -p "$BUILD"
+
+# TOOLS UNDER THE TARGET'S OWN NAME.
+#
+# --target is m68k-unknown-elf, so gcc's build looks for
+# m68k-unknown-elf-gcc, -as, -ld and the rest when it needs to compile
+# something FOR the target -- and the cross toolchain in ~/m68k/install
+# is installed as m68k-elf-*. Same compiler, same target, different
+# spelling of the triplet.
+#
+# Without them the build got as far as linking xgcc and then ran
+# `m68k-unknown-elf-gcc -dumpspecs`, which is not on PATH: "Error 127",
+# command not found, in the middle of a compiler build.
+#
+# Note that these are the CROSS tools (build -> target), which is what
+# gcc wants here. They are not the native ones being built; those
+# cannot run on this workstation at all.
+mkdir -p "$BUILD/toolbin"
+for t in gcc as ld ar ranlib nm objdump objcopy strip readelf; do
+    src=""
+    if [ -x "$CROSS_BIN/m68k-elf-$t" ]; then
+        src=$CROSS_BIN/m68k-elf-$t
+    elif [ -x "$CXX_BINDIR/$t" ]; then
+        src=$CXX_BINDIR/$t
+    fi
+    [ -n "$src" ] && ln -sf "$src" "$BUILD/toolbin/$HOST_TRIPLET-$t"
+done
+PATH=$BUILD/toolbin:$PATH
+export PATH
+
 if [ ! -f "$BUILD/Makefile" ]; then
-    mkdir -p "$BUILD"
     (cd "$BUILD" && "$SRC/configure" \
         --build="$BUILD_TRIPLET" \
         --host="$HOST_TRIPLET" \

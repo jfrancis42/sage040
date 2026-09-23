@@ -40,6 +40,11 @@ without a better filesystem is ENFORCEMENT, and that waits.
 | 44 | **`/bin/less`** | asked for 2026-09-22; wants terminfo (39) | **done** |
 | 51 | **`df` and `du`** | asked for 2026-09-22 | **done** -- `du` is sbase's (`-k -h -a -s -d -x`); `df` is new, with `-h`, `-k` and `-i`. 14 checks, numbers verified against the host's own `mdir` |
 | 49 | **A native toolchain** | asked for 2026-09-22 | **in progress** -- binutils runs on the machine; gcc needs a C++ chain first |
+| 41 | **ssh, client and server, with scp** | asked for 2026-09-22 | **mostly done** -- Dropbear 2026.94. A real OpenSSH client authenticates into the machine by public key and runs commands. `scp` builds and does not work; see below |
+| 42 | **rsync** | asked for 2026-09-22 | **done** -- 3.4.1, over ssh, verified both locally and from another machine |
+| 33 | **A home directory** | | **done** with 34/35 |
+| 34 | **Users: a process belongs to one** | | **done** -- identity only; enforcement needs 36 |
+| 35 | **/etc/passwd** | | **done** |
 | 45 | **libiconv** | CLISP needs it, and so does anything that converts between character sets; picolibc has `iconv` headers but no converters worth the name | |
 | 46 | **gettext** | CLISP needs it; message catalogues, and the `_()` every GNU program is written around | |
 | 47 | **readline** | CLISP needs it, and it is what makes any interactive program's line editing behave; over the terminfo of task 39. **CPython is rebuilt once this exists** -- its `readline` module is what gives the interactive interpreter a line editor, and it is switched off now for want of the library | |
@@ -453,6 +458,70 @@ the toolchain everything else depends on, unattended, overnight. The
 first is probably the right long-term answer and would help CLISP,
 which is fussy about exactly this.
 
+### 33, 34, 35. Users, /etc/passwd and home directories -- done
+
+`kernel/usertest.sh`, 16 checks. A task carries a real, effective and
+saved user and group id, inherited across fork and exec; `setuid`,
+`setgid`, `setreuid`, `setregid`, `setresuid` and `setresgid` move
+them under POSIX's rules, and a change reaches **every thread of the
+process**, because credentials belong to a process and a thread left
+holding the old one would be a hole rather than a feature.
+
+`/etc/passwd` and `/etc/group` are installed when missing and left
+alone when present -- unlike `/etc/rc`, which has an unedited default
+to recognise. A passwd file is a list of people, and replacing one
+because it resembled the shipped version would delete a user.
+
+The shell expands `~` and `~user`, reading `/etc/passwd` itself with
+`open()` and `read()` because it may not call `getpwnam` -- it is not
+linked against the C library. That leaves two independent
+implementations of the same lookup, so the suite checks that they
+agree: the shell's parser against the C library's `getpwuid`, through
+sbase's `whoami`.
+
+**The last check in the suite reads root's file as an ordinary user's
+would and PASSES, on purpose.** There is no file ownership on a FAT
+volume, so nothing is protected by any of this. A suite that omitted
+that check could be read as evidence of a protection that does not
+exist.
+
+### 41, 42. ssh, scp and rsync -- ssh and rsync done, scp not
+
+**Dropbear 2026.94 rather than OpenSSH**, and the reason is written
+out in `ports/dropbear/build.sh`. OpenSSH separates privilege by
+forking a child, setuid-ing it to a dedicated account and chrooting it
+into an empty directory -- a design built on a filesystem that can
+hold an owner and a permission, which this one cannot. Running it with
+privilege separation off is exactly the configuration its authors warn
+about. Dropbear was written for machines this size, carries its own
+crypto so it need not agree with OpenSSL about anything, and bundles
+scp. The protocol is the same protocol.
+
+**Server password authentication is off.** Checking a password means
+`crypt(3)` against a hash, picolibc has none, and inventing one badly
+is worse than not having one. Public keys work, and are what should be
+used anyway. `crypt()` belongs in the C library and is a task of its
+own.
+
+**What is demonstrated, by running it:** `dropbearkey` generates an
+Ed25519 host key **on the 68040**; a real OpenSSH client on another
+machine authenticates into the Sage040 by public key and runs `id`,
+`uname` and `cat`, getting `uid=0(root) gid=0(root)` and `SuckOS`
+back; and `rsync -rlt` over that ssh transfers a file into the machine,
+verified by reading it back. rsync also copies locally, byte-for-byte.
+
+**`rsync -a` reports `chown ... failed: Not owner`** and is right to:
+`-a` asks for ownership to be preserved and there is nowhere to record
+it. `-rlt` is the flag set that matches this filesystem.
+
+**scp does not work and is the open item.** The binary builds and
+installs, prints its usage, and `scp -f FILE` -- the source mode the
+remote end runs -- exits 1 immediately with no output, on the machine,
+with no network involved. So it is not the ssh transport: something in
+scp's startup fails against this C library. It was left there rather
+than guessed at. Note also that a modern OpenSSH client needs `scp -O`
+to talk the old protocol at all, Dropbear having no sftp-server.
+
 ### 48a. The libraries CPython is built against -- done
 
 Seven ports, each fetched at a pinned version and built into `~/m68k/src`
@@ -469,7 +538,14 @@ into a new `make pylibs`, which is what `make python` now depends on):
 | **readline** 8.3 | line editing and history at the interactive prompt | a library only |
 | **libffi** 3.5.2 | `ctypes`, as far as it goes without `dlopen` | a library only, with `fficheck` |
 
-`kernel/pylibtest.sh`, 25 checks. **Every stream crosses the host
+`kernel/pylibtest.sh`, 25 checks. **CPython is rebuilt against them**
+(2026-09-23): 90 built-in modules where there were 87, gaining `_ssl`,
+`_hashlib`, `_sqlite3`, `_bz2`, `_lzma`, `_zstd` and `readline`. Only
+`_multiprocessing` and `_posixshmem` are still missing, both wanting
+POSIX shared memory. `_ctypes` stays off and **not for want of
+libffi**, which is built and works: `_ctypes.c` includes `<dlfcn.h>`
+and opens libraries by name at run time, and this loader has no
+`dlopen`. That is a missing loader feature, not a missing library. **Every stream crosses the host
 boundary in both directions** -- the machine compresses and the host
 decompresses, and the host compresses and the machine decompresses --
 because a compressor tested against its own output is `t3-ata` again:
