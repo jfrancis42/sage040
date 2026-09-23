@@ -184,9 +184,16 @@ else
     check "  free space agrees with the host's own tools" 1
 fi
 
-# used + avail must be the total, or the arithmetic is not arithmetic.
-awk 'NR==2 { exit !($2 == $3 + $4 || $2 - ($3 + $4) < 2) }' "$WORK/df.out"
-check "  total = used + available" $?
+# used + avail + reserved must be the total, or the arithmetic is not
+# arithmetic. ext2 keeps a percentage back that only root may dip into,
+# and df reports the available figure in its "avail" column as Linux's
+# does -- so the three do not add up without it, and under FAT, which
+# reserves nothing, they did.
+resv_k=$(( $(fsimg df | awk '/^blocks_reserved/ {print $2}') *
+           $(fsimg df | awk '/^blocksize/ {print $2}') / 1024 ))
+awk -v r="$resv_k" 'NR==2 { d = $2 - ($3 + $4 + r); if (d < 0) d = -d
+                            exit !(d < 2) }' "$WORK/df.out"
+check "  total = used + available + reserved ($resv_k K reserved)" $?
 
 grep -qE "[0-9]+M" "$WORK/dfh.out" 2>/dev/null
 check "df -h reports megabytes, not raw blocks" $?

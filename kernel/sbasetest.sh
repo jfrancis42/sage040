@@ -190,8 +190,11 @@ G=$WORK/got
 check "tar: an archive made on the machine, read by the host's tar" $?
 [ "$(stat -c %s "$G/zero.bin" 2>/dev/null)" = 2048 ] && ! tr -d '\0' < "$G/zero.bin" | grep -q .
 check "dd: 4 blocks of 512 zero bytes" $?
-fsimg ls /ST/touched.txt 2>/dev/null | grep -q "2001-02-03 *4:05"
-check "touch -d: the date the host reads off the disk" $?
+# The RAW seconds, not a printed date: debugfs prints its own format in
+# the HOST's timezone, so matching the text tests where the host is.
+# 981173106 is 2001-02-03 04:05:06 UTC.
+[ "$(fsimg mtime /ST/touched.txt 2>/dev/null)" = 981173106 ]
+check "touch -d: the time the host reads off the disk, to the second" $?
 [ "$(cat "$G/out.txt" 2>/dev/null)" = newer ]
 r=$?
 grep -q "cp in.txt out.txt" "$G/make1.out" && ! grep -q "cp in.txt" "$G/make2.out" &&

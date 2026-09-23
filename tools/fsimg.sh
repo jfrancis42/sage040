@@ -33,6 +33,8 @@
 #   fsimg.sh IMG exists PATH         exit 0 if it is there
 #   fsimg.sh IMG isdir PATH          exit 0 if it is a directory
 #   fsimg.sh IMG size PATH           its size in bytes, on stdout
+#   fsimg.sh IMG mtime PATH          its modification time, in SECONDS
+#                                    since the epoch
 #   fsimg.sh IMG mkdir DIR           make DIR and any parent of it
 #   fsimg.sh IMG rm PATH...          delete files
 #   fsimg.sh IMG rmdir DIR           delete an empty directory
@@ -286,6 +288,19 @@ size)
     P=${1:?size: need a path}
     fs_exists "$P" || die "no such file: $P"
     dbg_ro "stat $(q "$P")" | sed -n 's/.*Size: \([0-9]*\).*/\1/p' | head -1
+    ;;
+mtime)
+    #
+    # Raw seconds, not a printed date. debugfs prints "2-Feb-2001
+    # 21:05" -- its own format, in the HOST's timezone -- so a test that
+    # matched the text was really testing where the host is, and failed
+    # by seven hours west of Greenwich.
+    #
+    P=${1:?mtime: need a path}
+    fs_exists "$P" || die "no such file: $P"
+    dbg_ro "stat $(q "$P")" |
+        sed -n 's/^ *mtime: 0x\([0-9a-f]*\).*/\1/p' | head -1 |
+        while read -r h; do printf '%d\n' "$((16#$h))"; done
     ;;
 mkdir)
     fs_mkdir_p "${1:?mkdir: need a path}"
