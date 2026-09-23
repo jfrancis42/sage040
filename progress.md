@@ -45,7 +45,9 @@ without a better filesystem is ENFORCEMENT, and that waits.
 | 33 | **A home directory** | | **done** with 34/35 |
 | 34 | **Users: a process belongs to one** | | **done** -- identity only; enforcement needs 36 |
 | 35 | **/etc/passwd** | | **done** |
-| 45 | **libiconv** | CLISP needs it, and so does anything that converts between character sets; picolibc has `iconv` headers but no converters worth the name | |
+| 45 | **libiconv** | **done** -- 1.18 |
+| 46x | **gettext** | **done** -- 0.23.1, runtime only |
+| 45old | **libiconv** | CLISP needs it, and so does anything that converts between character sets; picolibc has `iconv` headers but no converters worth the name | |
 | 46 | **gettext** | CLISP needs it; message catalogues, and the `_()` every GNU program is written around | |
 | 47 | **readline** | CLISP needs it, and it is what makes any interactive program's line editing behave; over the terminfo of task 39. **CPython is rebuilt once this exists** -- its `readline` module is what gives the interactive interpreter a line editor, and it is switched off now for want of the library | |
 | 48a | **The libraries CPython wants** (asked for 2026-09-22) | **done** -- see below. bzip2, xz, zstd, SQLite, OpenSSL, readline and libffi all build and are installed by `make ports`. CPython is **not** rebuilt against them yet: that was asked to wait |
@@ -476,14 +478,12 @@ compared byte for byte. Same version, same flags, same target -- if
 they agree, the native compiler is not merely a compiler that runs,
 it is the same compiler.
 
-### 45, 46. libiconv and gettext -- ports written, not yet built
+### 45, 46. libiconv and gettext -- done
 
-`ports/libiconv` and `ports/gettext` are written and their sources
-fetched and **signature-checked against GNU's keyring** (both are Bruno
-Haible's, which is a pleasant coincidence given he also maintains
-CLISP). Neither has been built: the machine they build on was busy
-compiling gcc, and starting another build beside it is what caused an
-out-of-memory kill earlier in the night.
+libiconv 1.18 and gettext 0.23.1's runtime, both
+**signature-checked against GNU's keyring** (both are Bruno Haible's,
+which is a pleasant coincidence given he also maintains CLISP). Both
+built first try.
 
 gettext is deliberately **the runtime only** -- libintl and
 `gettext(1)`. The tools (xgettext, msgfmt, msgmerge) are a developer's
