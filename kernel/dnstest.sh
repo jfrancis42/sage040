@@ -77,7 +77,7 @@ printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
     | sfdisk -q "$DISK" >/dev/null
 fsimg mkfs SAGE040
 fsimg put kernel.rom /KERNEL.ROM
-fsimg mkdir /bin; fsimg mkdir /ETC
+fsimg mkdir /bin; fsimg mkdir /etc
 for p in ifconfig ping host ntpdate; do
     fsimg put -m 755 ../system/$p "/bin/$p"
 done

@@ -923,7 +923,7 @@ line.
 | `kernel/libctest.sh` | 232 | picolibc and the POSIX layer added to it |
 | `kernel/sotest.sh` | 119 | shared libraries, `ld.so`, and the sharing of their pages |
 | `kernel/fscktest.sh` | 23 | `fsck`, against seven kinds of damage made on the host, each repaired and then agreed with by e2fsck |
-| `kernel/fattest.sh` | 11 | the FAT16 fallback, which is no longer the machine's own filesystem |
+| `kernel/fattest.sh` | 10 | the FAT16 fallback, which is no longer the machine's own filesystem |
 | `tools/fsimgtest.sh` | 34 | the host's end of the disk, which every other suite stages its files through |
 | `kernel/uemacstest.sh` `kernel/vitest.sh` | 9, 9 | the two editors |
 | `kernel/awktest.sh` | 40 | awk's own regression tests, and eleven more against the host's awk |

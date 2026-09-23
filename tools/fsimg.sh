@@ -37,6 +37,8 @@
 #   fsimg.sh IMG rm PATH...          delete files
 #   fsimg.sh IMG rmdir DIR           delete an empty directory
 #   fsimg.sh IMG mv FROM TO          rename
+#   fsimg.sh IMG alloc PATH MB       a file of MB megabytes with every
+#                                    block really allocated (no holes)
 #   fsimg.sh IMG df                  total, used, free and AVAILABLE bytes,
 #                                    and the inode counts
 #   fsimg.sh IMG fsck [-p]           check it; -p repairs
@@ -295,6 +297,27 @@ mv)
         echo "$out" | dbg_clean >&2
         die "could not rename $FROM"
     fi
+    ;;
+alloc)
+    #
+    # A FILE WITH NO HOLES, which is not what `put` of a file of zeroes
+    # gives you.
+    #
+    # debugfs writes an all-zero input as a fully sparse file -- size
+    # right, Blockcount 0, no blocks at all -- which is correct ext2 and
+    # useless as a swap file: swapon maps every page through the
+    # filesystem's bmap once, and a hole has no block to name. Linux
+    # refuses a swap file with holes for the same reason ("it appears to
+    # have holes"), and so does this kernel.
+    #
+    # Filling with a non-zero byte is what makes the blocks real.
+    #
+    P=${1:?alloc: need a path}
+    MB=${2:?alloc: need a size in megabytes}
+    TMP=$(mktemp)
+    head -c $((MB * 1024 * 1024)) /dev/zero | tr '\0' 'S' > "$TMP"
+    "$0" "$IMG" put "$TMP" "$P"
+    rm -f "$TMP"
     ;;
 df)
     # From e2fsck's own summary line, which is the host counting the

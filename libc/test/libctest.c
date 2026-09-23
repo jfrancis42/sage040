@@ -585,7 +585,7 @@ int main(int argc, char **argv)
     /* This program, by the name it was run as: the static and the
      * dynamic builds are two files, and each must exec itself. */
     test_dirs(argv[0][0] == '/' ? argv[0] : "/libctest");
-    test_processes(argv[0][0] == '/' ? argv[0] : "/LIBCTEST");
+    test_processes(argv[0][0] == '/' ? argv[0] : "/libctest");
     test_signals();
     test_time();
     test_tty();

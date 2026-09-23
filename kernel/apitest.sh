@@ -87,7 +87,7 @@ fsimg put -m 755 ../apps/pipetest /pipetest
 fsimg put -m 755 ../apps/proctest /proctest
 fsimg put -m 755 ../apps/socktest /socktest
 fsimg put -m 755 ../apps/spin /spin
-fsimg mkdir /ETC
+fsimg mkdir /etc
 fsimg mkdir /bin
 fsimg put -m 755 ../system/env /bin/env
 fsimg put -m 755 ../system/sh /bin/sh
@@ -95,7 +95,7 @@ fsimg put -m 755 ../system/ping /bin/ping
 printf 'echo from-a-script\r\nexit 6\r\n' > "$SCRATCH/t.tmp"
 fsimg put "$SCRATCH/t.tmp" /T.SH
 printf 'echo rc-ran\r\n' > "$SCRATCH/rc.tmp"
-fsimg put "$SCRATCH/rc.tmp" /ETC/RC
+fsimg put "$SCRATCH/rc.tmp" /etc/rc
 
 # PATH: the same program name in two directories, to see which is
 # found. /bin/hello and /OTHER/hello are different programs -- one
@@ -108,7 +108,7 @@ fsimg put -m 755 ../system/env /OTHER/hello2
 : > "$SCRATCH/session.tmp"
 {
     # --- descriptors: fstat, access, dup, isatty ---
-    printf 'statfs /ETC/RC\r';          sleep 2
+    printf 'statfs /etc/rc\r';          sleep 2
 
     # --- the working directory belongs to the task ---
     printf 'pwd\r';                     sleep 1
@@ -116,8 +116,8 @@ fsimg put -m 755 ../system/env /OTHER/hello2
     printf 'pwd\r';                     sleep 1
 
     # --- an absolute path means the same thing from anywhere ---
-    printf 'cd /ETC\r';                 sleep 1
-    printf 'cat /ETC/RC\r';             sleep 1
+    printf 'cd /etc\r';                 sleep 1
+    printf 'cat /etc/rc\r';             sleep 1
     printf 'stat /bin/env\r';           sleep 1
     printf '/bin/env\r';                sleep 1
     printf 'cd /\r';                    sleep 1
@@ -150,10 +150,10 @@ fsimg put -m 755 ../system/env /OTHER/hello2
     printf 'pipetest out redirected-line >/RED.TXT\r'; sleep 1
     printf 'pipetest err to-stderr 2> /ERR.TXT\r';  sleep 1
     printf 'pipetest err both 2>&1 > /BOTH.TXT\r';  sleep 1
-    printf 'cat /ETC/RC > /CAT.TXT\r';              sleep 1
-    printf 'pipetest cat < /ETC/RC\r';              sleep 1
+    printf 'cat /etc/rc > /CAT.TXT\r';              sleep 1
+    printf 'pipetest cat < /etc/rc\r';              sleep 1
     printf 'pipetest out hi | pipetest count\r';    sleep 2
-    printf 'cat /ETC/RC | pipetest count\r';        sleep 2
+    printf 'cat /etc/rc | pipetest count\r';        sleep 2
     printf 'pipetest gen 100000 | pipetest cat | pipetest check 100000\r'; sleep 6
     printf 'pipetest out x | nosuchcmd\r';          sleep 2
     printf 'pipetest gen 100000 | pipetest out reader-gone\r'; sleep 2
@@ -196,7 +196,7 @@ fsimg put -m 755 ../system/env /OTHER/hello2
     printf 'memtest none\r';            sleep 2
 
     # --- the allocator: its workload runs as long as the host takes ---
-    printf 'mallocte\r'
+    printf 'malloctest\r'
 } >> "$SCRATCH/session.tmp"
 
 rm -f "$SCRATCH/in.fifo"
@@ -286,7 +286,7 @@ done
     printf '\r';                             sleep 0.5
     printf 'echo PS-KILLED\r';               sleep 0.5
     printf 'ps\r';                           sleep 1
-    printf 'mallocte doublefree\r';     sleep 2
+    printf 'malloctest doublefree\r';     sleep 2
     # Two programs using the FPU at once, with different values in every
     # register: one in the background, one in the foreground.
     printf 'fptest 1 &\r';              sleep 0.5
@@ -377,11 +377,16 @@ check "  and the shell that started it did NOT move" $?
 
 echo "=== checks: an absolute path is absolute ==="
 
-grep -q "rc-ran" "$C"
-check "/etc/rc ran at startup" $?
+# BEFORE THE FIRST PROMPT, not anywhere in the log. The session cats
+# /etc/rc twice, so a plain grep for the marker matches the script's own
+# text and passes whether or not the script ever ran -- which is what it
+# was doing, while the file sat at /ETC/RC where the kernel does not
+# look for it.
+awk '/^\/\$ / { exit } /rc-ran/ { found = 1 } END { exit !found }' "$C"
+check "/etc/rc ran at startup, before the first prompt" $?
 
-# cat /ETC/RC issued from inside /ETC. vfs.c used to strip the leading
-# slash, so it resolved relative to the cwd and became /ETC/ETC/RC.
+# cat /etc/rc issued from inside /etc. vfs.c used to strip the leading
+# slash, so it resolved relative to the cwd and became /etc/etc/rc.
 test "$(grep -c 'echo rc-ran' "$C")" -ge 1
 check "cat of an absolute path worked from inside that directory" $?
 
@@ -549,7 +554,7 @@ echo "=== checks: pipelines ==="
 
 grep -q "pipetest: counted 3 bytes" "$C"
 check "program | program" $?
-grep -q "pipetest: counted $(fsimg cat /ETC/RC | wc -c) bytes" "$C"
+grep -q "pipetest: counted $(fsimg cat /etc/rc | wc -c) bytes" "$C"
 check "builtin | program" $?
 grep -q "pipetest: check passed, 100000 bytes" "$C"
 check "100000 bytes through three stages, every one in order" $?

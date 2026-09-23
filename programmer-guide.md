@@ -1034,8 +1034,12 @@ sage$ free                  # shows the swap line
 sage$ swapoff /swap         # brings every page back first, or refuses
 ```
 
-Make the file on the host (`dd` of zeroes, then `tools/fsimg.sh IMG put`);
-the kernel
+Make the file on the host with `tools/fsimg.sh IMG alloc /swap 16`, which
+fills it rather than leaving it as zeroes. **A swap file may not have
+holes**, because swapon maps every page through the filesystem once and
+a hole has no block to name -- and a file of zeroes written with
+`debugfs` is entirely holes: right size, no blocks. Linux refuses such a
+file for the same reason. The kernel
 refuses to use a file it would have to grow, and while it is on the
 file cannot be written, truncated, renamed or deleted -- `ETXTBSY`.
 A program that touches more than memory and swap can hold is killed

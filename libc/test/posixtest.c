@@ -777,9 +777,9 @@ static void test_chroot(void)
         if (chroot("/JAIL") < 0 || chdir("/") < 0)
             _exit(10);
         bad |= stat("/flag", &sb) != 0;                     /* "/" is the jail */
-        bad |= (stat("/POSIXTST", &sb) == 0) << 1;          /* the world is not */
+        bad |= (stat("/posixtest", &sb) == 0) << 1;          /* the world is not */
         bad |= (stat("/../flag", &sb) != 0) << 2;           /* ".." stays in */
-        bad |= (stat("/../../POSIXTST", &sb) == 0) << 3;
+        bad |= (stat("/../../posixtest", &sb) == 0) << 3;
         bad |= (chdir("/inner/../..") != 0 || !getcwd(cwd, sizeof(cwd)) ||
                 strcmp(cwd, "/") != 0) << 4;
         bad |= (stat("flag", &sb) != 0) << 5;               /* and cd .. did not leave */
@@ -790,7 +790,7 @@ static void test_chroot(void)
            WIFEXITED(st) && WEXITSTATUS(st) == 0);
     if (!WIFEXITED(st) || WEXITSTATUS(st) != 0)
         printf("posixtest: chroot child status %d\n", WIFEXITED(st) ? WEXITSTATUS(st) : -1);
-    report("  and the parent's own root is untouched", access("/POSIXTST", F_OK) == 0);
+    report("  and the parent's own root is untouched", access("/posixtest", F_OK) == 0);
     unlink("/JAIL/flag");
     rmdir("/JAIL/inner");
     rmdir("/JAIL");
@@ -822,8 +822,8 @@ static void test_misc(void)
     rmdir(tmpl);
     report("confstr(_CS_PATH)", confstr(_CS_PATH, buf, sizeof(buf)) == 5 && strcmp(buf, "/bin") == 0);
     report("fchmodat and fchownat, to what FAT can say",
-           fchmodat(AT_FDCWD, "/POSIXTST", 0755, 0) == 0 &&
-           fchownat(AT_FDCWD, "/POSIXTST", 0, 0, 0) == 0);
+           fchmodat(AT_FDCWD, "/posixtest", 0755, 0) == 0 &&
+           fchownat(AT_FDCWD, "/posixtest", 0, 0, 0) == 0);
     errno = 0;
     report("mknodat and mkfifoat: EPERM, FAT holds neither",
            mkfifoat(AT_FDCWD, "/F.TMP", 0644) < 0 && errno == EPERM);
@@ -988,7 +988,7 @@ int main(int argc, char **argv)
     test_altstack();
     test_random();
     test_glob();
-    test_spawn(argc > 0 && argv[0][0] == '/' ? argv[0] : "/POSIXTST");
+    test_spawn(argc > 0 && argv[0][0] == '/' ? argv[0] : "/posixtest");
     test_chroot();
     test_timezones();
     test_misc();

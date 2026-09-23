@@ -126,6 +126,13 @@ LC_ALL=C.UTF-8 fsimg put "$SCRATCH/lfn.tmp" $'/na\xc3\xafve r\xc3\xa9sum\xc3\xa9
 head -c 5242880 /dev/urandom > "$SCRATCH/huge.tmp"
 fsimg put "$SCRATCH/huge.tmp" /HUGE.BIN
 
+# A SYMLINK, which only the host can make: ext2 holds one and nothing
+# in the guest creates or follows one. What is checked is that the
+# kernel calls it what it is instead of handing back the target's NAME
+# as though it were the file's contents -- which is what a driver that
+# knows only S_IFREG and S_IFDIR does.
+printf 'symlink /alink HOST.TXT\nquit\n' | debugfs -w "$DISK?offset=$OFFSET" >/dev/null 2>&1
+
 fsimg put -m 755 ../apps/hello /hello
 fsimg put -m 755 ../apps/fbtest /fbtest
 
@@ -134,6 +141,9 @@ printf '%s\n' \
   'uname -a' \
   'ls -l' \
   'cat HOST.TXT' \
+  'echo SYMLINK-TEST' \
+  'cat /alink' \
+  'echo LINK-RC=$?' \
   'cat > GUEST.TXT' \
   'a line the kernel wrote' \
   'and another one' \
@@ -519,6 +529,16 @@ check "rm of a long name removes it" $?
 awk '/^LFN-LS$/ { f = 1; next } f' "$SCRATCH/lfn-log.tmp" | grep -q "Renamed Long Name.text"
 check "ls shows long names" $?
 
+echo "=== checks: a symlink the host made ==="
+
+awk '/^SYMLINK-TEST$/ { f = 1; next } /^LINK-RC=/ { f = 0 } f' \
+    "$SCRATCH/lfn-log.tmp" > "$SCRATCH/link.tmp"
+! grep -q "written by the host" "$SCRATCH/link.tmp"
+check "reading a symlink does not hand back the target's name as contents" $?
+
+grep -q "^LINK-RC=[1-9]" "$SCRATCH/lfn-log.tmp"
+check "  and it is refused, with a status that says so" $?
+
 echo "=== checks: what e2fsck says ==="
 
 # The whole volume, checked by code that has nothing to do with the
@@ -540,7 +560,7 @@ echo
 echo "  passed: $pass"
 echo "  failed: $fail"
 
-rm -f "$SCRATCH/case.tmp" "$SCRATCH/lfn.tmp" "$SCRATCH/huge.tmp" "$SCRATCH/hugecopy.tmp" "$SCRATCH/lfn-dir.tmp" "$SCRATCH/lfn-log.tmp"
+rm -f "$SCRATCH/link.tmp" "$SCRATCH/case.tmp" "$SCRATCH/lfn.tmp" "$SCRATCH/huge.tmp" "$SCRATCH/hugecopy.tmp" "$SCRATCH/lfn-dir.tmp" "$SCRATCH/lfn-log.tmp"
 rm -f "$SCRATCH/hostfile.tmp" "$SCRATCH/big.tmp" "$SCRATCH/session.tmp" "$SCRATCH/dir.tmp" guest.tmp renamed.tmp \
       fsck.tmp
 

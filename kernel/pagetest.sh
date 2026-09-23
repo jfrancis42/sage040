@@ -80,9 +80,13 @@ boot() {
     fsimg put -m 755 ../system/swapon /bin/swapon
     fsimg put -m 755 ../system/swapoff /bin/swapoff
     if [ "$swap_mb" -gt 0 ]; then
-        dd if=/dev/zero of="$SCRATCH/swap.tmp" bs=1M count="$swap_mb" status=none
-        fsimg put "$SCRATCH/swap.tmp" /SWAP
-        rm -f "$SCRATCH/swap.tmp"
+        # `alloc`, not a dd of zeroes put in with `put`: debugfs writes
+        # an all-zero file as a fully SPARSE one -- the size is right
+        # and it has no blocks at all -- and swapon maps every page
+        # through the filesystem's bmap, which a hole has no block to
+        # answer with. Linux refuses a swap file with holes for the
+        # same reason, and so does this kernel.
+        fsimg alloc /SWAP "$swap_mb"
     fi
     rm -f "$SCRATCH/in.fifo"
     mkfifo "$SCRATCH/in.fifo"

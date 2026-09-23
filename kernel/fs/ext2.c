@@ -201,6 +201,7 @@ static void put_le32(u8 *p, u32 v)
 #define EXT2_FT_UNKNOWN      0
 #define EXT2_FT_REG_FILE     1
 #define EXT2_FT_DIR          2
+#define EXT2_FT_SYMLINK      7
 
 /* ---------------------------------------------------------------- */
 /* Mount state                                                       */
@@ -1755,6 +1756,28 @@ static int path_walk(u32 start, const char *path, u32 *out_dir,
         memcpy(comp, p, n);
         comp[n] = '\0';
 
+        /*
+         * ".." AT THE ROOT IS THE ROOT -- and "the root" means this
+         * task's root, which chroot() may have moved. Unlike FAT, an
+         * ext2 directory records its real parent in its own ".." entry,
+         * so following that entry walks straight out of a chroot jail.
+         * Clamping here is what keeps the jail a jail.
+         */
+        if (d == root_ino() && strcmp(comp, "..") == 0) {
+            p = slash;
+            while (*p == '/') {
+                p++;
+            }
+            if (*p == '\0') {
+                *out_dir = d;
+                if (out_last_is_dir) {
+                    *out_last_is_dir = 1;
+                }
+                return 0;
+            }
+            continue;
+        }
+
         if (*slash == '\0') {
             /* The last component: the caller decides what it means. */
             memcpy(out_name, comp, n + 1);
@@ -1774,9 +1797,19 @@ static int path_walk(u32 start, const char *path, u32 *out_dir,
             if (err != 0) {
                 return err;
             }
+            if (S_ISLNK(ei.mode)) {
+                return -ELOOP;
+            }
             if (!S_ISDIR(ei.mode)) {
                 return -ENOTDIR;
             }
+        } else if (type == EXT2_FT_SYMLINK) {
+            /* ext2 holds symlinks and a host tool can make one; nothing
+             * here follows one, so a path that goes through one cannot
+             * be resolved. ELOOP is Linux's answer for a symlink that
+             * cannot be followed, and is far better than walking into
+             * the target's NAME as though it were a directory. */
+            return -ELOOP;
         } else if (type != EXT2_FT_DIR) {
             return -ENOTDIR;
         }
@@ -2457,6 +2490,12 @@ static int ext2_open(const char *path, int flags, struct file *f)
         if (err != 0) {
             return err;
         }
+        if (S_ISLNK(ei.mode)) {
+            /* Reading it would hand the program the target's NAME as
+             * though it were the file's contents. Nothing follows a
+             * symlink here yet, so say so. */
+            return -ELOOP;
+        }
         if (S_ISDIR(ei.mode)) {
             /* vfs.c decides what opening a directory means and handles
              * the read-only case itself, so this is only reached if
@@ -3052,6 +3091,12 @@ static int ext2_sync(void)
     return (a != 0) ? a : b;
 }
 
+/*
+ * 0xffffffff means UTIME_OMIT: leave that one alone. The kernel's
+ * utimensat spells it that way (syslinux.c) and fs/fat16.c reads it the
+ * same, so a filesystem that assigned both unconditionally would set a
+ * time the caller explicitly asked it not to touch.
+ */
 static int set_times(u32 ino, u32 mtime, u32 atime)
 {
     struct einode ei;
@@ -3060,8 +3105,12 @@ static int set_times(u32 ino, u32 mtime, u32 atime)
     if (err != 0) {
         return err;
     }
-    ei.mtime = mtime;
-    ei.atime = atime;
+    if (mtime != 0xffffffffUL) {
+        ei.mtime = mtime;
+    }
+    if (atime != 0xffffffffUL) {
+        ei.atime = atime;
+    }
     ei.ctime = now_secs();
     err = iwrite(&ei);
     if (err != 0) {
@@ -3156,7 +3205,18 @@ static int ext2_bmap(struct file *f, u32 off, u32 *lba, struct blockdev **d)
 
 static u8 fsck_arena[FSCK_ARENA];
 static u8 *seen_map;            /* one bit per block: reached          */
-static u8 *links_map;           /* one byte per inode: names found     */
+/*
+ * One byte per inode, holding the number of DIRECTORY ENTRIES that
+ * account for its link count: the names that point at it, plus -- for a
+ * directory -- one for each subdirectory, whose ".." is a link back.
+ * Its own "." is the constant 1 added at the end.
+ *
+ * Both are kept in the one array on purpose. A second array of the same
+ * size does not fit: on the 512 MB disk that is 128 K inodes, and two
+ * of them plus the block bitmap is 272 KB of an arena that has to be
+ * static because there is no allocator here.
+ */
+static u8 *links_map;
 static u32 links_cap;
 
 static int seen_test(u32 b)
@@ -3514,6 +3574,15 @@ static void fsck_tree(u32 dino, u32 parent, int depth, struct fsck_report *r)
         }
         if (S_ISDIR(ce.mode)) {
             r->dirs++;
+            /* Counted HERE, where this directory is already being
+             * walked once, rather than by walking it again per entry
+             * in the sweep below: dir_nth() restarts from the first
+             * entry every time, so counting there is quadratic in the
+             * size of the directory, and /usr on a full disk has
+             * enough entries in it to make that minutes. */
+            if (dino < links_cap && links_map[dino] < 255) {
+                links_map[dino]++;
+            }
             /* A directory is reached by exactly one name, so a second
              * visit would be a loop; the link count check catches it. */
             if (child != dino && child < links_cap && links_map[child] == 1) {
@@ -3714,27 +3783,9 @@ static int ext2_check(int flags, struct fsck_report *r)
         names = (ino < links_cap) ? links_map[ino] : 0;
         if (S_ISDIR(ei.mode)) {
             /* A directory is named once by its parent and once by its
-             * own ".", plus once per subdirectory's "..". */
-            u32 subs = 0;
-            int k;
-
-            for (k = 0; ; k++) {
-                char nm[NAME_MAX + 1];
-                u32 child;
-                u8 type;
-                struct einode ce;
-
-                if (dir_nth(ino, k, nm, &child, &type) != 0) {
-                    break;
-                }
-                if (strcmp(nm, ".") == 0 || strcmp(nm, "..") == 0) {
-                    continue;
-                }
-                if (iread(child, &ce) == 0 && S_ISDIR(ce.mode)) {
-                    subs++;
-                }
-            }
-            names = names + 1 + subs;
+             * own ".", plus once per subdirectory's "..". The walk
+             * above counted the subdirectories as it went. */
+            names = names + 1;   /* its own "."; the rest is counted */
         }
         if (names == 0) {
             r->unattached++;
