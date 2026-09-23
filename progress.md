@@ -39,46 +39,49 @@ without a better filesystem is ENFORCEMENT, and that waits.
 | 43 | **`/var`, and `/var/log`**: the kernel's log to `/var/log/syslog` | asked for 2026-09-22 | **done** |
 | 44 | **`/bin/less`** | asked for 2026-09-22; wants terminfo (39) | **done** |
 | 51 | **`df` and `du`** | asked for 2026-09-22 | **done** -- `du` is sbase's (`-k -h -a -s -d -x`); `df` is new, with `-h`, `-k` and `-i`. 14 checks, numbers verified against the host's own `mdir` |
-| 49 | **A native toolchain** | asked for 2026-09-22 | **in progress** -- binutils runs on the machine; gcc needs a C++ chain first |
+| 49 | **A native toolchain** | asked for 2026-09-22 | **done** -- binutils AND gcc 15.2.0 run on the machine; 15 checks, and the code it generates is identical to the cross compiler's |
 | 41 | **ssh, client and server, with scp** | asked for 2026-09-22 | **mostly done** -- Dropbear 2026.94. A real OpenSSH client authenticates into the machine by public key and runs commands. `scp` builds and does not work; see below |
 | 42 | **rsync** | asked for 2026-09-22 | **done** -- 3.4.1, over ssh, verified both locally and from another machine |
 | 33 | **A home directory** | | **done** with 34/35 |
 | 34 | **Users: a process belongs to one** | | **done** -- identity only; enforcement needs 36 |
 | 35 | **/etc/passwd** | | **done** |
-| 45 | **libiconv** | **done** -- 1.18 |
-| 46x | **gettext** | **done** -- 0.23.1, runtime only |
-| 45old | **libiconv** | CLISP needs it, and so does anything that converts between character sets; picolibc has `iconv` headers but no converters worth the name | |
-| 46 | **gettext** | CLISP needs it; message catalogues, and the `_()` every GNU program is written around | |
-| 47 | **readline** | CLISP needs it, and it is what makes any interactive program's line editing behave; over the terminfo of task 39. **CPython is rebuilt once this exists** -- its `readline` module is what gives the interactive interpreter a line editor, and it is switched off now for want of the library | |
-| 48a | **The libraries CPython wants** (asked for 2026-09-22) | **done** -- see below. bzip2, xz, zstd, SQLite, OpenSSL, readline and libffi all build and are installed by `make ports`. CPython is **not** rebuilt against them yet: that was asked to wait |
-| 48 | **CLISP**, a Common Lisp | asked for 2026-09-22. GNU CLISP is C plus a bytecode VM and wants its own build Lisp, as CPython wants a build Python; SBCL is out (it compiles to native code and has no m68k backend), ECL is the other candidate (it compiles to C). Depends on 45, 46 and 47 | |
+| 45 | **libiconv** | character-set conversion; CLISP requires it | **done** -- 1.18 |
+| 46 | **gettext** | message catalogues, and the `_()` every GNU program is written around | **done** -- 0.23.1, the runtime only |
+| 47 | **readline** | line editing in any interactive program, over the terminfo of task 39 | **done** -- 8.3, and CPython is rebuilt against it |
+| 48a | **The libraries CPython wants** | asked for 2026-09-22 | **done**, and **CPython is rebuilt against them**: 90 built-in modules where there were 87 |
+| 48 | **CLISP**, a Common Lisp | asked for 2026-09-22 | **not started, deliberately** -- the bootstrap is solved but the release is from 2010 and does not build with a current compiler. See below; ECL is the likely answer |
+| 50 | **libatomic** | for a configure script that tests for `-latomic` by name | not done; nothing has asked for it |
 
-**Not to be built until asked** (2026-09-22): tasks 45, 46 and 48 --
-libiconv, gettext and CLISP. The list is here so the work is decided;
-the work itself waits.
+**What is left**, and none of it is blocked on anything:
 
-**readline (47) is built**, ahead of that rule and deliberately: it is a
-CPython dependency as much as a CLISP one, and 48a asked for the
-libraries that make a better CPython. Nothing CLISP-specific was built.
-**CPython has not been rebuilt against any of this yet**, because the
-instruction was to build the dependencies and stop.
+- **task 30's remainder**: FIFOs, `/dev/fd`, a listable `/dev`, and
+  `diff`. FIFOs and `/dev/fd` are kernel work -- a FIFO has to live in
+  the VFS, since a FAT directory entry cannot hold one -- and between
+  them they are what bash's `<(...)` needs.
+- **task 36**, the filesystem that can hold an owner, which is what
+  turns the users of 33-35 into enforcement. Deferred on purpose.
+- **task 48**, a Lisp. See below.
+- **task 50**, libatomic, which nothing has asked for.
+- **`scp`**, which builds and does not run.
+- **`dlopen`** and **thread-local storage**, both written up in
+  `design.md` as decisions about the machine rather than items on a
+  list.
 
-| # | Task | Why here |
-|---|------|----------|
-| 50 | **libatomic**, GCC's own, built for this target | asked for 2026-09-22. **CPython does not need it any more**: the four 64-bit operations it wanted are implemented in the C library (`atomic64.c` in the m68k backend), over a table of locks, which is exactly what libatomic does on a target whose processor has no 64-bit atomic instruction -- and the 68040 has none. What building the real one would buy is a `-latomic` that EXISTS, for the configure scripts that test for it by linking against it, and the wider set libatomic carries (16-byte operations, the `__atomic_*_16` family) that nothing here has asked for. Small, and worth doing when a port asks for `-latomic` by name |
-| 49 | **A native toolchain: gcc, gas, ld, gdb, objdump, nm, strip, ar, ranlib** -- the whole C and assembler chain running ON the machine, able to build the kernel and every program here without a cross compiler. Asked for 2026-09-22. Plus whatever they need to build and run: make (sbase has one), a shell (bash is here), binutils' and gcc's own dependencies -- GMP, MPFR, MPC, isl, zlib (here), libiconv and gettext (45, 46) | the point at which the machine stops needing another computer to exist. The 68040 is what gcc was written on; the question is memory and time, not capability -- gcc's own build wants a great deal of both, and 64 MB with swap is the constraint to measure first |
+**On libatomic (50), since the reasoning is worth keeping:** CPython
+does not need it. The four 64-bit operations it wanted are implemented
+in the C library (`atomic64.c` in the m68k backend) over a table of
+locks, which is exactly what libatomic does on a processor with no
+64-bit atomic instruction -- and the 68040 has none. What the real one
+would buy is a `-latomic` that EXISTS, for configure scripts that test
+for it by linking, and the 16-byte operations nothing here has asked
+for. Small, and worth doing when a port asks for it by name.
 
 Left for later, and not started:
 
 | # | Task | Why here |
 |---|------|----------|
 | 23 | Regression tests throughout | ongoing, never finished |
-| 33 | A home directory, /home/jfrancis by default | HOME, ~, and where a shell starts |
-| 34 | Users: a process belongs to one | ssh needs it; today everything is root |
-| 35 | /etc/passwd: users, passwords, home directories, shells | getpwnam and friends read it |
-| 36 | Multi-user for real: owners, groups and permissions | needs a filesystem that can hold them -- FAT cannot |
-| 41 | ssh, client and server | after users, and needs real crypto |
-| 42 | rsync | after ssh |
+| 36 | Multi-user for real: owners, groups and permissions | needs a filesystem that can hold them -- FAT cannot. **Deferred on purpose** (2026-09-22). The users exist (33-35); this is the enforcement |
 
 Tasks 1-22 built the system itself -- the address space, memory, signals,
 pipes, subprocesses, sockets, the VT102 console, the C library, long file
