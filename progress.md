@@ -14,10 +14,17 @@ A task is crossed off when its tests pass, and every task ships with them:
 a check that could pass vacuously gets a negative control -- a deliberate
 break that must make it fail.
 
-**In hand now, in this order** (asked for 2026-09-22): **31** and what it
-needs first, then 30, 32, 37, 38, 39, 40. The order below is the order of
-work, not of numbering: Python is the target and everything above it in
-this list is something Python wants.
+**In hand now** (asked for 2026-09-22, evening): the whole remaining
+list, in this order -- **49** (the native toolchain) first, then
+**CPython rebuilt** against the new libraries, then `df`/`du`, then
+home directories, users and `/etc/passwd` (33, 34, 35), then ssh with
+scp and rsync (41, 42), then the remaining POSIX gaps (30), then
+libiconv/gettext/libatomic (45, 46, 50), and **CLISP last** (48).
+
+**Explicitly deferred**: task 36, a filesystem that can hold owners,
+groups and permissions -- and only the parts of 34/35 that need it.
+Users and `/etc/passwd` are being built on FAT; what cannot be done
+without a better filesystem is ENFORCEMENT, and that waits.
 
 | # | Task | Why here | State |
 |---|------|----------|-------|
@@ -31,6 +38,8 @@ this list is something Python wants.
 | 37 | **cron** | needs the clock, a daemon, and somewhere to log | **done** |
 | 43 | **`/var`, and `/var/log`**: the kernel's log to `/var/log/syslog` | asked for 2026-09-22 | **done** |
 | 44 | **`/bin/less`** | asked for 2026-09-22; wants terminfo (39) | **done** |
+| 51 | **`df` and `du`** | asked for 2026-09-22 | **done** -- `du` is sbase's (`-k -h -a -s -d -x`); `df` is new, with `-h`, `-k` and `-i`. 14 checks, numbers verified against the host's own `mdir` |
+| 49 | **A native toolchain** | asked for 2026-09-22 | **in progress** -- binutils runs on the machine; gcc needs a C++ chain first |
 | 45 | **libiconv** | CLISP needs it, and so does anything that converts between character sets; picolibc has `iconv` headers but no converters worth the name | |
 | 46 | **gettext** | CLISP needs it; message catalogues, and the `_()` every GNU program is written around | |
 | 47 | **readline** | CLISP needs it, and it is what makes any interactive program's line editing behave; over the terminfo of task 39. **CPython is rebuilt once this exists** -- its `readline` module is what gives the interactive interpreter a line editor, and it is switched off now for want of the library | |
@@ -306,6 +315,143 @@ during the run. It must not fire, or the matching matches everything.
 8 checks.
 
 ---
+
+### 51. `df` and `du` -- done
+
+`du` was already there: sbase's, with `-a -s -d depth -h -k -H -L -P
+-x`. `df` is new -- `system/df.c`, installed as `/bin/df` -- with
+`-h`, `-k` and `-i`. `kernel/dftest.sh`, 14 checks.
+
+**The numbers are checked against the host's**, not against
+themselves. `mdir` reports the free space on the same image before the
+machine boots, and the two agreed to the kilobyte (62836 K each way).
+The file sizes are deliberately awkward -- 300,000 and 70,000 bytes,
+which are a whole number of neither kilobytes nor clusters -- so a
+`du` that rounded the wrong way could not come out right by accident.
+
+**The negative control** is the last check: `/bin/df` is moved aside
+and `df` run again. The shell has a `df` built in, so something must
+still answer -- and its heading must be the BUILT-IN's. Without that,
+every check above would pass just as well on a machine where the
+program was never run at all.
+
+Two bugs on the way, and one of them was waiting rather than new:
+
+- **`struct statfs` was this system's own layout behind Linux's system
+  call number**, and one of its fields was a `const char *` pointing
+  at the string `"fat16"` **in the kernel**. The kernel's own shell
+  could print it; a program could not, the kernel being mapped
+  supervisor-only, so `/bin/sh`'s `df` had an access fault waiting in
+  it. `statfs` is Linux's layout now, `f_type` is
+  `MSDOS_SUPER_MAGIC`, and the volume label -- which Linux's `statfs`
+  has no field for -- moved to `fsctl(FSCTL_LABEL)`.
+
+- **The shell's built-in `df` shadowed the program**, so `df -h`
+  silently ignored the `-h`. Built-ins normally win, which is right
+  for `echo`; it is wrong for a built-in that takes no arguments and
+  prints one fixed report. The built-in now runs `/bin/df` when it
+  exists and only answers itself when it does not -- which is what
+  keeps it useful on a disk whose filesystem is the thing being
+  investigated.
+
+- **ulib programs never linked `libgcc`.** Nothing had needed it,
+  which is not the same as nothing ever needing it: `df` multiplies a
+  cluster count by a cluster size and must work in 64 bits to survive
+  a 4 GB volume, and `__udivdi3` lives in libgcc. `lib/program.mk`
+  links it now.
+
+### 49. A native toolchain -- in progress
+
+**binutils 2.45 runs on the machine.** as, ld, ar, ranlib, nm,
+objdump, objcopy, strip, readelf, size, strings, addr2line, c++filt,
+elfedit, gprof -- about 15 MB, installed to `/usr/bin`, which is now
+on the shell's PATH. Verified by running them: a `.s` file assembled
+by the machine's own `as`, linked by its own `ld`, and inspected with
+its own `nm`, `size`, `readelf` and `strip`.
+
+It is a **Canadian cross** -- `--build` is this workstation, `--host`
+and `--target` are the Sage040 -- built entirely on mother. Nothing is
+compiled inside the emulator; the emulator runs the result, which is
+the test and not the build.
+
+Three things it needed:
+
+1. **`libc/sage040.specs`.** Every program here used to be linked with
+   eleven explicit flags, which works while a Makefile in this tree
+   does the linking and stops working the moment anything else does.
+   binutils' own top-level configure checks the compiler with
+   `${CC} -o conftest ${CFLAGS} ${CPPFLAGS} ${LDFLAGS} conftest.c` and
+   no `${LIBS}` anywhere. The knowledge belongs in the compiler: `gcc
+   hello.c -o hello` now links a dynamic program against
+   `/lib/libc.so`, and `gcc -static` a static one laid out by
+   `sage040.ld`. This is also exactly what the native compiler needs,
+   since somebody at a prompt will type no more than that.
+
+2. **Every flag baked into `$CC`.** binutils configures a dozen
+   subdirectories and passes CFLAGS down to each but not CPPFLAGS --
+   so libiberty could not find `<stdio.h>`, concluded the compiler
+   could not link at all, and failed every later test with "Link tests
+   are not allowed after GCC_NO_EXECUTABLES". Moving the flags to
+   CFLAGS fixed the compile tests and not the preprocessor-only ones,
+   which autoconf runs as `$CPP $CPPFLAGS` with no CFLAGS near them:
+   `AC_HEADER_STDC` came back "no", and libiberty then built regex.c
+   with no `<stdlib.h>` and failed on "too many arguments to function
+   'malloc'". Flags inside CC are in all three.
+
+3. **`ac_cv_tls=none`, exported for the whole build.** binutils tests
+   for thread-local storage by COMPILING `static thread_local int
+   bar;` and never linking it. Compiling succeeds -- the m68k back end
+   emits a call to `__m68k_read_tp`, which is how a CPU with no thread
+   pointer register does TLS -- and the link then fails on that
+   symbol. bfd uses TLS for one variable and falls back to a plain
+   global without it. The variable has to be EXPORTED rather than
+   named on the configure line, because bfd's own configure is run by
+   `make`, later, with a cache file of its own.
+
+**GMP, MPFR and MPC are built for the machine**, as their own ports
+rather than from gcc's in-tree copies -- gcc needs all three to fold
+constant expressions exactly, and CLISP's bignums will want the same
+libgmp. GMP needs `--disable-assembly` (its m68k assembly is selected
+by a host table this build does not match) and `-std=gnu17` (one of
+its own configure probes declares `void g(){}` and calls it with six
+arguments, which C23 refuses).
+
+**The C library is installed on the machine**, at `/usr/include` and
+`/usr/lib`, with `crt0.o`, `crt0-dyn.o`, `sage040.ld` and `libgcc.a`
+beside it. Nothing needed that while every program was cross-compiled.
+
+**What is left, and why the chain is longer than it looks:** GCC 15 is
+written in C++, so a compiler that runs on this machine needs a C++
+standard library that runs on this machine. And the existing cross
+toolchain is C-only -- there is no cross `g++` at all. So the order is
+a cross g++ (into a separate prefix, so the working C compiler
+everything depends on is never at risk), then libstdc++ against
+picolibc, then the native gcc, then gdb.
+
+### The stdint deviation -- a decision to be made
+
+`m68k-elf` takes its integer types from gcc's `newlib-stdint.h`, where
+`uint32_t` is **`long unsigned int`**. Linux/m68k takes them from
+`glibc-stdint.h`, where it is **`unsigned int`**. This system's ABI is
+Linux/m68k's on purpose, so that is a real deviation, and it has now
+broken four builds: zstd's legacy decoders, OpenSSL's QUIC assist
+thread, bfd's target jump tables and libsframe. Each needed a patch
+saying the same thing.
+
+Two ways out:
+
+- **Rebuild the cross gcc** so this target describes itself the way
+  Linux/m68k does. It kills the whole class permanently, and it is
+  ABI-safe: `int` and `long` are both 32 bits here with the same
+  alignment and the same passing convention, so no existing binary
+  changes and nothing needs recompiling to stay compatible.
+- **Patch each package as it trips.** Each patch is small, correct and
+  upstreamable.
+
+The second was taken, deliberately, because the first means rebuilding
+the toolchain everything else depends on, unattended, overnight. The
+first is probably the right long-term answer and would help CLISP,
+which is fussy about exactly this.
 
 ### 48a. The libraries CPython is built against -- done
 
