@@ -273,6 +273,12 @@ usertest:
 # byte for byte against what the cross compiler makes of the same
 # source. Wants more RAM and disk than the ordinary machine, and says
 # so in the script.
+#
+# NOT in `make test`, deliberately: it needs `make toolchain` first,
+# which is ~100 MB and a long build that a machine only meant to RUN
+# programs does not need. A suite in the default list that cannot run
+# without an optional build would either fail for everybody or pass
+# vacuously, and this tree does not do vacuous passes.
 nativetest:
 	cd kernel && ./nativetest.sh
 
