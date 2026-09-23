@@ -10,7 +10,8 @@ stack, a cryptographic random generator and a shell, and a program it runs
 cannot bring it down. Its system call interface is Linux/m68k's, which is
 what lets ordinary POSIX programs build against it: GNU bash, GNU sed and
 grep, the one true awk, uEmacs, vi, and 98 of suckless's utilities all run
-on it, built from their own unmodified sources against picolibc.
+on it, built from their own unmodified sources against picolibc -- and so
+does **CPython 3.14**, with its standard library on the disk.
 
 It is not a Unix clone and it is not a Linux. It has one user, root, and a
 FAT filesystem that cannot record who owns a file. **What it is not**, at
@@ -31,6 +32,8 @@ is still to be built.
 - [Files](#files)
 - [Randomness](#randomness)
 - [The terminal](#the-terminal)
+- [Pseudo-terminals](#pseudo-terminals)
+- [The log](#the-log)
 - [The network](#the-network)
 - [Programs](#programs)
 - [The shell](#the-shell)
@@ -279,6 +282,37 @@ register set, a return address of `task_entry`, the user stack pointer.
 Starting a task and resuming one are then the same operation, which is what
 makes `switch_context` the only switch in the system.
 
+### Threads
+
+A thread is a TASK THAT SHARES. `clone(2)` with CLONE_VM, CLONE_FS,
+CLONE_FILES, CLONE_SIGHAND and CLONE_THREAD gives a task that shares one
+address space (reference counted), one descriptor table (`struct
+fdtable`, reference counted), one working directory, one set of signal
+dispositions, and one process id -- `getpid()` reports the thread group
+and `gettid()` the task. The scheduler, the signal code and the system
+call gate are unchanged: a thread is scheduled exactly as a process is.
+
+**Everything that waits, waits on a futex.** `futex(2)` is "sleep unless
+this word has changed" and "wake whoever is sleeping on it", and every
+mutex, condition variable, semaphore, barrier and join in the C library
+is built from those two. The point is what does not happen: an
+uncontended lock is one `cas.l` and no system call at all. A futex here
+is identified by its address space and address, which is exact because
+nothing shares memory between address spaces.
+
+The C library's pthread layer is described in
+[`libc/README.md`](libc/README.md). Two things about it are properties
+of the machine rather than of the library: **there is no thread
+register**, so `__thread` does not work and `pthread_self()` finds a
+thread by the stack it is standing on, and `errno` is a call into the
+thread's own descriptor for the same reason.
+
+exit_group(2) ends every thread, which is what a C library's `exit()`
+calls; `execve` ends every thread but the one calling it, as POSIX says.
+A thread is not a child: `wait()` will not collect one, and a thread's
+death is told to whoever is joining it by the kernel zeroing a word and
+waking the futex on it.
+
 ### Scheduling
 
 Round robin over the ready tasks, where **`nice` sets the length of a turn
@@ -455,6 +489,13 @@ disk polls.
 | `/dev/nvram` | the M48T59's 8176 bytes of battery-backed RAM; `/bin/nvram` keeps settings there |
 | `/dev/null` `/dev/zero` `/dev/full` | as everywhere else |
 | `/dev/random` `/dev/urandom` | the generator below; `urandom` never waits, `random` waits until the pool is ready |
+| `/dev/klog` | what the kernel has said; a read drains it, and `klogd` copies it into `/var/log/syslog` |
+| `/dev/ptmx` `/dev/pts/N` | pseudo-terminals: open the first to get a master, and the second is the terminal at the other end |
+
+**`ls /dev` does not work.** /dev is a name lookup rather than a
+directory: `resolve_dev()` turns `/dev/<rest>` into a device of that
+name, which is also how `pts/0` is a device whose name contains a
+slash. Making it listable is a VFS change and is on the list.
 
 ### Where "/" is
 
@@ -585,6 +626,48 @@ because on the framebuffer each one is 128 pixels drawn individually and
 redrawing a whole line per keystroke is visibly slow.
 
 ---
+
+## Pseudo-terminals
+
+A pty is a pair of devices and a line discipline between them. What a
+program writes to the MASTER arrives at the SLAVE as though it had been
+typed; what the program on the slave writes comes back out of the master
+as though it had been displayed. The slave is a terminal in every way a
+program can ask: `isatty()` says so, it has termios settings, a window
+size, and a foreground process group whose members are what ctrl-C on
+that pty reaches.
+
+`/dev/ptmx` allocates a pair and gives back the master; the slave is
+`/dev/pts/N`, and N is what the master's `TIOCGPTN` says -- which is
+what `ptsname(3)` asks. `openpty` and `forkpty` are in the C library.
+
+The discipline is the terminal's, not the console's: canonical mode
+assembling lines with erase and kill, raw mode delivering characters as
+they arrive, ECHO going to the MASTER (which is where the person is),
+ICRNL and ONLCR, and ISIG turning the interrupt, quit and suspend
+characters into signals for the foreground group. Closing either end is
+visible at the other: the slave reads end of file, and the program on
+it gets SIGHUP.
+
+Eight pairs, and they are given back -- which `kernel/ptytest.sh`
+checks by taking every one, closing them, and taking them all again.
+
+## The log
+
+The kernel keeps everything it prints in a ring and writes to no file:
+its first messages exist before there is a disk driver, and a panic has
+to work with the filesystem in whatever state it is in. The ring is
+**`/dev/klog`**, and a read of it blocks until there is something and
+DRAINS what it takes -- `/proc/kmsg`'s rule rather than `/dev/kmsg`'s,
+because the only reader is the one whose job is to put the bytes
+somewhere they can be read repeatedly.
+
+That reader is **`klogd`**, started from `/etc/rc`: asleep until the
+kernel speaks, appending to **`/var/log/syslog`** with a timestamp and
+the machine's name on each line. `syslog(3)` appends to the same file,
+so a program's messages and the kernel's are one log in the order they
+happened. **`dmesg`** reads the ring directly, which is what a machine
+with no klogd running wants.
 
 ## The network
 
@@ -784,6 +867,13 @@ line.
 | `kernel/greptest.sh` | 37 | grep's own 329 pattern cases, and its options against the host's grep |
 | `kernel/sbasetest.sh` | 76 | the utilities, against the host's own, and what only the disk can say |
 | `kernel/bashtest.sh` | | the shell language against the host's bash, and part of bash's own suite |
+| `kernel/threadtest.sh` | 52 | threads: clone, futexes, and the pthread layer, with the lock's own negative control |
+| `kernel/ptytest.sh` | 34 | pseudo-terminals, and that the pairs are given back |
+| `kernel/curstest.sh` | 28 | terminfo and curses, with the database renamed away as the control |
+| `kernel/lesstest.sh` | 12 | less, and a full-screen program on a terminal that cannot address its cursor |
+| `kernel/logtest.sh` | 10 | the kernel's log, klogd, and /var/log/syslog |
+| `kernel/crontest.sh` | 8 | something the machine does by itself, later |
+| `kernel/pytest.sh` | 43 | CPython, against the host's Python's answers to the same questions |
 
 `make bashsuite` runs every one of bash's 83 tests instead of the subset,
 which takes hours: one test is minutes of work for a 25 MHz 68040.

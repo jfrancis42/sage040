@@ -15,8 +15,11 @@ Sage name is an homage and a design sensibility, not a claim of accuracy.
 **SuckOS** is the operating system written for it: protected address spaces,
 preemptive multitasking, demand paging and swap, signals and job control, a
 FAT filesystem with long names, a TCP/IP stack, a framebuffer console, and a
-C library that ordinary POSIX programs build against. GNU bash, GNU sed, GNU
-grep, the one true awk, uEmacs, vi and 98 of suckless's utilities run on it.
+C library that ordinary POSIX programs build against, with threads,
+pseudo-terminals and a real terminfo database. **CPython 3.14** runs on
+it, and so do GNU bash, sed, grep, less, the one true awk, uEmacs, vi and
+98 of suckless's utilities -- each built from its own unmodified
+upstream source.
 
 ```
 $ make boot
@@ -91,6 +94,8 @@ The ported programs are built and installed separately, because each fetches
 its own source:
 
 ```bash
+make -C ports/python install  # CPython 3.14 and its standard library
+make -C ports/ncurses install # the terminfo database
 make -C ports/sbase install   # 98 utilities into /bin
 make -C ports/bash install    # bash 5.3.20
 make -C ports/awk install     # and sed, grep, uemacs, vi the same way
@@ -162,7 +167,11 @@ the POSIX layer added to it.
 
 | | |
 |---|---|
+| `ports/python` | CPython 3.14.7: big integers, the FPU, threads, sockets, curses, the standard library on the disk |
 | `ports/bash` | GNU bash 5.3.20 — job control, arrays, `[[ ]]`, arithmetic, here-documents |
+| `ports/ncurses` | ncurses 6.5: the terminfo database at /usr/share/terminfo, and curses |
+| `ports/less` | the pager, over terminfo |
+| `ports/zlib` | zlib 1.3.1 |
 | `ports/sbase` | 98 POSIX utilities: `sort`, `find`, `xargs`, `tar`, `make`, `ed`, `bc`, `wc`, `cut`, `tr`, the checksums |
 | `ports/sed`, `ports/grep` | GNU sed 4.10 and GNU grep 3.12 |
 | `ports/awk` | the one true awk |
@@ -267,7 +276,8 @@ emulator.
 ## Tests
 
 Everything here is tested, and the tests are the reason to trust any of it.
-`make test` runs them all: **33 suites, 1,354 checks**, about an hour.
+`make test` runs them all: **31 suites**, about two hours -- the machine
+is a 25 MHz 68040, and one of the suites waits for the wall clock.
 
 | | |
 |---|---|
@@ -279,7 +289,11 @@ Everything here is tested, and the tests are the reason to trust any of it.
 | `make nettest` `make lotest` `make dnstest` `make tcptest` | the network, loopback, the resolver, TCP |
 | `make libctest` `make sotest` | picolibc, the POSIX layer, shared libraries |
 | `make devtest` | interrupts, the NVRAM, the limits, `mmap` of the framebuffer |
+| `make threadtest` `make ptytest` | threads and futexes; pseudo-terminals |
+| `make curstest` `make lesstest` | terminfo and curses; less |
+| `make logtest` `make crontest` | the kernel's log; cron |
 | `make awktest` `make sedtest` `make greptest` `make sbasetest` `make bashtest` | the ported programs |
+| `make pytest` | CPython, every answer against the host's Python |
 | `make uemacstest` `make vitest` | the editors |
 | `make bashsuite` | every one of bash's own 83 tests (hours, not minutes) |
 
