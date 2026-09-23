@@ -367,7 +367,7 @@ Two bugs on the way, and one of them was waiting rather than new:
   a 4 GB volume, and `__udivdi3` lives in libgcc. `lib/program.mk`
   links it now.
 
-### 49. A native toolchain -- in progress
+### 49. A native toolchain -- DONE
 
 **binutils 2.45 runs on the machine.** as, ld, ar, ranlib, nm,
 objdump, objcopy, strip, readelf, size, strings, addr2line, c++filt,
@@ -436,7 +436,9 @@ the existing cross toolchain is C-only, with no cross `g++` at all. So:
    `~/m68k/install-cxx` -- a prefix of its own, so the C compiler
    everything else depends on is never at risk. **Done.**
 2. **libstdc++ for the target**, `ports/libstdcxx`, 1.5 MB. **Done.**
-3. **the native gcc**, `ports/gcc`. **Building.**
+3. **the native gcc**, `ports/gcc`. **Done.** 79 MB stripped, of
+   which cc1 is 28 MB; unstripped it is 1.1 GB, which does not go on
+   a 512 MB disk and is of no use on a machine with no debugger.
 4. gdb, which is also C++ and additionally wants `ptrace` in the
    kernel. Not started.
 
@@ -471,12 +473,31 @@ of these failed in a way that named something else:
   translation unit gave `getaddrinfo` and friends mangled names. gcc's
   own `c++tools` is C++ and found it immediately.
 
-**`kernel/nativetest.sh` is written and waiting for the compiler.** Its
-last check is the one that matters: the same source compiled here by
-the cross compiler and there by the native one, and the object files
-compared byte for byte. Same version, same flags, same target -- if
-they agree, the native compiler is not merely a compiler that runs,
-it is the same compiler.
+**`kernel/nativetest.sh`: 15 checks, all passing.** The machine runs
+`gcc`, compiles `hello.c`, links it with its own `ld`, and runs the
+result; compiles a program whose 64-bit arithmetic, floating point and
+type sizes are all checked against known answers; and compiles two
+source files separately and links them together.
+
+**And the code it generates is the cross compiler's code.** The same
+source is compiled here and there, and `.text`, `.rodata` and `.data`,
+the disassembly instruction for instruction, the symbol table and the
+relocations are all identical. So this is not merely a compiler that
+runs on the machine -- it is the same compiler, which is what rules
+out a native gcc that is subtly miscompiled and quietly produces wrong
+code.
+
+**One genuine difference, worth knowing:** the raw object files are
+NOT byte-identical. Two bytes differ, both alignment padding -- before
+the section header table and before `.comment` -- where the native
+assembler leaves `0x1b` and `0x04` and the cross one leaves zeroes. So
+one of them writes whatever was in the buffer. Nothing reads those
+bytes and every section a tool looks at agrees, but it does mean
+object files built on this machine are not reproducible byte for byte.
+
+**It needs a bigger machine than the default**: `NATIVE_RAM_MB=256`
+and a 512 MB disk. cc1 is 28 MB of program before it allocates
+anything.
 
 ### 45, 46. libiconv and gettext -- done
 

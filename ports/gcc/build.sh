@@ -230,5 +230,17 @@ rm -rf "$OUT"
 mkdir -p "$OUT"
 cp -a "$STAGE/usr/." "$OUT/"
 
+# STRIPPED, and it is not optional. gcc built with -g is 1.1 GB, which
+# does not go on a 512 MB disk; cc1 alone is most of it. The debug
+# information is of no use on the machine anyway -- there is no native
+# gdb yet, and when there is, this is not the program anybody wants to
+# debug with it. What is left is around a tenth of the size.
+find "$OUT" -type f -perm -u+x | while read -r f; do
+    case "$(head -c 4 "$f" | od -An -tx1 | tr -d " ")" in
+        7f454c46) "$CROSS_BIN/m68k-elf-strip" --strip-unneeded "$f" \
+                      2>/dev/null || true ;;
+    esac
+done
+
 echo "gcc $VERSION (native) -> $OUT"
 du -sh "$OUT" 2>/dev/null | awk '{print "   total", $1}'

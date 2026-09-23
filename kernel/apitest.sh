@@ -387,8 +387,12 @@ check "a program ran by absolute path from another directory" $?
 
 echo "=== checks: PATH ==="
 
-grep -q "^/bin:\.$" "$C"
-check "the shell sets PATH to /bin:. before /etc/rc runs" $?
+# /usr/bin is between them: /bin first so the system's own programs win
+# a name clash, then /usr/bin where a package installed with
+# --prefix=/usr puts itself -- the native toolchain -- and "." last, so
+# a program dropped in the working directory cannot stand in for either.
+grep -q "^/bin:/usr/bin:\.$" "$C"
+check "the shell sets PATH to /bin:/usr/bin:. before /etc/rc runs" $?
 
 # Between "hello2" the first time and the export, the /BIN one ran.
 sed -n '/echo \$PATH/,/export PATH=\/OTHER/p' "$C" | grep -q "hello from a program"

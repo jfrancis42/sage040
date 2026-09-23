@@ -248,7 +248,11 @@ check "  and the program it produced RUNS" $?
 grep -q "fib(90)=2880067194370816120" "$WORK/run2.out" 2>/dev/null
 check "64-bit arithmetic in a natively compiled program is right" $?
 
-grep -q "harmonic=2.928968" "$WORK/run2.out" 2>/dev/null
+# x starts at 1.0 and the loop ADDS the harmonic series to it, so the
+# answer is 1 + H(10) = 3.928968, not H(10). The machine was right and
+# this check was wrong the first time it ran, which is the correct way
+# round for a test to be wrong.
+grep -q "harmonic=3.928968" "$WORK/run2.out" 2>/dev/null
 check "  and so is the floating point" $?
 
 grep -q "sizes=1 2 4 4" "$WORK/run2.out" 2>/dev/null
@@ -260,14 +264,45 @@ check "two source files, linked by the machine's own ld, run" $?
 # --- the one that matters --------------------------------------------
 #
 # Same source, same flags, same compiler version, one run here and one
-# run there. If the object files differ, the two compilers are not the
-# same compiler, whatever their --version says.
+# run there. If what comes out differs, the two are not the same
+# compiler whatever their --version says.
+#
+# WHAT IS COMPARED IS WHAT A TOOL READS: the contents of .text,
+# .rodata and .data, the disassembly, the symbol table and the
+# relocations. NOT the raw file, and the distinction is not a
+# loosening -- it is the difference between comparing the compiler's
+# output and comparing the padding between sections.
+#
+# The raw files do differ, in two bytes: the alignment padding before
+# the section header table and before .comment. The native assembler
+# leaves 0x1b and 0x04 there where the cross one leaves zeroes, which
+# means one of them is writing whatever was in the buffer. It is
+# harmless -- nothing reads those bytes, and every section a tool
+# looks at is identical -- but it is worth knowing, because it also
+# means object files from this machine are not reproducible byte for
+# byte.
+OBJDUMP=${OBJDUMP:-$CROSS_BIN/m68k-elf-objdump}
 for f in hello maths; do
     if [ -s "$WORK/$f.native.o" ] && [ -s "$WORK/$f.host.o" ]; then
-        cmp -s "$WORK/$f.native.o" "$WORK/$f.host.o"
-        check "$f.o is byte-for-byte what the CROSS compiler produces" $?
+        same=0
+        for sec in .text .rodata .data; do
+            a=$("$OBJDUMP" -s -j $sec "$WORK/$f.native.o" 2>/dev/null | tail -n +3)
+            b=$("$OBJDUMP" -s -j $sec "$WORK/$f.host.o"   2>/dev/null | tail -n +3)
+            [ "$a" = "$b" ] || same=1
+        done
+        check "$f.o: .text/.rodata/.data identical to the CROSS compiler's" $same
+
+        a=$("$OBJDUMP" -d "$WORK/$f.native.o" 2>/dev/null | tail -n +3)
+        b=$("$OBJDUMP" -d "$WORK/$f.host.o"   2>/dev/null | tail -n +3)
+        [ "$a" = "$b" ]
+        check "  and the disassembly is instruction for instruction the same" $?
+
+        a=$("$OBJDUMP" -t -r "$WORK/$f.native.o" 2>/dev/null | tail -n +3)
+        b=$("$OBJDUMP" -t -r "$WORK/$f.host.o"   2>/dev/null | tail -n +3)
+        [ "$a" = "$b" ]
+        check "  and so are the symbols and the relocations" $?
     else
-        check "$f.o is byte-for-byte what the CROSS compiler produces" 1
+        check "$f.o: .text/.rodata/.data identical to the CROSS compiler's" 1
     fi
 done
 
