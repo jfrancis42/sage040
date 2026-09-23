@@ -433,6 +433,23 @@ a cross g++ (into a separate prefix, so the working C compiler
 everything depends on is never at risk), then libstdc++ against
 picolibc, then the native gcc, then gdb.
 
+### 45, 46. libiconv and gettext -- ports written, not yet built
+
+`ports/libiconv` and `ports/gettext` are written and their sources
+fetched and **signature-checked against GNU's keyring** (both are Bruno
+Haible's, which is a pleasant coincidence given he also maintains
+CLISP). Neither has been built: the machine they build on was busy
+compiling gcc, and starting another build beside it is what caused an
+out-of-memory kill earlier in the night.
+
+gettext is deliberately **the runtime only** -- libintl and
+`gettext(1)`. The tools (xgettext, msgfmt, msgmerge) are a developer's
+rather than a machine's: catalogues are compiled on a workstation and
+the `.mo` files copied over. Building them would mean porting their
+gnulib, which has been the most troublesome thing in this tree by a
+distance -- gcc's bundled copy had to be switched off entirely
+(`ports/gcc/patches/01`).
+
 ### The stdint deviation -- a decision to be made
 
 `m68k-elf` takes its integer types from gcc's `newlib-stdint.h`, where
