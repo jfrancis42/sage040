@@ -42,6 +42,21 @@
 #ifndef __ARPA_INET_H__
 #define __ARPA_INET_H__
 
+
+#include <sys/cdefs.h>
+
+/*
+ * EVERYTHING BELOW IS C, even when a C++ program includes it.
+ *
+ * Without this, a C++ translation unit gives every one of these
+ * functions a C++ mangled name, and the link fails on symbols like
+ * `_Z11getaddrinfoPKcS0_PK8addrinfoPPS1_` -- a name no C library
+ * contains. It stayed unnoticed for as long as nothing here was
+ * written in C++; gcc's own c++tools is, and found it at once.
+ */
+
+_BEGIN_STD_C
+
 #include <endian.h>
 #include <stdint.h>
 
@@ -74,5 +89,7 @@ int         inet_aton(const char *cp, struct in_addr *inp);
 char       *inet_ntoa(struct in_addr in);
 int         inet_pton(int af, const char *src, void *dst);
 const char *inet_ntop(int af, const void *src, char *dst, unsigned int size);
+
+_END_STD_C
 
 #endif /* __ARPA_INET_H__ */

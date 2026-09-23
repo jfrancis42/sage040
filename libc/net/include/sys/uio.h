@@ -37,6 +37,21 @@
 #ifndef _SYS_UIO_H_
 #define _SYS_UIO_H_
 
+
+#include <sys/cdefs.h>
+
+/*
+ * EVERYTHING BELOW IS C, even when a C++ program includes it.
+ *
+ * Without this, a C++ translation unit gives every one of these
+ * functions a C++ mangled name, and the link fails on symbols like
+ * `_Z11getaddrinfoPKcS0_PK8addrinfoPPS1_` -- a name no C library
+ * contains. It stayed unnoticed for as long as nothing here was
+ * written in C++; gcc's own c++tools is, and found it at once.
+ */
+
+_BEGIN_STD_C
+
 #include <sys/types.h>
 
 struct iovec {
@@ -46,5 +61,7 @@ struct iovec {
 
 ssize_t readv(int fd, const struct iovec *iov, int iovcnt);
 ssize_t writev(int fd, const struct iovec *iov, int iovcnt);
+
+_END_STD_C
 
 #endif

@@ -147,7 +147,17 @@ mkdir -p "$BUILD"
 # gcc wants here. They are not the native ones being built; those
 # cannot run on this workstation at all.
 mkdir -p "$BUILD/toolbin"
-for t in gcc as ld ar ranlib nm objdump objcopy strip readelf; do
+#
+# THE COMPILER ONES COME FROM install-cxx, the binutils ones from the
+# ordinary cross prefix. gcc's build runs the target compiler on its own
+# C++ self-test, and the C-only cross gcc answers "language c++ not
+# recognized" -- which is true of it and is not what the build is
+# asking about.
+for t in gcc g++ c++ cpp; do
+    [ -x "$CXXPREFIX/bin/m68k-elf-$t" ] && \
+        ln -sf "$CXXPREFIX/bin/m68k-elf-$t" "$BUILD/toolbin/$HOST_TRIPLET-$t"
+done
+for t in as ld ar ranlib nm objdump objcopy strip readelf; do
     src=""
     if [ -x "$CROSS_BIN/m68k-elf-$t" ]; then
         src=$CROSS_BIN/m68k-elf-$t
@@ -195,11 +205,24 @@ if [ ! -f "$BUILD/Makefile" ]; then
         > configure.log 2>&1) || { tail -40 "$BUILD/configure.log"; exit 1; }
 fi
 
-make -C "$BUILD" -j"$(nproc)" > "$BUILD/make.log" 2>&1 \
+# all-host AND install-host, NOT all and install.
+#
+# `all` would go on to build the TARGET libraries -- libgcc first --
+# and building libgcc means RUNNING the compiler that was just built,
+# which is an m68k program and cannot run on this workstation. The
+# failure is configure-target-libgcc saying "cannot compute suffix of
+# object files".
+#
+# There is nothing to build anyway: libgcc for this target already
+# exists, from the cross toolchain, and is the same library from the
+# same source at the same version. The C library is picolibc, built by
+# libc/build.sh. What is missing here is only the compiler, and
+# all-host is exactly the compiler.
+make -C "$BUILD" -j"$(nproc)" all-host > "$BUILD/make.log" 2>&1 \
     || { tail -40 "$BUILD/make.log"; exit 1; }
 
 rm -rf "$STAGE"
-make -C "$BUILD" install DESTDIR="$STAGE" > "$BUILD/install.log" 2>&1 \
+make -C "$BUILD" install-host DESTDIR="$STAGE" > "$BUILD/install.log" 2>&1 \
     || { tail -30 "$BUILD/install.log"; exit 1; }
 
 OUT=$BUILD/sage040

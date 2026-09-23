@@ -44,6 +44,21 @@
 #ifndef _NETDB_H_
 #define _NETDB_H_
 
+
+#include <sys/cdefs.h>
+
+/*
+ * EVERYTHING BELOW IS C, even when a C++ program includes it.
+ *
+ * Without this, a C++ translation unit gives every one of these
+ * functions a C++ mangled name, and the link fails on symbols like
+ * `_Z11getaddrinfoPKcS0_PK8addrinfoPPS1_` -- a name no C library
+ * contains. It stayed unnoticed for as long as nothing here was
+ * written in C++; gcc's own c++tools is, and found it at once.
+ */
+
+_BEGIN_STD_C
+
 #include <sys/socket.h>
 #include <netinet/in.h>
 
@@ -120,5 +135,7 @@ struct hostent  *gethostbyname(const char *name);
 struct servent  *getservbyname(const char *name, const char *proto);
 struct servent  *getservbyport(int port, const char *proto);
 const char      *hstrerror(int err);
+
+_END_STD_C
 
 #endif
