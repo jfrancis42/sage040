@@ -666,6 +666,7 @@ int exec_spawn(const char *path, int argc, char **argv, char **envp)
      * awk was the first program to open a relative name after a `cd`.
      */
     task_cwd_inherit(t, current);
+    task_cred_inherit(t, current);
 
     /*
      * The new task joins its spawner's process group, as a forked one

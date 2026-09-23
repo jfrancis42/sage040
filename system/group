@@ -1,0 +1,10 @@
+# /etc/group - the groups, such as they are.
+#
+# name:password:gid:members
+#
+# One group per user and nothing else, which is what a machine with
+# one person on it needs. Supplementary groups are not implemented:
+# getgroups() returns none, and there is nothing yet that a group
+# membership would decide.
+root::0:
+jfrancis::1000:

@@ -18,7 +18,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-PROGS := ifconfig ping netstat shutdown env stty resize fsck host ntpdate swapon swapoff irqs nvram klogd dmesg df sh
+PROGS := ifconfig ping netstat shutdown env stty resize fsck host ntpdate swapon swapoff irqs nvram klogd dmesg df id sh
 INSTALL_DIR := /BIN
 
 include $(TOPDIR)/lib/program.mk
@@ -37,9 +37,22 @@ include $(TOPDIR)/lib/program.mk
 install: install-etc
 install-etc: $(DISK)
 	@mmd -D s -i $(MIMG) ::/etc 2>/dev/null || true
+	@mmd -D s -i $(MIMG) ::/root 2>/dev/null || true
+	@mmd -D s -i $(MIMG) ::/home 2>/dev/null || true
+	@mmd -D s -i $(MIMG) ::/home/jfrancis 2>/dev/null || true
 	@mmd -D s -i $(MIMG) ::/var 2>/dev/null || true
 	@mmd -D s -i $(MIMG) ::/var/log 2>/dev/null || true
 	@mmd -D s -i $(MIMG) ::/var/run 2>/dev/null || true
+	@# /etc/passwd and /etc/group: installed if missing, left alone if
+	@# they are there. Unlike /etc/rc there is no "unedited default" to
+	@# recognise -- a passwd file is a list of people, and replacing one
+	@# because it looked like the shipped version would delete a user.
+	@if ! mdir -i $(MIMG) ::/etc/passwd >/dev/null 2>&1; then \
+	    mcopy -i $(MIMG) passwd ::/etc/passwd && echo "installed /etc/passwd"; \
+	fi
+	@if ! mdir -i $(MIMG) ::/etc/group >/dev/null 2>&1; then \
+	    mcopy -i $(MIMG) group ::/etc/group && echo "installed /etc/group"; \
+	fi
 	@if ! mdir -i $(MIMG) ::/etc/rc >/dev/null 2>&1; then \
 	    mcopy -i $(MIMG) rc ::/etc/rc && echo "installed /etc/rc"; \
 	elif mtype -i $(MIMG) ::/etc/rc 2>/dev/null | head -1 | \

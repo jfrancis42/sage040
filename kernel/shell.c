@@ -1592,6 +1592,96 @@ static int wait_for(int pid, const char *what)
  * without there being a prompt involved.
  */
 /*
+ * A user's home directory, out of /etc/passwd.
+ *
+ * The shell reads the file itself, with open() and read() and nothing
+ * else, because the shell may only use syscall.h -- it cannot call
+ * getpwnam(), which lives in the C library the shell is not linked
+ * against. That is the layering rule doing its job rather than getting
+ * in the way: what the shell needs here is one field of one line.
+ *
+ * Either a name or a uid: pass `user` for `~name`, or a null `user`
+ * and a uid for "whose home is this". Returns `buf` or null.
+ *
+ * The format is the ordinary one, name:passwd:uid:gid:gecos:dir:shell,
+ * and a line that is short of fields is skipped rather than guessed at.
+ */
+static char *passwd_home(const char *user, u32 uid, char *buf, u32 size)
+{
+    char line[256];
+    int fd = sys_open("/etc/passwd", O_RDONLY);
+    u32 n = 0;
+    char c;
+    int done = 0;
+
+    if (fd < 0) {
+        return 0;
+    }
+    while (!done) {
+        int r = sys_read(fd, &c, 1);
+
+        if (r <= 0) {
+            done = 1;
+            if (n == 0) {
+                break;
+            }
+            c = '\n';
+        }
+        if (c != '\n') {
+            if (n + 1 < sizeof(line)) {
+                line[n++] = c;
+            }
+            continue;
+        }
+        line[n] = '\0';
+        n = 0;
+
+        if (line[0] && line[0] != '#') {
+            char *f[7];
+            int nf = 0;
+            u32 i = 0;
+
+            f[nf++] = line;
+            for (i = 0; line[i] && nf < 7; i++) {
+                if (line[i] == ':') {
+                    line[i] = '\0';
+                    f[nf++] = &line[i + 1];
+                }
+            }
+            if (nf == 7) {
+                int match;
+
+                if (user) {
+                    match = strcmp(f[0], user) == 0;
+                } else {
+                    /* The uid field, by hand: the shell has no atoi. */
+                    u32 v = 0;
+                    const char *d = f[2];
+
+                    while (*d >= '0' && *d <= '9') {
+                        v = v * 10 + (u32)(*d++ - '0');
+                    }
+                    match = (*d == '\0' && v == uid);
+                }
+                if (match && f[5][0]) {
+                    u32 k = 0;
+
+                    while (f[5][k] && k + 1 < size) {
+                        buf[k] = f[5][k];
+                        k++;
+                    }
+                    buf[k] = '\0';
+                    sys_close(fd);
+                    return buf;
+                }
+            }
+        }
+    }
+    sys_close(fd);
+    return 0;
+}
+
+/*
  * Replace $NAME with its value, in place.
  *
  * In place because the line buffer is already the right size and a
@@ -1633,6 +1723,53 @@ static int expand(char *line, u32 max)
             }
             continue;
         }
+        /*
+         * ~ AND ~user, at the start of a word only.
+         *
+         * "at the start of a word" is what stops a tilde in the middle
+         * of something -- a filename, an argument to sed -- being
+         * mangled. Unquoted only, for the same reason: '~' means a
+         * tilde and so does "~".
+         */
+        if (line[i] == '~' && !in_single && !in_double &&
+            (o == 0 || out[o - 1] == ' ' || out[o - 1] == '\t' ||
+             out[o - 1] == '=' || out[o - 1] == ':')) {
+            char user[32];
+            char home[PATH_MAX];
+            const char *val2 = 0;
+            u32 un = 0;
+            u32 j = i + 1;
+
+            while (line[j] && line[j] != '/' && line[j] != ' ' &&
+                   line[j] != '\t' && un + 1 < sizeof(user)) {
+                user[un++] = line[j++];
+            }
+            user[un] = '\0';
+
+            if (un == 0) {
+                /*
+                 * A bare ~ is $HOME, and only falls back to the passwd
+                 * file if nothing set it -- so that changing HOME does
+                 * what changing HOME does everywhere else.
+                 */
+                val2 = env_get("HOME");
+                if (!val2 || !*val2) {
+                    val2 = passwd_home(0, (u32)sys_getuid(), home, sizeof(home));
+                }
+            } else {
+                val2 = passwd_home(user, 0, home, sizeof(home));
+            }
+
+            if (val2 && *val2) {
+                while (*val2 && o + 1 < sizeof(out)) {
+                    out[o++] = *val2++;
+                }
+                i = j;
+                continue;
+            }
+            /* Nobody of that name: leave the word exactly as typed. */
+        }
+
         if (line[i] != '$' || !line[i + 1] || in_single) {
             out[o++] = line[i++];
             continue;
@@ -2915,7 +3052,23 @@ void shell(void)
      * win a name clash, and before "." for the same reason /bin does.
      */
     env_set("PATH", "/bin:/usr/bin:.");
-    env_set("HOME", "/");
+    /*
+     * HOME comes from /etc/passwd, for whoever this task belongs to --
+     * which at boot is root, because there is nothing to log in to
+     * yet. A machine with no /etc/passwd falls back to "/", which is
+     * somewhere rather than nowhere.
+     *
+     * /etc/rc is where a machine says whose it is: setting HOME there
+     * is a configuration choice and belongs in a file somebody can
+     * edit, not compiled into the shell.
+     */
+    {
+        char home[PATH_MAX];
+
+        env_set("HOME",
+                passwd_home(0, (u32)sys_getuid(), home, sizeof(home))
+                    ? home : "/");
+    }
     env_set("SHELL", "/bin/sh");
     env_set("TERM", "vt102");   /* what fbcon.c is, and any serial terminal can be */
 

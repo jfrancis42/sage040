@@ -1,0 +1,74 @@
+fgetpwent_r: skip blank lines and comments, and skip a bad line rather
+than failing the whole lookup.
+
+picolibc's /etc/passwd reader takes the next line whatever it is, and
+a line that does not have exactly seven colon-separated fields makes it
+return EINVAL. So one comment at the top of the file makes getpwuid()
+fail for every user in it -- which is what happened here: `whoami` said
+"getpwuid 0: Invalid argument" on a perfectly good passwd file whose
+first line began with '#'.
+
+Comments in /etc/passwd are not in POSIX, but glibc's files backend
+skips blank lines and lines beginning with '#', so software written on
+Linux expects them to be harmless, and a passwd file is exactly the
+kind of thing somebody writes a note at the top of.
+
+Skipping a MALFORMED line rather than failing is the same argument one
+step further: one corrupt entry should cost that entry, not every
+account on the system.
+
+--- a/libc/posix/fgetpwent_r.c
++++ b/libc/posix/fgetpwent_r.c
+@@ -44,17 +44,36 @@
+     enum pw_id id;
+     ptrdiff_t  offset;
+     void      *ptr;
+--- a/libc/posix/fgetpwent_r.c
++++ b/libc/posix/fgetpwent_r.c
+@@ -80,6 +80,7 @@
+     ptrdiff_t  offset;
+     void      *ptr;
+ 
++  again:
+     errno = 0;
+     line = fgets(buf, size, stream);
+     if (!line) {
+@@ -90,6 +91,23 @@
+     }
+     if ((nl = strchr(line, '\n')) != NULL)
+         *nl = '\0';
++
++    /*
++     * A blank line or a comment is not an entry and not an error.
++     * glibc's files backend skips both, so software written on Linux
++     * assumes a note at the top of /etc/passwd is harmless -- and
++     * without this, one such note made getpwuid() fail for every
++     * account in the file.
++     */
++    {
++        char *p = line;
++
++        while (*p == ' ' || *p == '\t')
++            p++;
++        if (*p == '\0' || *p == '#')
++            goto again;
++    }
++
+     id = pw_name;
+ 
+     /*
+@@ -114,8 +132,13 @@
+             id++;
+         }
+     }
++    /*
++     * A line that is not an entry costs that line, not the lookup.
++     * Returning EINVAL here made one malformed entry hide every
++     * account after it.
++     */
+     if (id != pw_count)
+-        return (errno = EINVAL);
++        goto again;
+     *pwbufp = pwbuf;
+     return 0;
+ }

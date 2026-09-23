@@ -1328,6 +1328,14 @@ struct sigcontext {
 #define __NR_umask          60
 #define __NR_setreuid       70
 #define __NR_setregid       71
+/*
+ * The 32-bit forms. On m68k the original calls take 16-bit ids, which
+ * is why Linux grew a second set when uids outgrew 65535; this system
+ * treats both the same, because its ids are 32 bits throughout and
+ * always were. A C library will call whichever its headers name.
+ */
+#define __NR_setreuid32    203
+#define __NR_setregid32    204
 #define __NR_setrlimit      75
 #define __NR_getrlimit      76
 #define __NR_getgroups      80

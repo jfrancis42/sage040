@@ -28,6 +28,19 @@ klogd -q &
 # (Both at 02:00 local, which is the default when no time is given.)
 export TZ=MST7MDT,M3.2.0,M11.1.0
 
+# WHOSE MACHINE THIS IS.
+#
+# The console session runs as root, because there is nothing to log in
+# to yet -- the machine boots straight into a shell. HOME therefore
+# comes out of /etc/passwd as /root, which is correct and is not what
+# somebody sitting at this machine wants.
+#
+# So it is set here. /etc/rc is where a machine says whose it is: a
+# policy choice belongs in a file that can be edited, not compiled into
+# the shell. When there is a login -- ssh -- a session as jfrancis will
+# get /home/jfrancis from the passwd file without this line.
+export HOME=/home/jfrancis
+
 # The network, from what /bin/nvram has stored -- `nvram net=dhcp`, or
 # net.ip/net.mask/net.gw for a fixed address. Uncomment when the machine
 # has been told which.

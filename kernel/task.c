@@ -193,6 +193,39 @@ void task_cwd_inherit(struct task *t, struct task *from)
 }
 
 /*
+ * Who a new task belongs to.
+ *
+ * Every one of these is inherited, and that is the whole rule: fork
+ * copies them, exec keeps them (there is no set-user-id bit on a FAT
+ * volume to change them), and only setuid() and its relatives move
+ * them. A task with no parent -- the first one -- is root, because
+ * something has to be, and because the machine boots into a shell
+ * before there is any way to have logged in.
+ *
+ * It lives beside task_cwd_inherit and is called from the same four
+ * places rather than folded into it: what directory a task starts in
+ * and who it belongs to are different questions, and a function named
+ * for one that quietly did the other is how things get missed.
+ */
+void task_cred_inherit(struct task *t, struct task *from)
+{
+    if (!t) {
+        return;
+    }
+    if (!from) {
+        t->uid = t->euid = t->suid = 0;
+        t->gid = t->egid = t->sgid = 0;
+        return;
+    }
+    t->uid = from->uid;
+    t->euid = from->euid;
+    t->suid = from->suid;
+    t->gid = from->gid;
+    t->egid = from->egid;
+    t->sgid = from->sgid;
+}
+
+/*
  * Build a kernel stack that looks like one belonging to a task suspended
  * in switch_context, so that the first schedule to it simply returns.
  *
@@ -268,6 +301,7 @@ struct task *task_create(const char *name, void (*entry)(void))
     t->parent = current;
     fd_inherit(t, current);
     task_cwd_inherit(t, current);
+    task_cred_inherit(t, current);
 
     /*
      * A kernel task takes no signals at all (see signal_send), which is
@@ -360,6 +394,7 @@ struct task *task_fork(struct pt_regs *regs)
     t->ss_size = p->ss_size;
     fd_fork(t, p);
     task_cwd_inherit(t, p);
+    task_cred_inherit(t, p);
     memcpy(t->sigact, p->sigact, sizeof(t->sigact));
     t->sig_blocked = p->sig_blocked;
     /* Pending signals, timers and times are the parent's own: not copied. */
@@ -459,6 +494,7 @@ struct task *task_clone(struct pt_regs *regs, u32 flags, u32 child_stack,
     t->files = p->files;
     fdtable_get(t->files);
     task_cwd_inherit(t, p);
+    task_cred_inherit(t, p);
 
     /*
      * One process. getpid() answers the group, gettid() the task, and

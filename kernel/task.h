@@ -169,6 +169,32 @@ struct task {
     char  cwd_path[PATH_MAX];
     u32   umask;                /* kept and reported; FAT has no modes  */
 
+    /*
+     * WHO THE TASK BELONGS TO.
+     *
+     * Real, effective and saved, as POSIX has them, and they are kept
+     * properly rather than reported as a constant 0 -- which is what
+     * this did until there were users at all.
+     *
+     * BE CLEAR WHAT THIS DOES AND DOES NOT BUY. The identity is real:
+     * it is inherited across fork, kept across exec, changed by
+     * setuid() under the usual rules, and reported by getuid() and
+     * friends. What it cannot yet do is DECIDE ANYTHING ABOUT A FILE,
+     * because a FAT volume has nowhere to record an owner or a mode --
+     * so there is no such thing here as a file another user may not
+     * read. Enforcement waits for a filesystem that can hold it
+     * (task 36); until then this is identity without authority, which
+     * is worth having by itself: it is what lets /etc/passwd mean
+     * something, what `id` and `whoami` answer from, what a login
+     * would set, and what ssh will authenticate into.
+     *
+     * Saying so plainly matters more than the feature does. A system
+     * that reports users and enforces nothing is a system somebody
+     * could mistake for one that enforces something.
+     */
+    u32   uid, euid, suid;      /* real, effective, saved-set          */
+    u32   gid, egid, sgid;
+
     char  name[TASK_NAME_MAX];
     char  cmd[JOB_CMD_MAX];     /* the command line, for `jobs`        */
 
@@ -297,6 +323,7 @@ void task_ret_to_user(struct pt_regs *regs);
 
 /* Give `t` the working directory `from` is standing in. */
 void task_cwd_inherit(struct task *t, struct task *from);
+void task_cred_inherit(struct task *t, struct task *from);
 
 /* Never returns. */
 void task_exit(int status) __attribute__((noreturn));

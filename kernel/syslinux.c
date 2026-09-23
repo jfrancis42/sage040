@@ -823,20 +823,128 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         return (s32)old;
     }
 
-    /* --- identity: one user, root --- */
+    /*
+     * --- identity ---
+     *
+     * Real, effective and saved, kept per task. They used to be a
+     * constant 0: one user, root, and setuid(0) the only call that
+     * succeeded. See struct task for what having them properly does
+     * and does not buy -- identity is real, ENFORCEMENT against files
+     * is not, because FAT cannot record an owner.
+     */
     case __NR_getuid:  case __NR_getuid32:
+        return (s32)current->uid;
     case __NR_geteuid: case __NR_geteuid32:
+        return (s32)current->euid;
     case __NR_getgid:  case __NR_getgid32:
+        return (s32)current->gid;
     case __NR_getegid: case __NR_getegid32:
+        return (s32)current->egid;
+
+    /*
+     * setuid(): POSIX's rule exactly. Root may become anybody, and
+     * doing so sets all three so the change cannot be undone. Anybody
+     * else may only move between the identities they already hold --
+     * their real and their saved -- which is what lets a program drop
+     * a privilege and take it back.
+     */
+    case __NR_setuid:  case __NR_setuid32: {
+        u32 want = a1;
+        struct task *t;
+        int i;
+
+        if (current->euid != 0 &&
+            want != current->uid && want != current->suid) {
+            return -EPERM;
+        }
+        /*
+         * EVERY THREAD OF THE PROCESS, not just this one. Credentials
+         * belong to the process; a thread that kept the old uid while
+         * its siblings changed would be a hole rather than a feature.
+         * The same reason cwd is written through in vfs_cwd_set.
+         */
+        for (i = 0; (t = task_nth(i)) != 0; i++) {
+            if (t->tgid != current->tgid) {
+                continue;
+            }
+            t->euid = want;
+            if (current->euid == 0) {
+                t->uid = t->suid = want;
+            }
+        }
         return 0;
+    }
 
-    case __NR_setuid:  case __NR_setuid32:
-    case __NR_setgid:  case __NR_setgid32:
-        return a1 == 0 ? 0 : -EPERM;
+    case __NR_setgid:  case __NR_setgid32: {
+        u32 want = a1;
+        struct task *t;
+        int i;
 
-    case __NR_setreuid:
-    case __NR_setregid:
-        return ((s32)a1 <= 0 && (s32)a2 <= 0) ? 0 : -EPERM;
+        if (current->euid != 0 &&
+            want != current->gid && want != current->sgid) {
+            return -EPERM;
+        }
+        for (i = 0; (t = task_nth(i)) != 0; i++) {
+            if (t->tgid != current->tgid) {
+                continue;
+            }
+            t->egid = want;
+            if (current->euid == 0) {
+                t->gid = t->sgid = want;
+            }
+        }
+        return 0;
+    }
+
+    /*
+     * setreuid(ruid, euid): -1 for either means "leave it". Root may
+     * set both; anybody else may only swap between the ones they
+     * hold. The saved id follows the effective one whenever the real
+     * one changes or the effective is set to something other than the
+     * real, which is what POSIX says and what makes a swap
+     * reversible.
+     */
+    case __NR_setreuid: case __NR_setreuid32:
+    case __NR_setregid: case __NR_setregid32: {
+        int is_uid = (nr == __NR_setreuid || nr == __NR_setreuid32);
+        s32 r = (s32)a1, e = (s32)a2;
+        u32 cur_r = is_uid ? current->uid : current->gid;
+        u32 cur_e = is_uid ? current->euid : current->egid;
+        u32 cur_s = is_uid ? current->suid : current->sgid;
+        u32 new_r = r == -1 ? cur_r : (u32)r;
+        u32 new_e = e == -1 ? cur_e : (u32)e;
+        struct task *t;
+        int i;
+
+        if (current->euid != 0) {
+            if (r != -1 && new_r != cur_r && new_r != cur_e) {
+                return -EPERM;
+            }
+            if (e != -1 && new_e != cur_r && new_e != cur_e &&
+                new_e != cur_s) {
+                return -EPERM;
+            }
+        }
+        for (i = 0; (t = task_nth(i)) != 0; i++) {
+            if (t->tgid != current->tgid) {
+                continue;
+            }
+            if (is_uid) {
+                t->uid = new_r;
+                t->euid = new_e;
+                if (r != -1 || new_e != new_r) {
+                    t->suid = new_e;
+                }
+            } else {
+                t->gid = new_r;
+                t->egid = new_e;
+                if (r != -1 || new_e != new_r) {
+                    t->sgid = new_e;
+                }
+            }
+        }
+        return 0;
+    }
 
     case __NR_getgroups:
     case __NR_getgroups32:

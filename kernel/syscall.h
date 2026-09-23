@@ -57,6 +57,8 @@ int  sys_stat(const char *path, void *st);
 int  sys_getdents(int index, void *dirent);
 int  sys_statfs(void *sfs);
 int  sys_fslabel(void *label);
+int  sys_getuid(void);
+int  sys_getgid(void);
 int  sys_fsync(int fd);
 int  sys_sync(void);
 int  sys_uname(struct utsname *u);

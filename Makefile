@@ -21,7 +21,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: all boot run world ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest libc cube programs clean distclean
+.PHONY: all boot run world ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest libc cube programs clean distclean
 
 all:
 	$(MAKE) -C bootrom
@@ -126,7 +126,7 @@ world: programs ports python
 run:
 	$(MAKE) -C kernel run
 
-test: tests cryptotest fstest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest
+test: tests cryptotest fstest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest
 
 tests:
 	$(MAKE) -C tests run
@@ -237,6 +237,11 @@ pylibtest:
 # same disk image, and the shell's built-in df as the negative control.
 dftest:
 	cd kernel && ./dftest.sh
+
+# Users, /etc/passwd and home directories -- and a check that the
+# absence of file ownership is honest rather than accidental.
+usertest:
+	cd kernel && ./usertest.sh
 
 # Every one of bash's own 83 tests, not the subset: hours, not minutes.
 bashsuite:

@@ -136,6 +136,17 @@ int sys_fslabel(void *label)
     return (int)syscall3(__NR_fsctl, FSCTL_LABEL, 0, (u32)label);
 }
 
+/* Who this task belongs to. See struct task for what that does buy. */
+int sys_getuid(void)
+{
+    return (int)syscall0(__NR_getuid);
+}
+
+int sys_getgid(void)
+{
+    return (int)syscall0(__NR_getgid);
+}
+
 int sys_fsync(int fd)
 {
     return (int)syscall1(__NR_fsync, (u32)fd);
