@@ -21,7 +21,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: all boot run test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest libc cube programs clean distclean
+.PHONY: all boot run world ports python test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest libc cube programs clean distclean
 
 all:
 	$(MAKE) -C bootrom
@@ -51,6 +51,37 @@ programs:
 	$(MAKE) -C system install
 	$(MAKE) -C apps install
 	$(MAKE) -C ldso install
+
+# EVERYTHING PORTED, onto the machine's disk.
+#
+# A port installs only when told to, because each one fetches and builds
+# its own source and that takes time somebody may not want spent. The
+# consequence, which cost a boot with an empty-looking /bin: `make boot`
+# puts the SYSTEM on the disk and nothing else, and the test suites build
+# scratch disks of their own -- so a program can be proven working and
+# still not be anywhere you can run it.
+#
+# This is the one command that puts the lot on hd.img. Each port builds
+# first if it has not been built.
+ports:
+	$(MAKE) -C ports/sbase install
+	$(MAKE) -C ports/awk install
+	$(MAKE) -C ports/sed install
+	$(MAKE) -C ports/grep install
+	$(MAKE) -C ports/bash install
+	$(MAKE) -C ports/ncurses install
+	$(MAKE) -C ports/less install
+	$(MAKE) -C ports/uemacs install
+	$(MAKE) -C ports/vi install
+	@echo
+	@echo "Python is not in the list above: it is 45 MB and 2,244 files,"
+	@echo "and copying it takes minutes. 'make python' installs it."
+
+python:
+	$(MAKE) -C ports/python install
+
+# The whole machine: the system, every port, and Python.
+world: programs ports python
 
 # The kernel without the boot ROM in the way. Same kernel, quicker loop.
 run:

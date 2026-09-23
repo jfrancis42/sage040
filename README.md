@@ -90,15 +90,22 @@ make boot                  # build everything, put it on hd.img, boot it
 stops the machine; with no display, `shutdown -h` and closing the window do
 the same.
 
-The ported programs are built and installed separately, because each fetches
-its own source:
+**`make boot` puts the SYSTEM on the disk and nothing else.** The ported
+programs are built and installed separately, because each one fetches and
+builds its own source and that takes time you may not want spent:
 
 ```bash
-make -C ports/python install  # CPython 3.14 and its standard library
-make -C ports/ncurses install # the terminfo database
-make -C ports/sbase install   # 98 utilities into /bin
-make -C ports/bash install    # bash 5.3.20
-make -C ports/awk install     # and sed, grep, uemacs, vi the same way
+make world      # the system, every port, and Python: everything
+make ports      # the ports alone: bash, sed, grep, awk, less, sbase,
+                # ncurses, uemacs, vi
+make python     # Python alone -- 45 MB and 2,244 files, minutes to copy
+make programs   # system/ and apps/ alone, as `make boot` does
+```
+
+A single port, if that is all you want:
+
+```bash
+make -C ports/bash install
 ```
 
 ---
