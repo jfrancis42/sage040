@@ -21,7 +21,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: all boot run world toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest nativetest libc cube programs clean distclean
+.PHONY: all boot run world toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest nativetest qemutest libc cube programs clean distclean
 
 all:
 	$(MAKE) -C bootrom
@@ -151,7 +151,7 @@ world: programs ports python toolchain
 run:
 	$(MAKE) -C kernel run
 
-test: tests cryptotest fstest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest
+test: tests cryptotest fstest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest qemutest
 
 tests:
 	$(MAKE) -C tests run
@@ -281,6 +281,12 @@ usertest:
 # vacuously, and this tree does not do vacuous passes.
 nativetest:
 	cd kernel && ./nativetest.sh
+
+# A Sage040 program run by qemu-m68k's linux-user emulation, on this
+# workstation, with none of this system underneath it. The ABI claim
+# checked by somebody else's implementation of it.
+qemutest:
+	cd libc/test && ./qemutest.sh
 
 # Every one of bash's own 83 tests, not the subset: hours, not minutes.
 bashsuite:

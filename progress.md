@@ -532,12 +532,28 @@ has to execute a target binary partway through. That is the whole
 problem, and there are three ways at it:
 
 1. **Run `lisp.run` under `qemu-m68k` user-mode emulation on the
-   workstation.** This is more plausible here than it sounds: this
-   system's ABI *is* Linux/m68k's -- the system call numbers, the
-   calling convention and the errnos -- which is exactly what
-   `qemu-m68k` emulates. A statically linked SuckOS binary may simply
-   run. It has not been tried. If it works it is by far the cheapest
-   route, and it would be useful for more than CLISP.
+   workstation.** **This has now been tried and it works** --
+   `libc/crt0-qemu.s` and `libc/test/qemutest.sh`, 8 checks. A
+   statically linked Sage040 program runs on this workstation under
+   `qemu-m68k` with no Sage040 and no kernel of ours involved: it
+   opens, writes, reads and stats files on the host's filesystem, gets
+   `ENOENT` as 2, allocates from the heap, and returns the right
+   answers from `getpid` and `time`.
+
+   The only thing it needed was a different `crt0`. This kernel enters
+   a program with `jsr`, so argc is at `4(%sp)`; Linux puts argc at
+   `0(%sp)` with the argv **array** inline above it rather than a
+   pointer to it. Reading it the kernel's way dereferenced the first
+   four characters of the program name -- `si_addr=0x2f746d70`,
+   `"/tmp"`.
+
+   That makes route 1 the way to build CLISP, and it is worth more
+   than CLISP: it is the **strongest evidence available that the ABI
+   claim is true**. Every other check of it in this tree is made by
+   something in this tree; `qemu-m68k` is somebody else's
+   implementation of Linux/m68k written with no knowledge of this
+   project. And it runs a program for the machine in seconds rather
+   than a minute of booting.
 2. **Run it on the machine**, under the full emulator, with the build
    driven over the serial console. Certain to work and slow, and the
    build would have to be split around the handover.
