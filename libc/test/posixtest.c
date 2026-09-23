@@ -390,8 +390,37 @@ static void test_sysconf(const char *argv0)
            sysconf(_SC_OPEN_MAX) == (long)rl.rlim_cur && sysconf(_SC_OPEN_MAX) == 64);
     report("sysconf(_SC_CLK_TCK) is the kernel's 100 Hz", sysconf(_SC_CLK_TCK) == 100);
     report("sysconf(_SC_PAGESIZE)", sysconf(_SC_PAGESIZE) == 4096);
-    report("sysconf(_SC_ARG_MAX) is what execve accepts",
+    /*
+     * ARG_MAX is a BYTE count and there is a separate cap on the NUMBER
+     * of arguments, which POSIX has no name for -- so this asks the
+     * system both questions rather than only reading the number back.
+     * The old check claimed to test "what execve accepts" while only
+     * range-checking sysconf's answer, and the machine refused 641
+     * arguments for years with the check passing.
+     */
+    report("sysconf(_SC_ARG_MAX) is a plausible byte count",
            sysconf(_SC_ARG_MAX) > 20000 && sysconf(_SC_ARG_MAX) < 32768);
+    {
+        static char *many[600];
+        int n;
+        pid_t p;
+        int st2 = 0;
+
+        many[0] = (char *)argv0;
+        many[1] = "argcount";
+        for (n = 2; n < 599; n++) {
+            many[n] = "x";
+        }
+        many[599] = NULL;
+        p = fork();
+        if (p == 0) {
+            execv(argv0, many);
+            _exit(99);
+        }
+        waitpid(p, &st2, 0);
+        report("  and execve takes 599 arguments, not just a few hundred",
+               WIFEXITED(st2) && WEXITSTATUS(st2) == 0);
+    }
     errno = 0;
     report("  and a name that is not one is EINVAL", sysconf(-5) == -1 && errno == EINVAL);
 
@@ -963,6 +992,11 @@ int main(int argc, char **argv)
 {
     char where[256];
 
+    if (argc > 1 && strcmp(argv[1], "argcount") == 0) {
+        /* Re-executed with several hundred arguments: that it got here
+         * at all with them intact is the whole answer. */
+        return (argc == 599) ? 0 : 1;
+    }
     if (argc > 1 && strcmp(argv[1], "spawned") == 0) {
         /* posix_spawn's child: where did stdout go, and which group. */
         printf("spawned in %s group\n", getpgrp() == getpid() ? "its own" : "another");

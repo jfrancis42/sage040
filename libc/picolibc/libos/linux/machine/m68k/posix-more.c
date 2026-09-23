@@ -408,10 +408,12 @@ sysconf(int name)
 {
     switch (name) {
     case _SC_ARG_MAX:
-        /* kernel/syscall.c: 32 KB for the strings and the 2 x 257
-         * pointer slots together. (There is also a 256-argument cap,
-         * which POSIX has no name for.) */
-        return 32768 - 2 * 257 * 4;
+        /* kernel/syscall.c: 32 KB holds the strings and the pointer
+         * arrays together -- EXEC_MAX_ARGS + 1 of one and
+         * EXEC_MAX_ENV + 1 of the other, at four bytes each. What is
+         * left is what the strings may use. (There is also a cap on the
+         * NUMBER of arguments, 1024, which POSIX has no name for.) */
+        return 32768 - (1025 + 257) * 4;
     case _SC_CHILD_MAX:
         /* TASK_MAX, kernel/task.h: picolibc has no RLIMIT_NPROC to ask. */
         return 64;

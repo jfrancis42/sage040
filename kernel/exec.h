@@ -33,7 +33,23 @@
  * space, and the gap below the stack was a convention rather than a
  * rule. It is now a hole in a page table.
  */
-#define EXEC_MAX_ARGS   256
+/*
+ * How many arguments and environment entries one program may be given.
+ *
+ * Both are counts, not byte limits: the bytes are bounded by the 32 KB
+ * argument block in syscall.c, which holds these two pointer arrays and
+ * then the strings packed after them. Raising the argument count costs
+ * four bytes of that block per slot, and the same again in the static
+ * uargv[] setup_stack() builds -- so 1024 arguments spend 5 KB of the
+ * 32 and leave 27 for the strings, which is still more than any command
+ * line here has ever wanted.
+ *
+ * It was 256, which is not many on a machine with a compiler on it: a
+ * directory of more than 256 matching files made `grep something *.c`
+ * fail with E2BIG, and that is what bash's own array test was hitting
+ * in a directory of 641.
+ */
+#define EXEC_MAX_ARGS   1024
 #define EXEC_MAX_ENV    256
 
 /*
