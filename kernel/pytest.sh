@@ -332,8 +332,10 @@ same slice     "an extended slice"
 same fstring   "an f-string with a format spec"
 
 echo "--- the standard library"
-# Every module in the list but sqlite3, which is not built here.
-is   imported  35 "modules imported off the disk, all but sqlite3"
+# EVERY module in the list, sqlite3 included. It used to be all but
+# sqlite3, because SQLite was not built for the machine; it is now, so
+# the number went up and the check that named a count went off.
+is   imported  36 "every module in the list imports off the disk"
 # sqlite3 is not built here (no library) and the host has it, so the
 # two lists differ by exactly that, and by nothing else.
 g=$(guest failed_imports)
