@@ -107,6 +107,32 @@ The structure headers use explicit byte offsets (`__adjust_N` padding
 arrays), so they come out the same under m68k's two-byte alignment of
 `int` as under i686's four.
 
+## The pthread layer
+
+Built on `clone(2)` and `futex(2)` -- the kernel side is in
+[`os.md`](../os.md) under "Threads" -- and what it offers is what a
+port generally asks for: create, join, detach, exit; mutexes (normal,
+recursive, errorcheck and timed); condition variables, including
+`pthread_condattr_setclock`; read/write locks, barriers, spinlocks,
+`pthread_once`; keys with destructors; POSIX semaphores;
+`pthread_kill` and `pthread_sigmask`; and attributes including stack
+size and stack address.
+
+An uncontended lock is one `cas.l` and no system call: a futex is only
+entered when there is something to wait for.
+
+Three things are deliberately absent.
+
+- **`pthread_cancel` answers ENOSYS.** Cancellation needs cancellation
+  points throughout the library, and half of them is worse than none
+  -- a program that believes it can cancel a thread blocked in a call
+  that never checks is worse off than one that knows it cannot.
+- **No compiler thread-local storage.** `__thread` does not work and
+  `CLONE_SETTLS` is refused rather than accepted and ignored. See the
+  note below.
+- **No realtime scheduling attributes.** There is one policy, and
+  `nice(2)` is how a program asks for less of the processor.
+
 ## Differences from glibc a port will meet
 
 - **`environ` is declared nowhere.** Declare it yourself

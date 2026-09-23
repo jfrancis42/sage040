@@ -295,6 +295,46 @@ as `m68k-elf-*`. `ports/gcc/build.sh` makes a directory of symlinks
 under the expected names and puts it on PATH; without it the build links
 `xgcc` and then dies on `m68k-unknown-elf-gcc: command not found`.
 
+**`all-host`, not `all`.** `all` goes on to build the target libraries --
+libgcc, libstdc++ -- for a target whose C library is already installed,
+and rebuilds them in the wrong place. `all-host` stops at the programs,
+which is what a native toolchain is.
+
+**`--without-isl`.** isl is configured before gmp is anywhere it can be
+found, so the configure fails on a library the build itself is about to
+produce. gcc needs it only for Graphite loop optimisations, which
+nothing here asks for.
+
+**gcc's bundled gettext has to go** (`ports/gcc/patches/01`). gcc 15
+carries a copy of gettext's gnulib and configures it for the host it is
+built ON, not the one it is built FOR; it then fails on the difference.
+gcc does not need message catalogues to compile C.
+
+**`extern "C"` in every network header.** This was a real bug rather
+than a build inconvenience: `libc/net/include/*.h` had no
+`_BEGIN_STD_C`, so a C++ translation unit got C++ linkage for
+`htons` and friends and the link failed on symbols that existed. Every
+one of the seven has the guards now.
+
+### That it is the same compiler
+
+The point of a native toolchain is not that it runs but that it is
+**the same compiler**. `kernel/nativetest.sh` (15 checks) compiles on
+the machine and compares: the object files it produces, disassembled,
+are the cross compiler's -- same instructions, same order, for the same
+source at the same optimisation level.
+
+One genuine difference is worth knowing: **the raw object files are not
+byte-identical**. The native assembler leaves uninitialised bytes in
+section padding where the cross one writes zeroes, so `cmp` on two
+`.o` files fails while every section a tool reads is the same. Compare
+disassembly, or the linked output, not the bytes.
+
+**It needs a bigger machine than the default.** gcc compiling anything
+real wants more than 64 MB, so the suite runs with `NATIVE_RAM_MB=256`.
+The machine sizes RAM at run time, so this is an emulator flag and not
+a rebuild.
+
 ### What the machine needs on its own disk
 
 A compiler running on the Sage040 looks for headers and libraries on the

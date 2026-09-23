@@ -29,12 +29,14 @@ owns a file and what may be done with it, and nothing checks either yet.
 - [Waiting](#waiting)
 - [Signals and job control](#signals-and-job-control)
 - [System calls](#system-calls)
+- [Time zones](#time-zones)
 - [Files](#files)
 - [Randomness](#randomness)
 - [The terminal](#the-terminal)
 - [Pseudo-terminals](#pseudo-terminals)
 - [Users](#users)
 - [The log](#the-log)
+- [Doing something later](#doing-something-later)
 - [The network](#the-network)
 - [Programs](#programs)
 - [The shell](#the-shell)
@@ -465,6 +467,22 @@ answers the same question with `sysconf(_SC_CLK_TCK)`.
 
 ---
 
+## Time zones
+
+The clock keeps UTC and **`TZ` says how to turn that into a local
+time**. picolibc's `tzset` reads it, and the shell sets `TZ=UTC0` by
+default, so a machine that has not been told where it is does not
+guess.
+
+There is no zoneinfo database and no need of one: **a POSIX TZ string
+carries its own rules**, which is what the format is for.
+`export TZ=MST7MDT,M3.2.0,M11.1.0` in `/etc/rc` is a machine in
+Colorado, daylight saving included -- an offset, a summer offset, and
+the two dates it changes on.
+
+The shell's own `date` prints UTC and says so. Local time is what
+programs show, because that is where `TZ` lives.
+
 ## Files
 
 **The disk is interrupt-driven**: a task waiting for a sector
@@ -691,8 +709,8 @@ checks by taking every one, closing them, and taking them all again.
 ## Users
 
 A task has a real, effective and saved user id and the same three group
-ids. They are inherited by `fork` and kept across `exec` -- there is no
-set-user-id bit to change them -- and moved by `setuid`,
+ids. They are inherited by `fork` and kept across `exec` -- the disk records
+a set-user-id bit and nothing honours it -- and moved by `setuid`,
 `setgid`, `setreuid`, `setregid`, `setresuid` and `setresgid` under the
 rules POSIX gives: root may become anybody, and anybody else may only
 move between the identities they already hold, which is exactly enough to
@@ -730,6 +748,17 @@ the machine's name on each line. `syslog(3)` appends to the same file,
 so a program's messages and the kernel's are one log in the order they
 happened. **`dmesg`** reads the ring directly, which is what a machine
 with no klogd running wants.
+
+## Doing something later
+
+`cron` (sbase's) reads `/etc/crontab`, keeps its pid in
+`/var/run/crond.pid`, and says what it is doing through `syslog(3)` --
+which appends to `/var/log/syslog`, the file klogd writes the kernel's
+messages to, so the machine has ONE log rather than one per source.
+
+It is the first thing here that happens because the CLOCK said so
+rather than because somebody typed something, which makes it as much a
+test of the clock and of a long-lived background task as of cron.
 
 ## The network
 
@@ -816,6 +845,41 @@ wireless and the other is wired.
 The test suites always use slirp, deliberately: a test that depends on the
 building's network is not a test.
 
+### Logging in over it
+
+**Dropbear** (`ports/dropbear`) is the ssh server, the client, `scp`
+and `dropbearkey`, and **rsync** is beside it. A real OpenSSH client on
+another machine authenticates into the Sage040 by public key and runs
+commands; `scp` copies files in both directions; `rsync` runs over that
+same ssh. `dropbearkey` generates the Ed25519 host key **on the
+68040**.
+
+Dropbear rather than OpenSSH, and the reasoning is at the head of
+`ports/dropbear/build.sh`: OpenSSH separates privilege by forking a
+child, setuid-ing it to a dedicated account and chrooting it into an
+empty directory -- a design that rests on a filesystem enforcing
+ownership, which this one does not yet do. Running it with privilege
+separation off is the configuration its own authors warn about.
+Dropbear was written for machines this size and carries its own crypto,
+so it need not agree with OpenSSL about anything. The protocol is the
+same protocol.
+
+**Password authentication is off.** Checking a password means
+`crypt(3)` against a hash, picolibc has none, and inventing one badly
+is worse than not having one. Public keys work and are what should be
+used anyway.
+
+**`rsync -a` asks for ownership to be preserved** and reports
+`chown ... failed`. `-rlt` is the flag set that matches what this
+system enforces.
+
+Two things are worth knowing. A modern OpenSSH client needs `scp -O`
+to use the old protocol at all, Dropbear having no sftp-server. And
+**scp's port flag is `-P`**; `-p` means "preserve modification times",
+so passing the port as `-p` turns it into an extra source file and
+produces `No such file or directory` -- which reads exactly like a
+broken scp, and was read that way for a while.
+
 ---
 
 ## Programs
@@ -827,21 +891,47 @@ names.
 
 `lib/` is what a program written for this system links against: `crt0.s`,
 `ulib.c`, `user.ld`. `system/` is what the system ships, installed into
-`/bin`: `ifconfig`, `ping`, `netstat`, `shutdown`, `env`, `stty`,
-`resize`, `fsck`, `host`, `ntpdate`, `swapon`, `swapoff`, `nvram`, `irqs`
-and `sh`. `apps/` is everything else, installed at the root: `cube`,
-`fbtest`, `fbmap`, `hello`, `fetch`, `httpd`, and the test programs.
+`/bin`: `ifconfig`, `ping`, `netstat`, `host`, `ntpdate`, `shutdown`,
+`env`, `stty`, `resize`, `fsck`, `df`, `id`, `klogd`, `dmesg`,
+`swapon`, `swapoff`, `nvram`, `irqs` and `sh`. `apps/` is everything
+else, installed at the root: `cube`, `fbtest`, `fbmap`, `hello`,
+`fetch`, `httpd`, and the test programs.
+
+**A program keeps its own name.** It used to be upper-cased on the way
+onto the disk, because FAT16 had no lower case in a short name and
+`winchtest` became `WINCHTES`; on ext2 a name is just bytes.
 
 None of them is privileged. A system program can do only what the system
 call interface allows, which is the point of it being a program: the ones
 that cannot be written that way are the argument for a system call that is
 missing.
 
-`ports/` holds programs written by other people -- bash, sbase, sed, grep,
-awk, uEmacs, vi. No source from any of them is copied into this tree: each
-port fetches its own at a pinned version, applies whatever patches are kept
-beside it, and builds against picolibc. Each has a README saying what it
-needed from the system.
+`ports/` holds programs written by other people. No source from any of
+them is copied into this tree: each port fetches its own at a pinned
+version, applies whatever patches are kept beside it, and builds
+against picolibc. The reasoning for each is at the head of its
+`build.sh`, and several have a README as well.
+
+| | |
+|---|---|
+| the tools | bash, sbase (98 utilities), sed, grep, awk |
+| editors | uEmacs, vi, and `less` for reading |
+| the terminal | ncurses 6.5 and a terminfo database of seventeen terminals at `/usr/share/terminfo` |
+| the network | Dropbear (ssh, scp, dropbearkey) and rsync |
+| languages | CPython 3.14.7, with 90 built-in modules |
+| libraries | OpenSSL, SQLite, bzip2, xz, zstd, readline, libffi, libiconv, gettext's runtime |
+| the toolchain | binutils 2.45 and gcc 15.2.0, which run ON the machine -- see [`toolchain.md`](toolchain.md) |
+
+**Every terminfo entry begins with a lower-case letter.** terminfo
+stores one directory per first letter, and the database has entries
+(`Eterm`, `emu`) that differ only in case; the build refuses a set with
+two such names. That was forced when the disk was FAT and could not
+tell them apart. ext2 can, and the constraint has not been lifted
+because nothing has needed it to be.
+
+Four terminals are compiled into the library as fallbacks -- vt102,
+vt100, dumb, unknown -- so a program works on a disk with no database
+at all.
 
 `ulib` is a thin wrapper over the system calls plus the handful of string
 and output helpers that every program needs, and `lib/malloc.c`, a
@@ -869,7 +959,14 @@ bus error a few instructions later.
 
 - Environment variables, `export`, `unset`, and inheritance by spawned
   programs
-- `PATH`, searched by `spawn_on_path()`
+- `PATH`, searched by `spawn_on_path()`, and **`/bin:/usr/bin:.`** by
+  default -- set before `/etc/rc` runs. The first directory that has
+  the name wins, and the working directory is searched **last**, so a
+  program dropped in it cannot quietly replace a system one. `./name`
+  runs the one here whatever PATH says, a name with a slash being a
+  path and not a search. `execvp` in `lib/ulib` and picolibc's both
+  walk it the same way, so a program that spawns by name agrees with
+  the shell.
 - `$VAR`, `${VAR}`, `$$` and `$?` expansion
 - Shell scripts, run by path or with `source`; `/etc/rc` at startup
 - Job control: `&`, `jobs`, `fg`, `bg`, `ps`, `kill`, ctrl-Z, ctrl-C
@@ -1005,6 +1102,13 @@ either that or a FIFO.
 
 **No `diff`.** sbase has none; GNU diffutils is the obvious port.
 
+**A built-in can be shadowed by a program on purpose.** `df` is the
+case: the built-in takes no arguments and prints one fixed report,
+which is wrong for a command with `-h`, `-k` and `-i`. It runs
+`/bin/df` when there is one and answers itself only when there is not
+-- which is what keeps it useful on a disk whose filesystem is the
+thing being investigated.
+
 **No `dlopen`.** `ld.so` resolves what a program was linked against and
 stops, so a library cannot be opened by name at run time. libffi is built
 and works, and Python's `ctypes` still cannot be built, because
@@ -1016,11 +1120,6 @@ the library's.
 Giving the system real TLS means PT_TLS in `ld.so`, a per-thread block
 and that function in the C library. Software that uses `__thread` for an
 optimisation -- bfd does, for one variable -- falls back to a global.
-
-**`scp` did not work in the one test made of it**, though `ssh` and
-`rsync` over the same transport did. The cause is not known; see
-`progress.md`, which also records that the first diagnosis of it was
-drawn from an invalid test.
 
 **A fault's own signal cannot be caught.** `SIGSEGV` from an access fault
 ends the program: the 68040's access-fault frame cannot be redirected to a

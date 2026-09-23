@@ -44,17 +44,54 @@ version here is pinned to what the host has.
   convention and errnos are Linux's. `__linux__` stays undefined, so code
   that tests for it directly compiles out.
 - **The `.pyc` files are hash-based and unchecked.** A normal `.pyc`
-  carries its source's size and modification time, and the times on a FAT
-  filesystem are whatever the copy onto the image wrote -- so every module looked stale and
-  the machine recompiled the standard library at every import.
+  carries its source's size and modification time, and the times on the
+  image are whatever the copy onto it wrote -- so every module looked
+  stale and the machine recompiled the standard library at every import.
   `statistics` alone took minutes.
 
-## What is not built
+## The libraries it is built against
 
-`_ctypes` (no libffi and no dlopen), `ssl`, `sqlite3`, `bz2`, `lzma`,
-`zstd`, `tkinter`, and `readline` -- the last only until the library is
-ported, at which point this is rebuilt, because an interactive
-interpreter with no line editing is the one obvious thing missing.
+Seven ports, each fetched at a pinned version, built into `~/m68k/src`
+with nothing landing in this tree, and wired into `make pylibs` --
+which `make python` depends on. **90 built-in modules**, where a CPython
+built without them has 87.
+
+| port | what it gives CPython | on the disk |
+|------|----------------------|-------------|
+| **bzip2** 1.0.8 | `bz2` | `/bin/bzip2` |
+| **xz** 5.6.3 | `lzma` | `/bin/xz` |
+| **zstd** 1.5.7 | `compression.zstd`, new in 3.14 | `/bin/zstd` |
+| **SQLite** 3.53.4 | `sqlite3` | `/bin/sqlite3` |
+| **OpenSSL** 3.5.4 | `ssl`, and a `hashlib` whose digests come from OpenSSL | `/bin/openssl` |
+| **readline** 8.3 | line editing and history at the interactive prompt | a library only |
+| **libffi** 3.5.2 | `ctypes`, as far as it goes without `dlopen` | a library only, with `fficheck` |
+
+`kernel/pylibtest.sh` checks them, and **every stream crosses the host
+boundary in both directions**: the machine compresses and the host
+decompresses, and the reverse. A compressor tested against its own
+output is self-consistently wrong at best, and these are byte streams
+with a defined byte order on a big-endian machine. The digests are
+compared with coreutils' `md5sum`, `sha1sum`, `sha256sum` and
+`sha512sum` -- a different implementation on a different CPU -- and with
+the published SHA-256 of the empty string, which is owed to nothing on
+this host at all.
+
+## What is still not built
+
+- **`_ctypes`**, and **not for want of libffi**, which is built and
+  demonstrably works. `_ctypes.c` includes `<dlfcn.h>` and opens
+  libraries by name at run time; this loader has no `dlopen`. A missing
+  loader feature, not a missing library.
+- **`_multiprocessing`** and **`_posixshmem`**, both wanting POSIX
+  shared memory.
+- **`tkinter`**.
+
+**`xz` at its default preset will not run here.** LZMA's memory use
+follows its dictionary size, and `-6` -- which plain `xz` uses -- wants
+about 94 MB on a machine with 64. It fails cleanly with "Not enough
+space" and exit 1 rather than crashing, and the suite checks that it
+does, so the low preset used elsewhere is not mistaken for timidity.
+`-1` needs about 9 MB.
 
 ## What it found
 
@@ -88,7 +125,7 @@ things. Each of these is a patch in `libc/patches/` or
 `kernel/pytest.sh` runs a script on the machine and asks the HOST's
 Python 3.14 the same questions: the version, the byte order, the size of
 a pointer, big integers, `0.1 + 0.2` to the last bit, sorting, dict
-comprehensions, f-strings, 35 standard-library imports off the disk,
+comprehensions, f-strings, 36 standard-library imports off the disk,
 hashes, zlib, files, threads with a lock, time zones, and a subprocess.
 
 Two answers are allowed to differ, and the suite says why: `sys.maxsize`,
