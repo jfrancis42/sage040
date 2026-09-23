@@ -403,7 +403,21 @@ machine:
 
 - **Permissions and ownership need a filesystem that can hold them.** FAT
   cannot (§8), so a genuinely multi-user system means a second filesystem
-  type under the VFS, not a change to `fat16.c`.
+  type under the VFS, not a change to `fat16.c`. The USERS are there now
+  -- a task carries a real, effective and saved uid and gid, `/etc/passwd`
+  names them, and ssh authenticates into them -- so what is missing is
+  only the enforcement, and the enforcement is the filesystem's.
+- **`dlopen` is the loader's, not the library's.** `ld.so` resolves what
+  a program was linked against and stops. libffi is built and works, and
+  Python's `ctypes` still cannot be built, because it opens libraries by
+  name at run time. Adding it means the loader learning to map and
+  relocate an object that nothing referenced at link time.
+- **Thread-local storage needs three things at once**: `PT_TLS` handled
+  in `ld.so`, a per-thread block allocated at clone, and
+  `__m68k_read_tp` in the C library -- the 68040 has no thread pointer
+  register, which is why the compiler emits a call rather than an
+  instruction. Software that uses `__thread` as an optimisation falls
+  back to a global without it.
 - **Upstreaming.** The `sm501.c` build fix and the IACK callback are both
   plausibly of general use, which is why `qemu-patch/` is
   GPL-2.0-or-later rather than matching the rest of the tree.
@@ -412,3 +426,9 @@ Nothing is on a "deliberately not doing" list. Paging, shared libraries and
 the remaining TCP options each sat on one once, justified by the machine
 being small; it is not small — 64 MB of RAM and a 512 MB disk — so the
 justification went with them.
+
+**The machine builds its own programs.** binutils runs on it, the C
+library and the linker script are on its disk, and gcc is the last piece
+(`toolchain.md`, "The toolchain that runs ON the machine"). That was not
+on a list of things to avoid either; it was simply a long way down a
+chain that had to be built first.
