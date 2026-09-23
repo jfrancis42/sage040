@@ -92,20 +92,24 @@ ac_cv_have_decl_RTLD_NOW=${ac_cv_have_decl_RTLD_NOW=no}
 
 # Modules with no library on this machine. "n/a" is how CPython's
 # configure records a module that is not to be built at all, as opposed
-# to one that failed: bzip2, xz, OpenSSL, Tcl/Tk, dbm and the ones that
-# want a Linux kernel interface this system does not have.
-py_cv_module__bz2=${py_cv_module__bz2=n/a}
-py_cv_module__lzma=${py_cv_module__lzma=n/a}
-py_cv_module__zstd=${py_cv_module__zstd=n/a}
-py_cv_module__ssl=${py_cv_module__ssl=n/a}
-py_cv_module__hashlib=${py_cv_module__hashlib=n/a}
+# to one that failed.
+#
+# MOST OF THIS LIST HAS GONE. bzip2, xz, zstd, SQLite, OpenSSL,
+# readline and libffi are all built for this machine now
+# (ports/bzip2 and the rest, `make pylibs`), so the modules that
+# need them are built rather than refused. What is left here is what
+# there is genuinely nothing to build against.
 py_cv_module__tkinter=${py_cv_module__tkinter=n/a}
 py_cv_module__dbm=${py_cv_module__dbm=n/a}
 py_cv_module__gdbm=${py_cv_module__gdbm=n/a}
-py_cv_module__sqlite3=${py_cv_module__sqlite3=n/a}
 py_cv_module__uuid=${py_cv_module__uuid=n/a}
-# ctypes calls a function whose signature it learns at run time, which
-# needs libffi and a way to load a library: neither exists here.
+# ctypes, and ONLY ctypes, still cannot be built -- and not for want of
+# libffi, which is built for this machine and demonstrably works
+# (ports/libffi/test/fficheck.c calls through it and makes closures).
+# _ctypes.c includes <dlfcn.h> and opens libraries by name at run time,
+# and this system's loader has no dlopen: ld.so resolves what a program
+# was linked against and stops. The missing piece is the loader's, not
+# the library's.
 py_cv_module__ctypes=${py_cv_module__ctypes=n/a}
 py_cv_module__ctypes_test=${py_cv_module__ctypes_test=n/a}
 py_cv_module__testcapi=${py_cv_module__testcapi=n/a}
@@ -117,7 +121,6 @@ py_cv_module__testexternalinspection=${py_cv_module__testexternalinspection=n/a}
 py_cv_module__xxtestfuzz=${py_cv_module__xxtestfuzz=n/a}
 py_cv_module_xxlimited=${py_cv_module_xxlimited=n/a}
 py_cv_module_xxlimited_35=${py_cv_module_xxlimited_35=n/a}
-py_cv_module_readline=${py_cv_module_readline=n/a}
 py_cv_module_nis=${py_cv_module_nis=n/a}
 py_cv_module_ossaudiodev=${py_cv_module_ossaudiodev=n/a}
 py_cv_module_spwd=${py_cv_module_spwd=n/a}

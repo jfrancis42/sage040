@@ -80,6 +80,7 @@ ports:
 	$(MAKE) -C ports/openssl install
 	$(MAKE) -C ports/readline install
 	$(MAKE) -C ports/libffi install
+	$(MAKE) -C ports/dropbear install
 	@echo
 	@echo "Python is not in the list above: it is 45 MB and 2,244 files,"
 	@echo "and copying it takes minutes. 'make python' installs it."
@@ -109,6 +110,7 @@ pylibs:
 	$(MAKE) -C ports/openssl install
 	$(MAKE) -C ports/readline install
 	$(MAKE) -C ports/libffi install
+	$(MAKE) -C ports/dropbear install
 	$(MAKE) -C ports/ncurses install
 
 python: pylibs

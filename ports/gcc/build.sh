@@ -66,6 +66,8 @@ GMPOUT=$SRCDIR/build-gmp-sage040/sage040
 MPFROUT=$SRCDIR/build-mpfr-sage040/sage040
 MPCOUT=$SRCDIR/build-mpc-sage040/sage040
 BINOUT=$SRCDIR/build-binutils-native/sage040
+CXXLIB=$SRCDIR/build-libstdcxx-sage040/sage040
+CXXPREFIX=${SAGE_CXX:-$HOME/m68k/install-cxx}
 
 [ -d "$SRC" ] || {
     echo "gcc: $SRC is not there. The cross compiler was built from it" >&2
@@ -76,6 +78,26 @@ for d in "$GMPOUT/lib/libgmp.a" "$MPFROUT/lib/libmpfr.a" "$MPCOUT/lib/libmpc.a";
     [ -f "$d" ] || { echo "gcc: missing $d -- build ports/gmp, mpfr, mpc" >&2; exit 1; }
 done
 [ -x "$BINOUT/bin/as" ] || "$HERE/../binutils/build.sh"
+[ -f "$CXXLIB/lib/libstdc++.a" ] || "$HERE/../libstdcxx/build.sh"
+[ -x "$CXXPREFIX/bin/m68k-elf-g++" ] || {
+    echo "gcc: no cross g++ in $CXXPREFIX -- see progress.md, task 49." >&2
+    exit 1
+}
+
+# The compiler that builds this one is the C++-capable cross gcc, and
+# its own internal headers and its assembler have to be its own. See
+# ports/libstdcxx/build.sh, where the same three lines are explained
+# at length: the wrong gcc's include directory and the host's `as`
+# both produce failures that name neither.
+CXXCC=$CXXPREFIX/bin/m68k-elf-gcc
+CXXCXX=$CXXPREFIX/bin/m68k-elf-g++
+CXX_CPPFLAGS="-nostdinc -isystem $SAGE_LIBC/include \
+-isystem $("$CXXCC" -print-file-name=include) -D_GNU_SOURCE \
+-I$CXXLIB/include/c++/15.2.0 \
+-I$CXXLIB/include/c++/15.2.0/m68k-unknown-elf"
+CXX_BINDIR=$(dirname "$CROSS_CC")/../m68k-elf/bin
+CXX_LIBGCC=$(dirname "$("$CROSS_CC" -mcpu=68040 -print-libgcc-file-name)")
+CXX_TOOLS="-B$CXX_BINDIR/ -B$CXX_LIBGCC/ -L$CXX_LIBGCC -L$CXXLIB/lib"
 
 HOST_TRIPLET=m68k-unknown-elf
 BUILD_TRIPLET=$("$SRC/config.guess")
@@ -83,6 +105,18 @@ BUILD_TRIPLET=$("$SRC/config.guess")
 # See ports/binutils/build.sh: gcc has subdirectory configures too, and
 # this system has no thread-local storage for them to find.
 export ac_cv_tls=none
+
+# gcc 15 carries gettext in its tree and CONFIGURES IT WHATEVER
+# --disable-nls says -- there is no option that skips the directory.
+# Its gnulib decides uselocale() is usable from a compile test, then
+# calls it as `uselocale(NULL)`; picolibc's locale_t is not a pointer,
+# so that is "makes integer from pointer without a cast" and the whole
+# build stops in a library nothing here wants.
+#
+# Saying so through the cache variable is the truthful answer rather
+# than a workaround: this C library's uselocale does not do what
+# gnulib means by a working one.
+export gt_cv_func_uselocale_works=no
 
 applied=$SRC/.sage040-patches
 touch "$applied"
@@ -108,6 +142,7 @@ if [ ! -f "$BUILD/Makefile" ]; then
         --with-gmp="$GMPOUT" \
         --with-mpfr="$MPFROUT" \
         --with-mpc="$MPCOUT" \
+        --without-isl \
         --with-gnu-as --with-gnu-ld \
         --disable-nls \
         --disable-shared \
@@ -122,8 +157,8 @@ if [ ! -f "$BUILD/Makefile" ]; then
         --disable-multilib \
         --enable-threads=posix \
         --with-cpu=68040 \
-        CC="$CROSS_CC $CROSS_CFLAGS $CROSS_CPPFLAGS $SPECS_CFLAGS" \
-        CXX="$CROSS_BIN/m68k-elf-g++ $CROSS_CFLAGS $CROSS_CPPFLAGS $SPECS_CFLAGS" \
+        CC="$CXXCC $CXX_TOOLS $CROSS_CFLAGS $CXX_CPPFLAGS $SPECS_CFLAGS" \
+        CXX="$CXXCXX $CXX_TOOLS $CROSS_CFLAGS $CXX_CPPFLAGS $SPECS_CFLAGS -lstdc++" \
         CC_FOR_BUILD=cc \
         CXX_FOR_BUILD=c++ \
         AR="$CROSS_BIN/m68k-elf-ar" \

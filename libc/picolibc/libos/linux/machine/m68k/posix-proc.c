@@ -736,3 +736,68 @@ posix_spawnp(pid_t *__restrict pid, const char *__restrict file,
 {
     return spawn(pid, file, fa, attr, argv, envp ? envp : environ, 1);
 }
+
+/*
+ * setresuid / setresgid, and the calls that read them back.
+ *
+ * picolibc has seteuid() and nothing else of the family. Anything that
+ * separates privilege properly wants all three ids set in one call --
+ * real, effective and saved -- because setting them one at a time
+ * leaves the saved id wherever the order of operations put it.
+ * Dropbear refuses to build without setresgid rather than quietly run
+ * a session as root, which is the right instinct.
+ *
+ * Nothing to translate: the kernel's ids are 32-bit throughout, so
+ * the "32" forms and the originals are the same call.
+ */
+int
+setresuid(uid_t ruid, uid_t euid, uid_t suid)
+{
+    return syscall(LINUX_SYS_setresuid32, ruid, euid, suid);
+}
+
+int
+setresgid(gid_t rgid, gid_t egid, gid_t sgid)
+{
+    return syscall(LINUX_SYS_setresgid32, rgid, egid, sgid);
+}
+
+int
+getresuid(uid_t *ruid, uid_t *euid, uid_t *suid)
+{
+    return syscall(LINUX_SYS_getresuid32, ruid, euid, suid);
+}
+
+int
+getresgid(gid_t *rgid, gid_t *egid, gid_t *sgid)
+{
+    return syscall(LINUX_SYS_getresgid32, rgid, egid, sgid);
+}
+
+/*
+ * initgroups(user, group): the supplementary group list for a user.
+ *
+ * On a system with supplementary groups this reads /etc/group and
+ * hands the kernel every group `user` is a member of. THIS SYSTEM HAS
+ * NONE: the kernel's getgroups() returns an empty set and its
+ * setgroups() accepts only an empty one (kernel/syslinux.c), because
+ * there is nothing a group membership could yet decide -- a FAT volume
+ * records no owner and no mode, so no file belongs to a group.
+ *
+ * So the honest implementation is to make the supplementary set empty
+ * and say it worked, which is exactly what happened. It is not a stub
+ * that pretends: the set really is empty afterwards, and getgroups()
+ * will agree.
+ *
+ * When there is a filesystem that can hold a group (task 36), this
+ * becomes a real function and the kernel call behind it grows a real
+ * implementation. Until then a caller that drops privilege by calling
+ * initgroups() and then setuid() gets what it asked for.
+ */
+int
+initgroups(const char *user, gid_t group)
+{
+    (void)user;
+    (void)group;
+    return syscall(LINUX_SYS_setgroups32, 0, NULL);
+}

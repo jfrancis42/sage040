@@ -946,6 +946,70 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         return 0;
     }
 
+    /*
+     * setresuid(r, e, s) / setresgid: all three at once, -1 for any
+     * that is to stay. Root may set anything; anybody else may only
+     * shuffle the three they already hold, which is exactly enough to
+     * drop a privilege and pick it up again and no more.
+     */
+    case __NR_setresuid: case __NR_setresuid32:
+    case __NR_setresgid: case __NR_setresgid32: {
+        int is_uid = (nr == __NR_setresuid || nr == __NR_setresuid32);
+        s32 r = (s32)a1, e = (s32)a2, sv = (s32)a3;
+        u32 cur_r = is_uid ? current->uid  : current->gid;
+        u32 cur_e = is_uid ? current->euid : current->egid;
+        u32 cur_s = is_uid ? current->suid : current->sgid;
+        u32 new_r = r  == -1 ? cur_r : (u32)r;
+        u32 new_e = e  == -1 ? cur_e : (u32)e;
+        u32 new_s = sv == -1 ? cur_s : (u32)sv;
+        struct task *t;
+        int i;
+
+        if (current->euid != 0) {
+            u32 want[3];
+            int k;
+
+            want[0] = new_r;
+            want[1] = new_e;
+            want[2] = new_s;
+            for (k = 0; k < 3; k++) {
+                if (want[k] != cur_r && want[k] != cur_e &&
+                    want[k] != cur_s) {
+                    return -EPERM;
+                }
+            }
+        }
+        for (i = 0; (t = task_nth(i)) != 0; i++) {
+            if (t->tgid != current->tgid) {
+                continue;
+            }
+            if (is_uid) {
+                t->uid = new_r; t->euid = new_e; t->suid = new_s;
+            } else {
+                t->gid = new_r; t->egid = new_e; t->sgid = new_s;
+            }
+        }
+        return 0;
+    }
+
+    case __NR_getresuid: case __NR_getresuid32:
+    case __NR_getresgid: case __NR_getresgid32: {
+        int is_uid = (nr == __NR_getresuid || nr == __NR_getresuid32);
+        u32 v[3];
+        int e1, e2, e3;
+
+        v[0] = is_uid ? current->uid  : current->gid;
+        v[1] = is_uid ? current->euid : current->egid;
+        v[2] = is_uid ? current->suid : current->sgid;
+        e1 = store(a1, &v[0], sizeof(v[0]));
+        e2 = store(a2, &v[1], sizeof(v[1]));
+        e3 = store(a3, &v[2], sizeof(v[2]));
+        if (e1 < 0) { return e1; }
+        if (e2 < 0) { return e2; }
+        if (e3 < 0) { return e3; }
+        return 0;
+    }
+
     case __NR_getgroups:
     case __NR_getgroups32:
         return 0;               /* no supplementary groups */

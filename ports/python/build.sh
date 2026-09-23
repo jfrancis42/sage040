@@ -81,6 +81,13 @@ fi
 # The modules to build in. Everything Python needs to start, plus what
 # makes it useful here: the maths, the hashes, sockets, select, time,
 # the terminal, and curses over the ncurses built by ports/ncurses.
+SSLOUT=$SRCDIR/build-openssl-sage040/sage040
+SQLOUT=$SRCDIR/build-sqlite-sage040/sage040
+BZOUT=$SRCDIR/build-bzip2-sage040/sage040
+XZOUT=$SRCDIR/build-xz-sage040/sage040
+ZSTDOUT=$SRCDIR/build-zstd-sage040/sage040
+RLOUT=$SRCDIR/build-readline-sage040/sage040
+FFIOUT=$SRCDIR/build-libffi-sage040/sage040
 NCOUT=$SRCDIR/build-ncurses-sage040/sage040
 ZOUT=$SRCDIR/build-zlib-sage040/sage040
 
@@ -108,6 +115,23 @@ fi
 # about what it is, and is safe for exactly the reason above.
 #
 PY_CFLAGS="-Wno-incompatible-pointer-types"
+
+# ONE LINK GROUP FOR CONFIGURE, holding libssl and libcrypto as well as
+# the C library, and it is what makes _ssl and _hashlib exist.
+#
+# configure tests OpenSSL by linking a small program, and it decides
+# for itself where OPENSSL_LIBS goes on that line -- passing a value
+# does not move it. It landed AFTER the C library, so a single-pass
+# static link had already finished with libc by the time it reached
+# libssl, and every memcmp, strcmp, qsort, time and __udivdi3 libssl
+# needs came back undefined. configure reported "Python requires a
+# OpenSSL 1.1.1 or newer", which is a long way from what happened.
+#
+# Inside one --start-group the order stops mattering: ld rescans the
+# group until nothing new is resolved. This is the CONFIGURE line
+# only; the real links still use SYSLIBS last, where the ordering is
+# already right and understood.
+PY_CONF_LIBS="-Wl,--start-group -lc -llinux -lssl -lcrypto -lgcc -Wl,--end-group"
 
 libc_fresh "$BUILD" || true
 if [ ! -f "$BUILD/Makefile" ]; then
@@ -144,20 +168,39 @@ if [ ! -f "$BUILD/Makefile" ]; then
         --disable-ipv6 \
         --without-mimalloc \
         --with-ensurepip=no \
+        --with-openssl="$SSLOUT" \
+        OPENSSL_INCLUDES="-I$SSLOUT/include" \
+        OPENSSL_LDFLAGS="-L$SSLOUT/lib" \
+        --with-system-libmpdec=no \
+        --with-readline=readline \
         --without-doc-strings \
         --disable-test-modules \
         CC="$CROSS_CC" \
         AR="$CROSS_BIN/m68k-elf-ar" RANLIB="$CROSS_BIN/m68k-elf-ranlib" \
         PKG_CONFIG=/bin/false \
+        LIBFFI_CFLAGS="-I$FFIOUT/include" \
+        LIBFFI_LIBS="-L$FFIOUT/lib -lffi" \
+        LIBSQLITE3_CFLAGS="-I$SQLOUT/include" \
+        LIBSQLITE3_LIBS="-L$SQLOUT/lib -lsqlite3" \
+        LIBLZMA_CFLAGS="-I$XZOUT/include" \
+        LIBLZMA_LIBS="-L$XZOUT/lib -llzma" \
+        LIBZSTD_CFLAGS="-I$ZSTDOUT/include" \
+        LIBZSTD_LIBS="-L$ZSTDOUT/lib -lzstd" \
+        LIBREADLINE_CFLAGS="-I$RLOUT/include" \
+        LIBREADLINE_LIBS="-L$RLOUT/lib -lreadline -ltinfow" \
         CURSES_CFLAGS="-I$NCOUT/include" \
         CURSES_LIBS="-lncursesw -ltinfow -lncursesw" \
         PANEL_CFLAGS="-I$NCOUT/include" \
         PANEL_LIBS="-lpanelw -lncursesw -ltinfow -lncursesw" \
         READELF="$CROSS_BIN/m68k-elf-readelf" \
-        CPPFLAGS="$CROSS_CPPFLAGS -I$NCOUT/include -I$ZOUT/include" \
+        CPPFLAGS="$CROSS_CPPFLAGS -I$NCOUT/include -I$ZOUT/include \
+-I$SSLOUT/include -I$SQLOUT/include -I$BZOUT/include -I$XZOUT/include \
+-I$ZSTDOUT/include -I$RLOUT/include -I$FFIOUT/include" \
         CFLAGS="$CROSS_CFLAGS $PY_CFLAGS" \
-        LDFLAGS="$STATIC_LDFLAGS -L$NCOUT/lib -L$ZOUT/lib" \
-        LIBS="$STATIC_LIBS" \
+        LDFLAGS="$STATIC_LDFLAGS -L$NCOUT/lib -L$ZOUT/lib \
+-L$SSLOUT/lib -L$SQLOUT/lib -L$BZOUT/lib -L$XZOUT/lib -L$ZSTDOUT/lib \
+-L$RLOUT/lib -L$FFIOUT/lib" \
+        LIBS="$PY_CONF_LIBS" \
         > configure.log 2>&1) || { tail -40 "$BUILD/configure.log"; exit 1; }
 fi
 

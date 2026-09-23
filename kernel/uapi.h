@@ -1336,6 +1336,26 @@ struct sigcontext {
  */
 #define __NR_setreuid32    203
 #define __NR_setregid32    204
+
+/*
+ * setresuid/setresgid, and the calls that read them back. All three
+ * ids at once, which is the only way to set them that has no order
+ * dependence -- setreuid can leave the saved id somewhere the caller
+ * did not intend, depending on what it was before.
+ *
+ * This is what "drop privileges" means to anything that takes it
+ * seriously: Dropbear refuses to build without setresgid, rather than
+ * quietly running a session as root. Linux has had them since 2.1.44
+ * and everything that separates privilege uses them.
+ */
+#define __NR_setresuid     164
+#define __NR_getresuid     165
+#define __NR_setresgid     170
+#define __NR_getresgid     171
+#define __NR_setresuid32   208
+#define __NR_getresuid32   209
+#define __NR_setresgid32   210
+#define __NR_getresgid32   211
 #define __NR_setrlimit      75
 #define __NR_getrlimit      76
 #define __NR_getgroups      80

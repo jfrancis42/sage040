@@ -1,0 +1,36 @@
+unistd.h: declare setresuid, setresgid, getresuid and getresgid.
+
+picolibc has seteuid() and no other member of the family. Anything that
+separates privilege properly wants all three ids set in one call --
+real, effective and saved -- because setting them one at a time leaves
+the saved id wherever the order of operations happened to put it, which
+is exactly the hole setresuid was invented to close.
+
+Dropbear refuses to build without setresgid rather than quietly run a
+session as root, which is the right instinct and is what found this.
+
+The implementations are in the m68k backend (posix-proc.c), over the
+kernel's system calls 208-211.
+
+--- a/libc/include/sys/unistd.h
++++ b/libc/include/sys/unistd.h
+@@ -256,6 +256,19 @@
+ #if __BSD_VISIBLE || __POSIX_VISIBLE >= 200112
+ int setegid(gid_t __gid) __picolibc_export;
+ int seteuid(uid_t __uid) __picolibc_export;
++/*
++ * All three ids at once. picolibc has seteuid() and none of these,
++ * and anything that separates privilege wants them: setting the real,
++ * effective and saved ids one at a time leaves the saved one wherever
++ * the order of operations put it, which is the hole setresuid exists
++ * to close. Dropbear will not build without setresgid rather than
++ * quietly run a session as root.
++ */
++int initgroups(const char *__user, gid_t __group) __picolibc_export;
++int setresuid(uid_t __ruid, uid_t __euid, uid_t __suid) __picolibc_export;
++int setresgid(gid_t __rgid, gid_t __egid, gid_t __sgid) __picolibc_export;
++int getresuid(uid_t *__ruid, uid_t *__euid, uid_t *__suid) __picolibc_export;
++int getresgid(gid_t *__rgid, gid_t *__egid, gid_t *__sgid) __picolibc_export;
+ #endif
+ int setgid(gid_t __gid) __picolibc_export;
+ #if __BSD_VISIBLE

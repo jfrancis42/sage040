@@ -1,0 +1,69 @@
+pwd.h: carry pw_passwd and pw_gecos, which /etc/passwd has and this
+struct passwd did not.
+
+picolibc's struct passwd has five fields. The file it parses has seven,
+and fgetpwent_r already walks all seven -- it has entries for the other
+two in its offset table, set to -1 so the columns are read and thrown
+away. So the parsing was there and only the storage was missing.
+
+Every program that has ever read a passwd entry notices. Dropbear does
+not compile without pw_passwd. Python's pwd module cannot present the
+structure its own documentation describes. Neither is asking for
+anything unusual: these are the fields the file has had since the
+1970s.
+
+pw_passwd is not a password and carrying it is not a hazard: on any
+system with shadow passwords it holds "x" or "*", and on this one it is
+empty, there being nothing yet to log in to. It is column two, and
+software tests it.
+
+--- a/libc/include/pwd.h
++++ b/libc/include/pwd.h
+@@ -58,12 +58,27 @@
+ #define _PATH_PASSWD "/etc/passwd"
+ #endif
+ 
++/*
++ * The fields are the traditional seven, in the order /etc/passwd
++ * writes them. pw_passwd and pw_gecos used to be absent -- the file
++ * was parsed and those two columns thrown away -- which every program
++ * that has ever read a passwd entry notices: Dropbear will not compile
++ * without pw_passwd, and Python's pwd module cannot present the
++ * structure it documents.
++ *
++ * pw_passwd is not a password. On any system with shadow passwords it
++ * is "x" or "*", and on this one it is empty, because there is nothing
++ * yet to log in to. It is carried because it is column two and because
++ * software tests it.
++ */
+ struct passwd {
+-    char *pw_name;  /* user name */
+-    uid_t pw_uid;   /* user uid */
+-    gid_t pw_gid;   /* user gid */
+-    char *pw_dir;   /* home directory */
+-    char *pw_shell; /* default shell */
++    char *pw_name;   /* user name                                  */
++    char *pw_passwd; /* what column two says -- not a password     */
++    uid_t pw_uid;    /* user uid                                   */
++    gid_t pw_gid;    /* user gid                                   */
++    char *pw_gecos;  /* the real name, and whatever else is there  */
++    char *pw_dir;    /* home directory                             */
++    char *pw_shell;  /* default shell                              */
+ };
+ 
+ struct passwd *getpwuid(uid_t uid);
+--- a/libc/posix/fgetpwent_r.c
++++ b/libc/posix/fgetpwent_r.c
+@@ -56,10 +56,10 @@
+ 
+ static const ptrdiff_t pw_offset[] = {
+     [pw_name] = __offsetof(struct passwd, pw_name),
+-    [pw_passwd] = -1,
++    [pw_passwd] = __offsetof(struct passwd, pw_passwd),
+     [pw_uid] = __offsetof(struct passwd, pw_uid),
+     [pw_gid] = __offsetof(struct passwd, pw_gid),
+-    [pw_gecos] = -1,
++    [pw_gecos] = __offsetof(struct passwd, pw_gecos),
+     [pw_dir] = __offsetof(struct passwd, pw_dir),
+     [pw_shell] = __offsetof(struct passwd, pw_shell),
+ };

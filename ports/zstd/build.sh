@@ -91,7 +91,12 @@ make -C "$BUILD/src/programs" -j8 "${MAKEVARS[@]}" \
 OUT=$BUILD/sage040
 mkdir -p "$OUT/lib" "$OUT/include" "$OUT/bin"
 cp "$BUILD/src/lib/libzstd.a" "$OUT/lib/"
-cp "$BUILD/src/lib/zstd.h" "$BUILD/src/lib/zstd_errors.h" "$OUT/include/"
+# zdict.h as well as zstd.h: the dictionary builder is part of the
+# library (libzstd.a has the ZDICT_* symbols in it) and CPython's
+# _zstd module includes <zdict.h> by name. Installing only zstd.h
+# built a library whose header set could not compile its own user.
+cp "$BUILD/src/lib/zstd.h" "$BUILD/src/lib/zstd_errors.h" \
+   "$BUILD/src/lib/zdict.h" "$OUT/include/"
 cp "$BUILD/src/programs/zstd" "$OUT/bin/zstd"
 
 echo "zstd $VERSION -> $OUT"

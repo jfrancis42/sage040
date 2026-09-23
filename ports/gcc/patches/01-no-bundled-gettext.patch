@@ -1,0 +1,39 @@
+Do not build the bundled gettext when --disable-nls.
+
+gcc 15 carries gettext in its source tree and configures it
+unconditionally. --disable-nls stops gcc USING the result; it does not
+stop the directory being configured and built.
+
+That is harmless on a GNU/Linux host and is not harmless here. gettext
+brings gnulib with it, and gnulib compiled against picolibc wants
+things picolibc does not have in the shape it expects: it decides
+uselocale() is usable and then calls uselocale(NULL), where this
+locale_t is not a pointer; it reaches for C23's ckd_add. Each one stops
+the whole build in a library that nothing in this configuration will
+ever call, because nothing here is translated.
+
+zlib two lines above is dropped from noconfigdirs by exactly this
+mechanism when --with-system-zlib is given. This is the same idea for
+the same reason.
+
+--- a/configure
++++ b/configure
+@@ -2976,6 +2976,18 @@
+   noconfigdirs="$noconfigdirs zlib"
+ fi
+ 
++# And don't build the bundled gettext when NLS is off.
++#
++# gcc 15 carries gettext in its tree and configures it unconditionally:
++# --disable-nls stops gcc USING it and does not stop it being BUILT.
++# For a cross build against a small C library that is a long way from
++# free -- its gnulib assumes uselocale() returns a pointer, and reaches
++# for C23's ckd_add - and none of it is wanted, because nothing here
++# is translated.
++if test x$enable_nls = xno ; then
++  noconfigdirs="$noconfigdirs gettext"
++fi
++
+ # Don't compile the bundled readline/libreadline.a if --with-system-readline
+ # is provided.
+ if test x$with_system_readline = xyes ; then

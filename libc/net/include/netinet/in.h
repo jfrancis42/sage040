@@ -80,6 +80,19 @@ struct sockaddr_in6 {
 #define IPPROTO_IPV6    41
 #define IPPROTO_RAW     255
 
+/*
+ * The port ranges, as every Unix defines them.
+ *
+ * IPPORT_RESERVED is the line below which a port was historically
+ * only bindable by root. This system does not enforce that -- there
+ * is one user and nothing checks -- but the constant is what software
+ * uses to DECIDE things: ssh tests whether a forwarded port is
+ * privileged before allowing it, and needs the number whether or not
+ * anybody is stopping it.
+ */
+#define IPPORT_RESERVED     1024
+#define IPPORT_USERRESERVED 5000
+
 #define INADDR_ANY       ((in_addr_t)0x00000000)
 #define INADDR_BROADCAST ((in_addr_t)0xffffffff)
 #define INADDR_NONE      ((in_addr_t)0xffffffff)

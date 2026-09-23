@@ -1,0 +1,51 @@
+termios.h: struct winsize has four members, because the kernel sends
+four.
+
+TIOCGWINSZ is answered by copying the kernel's struct winsize to the
+caller's pointer. This system's kernel uses Linux's, which is eight
+bytes: rows, columns, and the two pixel dimensions a graphical terminal
+fills in. picolibc declares the first two and nothing else, so every
+program that asked how big its terminal was got four bytes written past
+the end of its structure.
+
+It had not been noticed because the overrun lands on whatever the
+compiler happened to put next and the values are normally zero. It is
+still four bytes of somebody else's memory, on every call, from every
+program that asks -- which on this machine includes less, resize and
+everything built on ncurses.
+
+Found because Dropbear sets ws_xpixel by name and would not compile.
+
+--- a/libc/include/sys/termios.h
++++ b/libc/include/sys/termios.h
+@@ -73,9 +73,30 @@
+     speed_t  c_ospeed;
+ };
+ 
++/*
++ * FOUR FIELDS, NOT TWO, and this is a correctness fix rather than a
++ * feature. TIOCGWINSZ is answered by the kernel with a structure of
++ * its own, and this system's -- Linux's -- has all four: rows,
++ * columns, and the pixel dimensions that a graphical terminal fills
++ * in. The kernel copies sizeof(struct winsize) bytes to the pointer
++ * it is given, which is eight; a program whose struct was this one
++ * offered four, and the other four went past the end of it.
++ *
++ * Nothing had noticed, because the overrun lands on whatever the
++ * compiler put next on the stack and the values written are usually
++ * zero. It is still four bytes of somebody else's memory, on every
++ * call, from every program that asks how big its terminal is.
++ *
++ * ws_xpixel and ws_ypixel are zero here: this machine's terminals are
++ * a serial line and a character console, and neither has a pixel size
++ * to report. They are carried because the kernel sends them and
++ * because software reads them.
++ */
+ struct winsize {
+     unsigned short ws_row;
+     unsigned short ws_col;
++    unsigned short ws_xpixel;
++    unsigned short ws_ypixel;
+ };
+ 
+ #define BRKINT    0x0001
