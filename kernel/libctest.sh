@@ -170,8 +170,11 @@ grep -qx "posixtest: 0 failed" "$SCRATCH/clean.tmp"
 check "posixtest ran to the end" $?
 grep -qx "posixtest: started in /PTSTART" "$SCRATCH/clean.tmp"
 check "a program starts in the shell's working directory, not the root" $?
-# The time utimensat set, read off the inode by the host's own tools.
-fsimg ls /TIMES.TMP 2>/dev/null | grep -q "2001-02-03 *4:05"
+# The time utimensat set, read off the inode by the host's own tools --
+# as RAW SECONDS, because debugfs prints its own format in the host's
+# timezone and matching that text tests where the host is.
+# 981173106 is 2001-02-03 04:05:06 UTC.
+[ "$(fsimg mtime /TIMES.TMP 2>/dev/null)" = 981173106 ]
 check "the file time set on the machine is the one the host reads from the disk" $?
 
 echo "=== checks: ChaCha20 and BLAKE2s on the 68040, against the RFC vectors ==="
