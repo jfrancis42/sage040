@@ -3394,6 +3394,17 @@ static void fsck_recount_groups(u32 *free_b, u32 *free_i)
                 freeb++;
             }
         }
+        /*
+         * TWO PASSES, and the second re-fetches the bitmap every time.
+         *
+         * iread() goes through the same sixteen-buffer cache, so it can
+         * EVICT the bitmap buffer -- and a pointer into it then points
+         * at whatever block took its place. Counting free bits and
+         * reading inodes in one loop therefore counted the first part
+         * of the bitmap and then some inode table, which is how a
+         * repair came to write a free-inode count that was wrong by
+         * exactly the number of inodes it had read.
+         */
         b = bget(gd_field(g, GD_INODE_BITMAP));
         if (!b) {
             return;
@@ -3401,13 +3412,21 @@ static void fsck_recount_groups(u32 *free_b, u32 *free_i)
         for (i = 0; i < inodes_per_group; i++) {
             if (!bitmap_test(b->data, i)) {
                 freei++;
-            } else {
-                struct einode ei;
+            }
+        }
+        for (i = 0; i < inodes_per_group; i++) {
+            struct einode ei;
 
-                if (iread(g * inodes_per_group + i + 1, &ei) == 0 &&
-                    S_ISDIR(ei.mode)) {
-                    dirs++;
-                }
+            b = bget(gd_field(g, GD_INODE_BITMAP));
+            if (!b) {
+                return;
+            }
+            if (!bitmap_test(b->data, i)) {
+                continue;
+            }
+            if (iread(g * inodes_per_group + i + 1, &ei) == 0 &&
+                S_ISDIR(ei.mode)) {
+                dirs++;
             }
         }
         d = gd_get(g, &gb);
