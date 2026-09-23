@@ -45,6 +45,7 @@
 #                                    and the inode counts
 #   fsimg.sh IMG fsck [-p]           check it; -p repairs
 #   fsimg.sh IMG batch               debugfs commands on stdin, one session
+#   fsimg.sh IMG offset              where the filesystem starts, in bytes
 #
 # The offset comes from PART_OFFSET in the environment, or from the
 # partition table in the image, or is zero for an image that is nothing
