@@ -124,16 +124,30 @@ fs_exists() {
 
 # Copy a host directory's CONTENTS into a directory on the image.
 fs_put_tree() {                 # fs_put_tree SRCDIR DSTDIR
-    local src=$1 dst=${2%/}
+    local src=$1 dst=${2%/} d
     fs_mkdir_p "$dst"
-    {
-        (cd "$src" && find . -type d ! -name .) |
-            sed "s|^\./|mkdir \"$dst/|; s|$|\"|"
-        (cd "$src" && find . -type f) | while read -r f; do
-            echo "rm \"$dst/${f#./}\""
-            echo "write \"$src/${f#./}\" \"$dst/${f#./}\""
-        done
-    } | debugfs -w -f - "$DEV" >/dev/null 2>&1
+    #
+    # THE DIRECTORIES FIRST, AND ONLY THE ONES THAT ARE MISSING.
+    #
+    # debugfs's `mkdir` on a name that already exists does not simply
+    # fail: it allocates and initialises the directory inode, THEN
+    # fails to link it, and leaves it behind with its ".." pointing at
+    # the parent and nothing pointing at it. e2fsck calls that an
+    # unconnected directory inode, and a second `put -r` over the same
+    # tree leaked one for every directory in it.
+    #
+    while read -r d; do
+        [ -n "$d" ] || continue
+        fs_exists "$dst/$d" || dbg "mkdir $(q "$dst/$d")" >/dev/null
+    done <<EOT
+$(cd "$src" && find . -type d ! -name . | sed 's|^\./||' | sort)
+EOT
+    # Then every file, in ONE debugfs session: a header directory of
+    # 300 files is 300 process starts otherwise.
+    (cd "$src" && find . -type f) | while read -r f; do
+        echo "rm \"$dst/${f#./}\""
+        echo "write \"$src/${f#./}\" \"$dst/${f#./}\""
+    done | debugfs -w -f - "$DEV" >/dev/null 2>&1
 }
 
 fs_mkdir_p() {                  # every component, parents first

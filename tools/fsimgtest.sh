@@ -133,6 +133,33 @@ check "everything put in and taken out again leaves the block count where it sta
 e2fsck -fn "$IMG?offset=$OFF" >>"$LOG" 2>&1
 check "the filesystem is still clean after all of that" $?
 
+# --- a tree, put twice ------------------------------------------------
+# debugfs's `mkdir` on a name that already exists allocates the inode,
+# THEN fails to link it, and leaves it behind unconnected. Installing
+# the same tree twice -- which every `make install` does -- leaked one
+# inode per directory, and e2fsck called them unconnected directory
+# inodes.
+mkdir -p "$SCRATCH/rtree/a/b/c"
+echo one > "$SCRATCH/rtree/f1"
+echo two > "$SCRATCH/rtree/a/f2"
+echo three > "$SCRATCH/rtree/a/b/c/f3"
+"$F" "$IMG" mkdir /treetest
+"$F" "$IMG" put -r "$SCRATCH/rtree" /treetest
+INODES1=$(e2fsck -fn "$IMG?offset=$OFF" 2>/dev/null |
+          sed -n 's|.*: \([0-9]*\)/[0-9]* files.*|\1|p' | tail -1)
+"$F" "$IMG" put -r "$SCRATCH/rtree" /treetest
+"$F" "$IMG" put -r "$SCRATCH/rtree" /treetest
+INODES2=$(e2fsck -fn "$IMG?offset=$OFF" 2>/dev/null |
+          sed -n 's|.*: \([0-9]*\)/[0-9]* files.*|\1|p' | tail -1)
+[ "$INODES1" = "$INODES2" ]
+check "putting the same tree in three times uses the inodes of one (was $INODES1, now $INODES2)" $?
+
+"$F" "$IMG" cat /treetest/a/b/c/f3 | grep -qx three
+check "  and the deepest file in it is still right" $?
+
+e2fsck -fn "$IMG?offset=$OFF" >>"$LOG" 2>&1
+check "  and e2fsck finds no unconnected directory" $?
+
 # --- negative controls ------------------------------------------------
 # A suite that cannot fail is measuring nothing.
 "$F" "$IMG" exists /never-existed;  notok "exists reports a missing file as missing"
