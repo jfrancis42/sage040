@@ -563,6 +563,31 @@ problem, and there are three ways at it:
 
 Route 1 first, then 2. Neither is a night's work to do carefully.
 
+**AND THERE IS A BIGGER PROBLEM THAN THE BOOTSTRAP, which is worth
+knowing before any time goes into it.** GNU CLISP's last release is
+**2.49, dated 2010** -- checked against ftp.gnu.org, where 2.49 is
+still the newest directory. It is a fifteen-year-old C codebase, and
+fifteen years is exactly the span over which C compilers stopped
+tolerating what it does: implicit declarations, aliasing assumptions,
+and the pre-C23 spellings that have already bitten GMP (`void g(){}`
+called with six arguments) and zstd in this tree. It does not build
+with a current gcc on an ordinary Linux machine without patches, let
+alone against picolibc on m68k.
+
+So CLISP is not "one more port". It is a porting project of its own,
+and the bootstrap -- now solved -- was the easy half.
+
+**ECL is the alternative and is probably the better answer.** It was
+named in this list from the start as the other candidate, it is
+actively maintained, and it compiles Lisp to C and hands it to the
+system compiler -- which this machine now has. That last point changed
+tonight: an implementation that needs a C compiler at run time was
+impossible here this morning and is not now.
+
+The choice between them is the user's, and it is a real choice rather
+than a formality: CLISP is what was asked for, ECL is what is likely
+to work.
+
 `m68k-elf` takes its integer types from gcc's `newlib-stdint.h`, where
 `uint32_t` is **`long unsigned int`**. Linux/m68k takes them from
 `glibc-stdint.h`, where it is **`unsigned int`**. This system's ABI is
