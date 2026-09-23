@@ -71,16 +71,19 @@ Every suite in the tree has been run on ext2 and passes:
 `apitest` · `greptest` · `sbasetest` · `dftest` · `libctest` ·
 `nativetest` (15) · `qemutest` (8) · `pylibtest` · `sshtest` · `pytest`
 
-`bashtest` is 12 of bash's own 15 cases, up from 8. The three that
-remain are named, and none of them is about the shell:
+`bashtest` is 13 of bash's own 15 cases, up from 8. The two that
+remain are named, and neither is about the shell:
 
 - **`func`** uses process substitution, `<(...)`, which this system
   does not have: it needs FIFOs and `/dev/fd`, which are task 30's
   remainder below.
 - **`glob`** wants the `locale` command and a zh_TW.big5 locale, and
   says so itself in a warning.
-- **`array`** has one line of 259 different, from `ls ${pat[@]}` with
-  a `*.*` glob. Not investigated.
+
+The three that were fixed were all in the machine around the shell,
+not in bash: its test helpers were host binaries, the utilities its
+tests shell out to were not installed, and `ls ${pat[@]}` over a `*.*`
+glob of 641 files exceeded a 256-argument cap in exec.
 
 Three of those were finding faults that had nothing to do with the
 filesystem and had been there all along:
