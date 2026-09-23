@@ -25,8 +25,8 @@ this list is something Python wants.
 | 38 | **Time zones**: `TZ`, `tzset`, `localtime` | `time.localtime`, `datetime`, and every timestamp a program prints | **done** |
 | 39 | **terminfo**: a real database, not one terminal compiled in | curses reads it; so does `less` | **done** |
 | 40 | **curses (ncurses)** | Python's `curses` and `_curses_panel`; `less` and any full-screen program | **done** |
-| 30 | **The POSIX gaps**: FIFOs, `/dev/fd`, pseudo-terminals, `PATH_MAX`, `ARG_MAX` | the rest of what a port expects to find | |
-| 31 | **Python (CPython)** | the largest port yet | in progress |
+| 30 | **The POSIX gaps**: FIFOs, `/dev/fd`, pseudo-terminals, `PATH_MAX`, `ARG_MAX` | the rest of what a port expects to find | pseudo-terminals and `PATH_MAX` **done**; FIFOs, `/dev/fd`, a listable `/dev` and `diff` open |
+| 31 | **Python (CPython)** | the largest port yet | **done** -- 3.14.7 runs, 43 checks |
 | 32 | **PATH**: that it is set, inherited, and searched | small, and everything assumes it | **done** |
 | 37 | **cron** | needs the clock, a daemon, and somewhere to log | **done** |
 | 43 | **`/var`, and `/var/log`**: the kernel's log to `/var/log/syslog` | asked for 2026-09-22 | **done** |
@@ -162,7 +162,7 @@ runs the whole thing again: vt102 keeps working, the other two fail.
 
 ---
 
-### 31. Python -- in progress
+### 31. Python -- done
 
 CPython **3.14.7**, cross-built against picolibc, statically linked, with
 every extension module built in (there is no dlopen here) and the
