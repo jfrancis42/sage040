@@ -21,7 +21,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: all boot run world ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest nativetest libc cube programs clean distclean
+.PHONY: all boot run world toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest nativetest libc cube programs clean distclean
 
 all:
 	$(MAKE) -C bootrom
@@ -127,8 +127,25 @@ python: pylibs
 etc:
 	$(MAKE) -C system etc
 
-# The whole machine: the system, every port, and Python.
-world: programs ports python
+# THE TOOLCHAIN THAT RUNS ON THE MACHINE (task 49).
+#
+# binutils and gcc, plus the C library installed at /usr where a
+# compiler running there will look for it. Separate from `ports`
+# because it is ~100 MB and a long build, and a machine that is only
+# going to run programs does not need it.
+toolchain:
+	$(MAKE) -C libc install
+	$(MAKE) -C ports/binutils install
+	$(MAKE) -C ports/gmp install
+	$(MAKE) -C ports/mpfr install
+	$(MAKE) -C ports/mpc install
+	$(MAKE) -C ports/libstdcxx install
+	$(MAKE) -C ports/gcc install
+	@echo
+	@echo "the machine can now compile and link its own programs."
+
+# The whole machine: the system, every port, Python, and the toolchain.
+world: programs ports python toolchain
 
 # The kernel without the boot ROM in the way. Same kernel, quicker loop.
 run:
