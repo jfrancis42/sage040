@@ -101,9 +101,41 @@ fsimg put "$BASHSRC"/tests/* /BT/tests/ 2>/dev/null
 fsimg put -m 755 ../ports/bash/tests/runsuite.sh /BT/tests/
 # Its own runners invoke the shell as ./bash as well as $THIS_SH.
 fsimg put -m 755 ../ports/bash/bash /BT/tests/bash
+
+#
+# THE TEST HELPERS, BUILT FOR THE MACHINE.
+#
+# bash's suite shells out to four little programs of its own -- recho,
+# zecho, printenv and xcase -- and to `grep`. The build directory's
+# copies of the four are built by the HOST compiler for the host, so
+# copying them there put x86-64 binaries on an m68k disk and every test
+# that used one answered "cannot execute binary file: Exec format
+# error". They come from support/*.c and are cross-compiled here.
+#
+# grep is GNU grep from ports/, because sbase has none, and without it
+# array.tests' ignore_builtin_arrays() -- a bare `grep -v` -- silently
+# drops the output it was meant to filter.
+#
+# Seven of bash's own cases were failing on these two things, and had
+# been failing on them for as long as the suite has existed.
+#
+HELPERS=$WORK/helpers
+mkdir -p "$HELPERS"
+# In a SUBSHELL: ports/cross.sh exits when picolibc is not built, and
+# sourcing it here would take the suite down with it.
+(
+    TOP=$(cd .. && pwd)
+    . "$TOP/ports/cross.sh"
+    for h in recho zecho printenv xcase; do
+        [ -f "$BASHSRC/support/$h.c" ] || continue
+        "$CROSS_CC" $CROSS_CPPFLAGS $SPECS_CFLAGS -O2 -w \
+            "$BASHSRC/support/$h.c" -o "$HELPERS/$h"
+    done
+) >/dev/null 2>&1
 for h in recho zecho printenv xcase; do
-    [ -x "$BASHBUILD/$h" ] && fsimg put "$BASHBUILD/$h" /BT/tests/$h
+    [ -f "$HELPERS/$h" ] && fsimg put -m 755 "$HELPERS/$h" /BT/tests/$h
 done
+[ -x ../ports/grep/grep ] && fsimg put -m 755 ../ports/grep/grep /bin/grep
 
 rm -f "$SCRATCH/bash.fifo"
 mkfifo "$SCRATCH/bash.fifo"
