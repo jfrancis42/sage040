@@ -16,10 +16,15 @@ Sage name is an homage and a design sensibility, not a claim of accuracy.
 preemptive multitasking, demand paging and swap, signals and job control, a
 FAT filesystem with long names, a TCP/IP stack, a framebuffer console, and a
 C library that ordinary POSIX programs build against, with threads,
-pseudo-terminals and a real terminfo database. **CPython 3.14** runs on
-it, and so do GNU bash, sed, grep, less, the one true awk, uEmacs, vi and
-98 of suckless's utilities -- each built from its own unmodified
+pseudo-terminals, users and a real terminfo database. **CPython 3.14**
+runs on it -- with TLS, SQLite, compression and readline behind it -- and
+so do GNU bash, sed, grep, less, the one true awk, uEmacs, vi, ssh,
+rsync and 98 of suckless's utilities, each built from its own unmodified
 upstream source.
+
+**It assembles and links its own programs**: GNU binutils runs on the
+machine, and the C library, the start files and the linker script are
+installed on its disk.
 
 ```
 $ make boot
@@ -179,11 +184,21 @@ the POSIX layer added to it.
 | `ports/ncurses` | ncurses 6.5: the terminfo database at /usr/share/terminfo, and curses |
 | `ports/less` | the pager, over terminfo |
 | `ports/zlib` | zlib 1.3.1 |
+| `ports/openssl` | OpenSSL 3.5.4: TLS, and the digests `hashlib` uses |
+| `ports/sqlite` | SQLite 3.53.4, library and shell |
+| `ports/bzip2`, `ports/xz`, `ports/zstd` | the compressors, and `bz2`/`lzma`/`compression.zstd` |
+| `ports/readline` | GNU readline 8.3, for Python's prompt |
+| `ports/libffi` | libffi 3.5.2 — calls built at run time, closures included |
+| `ports/dropbear` | ssh, sshd and `dropbearkey`; public-key authentication |
+| `ports/rsync` | rsync 3.4.1, over ssh |
+| `ports/binutils` | **binutils 2.45 that RUNS ON THE MACHINE**: `as`, `ld`, `ar`, `nm`, `objdump`, `strip`, `readelf` |
+| `ports/gmp`, `ports/mpfr`, `ports/mpc` | the arithmetic libraries a compiler needs |
+| `ports/libstdcxx` | the C++ standard library, for the target |
 | `ports/sbase` | 98 POSIX utilities: `sort`, `find`, `xargs`, `tar`, `make`, `ed`, `bc`, `wc`, `cut`, `tr`, the checksums |
 | `ports/sed`, `ports/grep` | GNU sed 4.10 and GNU grep 3.12 |
 | `ports/awk` | the one true awk |
 | `ports/uemacs`, `ports/vi` | uEmacs/PK and neatvi |
-| `system/` | the system's own programs: `ifconfig`, `ping`, `netstat`, `host`, `ntpdate`, `fsck`, `swapon`, `nvram`, `irqs`, `stty`, `sh` |
+| `system/` | the system's own programs: `ifconfig`, `ping`, `netstat`, `host`, `ntpdate`, `fsck`, `swapon`, `nvram`, `irqs`, `stty`, `df`, `id`, `sh` |
 | `apps/` | demonstrations and test programs: `cube`, `httpd`, `fetch`, `fbmap`, `pagetest` |
 
 ---

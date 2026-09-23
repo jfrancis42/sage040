@@ -33,6 +33,7 @@ is still to be built.
 - [Randomness](#randomness)
 - [The terminal](#the-terminal)
 - [Pseudo-terminals](#pseudo-terminals)
+- [Users](#users)
 - [The log](#the-log)
 - [The network](#the-network)
 - [Programs](#programs)
@@ -652,6 +653,32 @@ it gets SIGHUP.
 Eight pairs, and they are given back -- which `kernel/ptytest.sh`
 checks by taking every one, closing them, and taking them all again.
 
+## Users
+
+A task has a real, effective and saved user id and the same three group
+ids. They are inherited by `fork` and kept across `exec` -- there is no
+set-user-id bit on a FAT volume to change them -- and moved by `setuid`,
+`setgid`, `setreuid`, `setregid`, `setresuid` and `setresgid` under the
+rules POSIX gives: root may become anybody, and anybody else may only
+move between the identities they already hold, which is exactly enough to
+drop a privilege and take it back.
+
+A change reaches **every task in the thread group**, not just the one
+that asked. Credentials belong to a process; a thread still holding the
+old uid after its siblings changed would be a hole.
+
+`/etc/passwd` and `/etc/group` are ordinary files in the traditional
+format. The C library reads them (`getpwnam`, `getpwuid`, `getpwent`);
+the shell reads `/etc/passwd` itself, with `open` and `read`, because the
+shell may not call the C library -- which leaves two independent
+implementations of the same lookup, and a test that checks they agree.
+
+`HOME` comes from the passwd file. `/etc/rc` overrides it, because whose
+machine this is belongs in a file somebody can edit rather than compiled
+into the shell.
+
+**None of this enforces anything.** See "What it is not".
+
 ## The log
 
 The kernel keeps everything it prints in a ring and writes to no file:
@@ -906,13 +933,22 @@ seconds later" landed before the program existed and went to the shell.
 
 Named, so that nobody has to discover them by trying.
 
-**One user, root.** Every uid and gid is 0, and the kernel says so rather
-than pretending: `chown` to anyone else is `EPERM`, as it is on a Linux
-FAT mount. There are no passwords, no `/etc/passwd` and no login.
+**Users exist and protect nothing.** A task carries a real, effective and
+saved uid and gid; they are inherited across fork and exec, `setuid` and
+its relatives move them under POSIX's rules, and `/etc/passwd` turns them
+into names -- `id`, `whoami` and `~user` all work. What no user id can do
+is decide whether anybody may read a file, because a FAT directory entry
+has nowhere to record an owner. So this is **identity without
+authority**, which is worth having by itself -- it is what a login
+authenticates into, and ssh does -- but it is not protection, and
+`kernel/usertest.sh` ends with a check that reads root's file as anybody
+and passes, so that nobody mistakes it for protection.
 
 **No permissions.** FAT has nowhere to put them. `chmod` succeeds and
 changes nothing; what is executable is decided by a file's first four
-bytes, which is also how `exec` decides.
+bytes, which is also how `exec` decides. There are no passwords and no
+`/etc/shadow`: ssh authenticates by public key, and verifying a password
+would need `crypt(3)`, which the C library has not got.
 
 **No links, no FIFOs, no device nodes on disk.** `link`, `symlink`,
 `mkfifo` and `mknod` answer `EPERM`. A FIFO could live in the VFS instead
@@ -921,11 +957,23 @@ of on the disk, and does not yet.
 **No `/dev/fd`, and so no process substitution in bash.** `<(...)` needs
 either that or a FIFO.
 
-**No pseudo-terminals.** `openpty` and `ptsname` are not there, which is
-what a terminal multiplexer, `script`, or Python's `pty` module would
-want.
-
 **No `diff`.** sbase has none; GNU diffutils is the obvious port.
+
+**No `dlopen`.** `ld.so` resolves what a program was linked against and
+stops, so a library cannot be opened by name at run time. libffi is built
+and works, and Python's `ctypes` still cannot be built, because
+`_ctypes.c` wants `<dlfcn.h>`. This is the loader's missing feature, not
+the library's.
+
+**No thread-local storage.** The 68040 has no thread pointer register, so
+`__thread` compiles to a call to `__m68k_read_tp` that nothing provides.
+Giving the system real TLS means PT_TLS in `ld.so`, a per-thread block
+and that function in the C library. Software that uses `__thread` for an
+optimisation -- bfd does, for one variable -- falls back to a global.
+
+**`scp` does not work**, though ssh and rsync over ssh do. The binary
+builds and `scp -f FILE` exits 1 immediately with no output, locally,
+with no network involved.
 
 **A fault's own signal cannot be caught.** `SIGSEGV` from an access fault
 ends the program: the 68040's access-fault frame cannot be redirected to a

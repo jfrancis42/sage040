@@ -196,3 +196,114 @@ GCC drives `m68k-elf-as` (GNU/AT&T syntax) for `.s` files, which is what this
 tree uses. If you prefer Motorola syntax, `vasm` (`vasmm68k_mot`) is a good
 standalone assembler; the raw-binary output needs wrapping in an ELF for
 QEMU's `-kernel`, which `boot/mkelf.py` shows how to do in a few lines.
+
+---
+
+## The toolchain that runs ON the machine
+
+Everything above builds tools that run on a workstation and produce code
+for the Sage040. This section is about the other direction: tools that
+run on the Sage040 itself, so the machine can build its own programs --
+and, eventually, its own kernel -- without another computer.
+
+**It is still built here.** Nothing is compiled inside the emulator; the
+emulator runs the result, which is the test rather than the build. The
+technique is a **Canadian cross**, where three machines are named
+separately:
+
+| | |
+|---|---|
+| `--build` | the workstation doing the compiling |
+| `--host` | where the finished tool runs — the Sage040 |
+| `--target` | what the finished tool generates code for — also the Sage040 |
+
+`--host` equal to `--target` is what makes the result a *native*
+toolchain rather than a cross compiler that happens to run there.
+
+The ports build it in this order, and the order is forced:
+
+```bash
+make -C ports/binutils install     # as, ld, ar, nm, objdump, strip, ...
+make -C libc install               # the C library at /usr on the machine
+make -C ports/gmp install          # gcc's arithmetic
+make -C ports/mpfr install
+make -C ports/mpc install
+make -C ports/libstdcxx install    # needs a cross g++; see below
+make -C ports/gcc install
+```
+
+### Why there is a second cross compiler
+
+GCC 15 is written in C++. A compiler that runs on the machine therefore
+needs a **C++ runtime that runs on the machine**, which means libstdc++
+must be built for the target before the native gcc can be built at all.
+And libstdc++ needs a C++ compiler targeting m68k, which the toolchain
+above does not include -- it is configured `--enable-languages=c`.
+
+So there is a second cross gcc, built with `c,c++`, into a prefix of its
+own:
+
+```bash
+mkdir build-gcc-cxx && cd build-gcc-cxx
+../gcc-15.2.0/configure --target=m68k-elf \
+    --prefix="$HOME/m68k/install-cxx" \
+    --disable-nls --enable-languages=c,c++ --without-headers \
+    --with-gnu-as --with-gnu-ld --disable-multilib --with-cpu=68040 \
+    CXX="g++ -std=gnu++17" CXX_FOR_BUILD="g++ -std=gnu++17"
+make -j4 all-gcc && make install-gcc
+```
+
+**A separate prefix on purpose.** `~/m68k/install` is the C compiler
+every other thing in this tree depends on, and it is not worth putting
+at risk to add a language. The two are the same gcc version for the same
+target, so an object from one links against an object from the other.
+
+`CXX="g++ -std=gnu++17"` because a host g++ that defaults to C++20 --
+GCC 16 does -- compiles gcc 15's own `libcody` wrongly: `u8""` literals
+became `char8_t` in C++20 and libcody predates it.
+
+`make install-gcc` installs the compiler and **not** the target
+libgcc, so the new prefix has no `libgcc.a`. The ports pass
+`-B` at the existing one rather than build a second copy; same version,
+same target, and libgcc does not depend on which front ends were built.
+
+### Things that bite in a Canadian cross
+
+**Flags belong in `$CC`, not only in CFLAGS.** A package like binutils
+configures a dozen subdirectories of its own and passes CFLAGS down to
+each but not CPPFLAGS -- and autoconf's preprocessor-only tests run as
+`$CPP $CPPFLAGS` with no CFLAGS anywhere near them. Put the
+`-nostdinc -isystem ...` in CC and it is in all three: compiling,
+preprocessing and linking.
+
+**`libc/sage040.specs` is what makes a plain link work.** Without it,
+every link needs eleven flags, and a configure script that writes
+`${CC} -o conftest ${CFLAGS} ${LDFLAGS} conftest.c` and no `${LIBS}` --
+binutils' own does -- cannot pass. With it, `gcc hello.c -o hello` links
+a dynamic program against `/lib/libc.so` and `gcc -static` a static one.
+
+**Cache variables have to be exported**, not passed as configure
+arguments: a subdirectory's configure is run later, by `make`, with a
+cache file of its own. `ac_cv_tls=none` is needed because this system
+has no thread-local storage and binutils tests for it by *compiling*
+`thread_local int x;` and never linking it.
+
+**Tools under the target's own name.** `--target=m68k-unknown-elf` makes
+gcc's build look for `m68k-unknown-elf-gcc` and `-as` when it needs to
+compile something for the target, and the cross tools here are installed
+as `m68k-elf-*`. `ports/gcc/build.sh` makes a directory of symlinks
+under the expected names and puts it on PATH; without it the build links
+`xgcc` and then dies on `m68k-unknown-elf-gcc: command not found`.
+
+### What the machine needs on its own disk
+
+A compiler running on the Sage040 looks for headers and libraries on the
+Sage040. `make -C libc install` puts them there:
+
+| | |
+|---|---|
+| `/usr/include` | picolibc's headers, and the network ones |
+| `/usr/lib` | `libc.a`, `libc.so`, `liblinux.a`, `libm.a`, `libgcc.a` |
+| `/usr/lib/crt0.o`, `crt0-dyn.o` | where a program starts |
+| `/usr/lib/sage040.ld` | how a static program is laid out |
+| `/usr/bin` | the tools themselves; `/usr/bin` is on the shell's PATH |
