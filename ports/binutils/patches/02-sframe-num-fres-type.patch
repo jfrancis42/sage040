@@ -1,0 +1,21 @@
+bfd: num_fres is a uint32_t, because that is what the SFrame API says.
+
+sframe_decoder_get_funcdesc_v2's third parameter is `uint32_t *`.
+elf-sframe.c declares the variable it passes as `unsigned int`, which
+is the same type on every platform where uint32_t is unsigned int, and
+is not on m68k-elf, where uint32_t is `long unsigned int`. gcc refuses
+the call outright.
+
+The API's own spelling is correct everywhere.
+
+--- a/bfd/elf-sframe.c
++++ b/bfd/elf-sframe.c
+@@ -469,7 +469,7 @@
+ 
+   for (i = 0; i < num_fidx; i++)
+     {
+-      unsigned int num_fres = 0;
++      uint32_t num_fres = 0;
+       int32_t func_start_addr;
+       bfd_vma address;
+       uint32_t func_size = 0;

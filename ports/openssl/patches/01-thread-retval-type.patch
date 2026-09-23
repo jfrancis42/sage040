@@ -1,0 +1,27 @@
+QUIC's assist thread must return the type the thread API says it does.
+
+ossl_crypto_thread_native_start takes a CRYPTO_THREAD_ROUTINE, which
+returns CRYPTO_THREAD_RETVAL -- a uint32_t. quic_thread_assist.c writes
+its thread function as returning `unsigned int` instead, on the
+assumption that uint32_t IS unsigned int.
+
+On m68k it is not: this target's uint32_t is `long unsigned int`, so
+the two function pointer types are incompatible and gcc refuses the
+call outright (-Wincompatible-pointer-types, which OpenSSL builds with
+as an error). The same assumption is what stops zstd's legacy decoders
+compiling here; it is a property of the ABI, not of this build.
+
+Using the typedef is correct everywhere and identical to what is there
+now on every platform where uint32_t is unsigned int.
+
+--- a/ssl/quic/quic_thread_assist.c
++++ b/ssl/quic/quic_thread_assist.c
+@@ -16,7 +16,7 @@
+ #if !defined(OPENSSL_NO_QUIC_THREAD_ASSIST)
+ 
+ /* Main loop for the QUIC assist thread. */
+-static unsigned int assist_thread_main(void *arg)
++static CRYPTO_THREAD_RETVAL assist_thread_main(void *arg)
+ {
+     QUIC_THREAD_ASSIST *qta = arg;
+     CRYPTO_MUTEX *m = ossl_quic_channel_get_mutex(qta->ch);

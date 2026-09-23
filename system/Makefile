@@ -18,24 +18,44 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-PROGS := ifconfig ping netstat shutdown env stty resize fsck host ntpdate swapon swapoff irqs nvram klogd dmesg sh
+PROGS := ifconfig ping netstat shutdown env stty resize fsck host ntpdate swapon swapoff irqs nvram klogd dmesg df sh
 INSTALL_DIR := /BIN
 
 include $(TOPDIR)/lib/program.mk
 
-# /etc/rc and the /var tree that klogd logs into. The rc file is only
-# written if the disk has none: it is the machine's configuration, and
-# an install must not overwrite what somebody has edited.
+# /etc/rc, and the /var tree klogd logs into.
+#
+# THE RULE, because both halves of it matter: an /etc/rc that still says
+# "SuckOS default" in its first line is one nobody has edited, so it is
+# replaced and keeps up with the system. One that does not is a
+# configuration somebody wrote, and is left alone. A disk with no
+# /etc/rc gets the default.
+#
+# The alternative -- never overwrite -- is what left a machine booting a
+# one-line placeholder from an old test long after the default had
+# grown a log daemon and a time zone. `make etc` replaces it either way.
 install: install-etc
 install-etc: $(DISK)
 	@mmd -D s -i $(MIMG) ::/etc 2>/dev/null || true
 	@mmd -D s -i $(MIMG) ::/var 2>/dev/null || true
 	@mmd -D s -i $(MIMG) ::/var/log 2>/dev/null || true
-	@if mdir -i $(MIMG) ::/etc/rc >/dev/null 2>&1; then \
-	    echo "/etc/rc is already there, and is yours: not touched"; \
-	else \
+	@mmd -D s -i $(MIMG) ::/var/run 2>/dev/null || true
+	@if ! mdir -i $(MIMG) ::/etc/rc >/dev/null 2>&1; then \
 	    mcopy -i $(MIMG) rc ::/etc/rc && echo "installed /etc/rc"; \
+	elif mtype -i $(MIMG) ::/etc/rc 2>/dev/null | head -1 | \
+	     grep -q "SuckOS default"; then \
+	    mcopy -o -i $(MIMG) rc ::/etc/rc && \
+	    echo "/etc/rc was the unedited default: brought up to date"; \
+	else \
+	    echo "/etc/rc has been edited, and is yours: not touched"; \
 	fi
+
+# Replace /etc/rc whatever it says.
+etc: $(DISK)
+	@mmd -D s -i $(MIMG) ::/etc 2>/dev/null || true
+	mcopy -o -i $(MIMG) rc ::/etc/rc
+	@echo "/etc/rc replaced with the default"
+
 
 # sh is the kernel's own shell, built as a program: the shell and line
 # editor sources, the gate's calling side, and the pure helpers they use

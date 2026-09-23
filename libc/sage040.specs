@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Jeff Francis
+#
+# sage040.specs - what `gcc hello.c -o hello` has to mean on this
+# system.
+#
+# Until now every program here was linked with eleven explicit flags
+# (libc/libc.mk, ports/cross.sh): -nostdlib, a linker script, a start
+# file, a library group. That is workable when a Makefile in this tree
+# is doing the linking. It is not workable when the thing doing the
+# linking is somebody at a prompt on the machine, or a configure
+# script, which writes `${CC} -o conftest ${CFLAGS} ${LDFLAGS}
+# conftest.c` and nothing else -- binutils' own sanity check does
+# exactly that, and failed on it.
+#
+# So the knowledge moves into the compiler, which is where it belongs.
+#
+#   gcc hello.c -o hello            a dynamic program, against
+#                                   /lib/libc.so through /lib/ld.so
+#   gcc -static hello.c -o hello    a static one, laid out by
+#                                   sage040.ld, which runs on a disk
+#                                   with no libraries on it at all
+#
+# Dynamic is the default because that is what Linux does and what the
+# machine is set up for: ld.so and libc.so are in /lib on every disk
+# this system builds.
+#
+# WHY EACH LINE IS WHAT IT IS:
+#
+# startfile  crt0.o for a static program, crt0-dyn.o for a dynamic
+#            one. They differ: the dynamic one has the constructor
+#            walk the arrays the stock linker script brackets, and
+#            the static one uses sage040.ld's own symbols.
+# endfile    empty. crtend.o belongs to a hosted GCC runtime this
+#            system does not have; the .fini_array walk is in exit().
+# lib        picolibc's libc, and liblinux -- the system call layer --
+#            in a group with it, because the two call each other and
+#            a single pass cannot resolve that. A dynamic program
+#            needs no group: libc.so has the lot in one object.
+# link       -Bstatic and -shared are spelled out because THIS GCC'S
+#            DRIVER PASSES NEITHER TO THE LINKER: `-static -lc` with
+#            libc.so present quietly produced a DYNAMIC program asking
+#            for /usr/lib/libc.so.1.
+#            --build-id=none because nothing here reads a build id and
+#            it costs a note section in every program.
+#            The dynamic layout is the one ld.so expects: text at
+#            0x10000000, eager binding (ld.so binds eagerly anyway),
+#            and SysV hashes, which are what ld.so reads.
+
+*startfile:
+%{static:crt0%O%s}%{!static:crt0-dyn%O%s}
+
+*endfile:
+
+
+*lib:
+%{static:--start-group -lc -llinux --end-group}%{!static:-lc}
+
+*link:
+--build-id=none %{static:-Bstatic -T sage040.ld%s --no-warn-rwx-segments}%{!static:-Ttext-segment=0x10000000 --dynamic-linker=/lib/ld.so -z now --hash-style=sysv}
+

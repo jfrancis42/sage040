@@ -43,6 +43,36 @@ DYN_LDFLAGS="-nostdlib -Wl,-Ttext-segment=0x10000000 \
 -Wl,--build-id=none $TOP/libc/crt0-dyn.s -L$SAGE_LIBC/lib"
 DYN_LIBS="-lc -lgcc"
 
+# THE SPECS FILE, which is the other way to link for this machine.
+#
+# Everything above hands configure a link line spelled out in full.
+# That works while a Makefile in this tree does the linking, and stops
+# working the moment something else does: binutils' top-level configure
+# checks the compiler with
+#
+#     ${CC} -o conftest ${CFLAGS} ${CPPFLAGS} ${LDFLAGS} conftest.c
+#
+# and no ${LIBS} anywhere, so a link line that depends on LIBS cannot
+# pass it. libc/sage040.specs puts the knowledge in the compiler
+# instead: `gcc hello.c -o hello` links a dynamic program, `gcc -static`
+# a static one, and nothing else has to be said. It is also exactly what
+# the NATIVE compiler needs, since somebody typing at a prompt on the
+# machine will say no more than that either.
+#
+# -B, not -L, for the start files and the linker script: gcc looks for
+# %s files in the startfile prefixes, and -L directories are not among
+# them.
+SAGE_SPECS=$TOP/libc/sage040.specs
+SPECS_CFLAGS="-specs=$SAGE_SPECS -B$TOP/libc/ -B$SAGE_LIBC/lib/ -L$SAGE_LIBC/lib"
+
+# The start files have to exist as OBJECTS for a spec to name one.
+for _crt in crt0 crt0-dyn; do
+    if [ ! -f "$TOP/libc/$_crt.o" ] ||        [ "$TOP/libc/$_crt.s" -nt "$TOP/libc/$_crt.o" ]; then
+        "$CROSS_CC" -mcpu=68040 -c "$TOP/libc/$_crt.s" -o "$TOP/libc/$_crt.o"
+    fi
+done
+unset _crt
+
 # configure, cross: CC and friends, and the answers configure cannot
 # find out without running a program on the machine.
 cross_configure() {             # cross_configure SRCDIR [configure args...]

@@ -50,10 +50,21 @@ COMMON := $(LIB)/crt0.s $(LIB)/ulib.c $(LIB)/ulib.h $(LIB)/malloc.c \
 
 all: $(PROGS)
 
+# -lgcc LAST, and it belongs there. It is not a library in the usual
+# sense: it is the COMPILER'S OWN RUNTIME, the handful of routines gcc
+# emits calls to when the 68040 has no instruction for something --
+# 64-bit division (__udivdi3, __umoddi3), some floating point, a few
+# shifts. A program that never divides a long long never references
+# it and pays nothing; `df`, which multiplies clusters by a cluster
+# size and so must work in 64 bits to survive a 4 GB volume, could not
+# link without it.
+#
+# It was missing because nothing here had needed it yet, which is not
+# the same as nothing here ever needing it.
 %: %.c $(COMMON)
 	$(CC) $(CFLAGS) $(LDFLAGS) \
 	    -x assembler-with-cpp $(LIB)/crt0.s \
-	    -x c $(LIB)/ulib.c $(LIB)/malloc.c $(LIB)/resolv.c $< -o $@
+	    -x c $(LIB)/ulib.c $(LIB)/malloc.c $(LIB)/resolv.c $< -lgcc -o $@
 	@$(SIZE) $@
 
 install: $(PROGS) $(DISK)

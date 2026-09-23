@@ -207,6 +207,11 @@ mkdir -p "$PREFIX/include/sys"
 cp "$HERE/picolibc/libos/linux/machine/m68k/pthread.h" \
    "$HERE/picolibc/libos/linux/machine/m68k/semaphore.h" \
    "$HERE/picolibc/libos/linux/machine/m68k/pty.h" "$PREFIX/include/"
+# <asm/cachectl.h>, at Linux's path because that is where the things
+# that need it look: libffi includes <asm/cachectl.h> by name.
+mkdir -p "$PREFIX/include/asm"
+cp "$HERE/picolibc/libos/linux/machine/m68k/asm/cachectl.h" \
+   "$PREFIX/include/asm/cachectl.h"
 # A PROGRAM does not get the library's own -D, so the installed
 # features.h says outright that this target has threads. Patch 21 is
 # what puts the switch there; this is what throws it.

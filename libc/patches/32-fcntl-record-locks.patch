@@ -1,0 +1,60 @@
+fcntl: answer the record-lock requests instead of refusing them.
+
+picolibc's fcntl knows F_SETLK and returns 0 for it -- there is no
+advisory locking here, so nothing can conflict and "the lock was taken"
+is the truthful answer. F_GETLK and F_SETLKW fell through to the
+default and returned EINVAL.
+
+That is what stopped SQLite writing. Its unixCheckReservedLock asks
+F_GETLK whether another connection holds a RESERVED lock; EINVAL came
+back, SQLite turned it into SQLITE_IOERR_CHECKRESERVEDLOCK, and the
+sqlite3 shell printed "disk I/O error" for every CREATE TABLE and every
+INSERT while SELECT on an existing database worked perfectly. Nothing
+in the message pointed at locking.
+
+The answers here are the ones a system with no record locking should
+give, not convenient fictions:
+
+  F_GETLK   fills in l_type = F_UNLCK, which means "no lock would
+            conflict with the one you asked about". True: nothing on
+            this machine can hold one.
+  F_SETLKW  the blocking form of F_SETLK. Since the lock is always
+            available it never blocks, so it is F_SETLK's answer.
+
+If advisory locking is ever implemented in the kernel, all three become
+real calls and this becomes the fallback for a kernel that lacks them.
+
+--- a/libos/linux/fcntl.c
++++ b/libos/linux/fcntl.c
+@@ -73,9 +73,31 @@
+         op = LINUX_F_SETFL;
+         arg = 2;                /* translate, below */
+         break;
++    /*
++     * RECORD LOCKS. There is no advisory locking on this system, so no
++     * lock can ever conflict with another -- and that makes these
++     * answers correct rather than merely convenient.
++     */
+     case F_SETLK:
++    case F_SETLKW:
+         return 0;
++    case F_GETLK: {
++        struct flock *fl;
++
++        va_start(ap, op);
++        fl = va_arg(ap, struct flock *);
++        va_end(ap);
++        /*
++         * F_UNLCK means "nothing would stop you taking this lock".
++         * SQLite asks exactly this question before it writes, and an
++         * EINVAL here became "disk I/O error" with no mention of locks
++         * anywhere in it.
++         */
++        if (fl)
++            fl->l_type = F_UNLCK;
++        return 0;
++    }
+     default:
+         errno = EINVAL;
+         return -1;
+     }

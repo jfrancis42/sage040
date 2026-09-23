@@ -30,6 +30,7 @@
 #include "uaccess.h"
 #include "pmm.h"
 #include "vm.h"
+#include "cache.h"
 #include "mmap.h"
 #include "drivers/drivers.h"
 #include "textcache.h"
@@ -1685,7 +1686,13 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         return store(a1, &sf, sizeof(sf));
     }
 
+    /*
+     * fdatasync is fsync here: there is no separate metadata journal
+     * for it to skip. See uapi.h -- it exists because SQLite prefers
+     * it, and an ENOSYS from it reads as "disk I/O error".
+     */
     case __NR_fsync:
+    case __NR_fdatasync:
     case __NR_sync:
         return vfs_sync();
 
@@ -1765,19 +1772,29 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
     case __NR_netctl:
         return do_netctl((int)a1, a2, a3);
 
-    case __NR_fsctl: {
-        struct fsck_report r;
-        int err;
+    case __NR_fsctl:
+        switch (a1) {
+        case FSCTL_CHECK: {
+            struct fsck_report r;
+            int err = vfs_check((int)a2, &r);
 
-        if (a1 != FSCTL_CHECK) {
+            if (err < 0) {
+                return err;
+            }
+            return a3 ? store(a3, &r, sizeof(r)) : 0;
+        }
+        case FSCTL_LABEL: {
+            struct fslabel l;
+            int err = vfs_label(&l);
+
+            if (err < 0) {
+                return err;
+            }
+            return a3 ? store(a3, &l, sizeof(l)) : 0;
+        }
+        default:
             return -EINVAL;
         }
-        err = vfs_check((int)a2, &r);
-        if (err < 0) {
-            return err;
-        }
-        return a3 ? store(a3, &r, sizeof(r)) : 0;
-    }
 
     case __NR_memctl:
         if (a1 == MEMCTL_STATS) {
@@ -2097,6 +2114,14 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
 
     case __NR_mprotect:
         return do_mprotect(a1, a2, a3);
+
+    /*
+     * m68k's own call, for a program that wrote code and now wants to
+     * run it. See kernel/cache.c for why it exists and why it is
+     * currently a correct no-op.
+     */
+    case __NR_cacheflush:
+        return do_cacheflush(a1, (int)a2, (int)a3, a4);
 
     case __NR_kill:
         return signal_kill((int)a1, (int)a2);

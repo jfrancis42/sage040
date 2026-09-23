@@ -46,6 +46,7 @@
 #include <sys/select.h>
 #include <sys/file.h>
 #include <time.h>
+#include <asm/cachectl.h>
 
 int
 pause(void)
@@ -155,4 +156,22 @@ clock_getres(clockid_t id, struct timespec *res)
         res->tv_nsec = kts.tv_nsec;
     }
     return 0;
+}
+
+/*
+ * cacheflush(2) -- m68k's, and only m68k's.
+ *
+ * A program that writes instructions into memory and then jumps to them
+ * has to say so on this CPU, because the 68040's data and instruction
+ * caches are separate and the store went into one while the fetch comes
+ * from the other. libffi's closures are the caller here.
+ *
+ * Nothing to translate: the scopes and caches in <asm/cachectl.h> are
+ * the kernel's own numbers, and the errno comes back as it does from
+ * any other call. See kernel/cache.c for what the kernel does with it.
+ */
+int
+cacheflush(void *addr, int scope, int cache, size_t len)
+{
+    return syscall(LINUX_SYS_cacheflush, addr, scope, cache, len);
 }

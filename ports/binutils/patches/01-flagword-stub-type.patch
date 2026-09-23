@@ -1,0 +1,56 @@
+bfd: the generic set_private_flags stub must take a flagword.
+
+The target-vector slot is
+
+    bool (*_bfd_set_private_flags) (bfd *, flagword);
+
+and flagword is uint32_t. The generic do-nothing implementation that
+almost every target uses for that slot is declared
+
+    bool _bfd_bool_bfd_uint_true (bfd *, unsigned int);
+
+On every platform where uint32_t IS unsigned int those are the same
+type and nothing notices. On m68k-elf uint32_t is `long unsigned int`,
+so they are incompatible function pointer types and bfd does not
+compile at all -- binary.c, ihex.c, tekhex.c and every other target
+that builds its jump table from the macro fails.
+
+flagword is correct everywhere, and identical on every platform where
+the two spellings coincide.
+
+libbfd.h is generated from libbfd-in.h and both are in the tree, so
+both are changed; nothing in this build regenerates headers.
+
+--- a/bfd/libbfd-in.h
++++ b/bfd/libbfd-in.h
+@@ -182,7 +182,7 @@
+ extern bool _bfd_bool_bfd_bfd_true
+   (bfd *, bfd *) ATTRIBUTE_HIDDEN;
+ extern bool _bfd_bool_bfd_uint_true
+-  (bfd *, unsigned int) ATTRIBUTE_HIDDEN;
++  (bfd *, flagword) ATTRIBUTE_HIDDEN;
+ extern bool _bfd_bool_bfd_asection_bfd_asection_true
+   (bfd *, asection *, bfd *, asection *) ATTRIBUTE_HIDDEN;
+ extern bool _bfd_bool_bfd_asymbol_bfd_asymbol_true
+--- a/bfd/libbfd.h
++++ b/bfd/libbfd.h
+@@ -188,7 +188,7 @@
+ extern bool _bfd_bool_bfd_bfd_true
+   (bfd *, bfd *) ATTRIBUTE_HIDDEN;
+ extern bool _bfd_bool_bfd_uint_true
+-  (bfd *, unsigned int) ATTRIBUTE_HIDDEN;
++  (bfd *, flagword) ATTRIBUTE_HIDDEN;
+ extern bool _bfd_bool_bfd_asection_bfd_asection_true
+   (bfd *, asection *, bfd *, asection *) ATTRIBUTE_HIDDEN;
+ extern bool _bfd_bool_bfd_asymbol_bfd_asymbol_true
+--- a/bfd/libbfd.c
++++ b/bfd/libbfd.c
+@@ -97,7 +97,7 @@
+ 
+ bool
+ _bfd_bool_bfd_uint_true (bfd *abfd ATTRIBUTE_UNUSED,
+-			 unsigned int flags ATTRIBUTE_UNUSED)
++			 flagword flags ATTRIBUTE_UNUSED)
+ {
+   return true;
+ }

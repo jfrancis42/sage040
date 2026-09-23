@@ -3692,22 +3692,52 @@ static int fat_rmdir(const char *path)
 
 static int fat_statfs(struct statfs *s)
 {
+    u32 cb = cluster_bytes ? cluster_bytes : 1;
+
+    if (!mounted) {
+        return -ENODEV;
+    }
+    memset(s, 0, sizeof(*s));
+    s->f_type = MSDOS_SUPER_MAGIC;
+    s->f_bsize = fat_cluster_bytes();
+    s->f_frsize = s->f_bsize;
+    s->f_blocks = fat_total_bytes() / cb;
+    s->f_bfree = fat_free_bytes() / cb;
+    /*
+     * Nothing is reserved for anybody, so every free block is a block
+     * an ordinary program may have. On a system with users and quotas
+     * these two differ; here they cannot.
+     */
+    s->f_bavail = s->f_bfree;
+    /*
+     * f_files and f_ffree stay 0. FAT has no inode table to count --
+     * a directory entry IS the inode -- and Linux's own FAT driver
+     * reports 0 for both rather than inventing a number.
+     */
+    s->f_namelen = 255;         /* VFAT's longest name */
+    return 0;
+}
+
+/* The volume label, which Linux's statfs has no room for. */
+static int fat_label_get(struct fslabel *l)
+{
     int i;
 
     if (!mounted) {
         return -ENODEV;
     }
-    s->f_bsize = fat_cluster_bytes();
-    s->f_blocks = fat_total_bytes() / (cluster_bytes ? cluster_bytes : 1);
-    s->f_bfree = fat_free_bytes() / (cluster_bytes ? cluster_bytes : 1);
-    s->f_type = "fat16";
+    memset(l, 0, sizeof(*l));
     for (i = 0; i < 11; i++) {
-        s->f_label[i] = fat_label()[i];
-        if (!s->f_label[i]) {
+        l->name[i] = fat_label()[i];
+        if (!l->name[i]) {
             break;
         }
     }
-    s->f_label[11] = '\0';
+    l->name[11] = '\0';
+    /* FAT pads a label with spaces; nobody wants to see them. */
+    for (i = (int)strlen(l->name) - 1; i >= 0 && l->name[i] == ' '; i--) {
+        l->name[i] = '\0';
+    }
     return 0;
 }
 
@@ -3791,6 +3821,7 @@ static struct fs_type fat16_type = {
     fat_utime,
     fat_futime,
     fat_check,
+    fat_label_get,
     fat_bmap,
     0
 };

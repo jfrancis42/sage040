@@ -1,0 +1,51 @@
+m68k: take a pointer return value from the register the compiler uses.
+
+libffi's m68k ffi_call reads a pointer return from %a0. That is the
+m68k SVR4 convention, where a function returning a pointer leaves it in
+%a0 and the epilogue copies it to %d0 as well, so that callers which
+never saw a declaration still find it.
+
+This toolchain does not do that. m68k-elf gcc 15.2.0 compiles
+
+    const char *picker(const char *a, const char *b, int w)
+    { return w ? b : a; }
+
+to
+
+    tst.l 12(%sp) / jeq .L2 / move.l 8(%sp),4(%sp)
+    .L2: move.l 4(%sp),%d0 / rts
+
+-- %d0 only, and %a0 is left holding whatever it held. So ffi_call
+returned a plausible-looking address that was not the function's:
+0x100004f0, somewhere in the program's own text, instead of the string
+it had asked for. Nothing failed; the wrong pointer simply came back.
+
+Reading %d0 is correct for both conventions, because SVR4 puts the
+value in %d0 as well. That is why this patch does not need to ask
+which one is in force, and why it is safe on a target that does use
+%a0. __MINT__ already took this path; the #ifdef is now redundant and
+is removed rather than extended.
+
+The CLOSURE side needs nothing: it already writes the pointer to %a0
+and %d0 both.
+
+--- a/src/m68k/sysv.S
++++ b/src/m68k/sysv.S
+@@ -163,11 +163,13 @@
+ retpointer:
+ 	btst	#5,%d2
+ 	jbeq	retstruct1
+-#ifdef __MINT__
++	| %d0, not %a0. The SVR4 convention returns a pointer in %a0 and
++	| copies it to %d0; m68k-elf gcc uses %d0 alone and leaves %a0
++	| holding something else entirely. %d0 holds the value under
++	| both, so this needs no test for which is in force. Reading
++	| %a0 here did not fail -- it returned an address from the
++	| program's own text as though it were the result.
+ 	move.l	%d0,(%a1)
+-#else
+-	move.l	%a0,(%a1)
+-#endif
+ 	jbra	epilogue
+ 
+ retstruct1:

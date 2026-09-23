@@ -126,6 +126,16 @@ int sys_statfs(void *sfs)
     return (int)syscall1(__NR_statfs, (u32)sfs);
 }
 
+/*
+ * The mounted volume's name. Not part of statfs, because statfs is
+ * Linux's structure and Linux's has no field for it (uapi.h,
+ * FSCTL_LABEL).
+ */
+int sys_fslabel(void *label)
+{
+    return (int)syscall3(__NR_fsctl, FSCTL_LABEL, 0, (u32)label);
+}
+
 int sys_fsync(int fd)
 {
     return (int)syscall1(__NR_fsync, (u32)fd);

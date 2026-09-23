@@ -420,8 +420,10 @@ static void mount_root(void)
     kputs(" on /dev/");
     kputs(vfs_dev_name());
     if (sys_statfs(&sf) == 0) {
+        struct fslabel fl;
+
         kputs(" '");
-        kputs(sf.f_label[0] ? sf.f_label : "(unlabelled)");
+        kputs(sys_fslabel(&fl) == 0 && fl.name[0] ? fl.name : "(unlabelled)");
         kputs("', ");
         kputdec((sf.f_blocks * sf.f_bsize) / 1024);
         kputs(" KB, ");

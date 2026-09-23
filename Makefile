@@ -21,7 +21,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: all boot run world ports python test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest libc cube programs clean distclean
+.PHONY: all boot run world ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest libc cube programs clean distclean
 
 all:
 	$(MAKE) -C bootrom
@@ -73,12 +73,51 @@ ports:
 	$(MAKE) -C ports/less install
 	$(MAKE) -C ports/uemacs install
 	$(MAKE) -C ports/vi install
+	$(MAKE) -C ports/bzip2 install
+	$(MAKE) -C ports/xz install
+	$(MAKE) -C ports/zstd install
+	$(MAKE) -C ports/sqlite install
+	$(MAKE) -C ports/openssl install
+	$(MAKE) -C ports/readline install
+	$(MAKE) -C ports/libffi install
 	@echo
 	@echo "Python is not in the list above: it is 45 MB and 2,244 files,"
 	@echo "and copying it takes minutes. 'make python' installs it."
 
-python:
+# WHAT CPYTHON IS BUILT AGAINST. Each of these is a standard library
+# module that exists or does not depending on whether its library was
+# there when Python was configured -- so they have to be built BEFORE
+# python, and rebuilding one means rebuilding python to pick it up.
+#
+#   zlib      zlib, gzip, zipfile, and pip's wheels
+#   bzip2     bz2
+#   xz        lzma
+#   zstd      compression.zstd, new in 3.14
+#   sqlite    sqlite3
+#   openssl   ssl, and a hashlib whose digests come from OpenSSL
+#             instead of the bundled HACL* code (which gets MD5 wrong
+#             on a big-endian machine -- see ports/python/patches/04)
+#   readline  line editing and history at the interactive prompt
+#   libffi    ctypes, as far as it goes without dlopen
+#   ncurses   curses
+pylibs:
+	$(MAKE) -C ports/zlib install
+	$(MAKE) -C ports/bzip2 install
+	$(MAKE) -C ports/xz install
+	$(MAKE) -C ports/zstd install
+	$(MAKE) -C ports/sqlite install
+	$(MAKE) -C ports/openssl install
+	$(MAKE) -C ports/readline install
+	$(MAKE) -C ports/libffi install
+	$(MAKE) -C ports/ncurses install
+
+python: pylibs
 	$(MAKE) -C ports/python install
+
+# /etc/rc, replaced whatever it says. `make programs` installs it only
+# when the disk has none or still has the unedited default.
+etc:
+	$(MAKE) -C system etc
 
 # The whole machine: the system, every port, and Python.
 world: programs ports python
@@ -87,7 +126,7 @@ world: programs ports python
 run:
 	$(MAKE) -C kernel run
 
-test: tests cryptotest fstest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest
+test: tests cryptotest fstest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest
 
 tests:
 	$(MAKE) -C tests run
@@ -188,6 +227,16 @@ ptytest:
 # answer compared with the host's Python.
 pytest:
 	cd kernel && ./pytest.sh
+
+# The libraries CPython is built against, tested through their own
+# programs: every stream crosses the host boundary in both directions.
+pylibtest:
+	cd kernel && ./pylibtest.sh
+
+# df and du: the numbers checked against the host's own view of the
+# same disk image, and the shell's built-in df as the negative control.
+dftest:
+	cd kernel && ./dftest.sh
 
 # Every one of bash's own 83 tests, not the subset: hours, not minutes.
 bashsuite:

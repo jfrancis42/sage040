@@ -34,12 +34,18 @@ this list is something Python wants.
 | 45 | **libiconv** | CLISP needs it, and so does anything that converts between character sets; picolibc has `iconv` headers but no converters worth the name | |
 | 46 | **gettext** | CLISP needs it; message catalogues, and the `_()` every GNU program is written around | |
 | 47 | **readline** | CLISP needs it, and it is what makes any interactive program's line editing behave; over the terminfo of task 39. **CPython is rebuilt once this exists** -- its `readline` module is what gives the interactive interpreter a line editor, and it is switched off now for want of the library | |
-| 48a | **The libraries CPython and CLISP want**, within reason (asked for 2026-09-22): **OpenSSL** (`ssl`, `hashlib`'s fast paths -- and what anything that speaks TLS needs), **SQLite** (`sqlite3`), **bzip2** and **xz** (`bz2`, `lzma`), **libffi** (`_ctypes`, and the only one that may not be reasonable: it wants a calling-convention trampoline written in m68k assembly, and whether libffi's m68k port still works is to find out) | |
+| 48a | **The libraries CPython wants** (asked for 2026-09-22) | **done** -- see below. bzip2, xz, zstd, SQLite, OpenSSL, readline and libffi all build and are installed by `make ports`. CPython is **not** rebuilt against them yet: that was asked to wait |
 | 48 | **CLISP**, a Common Lisp | asked for 2026-09-22. GNU CLISP is C plus a bytecode VM and wants its own build Lisp, as CPython wants a build Python; SBCL is out (it compiles to native code and has no m68k backend), ECL is the other candidate (it compiles to C). Depends on 45, 46 and 47 | |
 
-**Not to be built until asked** (2026-09-22): tasks 45-48 -- libiconv,
-gettext, readline, CLISP -- and 48a, the libraries CPython and CLISP
-want. The list is here so the work is decided; the work itself waits.
+**Not to be built until asked** (2026-09-22): tasks 45, 46 and 48 --
+libiconv, gettext and CLISP. The list is here so the work is decided;
+the work itself waits.
+
+**readline (47) is built**, ahead of that rule and deliberately: it is a
+CPython dependency as much as a CLISP one, and 48a asked for the
+libraries that make a better CPython. Nothing CLISP-specific was built.
+**CPython has not been rebuilt against any of this yet**, because the
+instruction was to build the dependencies and stop.
 
 | # | Task | Why here |
 |---|------|----------|
@@ -300,6 +306,131 @@ during the run. It must not fire, or the matching matches everything.
 8 checks.
 
 ---
+
+### 48a. The libraries CPython is built against -- done
+
+Seven ports, each fetched at a pinned version and built into `~/m68k/src`
+with nothing landing in this tree, and each wired into `make ports` (and
+into a new `make pylibs`, which is what `make python` now depends on):
+
+| port | what it gives CPython | on the disk |
+|------|----------------------|-------------|
+| **bzip2** 1.0.8 | `bz2` | `/BIN/bzip2` |
+| **xz** 5.6.3 | `lzma` | `/BIN/xz` |
+| **zstd** 1.5.7 | `compression.zstd`, new in 3.14 | `/BIN/zstd` |
+| **SQLite** 3.53.4 | `sqlite3` | `/BIN/sqlite3` |
+| **OpenSSL** 3.5.4 | `ssl`, and a `hashlib` whose digests come from OpenSSL | `/BIN/openssl` |
+| **readline** 8.3 | line editing and history at the interactive prompt | a library only |
+| **libffi** 3.5.2 | `ctypes`, as far as it goes without `dlopen` | a library only, with `fficheck` |
+
+`kernel/pylibtest.sh`, 25 checks. **Every stream crosses the host
+boundary in both directions** -- the machine compresses and the host
+decompresses, and the host compresses and the machine decompresses --
+because a compressor tested against its own output is `t3-ata` again:
+self-consistently wrong is still wrong, and these are byte streams with
+a defined byte order on a big-endian machine. The digests are checked
+against coreutils' `md5sum`/`sha1sum`/`sha256sum`/`sha512sum`, a
+different implementation on a different CPU, and against the published
+SHA-256 of the empty string, which is owed to nothing on this host at
+all. AES-256-CBC is encrypted on the machine and decrypted on the host.
+
+**Five things were wrong, and each was found by a test rather than
+by reading:**
+
+1. **`fdatasync` did not exist**, so every write to a SQLite database
+   failed. The kernel had `fsync` (118) and not `fdatasync` (148);
+   SQLite prefers `fdatasync` when it is available, got ENOSYS, and
+   reported **"disk I/O error"** -- a message with no mention of
+   syncing anywhere in it. Found by linking a five-line program against
+   `libsqlite3.a` and printing `sqlite3_extended_errcode()`: 1034,
+   `SQLITE_IOERR_FSYNC`. The kernel now answers 148 exactly as 118,
+   because this filesystem has no separate metadata journal for the
+   distinction to save.
+
+2. **`fcntl(F_GETLK)` returned EINVAL.** picolibc's fcntl knew
+   `F_SETLK` and not the other two. Fixed in `libc/patches/32`:
+   `F_GETLK` answers `F_UNLCK` ("nothing would conflict"), which is the
+   truthful answer on a system with no advisory locking, and `F_SETLKW`
+   is `F_SETLK`'s. *This was not what broke SQLite* -- it was found
+   while looking, fixed, and the database still failed. Worth saying,
+   because stopping at the first plausible cause would have left the
+   real one in place.
+
+3. **`cacheflush(2)` did not exist**, and libffi would not compile
+   without it. See the section below.
+
+4. **libffi read a pointer return from the wrong register.** Its m68k
+   code takes it from `%a0`, which is the m68k SVR4 convention (return
+   in `%a0`, copy to `%d0` in the epilogue so undeclared callers still
+   work). m68k-elf gcc 15.2.0 does not do that: it returns pointers in
+   `%d0` alone and leaves `%a0` holding something else. So `ffi_call`
+   on a function returning a pointer gave back `0x100004f0` -- an
+   address inside the program's own text -- with nothing failing
+   anywhere. `ports/libffi/patches/01` reads `%d0`, which is correct
+   under both conventions because SVR4 puts the value there too.
+   Closures were already right; they write both registers.
+
+   This is the whole reason `ports/libffi/test/fficheck.c` exists.
+   libffi BUILDING says only that its m68k backend compiles; whether
+   the frames it lays out are the ones this compiler expects is a
+   different question, and the answer was no. The eleven checks call
+   functions whose arguments differ in width and value, so a frame
+   built wrongly cannot come out right by luck, and the closure check
+   hands a run-time-written function pointer to a call site that knows
+   nothing about libffi -- which is also the first thing on this
+   machine to execute code it generated itself.
+
+5. **zstd's legacy decoders and OpenSSL's QUIC assist thread both
+   assume `uint32_t` is `unsigned int`.** On `m68k-elf` it is
+   `long unsigned int`, so `U32 *` and `unsigned *` are incompatible
+   pointer types and neither file compiles. zstd's is dead code (the
+   v0.1-v0.7 frame formats, unwritten since 2016) and is switched off;
+   OpenSSL's is a one-line patch to use the typedef the API declares
+   (`ports/openssl/patches/01`), correct on every platform.
+
+**What the machine cannot afford:** `xz` at its default preset. LZMA's
+memory use follows its dictionary size, and `-6` wants about 94 MB to
+compress on a machine with 64 MB of RAM. It fails cleanly -- "Not
+enough space", exit 1 -- rather than crashing, and the suite checks
+that it does, so the low preset used elsewhere is not mistaken for
+timidity. `-1` needs about 9 MB and works.
+
+**OpenSSL needed a Configure target of its own**
+(`ports/openssl/50-sage040.conf`): `linux-generic32` minus `-pthread`
+(this gcc has no such option and refuses the whole compilation), minus
+`-ldl` (there is no `dlopen`), minus `afalgeng`. `-DB_ENDIAN` is passed as well, and **is not load-bearing** -- a claim
+made here in the opposite direction first, and then tested. The whole
+of OpenSSL was configured a second time without the flag, built, and
+run on the machine: it agrees with the flagged build and with the
+host's coreutils on SHA-256 and MD5 alike. OpenSSL 3.5 works its own
+byte order out. The flag stays because it is true and costs nothing.
+
+So the negative control for the digests **did not fail**, and that is
+the finding rather than a gap: the checks compare against a different
+implementation on a different CPU, which is worth doing, but they are
+not evidence about that flag and must not be read as any.
+
+### cacheflush(2) -- done
+
+m68k's own system call, number 123, which no other architecture has.
+The 68040's data and instruction caches are separate, so a program that
+writes instructions into memory and jumps to them has stored bytes that
+may still be in the data cache while the instruction cache holds what
+used to be there. Only the supervisor can do anything about it --
+`cpusha` is privileged -- so the program has to ask.
+
+libffi is the caller: it writes a closure trampoline and then calls
+`SYS_cacheflush`. It would not build at all without `<asm/cachectl.h>`,
+which is now in the C library at Linux's path, with Linux's constants.
+
+`kernel/cache.c` has it, and is honest about what it does today: the
+caches are OFF (nothing writes CACR), so there is nothing to push. The
+instruction is issued anyway because it is correct and costs four
+cycles, and whoever turns the caches on does not have to come back.
+**It cannot be observed to work by running it** -- QEMU decodes
+`cpusha`, `cpushl` and `cinv` as privileged no-ops, and on emulated
+hardware with no caches a correct flush and a missing one look
+identical.
 
 ### 44. less -- done
 

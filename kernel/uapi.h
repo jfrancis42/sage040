@@ -325,14 +325,46 @@ struct dirent {
     u32    d_ino;
 };
 
-struct statfs {
-    u32  f_bsize;               /* cluster size                       */
-    u32  f_blocks;              /* total clusters                     */
-    u32  f_bfree;               /* free clusters                      */
-    char f_label[12];
-    const char *f_type;         /* "fat16"                            */
-};
+/*
+ * statfs, LINUX'S LAYOUT, because the system call number is Linux's
+ * and a structure behind a Linux number has to be Linux's structure.
+ *
+ * It was not. It used to be this system's own five fields, one of
+ * which -- f_type -- was a `const char *` pointing at the string
+ * "fat16" IN THE KERNEL. That works while the caller is the kernel's
+ * own shell, and faults the moment the caller is a program: the
+ * kernel is mapped supervisor-only, so a user-mode dereference of
+ * that pointer is an access fault. /bin/sh's `df` had exactly that
+ * bug waiting in it.
+ *
+ * Linux's f_type is a MAGIC NUMBER, not a string. MSDOS_SUPER_MAGIC
+ * is 0x4d44 ("MD"), which is what a FAT volume reports on Linux, and
+ * what anything that recognises filesystems by magic will expect.
+ *
+ * f_bavail is what an unprivileged program may actually use, which on
+ * a system with no reserved blocks and no users is f_bfree. f_files
+ * and f_ffree are inode counts; FAT has no inode table, so they are
+ * reported as 0, which is what Linux's own FAT driver does.
+ *
+ * The volume LABEL is not in here because it is not in Linux's
+ * either -- see FSCTL_LABEL below.
+ */
+#define MSDOS_SUPER_MAGIC 0x4d44
 
+struct statfs {
+    u32 f_type;                 /* MSDOS_SUPER_MAGIC                  */
+    u32 f_bsize;                /* transfer block size (the cluster)  */
+    u32 f_blocks;               /* total blocks                       */
+    u32 f_bfree;                /* free blocks                        */
+    u32 f_bavail;               /* free blocks a program may use      */
+    u32 f_files;                /* total inodes -- 0: FAT has none    */
+    u32 f_ffree;                /* free inodes -- likewise 0          */
+    u32 f_fsid[2];              /* filesystem id                      */
+    u32 f_namelen;             /* longest name: 255, VFAT's           */
+    u32 f_frsize;               /* fragment size                      */
+    u32 f_flags;                /* mount flags                        */
+    u32 f_spare[4];
+};
 /* ---------------------------------------------------------------- */
 /* System call numbers                                               */
 /*                                                                    */
@@ -363,6 +395,15 @@ struct statfs {
 #define __NR_dup        41
 #define __NR_dup2       63
 #define __NR_fsync     118
+/*
+ * fdatasync: a file's DATA out to the disk, without necessarily its
+ * metadata. This filesystem keeps no separate metadata journal to
+ * skip, so there is nothing the distinction could save and it does
+ * what fsync does. It has to EXIST, though: SQLite calls fdatasync
+ * rather than fsync when it is available, and an ENOSYS from it came
+ * back as "disk I/O error" on every write to a database.
+ */
+#define __NR_fdatasync 148
 #define __NR_sysinfo   116
 #define __NR_uname     122
 #define __NR_getdents  141
@@ -580,6 +621,26 @@ struct sel_arg_struct {
 #define __NR_mprotect  125
 #define __NR_mmap2     192
 
+/*
+ * cacheflush(addr, scope, cache, len) -- Linux/m68k's own call, and one
+ * of the few in its table that no other architecture has. A program that
+ * WRITES CODE and then jumps into it has to say so: on a 68040 the data
+ * and instruction caches are separate, so the bytes it stored may still
+ * be sitting in the data cache while the instruction cache holds what
+ * used to be there. libffi's trampolines are the reason this is here.
+ *
+ * The scopes and caches are Linux's, from its asm/cachectl.h.
+ */
+#define __NR_cacheflush 123
+
+#define FLUSH_SCOPE_LINE 1
+#define FLUSH_SCOPE_PAGE 2
+#define FLUSH_SCOPE_ALL  3
+
+#define FLUSH_CACHE_DATA 1
+#define FLUSH_CACHE_INSN 2
+#define FLUSH_CACHE_BOTH 3
+
 struct mmap_arg_struct {
     u32 addr;
     u32 len;
@@ -784,6 +845,21 @@ struct msghdr {
  * unless the volume was not cleanly unmounted -- what the boot uses.
  */
 #define FSCTL_CHECK    1
+
+/*
+ * fsctl(FSCTL_LABEL, 0, &label): the mounted volume's name.
+ *
+ * It is here rather than in statfs because Linux's statfs has no
+ * field for it and this one is Linux's. A FAT volume's label is real
+ * and worth showing -- `df` prints it -- so it gets a call of its
+ * own rather than a field bolted onto a structure that belongs to
+ * somebody else.
+ */
+#define FSCTL_LABEL    2
+
+struct fslabel {
+    char name[16];              /* 11 characters and a terminator     */
+};
 #define FSCK_REPAIR    0x01
 #define FSCK_IF_DIRTY  0x02
 

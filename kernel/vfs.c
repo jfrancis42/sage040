@@ -1559,6 +1559,25 @@ int vfs_statfs(struct statfs *s)
     }
 }
 
+/* The mounted volume's name. See FSCTL_LABEL in uapi.h. */
+int vfs_label(struct fslabel *l)
+{
+    if (!mounted_fs) {
+        return -ENODEV;
+    }
+    if (!mounted_fs->label) {
+        return -ENOSYS;
+    }
+    {
+        int r;
+
+        fs_lock();
+        r = mounted_fs->label(l);
+        fs_unlock();
+        return r;
+    }
+}
+
 int vfs_sync(void)
 {
     if (!mounted_fs || !mounted_fs->sync) {

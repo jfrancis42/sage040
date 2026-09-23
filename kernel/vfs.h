@@ -75,6 +75,7 @@ struct fs_type {
 
     /* Check the volume, and with FSCK_REPAIR put it right. */
     int (*check)(int flags, struct fsck_report *r);
+    int (*label)(struct fslabel *l);
 
     /*
      * Where on the disk byte `off` of an open file is: the sector, and
@@ -183,6 +184,7 @@ int  vfs_utime(const char *path, u32 mtime, u32 atime);
 int  vfs_futime(int fd, u32 mtime, u32 atime);
 int  vfs_statfs(struct statfs *s);
 int  vfs_check(int flags, struct fsck_report *r);
+int  vfs_label(struct fslabel *l);
 int  vfs_flock(int fd, int op);
 int  vfs_ftruncate(int fd, u32 len);
 int  vfs_sync(void);

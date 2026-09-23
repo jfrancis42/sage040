@@ -826,8 +826,10 @@ static void cmd_stat(const char *name)
 static void cmd_df(void)
 {
     struct statfs sf;
+    struct fslabel fl;
     int err = sys_statfs(&sf);
     u32 total, avail, used;
+    const char *name;
     int n;
 
     if (err < 0) {
@@ -843,13 +845,23 @@ static void cmd_df(void)
     avail = (sf.f_bfree * sf.f_bsize) / 1024;
     used = total - avail;
 
+    /*
+     * The label comes from its own call now. It used to be a field of
+     * struct statfs, along with an f_type that was a POINTER INTO THE
+     * KERNEL -- which the kernel's own shell could print and a
+     * /bin/sh could not, because the kernel is mapped supervisor-only.
+     */
+    if (sys_fslabel(&fl) < 0) {
+        fl.name[0] = '\0';
+    }
+    name = fl.name[0] ? fl.name : "(none)";
+
     out_puts("volume          type   1K-blocks       used      avail  use%\n");
-    out_puts(sf.f_label[0] ? sf.f_label : "(none)");
-    for (n = (int)strlen(sf.f_label[0] ? sf.f_label : "(none)");
-         n < 16; n++) {
+    out_puts(name);
+    for (n = (int)strlen(name); n < 16; n++) {
         out_putc(' ');
     }
-    out_puts(sf.f_type);
+    out_puts(sf.f_type == MSDOS_SUPER_MAGIC ? "fat16" : "?    ");
     out_putdec_pad(total, 12);
     out_putdec_pad(used, 11);
     out_putdec_pad(avail, 11);
@@ -1750,7 +1762,31 @@ static int run_builtin(int argc)
         }
 
     } else if (strcmp(argv[0], "df") == 0) {
-        cmd_df();
+        /*
+         * /bin/df IF IT IS THERE, and the built-in only if it is not.
+         *
+         * Built-ins normally win, which is what makes `echo` fast and
+         * what /bin/echo exists to get around. df is the case where
+         * that rule is actively wrong: the built-in prints one fixed
+         * report and takes no arguments, so `df -h` on a disk that HAS
+         * a perfectly good /bin/df silently ignored the -h and printed
+         * kilobytes. Better to run the program that understands the
+         * question.
+         *
+         * The built-in stays for the disk that has no /bin/df on it,
+         * which is the situation it was written for -- a machine whose
+         * filesystem is the thing being investigated.
+         */
+        int r = sys_spawn("/bin/df", argc, argv, env);
+
+        if (r == -ENOENT || r == -EINVAL) {
+            cmd_df();
+        } else if (r < 0) {
+            err_report("df", r);
+            last_status = 126;
+        } else {
+            last_status = wait_for(r, "df");
+        }
 
     } else if (strcmp(argv[0], "echo") == 0) {
         for (i = 1; i < argc; i++) {
@@ -2872,8 +2908,13 @@ void shell(void)
      * programs live, and the current directory last -- which is the
      * ordering that stops a program dropped in the working directory
      * from quietly replacing a system one.
+     *
+     * /usr/bin is where a package installed with --prefix=/usr puts
+     * itself, which is the whole native toolchain: as, ld, gcc and
+     * the rest. It comes after /bin so that the system's own programs
+     * win a name clash, and before "." for the same reason /bin does.
      */
-    env_set("PATH", "/bin:.");
+    env_set("PATH", "/bin:/usr/bin:.");
     env_set("HOME", "/");
     env_set("SHELL", "/bin/sh");
     env_set("TERM", "vt102");   /* what fbcon.c is, and any serial terminal can be */
@@ -2939,7 +2980,7 @@ int shell_main(int argc, char **args, char **envp)
         env_set(name, eq + 1);
     }
     if (!env_get("PATH")) {
-        env_set("PATH", "/bin:.");
+        env_set("PATH", "/bin:/usr/bin:.");
     }
     if (!env_get("SHELL")) {
         env_set("SHELL", "/bin/sh");
