@@ -1,4 +1,5 @@
-unistd.h: declare setresuid, setresgid, getresuid and getresgid.
+unistd.h: declare setresuid, setresgid, getresuid, getresgid and
+initgroups.
 
 picolibc has seteuid() and no other member of the family. Anything that
 separates privilege properly wants all three ids set in one call --
@@ -9,8 +10,15 @@ is exactly the hole setresuid was invented to close.
 Dropbear refuses to build without setresgid rather than quietly run a
 session as root, which is the right instinct and is what found this.
 
+initgroups is here for the same reason and answers honestly: this
+system has no supplementary groups -- the kernel's getgroups() returns
+an empty set and its setgroups() accepts only an empty one, because a
+FAT volume records no group for a file to belong to -- so it makes the
+set empty and says it worked. It is not a stub that pretends: the set
+really is empty afterwards, and getgroups() agrees.
+
 The implementations are in the m68k backend (posix-proc.c), over the
-kernel's system calls 208-211.
+kernel's system calls 206 and 208-211.
 
 --- a/libc/include/sys/unistd.h
 +++ b/libc/include/sys/unistd.h
