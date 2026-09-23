@@ -21,7 +21,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: all boot run world ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest libc cube programs clean distclean
+.PHONY: all boot run world ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest nativetest libc cube programs clean distclean
 
 all:
 	$(MAKE) -C bootrom
@@ -246,6 +246,14 @@ dftest:
 # absence of file ownership is honest rather than accidental.
 usertest:
 	cd kernel && ./usertest.sh
+
+# The toolchain running on the machine: gcc and as and ld, compiling
+# and linking programs that then run -- and the object files compared
+# byte for byte against what the cross compiler makes of the same
+# source. Wants more RAM and disk than the ordinary machine, and says
+# so in the script.
+nativetest:
+	cd kernel && ./nativetest.sh
 
 # Every one of bash's own 83 tests, not the subset: hours, not minutes.
 bashsuite:
