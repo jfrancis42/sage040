@@ -14,6 +14,92 @@ A task is crossed off when its tests pass, and every task ships with them:
 a check that could pass vacuously gets a negative control -- a deliberate
 break that must make it fail.
 
+---
+
+## STATE OF THINGS, 2026-09-23
+
+Everything that is broken, unfinished, unverified or waiting on a
+decision, in one place, so that none of it has to be discovered by
+reading the rest of this file. Dated, because it goes stale.
+
+### Broken, or not working
+
+| | |
+|---|---|
+| **`scp`** | Does not work, and **the cause is not known**. `ssh` and `rsync` over the same transport do work. Two earlier diagnoses of this were wrong -- see "Things I got wrong" below -- so treat it as unexamined rather than understood. |
+
+### Unverified -- believed working, not proven
+
+| | |
+|---|---|
+| **A clean end-to-end regression** | There has been no single run of `make test` in which every suite completed. `make` stops at the first failing suite, and the last run stopped at `bashtest`, so the eleven suites after it did not run in that pass. Each of them passed when run on its own. **This is the first thing to do.** |
+| **`bashtest`'s `array` case** | Failed once, in a run made while a gcc rebuild was using the whole machine. The log shows QEMU was KILLED moments after `runsuite.sh` started, with the preceding test (`arith`) passing -- so the harness timed out and `array` is simply the test that was in flight. Almost certainly load, not bash. Confirm on an idle machine. |
+| **ssh, on a loaded machine** | The ssh and rsync results were obtained on a quiet machine and are real. A later run under heavy load never got an address at all (`NEVER BECAME READY`). The suites have no readiness wait; they `sleep` and hope. Worth fixing before anything else is concluded from them. |
+
+### Needs a decision -- yours, not mine
+
+| | |
+|---|---|
+| **The stdint deviation** | `m68k-elf` takes its integer types from gcc's `newlib-stdint.h`, where `uint32_t` is `long unsigned int`; Linux/m68k uses `glibc-stdint.h`, where it is `unsigned int`. This system's ABI is Linux/m68k's everywhere else, so this is a real deviation, and it has broken four builds so far (zstd, OpenSSL, bfd, libsframe), each needing its own patch. **Rebuilding the cross gcc would end the whole class permanently and is ABI-safe** -- `int` and `long` are both 32 bits here with the same alignment and passing, so no existing binary changes. It was not done unattended overnight. See "The stdint deviation" below. |
+| **CLISP, or ECL** | CLISP's last release is 2.49, from **2010**, and does not build with a current gcc even on an ordinary Linux machine. It is a porting project rather than one more port. ECL is actively maintained and compiles Lisp to C -- which this machine can now compile. The bootstrap problem that made either hard is solved (see task 48). |
+| **Task 36, a filesystem with ownership** | Deferred by you on 2026-09-22. Worth knowing what it now gates: users, `/etc/passwd` and ssh are all built and working, and **none of it enforces anything**, because FAT records no owner. It is the only thing standing between identity and protection. |
+
+### Unfinished, and nothing is blocking them
+
+- **Task 30's remainder**: FIFOs, `/dev/fd`, a listable `/dev`, and
+  `diff`. A FIFO has to live in the VFS, a FAT directory entry having
+  nowhere to hold one. Between them FIFOs and `/dev/fd` are what
+  bash's `<(...)` needs.
+- **gdb**, native. It is C++ and libstdc++ now exists, so the
+  remaining obstacle is `ptrace` in the kernel -- which does not exist
+  at all. Without it a debugger cannot stop, inspect or step anything.
+- **libatomic** (50). Nothing has asked for it; the reasoning is kept
+  below.
+- **CLISP or ECL** (48), pending the decision above.
+
+### Known limitations, accepted rather than outstanding
+
+These are properties of the machine, written up in `design.md` and
+`os.md`. They are here so they are not mistaken for bugs.
+
+- **No `dlopen`**, so no `ctypes` -- and that is the loader's missing
+  feature, not libffi's. libffi is built and demonstrably works.
+- **No thread-local storage.** The 68040 has no thread pointer
+  register; `__thread` needs `PT_TLS` in `ld.so`, a per-thread block,
+  and `__m68k_read_tp`, all three.
+- **No `crypt(3)`**, so no ssh password authentication. Public keys
+  work.
+- **Users protect nothing** -- see task 36 above.
+- **Object files built on the machine are not byte-reproducible.** The
+  native assembler leaves uninitialised bytes in section padding where
+  the cross one leaves zeroes. Every section a tool reads is identical.
+- **`xz` at its default preset will not run**: `-6` wants about 94 MB
+  and the machine has 64. `-1` works.
+
+### Things I got wrong, and how
+
+Kept because a wrong conclusion that looked well-evidenced is worth
+more as a warning than as a deletion.
+
+- **`scp`, twice.** First "it fails guest-side, because `scp -f FILE`
+  exits 1 on the machine" -- but `-f` is the source half of the scp
+  protocol and reads from a peer, so exiting 1 with no peer is correct
+  behaviour and the probe was meaningless. Then the ssh-based tests
+  that replaced it turned out to have been racing the guest's startup
+  under load.
+- **`-DB_ENDIAN` in OpenSSL.** Written up as load-bearing, on the
+  reasoning that a generic target must assume little-endian. Rebuilt
+  the whole of OpenSSL without it: identical, correct digests. The
+  flag stays because it is true, not because anything depends on it.
+- **Two test expectations**, where the machine was right and the test
+  was wrong: `apitest` still expected `PATH` without `/usr/bin`, and
+  `nativetest` expected `H(10)` where the program prints `1 + H(10)`.
+- **A stale marker file** read as a build result, concluding a healthy
+  build had failed and starting a second `make` in the same tree. Two
+  makes raced over the same objects and the tree was thrown away.
+
+---
+
 **In hand now** (asked for 2026-09-22, evening): the whole remaining
 list, in this order -- **49** (the native toolchain) first, then
 **CPython rebuilt** against the new libraries, then `df`/`du`, then
