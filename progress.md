@@ -493,7 +493,38 @@ gnulib, which has been the most troublesome thing in this tree by a
 distance -- gcc's bundled copy had to be switched off entirely
 (`ports/gcc/patches/01`).
 
-### The stdint deviation -- a decision to be made
+### 48. CLISP -- not started, deliberately, and here is what it needs
+
+Its dependencies are now all built: libiconv, gettext's runtime,
+readline, and GMP (which CLISP uses for bignums and which gcc needed
+anyway). Nothing is missing on that side.
+
+**It was not started because it cannot be done well in what was left
+of the night, and half a Lisp is worse than none.** The obstacle is
+not the dependencies, it is the bootstrap, and it is worth writing
+down while it is clear:
+
+CLISP's build compiles a C program, `lisp.run`, and then **runs it**
+to compile CLISP's own Lisp sources into the memory image
+`lispinit.mem` that the finished system needs. A cross build therefore
+has to execute a target binary partway through. That is the whole
+problem, and there are three ways at it:
+
+1. **Run `lisp.run` under `qemu-m68k` user-mode emulation on the
+   workstation.** This is more plausible here than it sounds: this
+   system's ABI *is* Linux/m68k's -- the system call numbers, the
+   calling convention and the errnos -- which is exactly what
+   `qemu-m68k` emulates. A statically linked SuckOS binary may simply
+   run. It has not been tried. If it works it is by far the cheapest
+   route, and it would be useful for more than CLISP.
+2. **Run it on the machine**, under the full emulator, with the build
+   driven over the serial console. Certain to work and slow, and the
+   build would have to be split around the handover.
+3. **Use a host CLISP to produce the image.** The usual answer for
+   cross-building CLISP, and the memory image is architecture- and
+   word-size-specific, so a host image is not usable directly.
+
+Route 1 first, then 2. Neither is a night's work to do carefully.
 
 `m68k-elf` takes its integer types from gcc's `newlib-stdint.h`, where
 `uint32_t` is **`long unsigned int`**. Linux/m68k takes them from
