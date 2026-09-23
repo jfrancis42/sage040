@@ -292,8 +292,24 @@ struct fb_palette {
  * or follows one yet, so a symlink is reported as what it is rather
  * than mistaken for a short regular file. */
 #define S_IFLNK       0120000
+/* The permission bits, all nine of them. The disk has somewhere to put
+ * them now, so `ls -l` can print what is actually recorded rather than
+ * the two bits FAT could express. Nothing ENFORCES them yet. */
+#define S_IRWXU       0000700
 #define S_IRUSR       0000400
 #define S_IWUSR       0000200
+#define S_IXUSR       0000100
+#define S_IRWXG       0000070
+#define S_IRGRP       0000040
+#define S_IWGRP       0000020
+#define S_IXGRP       0000010
+#define S_IRWXO       0000007
+#define S_IROTH       0000004
+#define S_IWOTH       0000002
+#define S_IXOTH       0000001
+#define S_ISUID       0004000
+#define S_ISGID       0002000
+#define S_ISVTX       0001000
 
 #define S_ISREG(m)    (((m) & S_IFMT) == S_IFREG)
 #define S_ISDIR(m)    (((m) & S_IFMT) == S_IFDIR)
@@ -301,6 +317,7 @@ struct fb_palette {
 #define S_ISFIFO(m)   (((m) & S_IFMT) == S_IFIFO)
 #define S_ISSOCK(m)   (((m) & S_IFMT) == S_IFSOCK)
 #define S_ISLNK(m)    (((m) & S_IFMT) == S_IFLNK)
+#define S_ISBLK(m)    (((m) & S_IFMT) == S_IFBLK)
 
 /* access() modes, Linux's values. */
 #define F_OK          0

@@ -542,11 +542,27 @@ static void cmd_help(void)
         "  ps                 every task;  kill [-SIG] PID  signals one\n");
 }
 
+/*
+ * All ten characters, as `ls -l` anywhere else prints them. It used to
+ * be three -- a type and the two bits FAT could express -- because
+ * there was nowhere on the disk for the rest. ext2 records a full mode,
+ * so there is something to show. Nothing enforces any of it yet.
+ */
 static void print_mode(u32 mode)
 {
-    out_putc(S_ISDIR(mode) ? 'd' : (S_ISCHR(mode) ? 'c' : '-'));
-    out_putc((mode & S_IRUSR) ? 'r' : '-');
-    out_putc((mode & S_IWUSR) ? 'w' : '-');
+    static const char bit[9] = { 'r', 'w', 'x', 'r', 'w', 'x',
+                                 'r', 'w', 'x' };
+    int i;
+
+    out_putc(S_ISDIR(mode) ? 'd' :
+             S_ISCHR(mode) ? 'c' :
+             S_ISBLK(mode) ? 'b' :
+             S_ISFIFO(mode) ? 'p' :
+             S_ISLNK(mode) ? 'l' :
+             S_ISSOCK(mode) ? 's' : '-');
+    for (i = 0; i < 9; i++) {
+        out_putc((mode & (0400u >> i)) ? bit[i] : '-');
+    }
 }
 
 static void print_stamp(time_t when)
