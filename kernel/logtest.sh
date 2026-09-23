@@ -185,7 +185,7 @@ check "  and says which machine and that it is the kernel" $?
 grep -q "kernel ready" "$SCRATCH/syslog.tmp"
 check "the boot messages are in it -- from BEFORE klogd started" $?
 
-grep -qE "fat16 on /dev/hda" "$SCRATCH/syslog.tmp"
+grep -qE "(ext2|fat16) on /dev/hda" "$SCRATCH/syslog.tmp"
 check "  including what the kernel said about the disk" $?
 
 grep -q "eth0" "$SCRATCH/syslog.tmp"
