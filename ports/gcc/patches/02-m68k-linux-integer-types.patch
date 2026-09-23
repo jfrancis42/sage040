@@ -1,0 +1,64 @@
+m68k-elf: use Linux/m68k's integer types.
+
+m68k-elf takes its integer types from newlib-stdint.h, where uint32_t
+is `long unsigned int', and m68kemb.h makes size_t `long unsigned int'
+as well. m68k-linux uses glibc-stdint.h and m68k/linux.h, where both
+are `unsigned int'. The two describe the same machine and disagree
+about the name of a 32-bit integer.
+
+The difference is invisible until something takes an address.
+`uint32_t *' and `unsigned *' are then incompatible pointer types and
+the compiler refuses the call outright, which is what stops zstd's
+legacy decoders, OpenSSL's QUIC thread, bfd's target jump tables and
+libsframe building unchanged -- a patch per package, for a
+disagreement about spelling.
+
+Nothing about the ABI changes: int and long are both 32 bits on this
+target, with the same alignment and the same passing convention, so
+objects compiled either side of this are compatible. What changes is
+which of two identical types the compiler names.
+
+--- a/gcc/config.gcc
++++ b/gcc/config.gcc
+@@ -2421,7 +2421,8 @@
+ 		default_cf_cpu=5206
+ 		;;
+ 	esac
+-	tm_file="${tm_file} m68k/m68k-none.h m68k/m68kelf.h elfos.h newlib-stdint.h m68k/m68kemb.h m68k/m68020-elf.h"
++	# glibc-stdint.h, not newlib-stdint.h: see m68k/m68020-elf.h.
++	tm_file="${tm_file} m68k/m68k-none.h m68k/m68kelf.h elfos.h glibc-stdint.h m68k/m68kemb.h m68k/m68020-elf.h"
+ 	tm_defines="${tm_defines} MOTOROLA=1"
+ 	tmake_file="m68k/t-floatlib m68k/t-m68kbare m68k/t-m68kelf"
+ 	# Add multilibs for targets other than fido.
+--- a/gcc/config/m68k/m68020-elf.h
++++ b/gcc/config/m68k/m68020-elf.h
+@@ -28,3 +28,29 @@
+ #define STARTFILE_SPEC "crtbegin.o%s"
+ 
+ /* end of m68020-elf.h */
++
++/* This target's integer types are Linux/m68k's.
++
++   m68k-elf took them from newlib-stdint.h, where uint32_t is
++   `long unsigned int', and m68kemb.h makes size_t `long unsigned int'
++   too.  m68k-linux uses glibc-stdint.h and m68k/linux.h, where both
++   are `unsigned int'.  The two describe the same machine and disagree
++   about the name of a 32-bit integer.
++
++   The difference is invisible until something takes an address.
++   `uint32_t *' and `unsigned *' are then incompatible pointer types
++   and the compiler refuses the call, which is what stops zstd,
++   OpenSSL, binutils and anything else written on Linux from building
++   unchanged.  It costs a patch per package, for a disagreement about
++   spelling.
++
++   Nothing about the ABI changes: int and long are both 32 bits here,
++   with the same alignment and the same passing convention, so an
++   object compiled before this and one compiled after are still
++   compatible.  What changes is which of two identical types the
++   compiler names.  */
++#undef SIZE_TYPE
++#define SIZE_TYPE "unsigned int"
++
++#undef PTRDIFF_TYPE
++#define PTRDIFF_TYPE "int"
