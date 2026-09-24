@@ -23,7 +23,7 @@ set -u
 cd "$(dirname "$0")"
 . ../machine.conf
 QEMU=${QEMU:-$HOME/m68k/sage040-qemu/bin/qemu-system-m68k}
-S=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}; mkdir -p "$S"
+S=${SAGE_SCRATCH:-/tmp/scratch}; mkdir -p "$S"
 DISK="$S/hd-login.img"; OFF=$((2048*512))
 fsimg(){ PART_OFFSET=$OFF ../tools/fsimg.sh "$DISK" "$@" || {
     echo "logintest: fsimg $* failed" >&2; exit 1; }; }
