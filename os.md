@@ -792,8 +792,9 @@ Every path a system call takes is checked (`perm_ok`, `walk_ok` in
 `kernel/vfs.c`):
 
 - **owner, then group, then other -- first match wins.** Not "the most
-  permissive that applies": a file mode `0607` denies its owner the
-  write that `other` is given, and that is the POSIX rule rather than an
+  permissive that applies": a file mode `0477` denies its owner the
+  write that everybody else is given, because the owner matched first
+  and the search stopped there. That is the POSIX rule rather than an
   accident. Group membership counts the effective gid *and* the
   supplementary groups `login` set from `/etc/group`.
 - **every directory in a path needs its search bit**, which is what
