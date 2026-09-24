@@ -70,11 +70,21 @@ install-bin: stage $(DISK)
 	@$(FSIMG) mkdir /bin
 	$(FSIMG) put -m 755 $(PYBUILD)/stage/bin/python3 /bin/python3
 
-# `fsimg put -r` copies a directory tree, which is what the standard library
-# is: about 1,700 files once the test suites are gone.
+# `fsimg put -r SRC DST` copies SRC's CONTENTS into DST -- it does not
+# create DST/$(notdir SRC). The destination therefore has to name the
+# versioned directory itself.
+#
+# It said /usr/local/lib, so the whole standard library landed flat in
+# there: /usr/local/lib/encodings, /usr/local/lib/os.py and 1,700 more,
+# while the interpreter looked for them in /usr/local/lib/python$(PYVER)
+# -- which is compiled into it and is not negotiable. Every run of
+# python3 then died with "Failed to import encodings module", for root
+# as much as for anybody, because nothing about it depends on who ran
+# it.
 install-lib: stage $(DISK)
 	@$(FSIMG) mkdir /usr/local/lib
-	$(FSIMG) put -r $(PYBUILD)/stage/lib/python$(PYVER) /usr/local/lib
+	$(FSIMG) put -r $(PYBUILD)/stage/lib/python$(PYVER) \
+	    /usr/local/lib/python$(PYVER)
 	@echo "the standard library is on $(DISK)"
 
 install: install-bin install-lib
