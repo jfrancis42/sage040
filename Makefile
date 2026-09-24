@@ -15,7 +15,7 @@
 #   make boot       install everything, then boot it
 #   make programs   the system's own programs only -- the short way round
 #                   when iterating on one of them
-#   make test       device tests, then the kernel filesystem test
+#   make test       every suite in the tree, ~37 of them
 #   make libc       build picolibc for programs (needed by libctest)
 #   make disk       create the disk image if it is not there
 #   make disk-ls    partition table and directory listing
@@ -28,7 +28,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: logintest fsimgtest fattest all boot run install src qemu world libc-if-missing toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest sshtest nativetest qemutest libc cube programs clean distclean
+.PHONY: logintest fsimgtest fattest all boot run install src qemu world libc-if-missing toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest linktest sshtest nativetest qemutest libc cube programs clean distclean
 
 all:
 	$(MAKE) -C bootrom
@@ -219,7 +219,7 @@ qemu:
 run:
 	$(MAKE) -C kernel run
 
-test: fsimgtest tests cryptotest fstest fattest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest logintest sshtest qemutest
+test: fsimgtest tests cryptotest fstest fattest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest logintest linktest sshtest qemutest
 
 # The host's end of the disk, before anything that uses it: every suite
 # below stages its files through tools/fsimg.sh, so a fault in it does
@@ -344,13 +344,19 @@ pylibtest:
 dftest:
 	cd kernel && ./dftest.sh
 
-# Users, /etc/passwd and home directories -- and a check that the
-# absence of file ownership is honest rather than accidental.
+# Users, /etc/passwd and home directories, and what the mode bits now
+# refuse.
 logintest:
 	cd kernel && ./logintest.sh
 
 usertest:
 	cd kernel && ./usertest.sh
+
+# Hard links and symlinks: that a second name is the same inode and not
+# a copy, that a link survives its first name being removed, and that a
+# loop is ELOOP rather than a machine that has stopped.
+linktest:
+	cd kernel && ./linktest.sh
 
 # ssh, scp and rsync against the workstation's own OpenSSH -- and TEN
 # successive connections, because the machine once served exactly one
