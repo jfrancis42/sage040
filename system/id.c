@@ -3,13 +3,14 @@
 /*
  * id - who this process belongs to.
  *
- * The identity is real: a task carries a real, effective and saved
- * user and group id, inherited across fork and exec and changed by
- * setuid() under POSIX's rules. What it does NOT yet do is decide
- * whether anybody may read a file, because a FAT directory entry has
- * nowhere to record an owner -- so this reports an identity that
- * nothing is yet enforced against. Saying so where somebody will read
- * it matters more than the command does.
+ * The identity is real, and so is what it costs you: a task carries a
+ * real, effective and saved user and group id, inherited across fork
+ * and exec and changed by setuid() under POSIX's rules, and the
+ * filesystem decides what each one may read and write. This note used
+ * to say the opposite -- that nothing was enforced, because a FAT
+ * directory entry had nowhere to record an owner. The disk is ext2
+ * now, every inode has an owner and a mode, and `kernel/logintest.sh`
+ * proves the enforcement by having a user refused root's 0600 file.
  *
  * The names come from /etc/passwd and /etc/group, read here rather
  * than through getpwuid() because this program is built against

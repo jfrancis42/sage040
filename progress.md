@@ -86,6 +86,59 @@ Every suite in the tree passes, on ext2:
 
 ### Open, and nothing is blocking them
 
+- **`ssh machine` cannot get an interactive session: "ttyname fails
+  for openpty device".**
+
+  `ssh machine command` works -- `sshtest.sh` runs ten of them, plus
+  scp and rsync -- and `ssh machine`, or any session that asks for a
+  terminal, is refused by Dropbear before the shell ever starts.
+
+  The reason: Dropbear's `sshpty.c` calls `ttyname()` on the pty it has
+  just opened, and picolibc's `ttyname_r()` is `readlink("/proc/self/
+  fd/N")`. There is no /proc here, so it fails, and Dropbear treats
+  that as fatal. Nothing is wrong with the ptys themselves -- 
+  `ptytest.sh` passes and the kernel knows each one's name, since
+  `dev_char_name()` is what `who` gets "pts/0" from.
+
+  The fix is to let a program ask what terminal a descriptor is open
+  on, and to answer `ttyname()` from that rather than from a filesystem
+  this machine does not have: an ioctl in the tty layer, a
+  machine-specific `ttyname_r` beside the crypt one in
+  `libc/picolibc/libos/linux/machine/m68k/`, then a libc and Dropbear
+  rebuild. `tty(1)` wants the same call.
+
+  Found by `whotest.sh`, which logs in over ssh to check that `who`
+  sees a remote user. It could not, because nobody could.
+
+- **Nothing on this machine ever calls `setsid()`, so sessions are not
+  what they claim to be.**
+
+  The call is implemented (`syslinux.c`) and `struct task` carries a
+  `sid`, but no program uses it, so every task on the console belongs
+  to the session of the shell that booted -- `idle`, `netd`, `klogd`
+  and whoever is logged in, all one session. Ssh is the same: Dropbear's
+  session handling was never ported, so a connection's shell inherits
+  whatever session the daemon had.
+
+  This was found by writing `who`, whose natural rule -- a login is a
+  session leader with a terminal -- reported the kernel's own `idle`
+  and `netd` tasks as two logged-in roots and missed the person at the
+  keyboard entirely. `who` uses argv[0] instead and says why at length;
+  it is right either way, so nothing is blocked on this.
+
+  What it would take: `login` cannot simply call `setsid()`, because
+  the console shell spawns it as a job of its own and POSIX makes the
+  call fail for a process-group leader (the check is in `syslinux.c`,
+  and it is correct). It would have to fork first and let the child
+  start the session, which is what a getty does. Dropbear would need
+  the same in its own child.
+
+  What it would buy, beyond a tidier `who`: a controlling terminal that
+  means something, SIGHUP to a session when its terminal goes away --
+  which is what should happen when an ssh connection drops and at
+  present does not -- and `ps` being able to group a machine's tasks by
+  who is running them.
+
 - **MMU: use the M (modified) bit when evicting. ATTEMPTED AND
   REVERTED -- read this before trying again.**
 
