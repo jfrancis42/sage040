@@ -37,6 +37,10 @@ int dev_register_char(struct chardev *d)
     if (dev_find_char(d->name)) {
         return -EEXIST;
     }
+    if (d->mode == 0) {
+        d->mode = DEV_MODE_DEFAULT;
+    }
+    d->mode &= 07777;
     d->next = chars;
     chars = d;
     return 0;
@@ -76,19 +80,30 @@ int dev_unregister_char(struct chardev *d)
  * whose input is a pipe or a file has no terminal, and `who` says so
  * rather than inventing one.
  */
-const char *dev_char_name(const struct file *f)
+struct chardev *dev_char_for(const struct file *f)
 {
     struct chardev *d;
 
     if (!f || !f->ops) {
         return 0;
     }
+    /* BOTH ops AND priv. Every pseudo-terminal slave has its own ops
+     * table and its own priv, but the masters share one ops -- so
+     * matching on ops alone finds the wrong pty, and matching on priv
+     * alone could collide with a device that keeps none. */
     for (d = chars; d; d = d->next) {
         if (d->ops == f->ops && d->priv == f->priv) {
-            return d->name;
+            return d;
         }
     }
     return 0;
+}
+
+const char *dev_char_name(const struct file *f)
+{
+    struct chardev *d = dev_char_for(f);
+
+    return d ? d->name : 0;
 }
 
 struct chardev *dev_find_char(const char *name)

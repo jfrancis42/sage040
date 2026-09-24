@@ -603,6 +603,25 @@ int pty_open_master(struct file *f)
         p->slave_dev.name = p->name;
         p->slave_dev.ops = &p->slave_ops;
         p->slave_dev.priv = p;
+        /*
+         * A PSEUDO-TERMINAL BELONGS TO WHOEVER ALLOCATED IT, which is
+         * what Linux's devpts does and what programs assume. It is not
+         * a nicety: Dropbear drops to the user's uid the moment
+         * authentication succeeds and only then asks for a pty, so if
+         * the slave came up owned by root it had to chown it -- as the
+         * user, which it may not do -- and an interactive `ssh` died
+         * there with "chown(/dev/pts/0, ...) failed". Owned by its
+         * allocator, the chown is skipped because there is nothing to
+         * change, which is the path Linux takes too.
+         *
+         * 0620 is devpts's default: the owner reads and writes, the
+         * group writes (that is what lets `write(1)` reach a terminal),
+         * nobody else touches it. These are reset on every allocation
+         * rather than inherited from whoever had this slot last.
+         */
+        p->slave_dev.uid = current ? current->euid : 0;
+        p->slave_dev.gid = current ? current->egid : 0;
+        p->slave_dev.mode = 0620;
         if (dev_register_char(&p->slave_dev) < 0) {
             p->used = 0;
             return -ENFILE;
@@ -633,7 +652,7 @@ int pty_init(void)
      * vfs.c sees the open hook and replaces them with the master's.
      */
     static const struct file_ops ptmx_ops = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-    static struct chardev ptmx = { "ptmx", &ptmx_ops, 0, 0 };
+    static struct chardev ptmx = { .name = "ptmx", .ops = &ptmx_ops };
 
     return dev_register_char(&ptmx);
 }

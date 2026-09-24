@@ -264,12 +264,7 @@ static const struct file_ops nv_ops = {
     0,                          /* mmap: not memory to map */
 };
 
-static struct chardev nv_dev = {
-    "nvram",
-    &nv_ops,
-    0,
-    0
-};
+static struct chardev nv_dev = { .name = "nvram", .ops = &nv_ops };
 
 /* ---------------------------------------------------------------- */
 /* The device the kernel sees                                        */

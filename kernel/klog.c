@@ -164,7 +164,7 @@ static const struct file_ops klog_ops = {
     0,                          /* mmap                              */
 };
 
-static struct chardev klog_dev = { "klog", &klog_ops, 0, 0 };
+static struct chardev klog_dev = { .name = "klog", .ops = &klog_ops };
 
 void klog_init(void)
 {

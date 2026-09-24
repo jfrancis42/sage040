@@ -141,12 +141,7 @@ static const struct file_ops serial_ops = {
     0,                          /* mmap: not memory to map */
 };
 
-static struct chardev serial_dev = {
-    "ttyS0",
-    &serial_ops,
-    0,
-    0
-};
+static struct chardev serial_dev = { .name = "ttyS0", .ops = &serial_ops };
 
 /* ---------------------------------------------------------------- */
 

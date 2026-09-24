@@ -395,12 +395,7 @@ static const struct file_ops kbd_ops = {
     0,                          /* mmap: not memory to map */
 };
 
-static struct chardev kbd_dev = {
-    "kbd0",
-    &kbd_ops,
-    0,
-    0
-};
+static struct chardev kbd_dev = { .name = "kbd0", .ops = &kbd_ops };
 
 /* ---------------------------------------------------------------- */
 

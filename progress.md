@@ -86,35 +86,66 @@ Every suite in the tree passes, on ext2:
 
 ### Open, and nothing is blocking them
 
-- **`ssh machine` still cannot get an interactive session. One cause
-  fixed, a second now visible.**
+- **`ssh machine` gets an interactive session now. Two small things
+  about it are still not right.**
 
-  `ssh machine command` works -- `sshtest.sh` runs ten of them, plus
-  scp and rsync -- and any session that asks for a terminal is refused
-  by Dropbear before the shell starts.
+  It took four defects, each of which hid the next, and none of which
+  `sshtest.sh` could see because `ssh machine command` needs no
+  terminal and ten of those passed throughout:
 
-  **Fixed:** Dropbear called `ttyname()` on the pty it had just opened,
-  picolibc answered `ttyname()` by reading `/proc/self/fd/N`, and there
-  is no /proc here. The kernel knows the answer -- it is where `who`
-  gets "pts/0" -- so `TIOCGDEVNAME` asks a descriptor for the name of
-  the character device it is open on, answered in `fd_ioctl` from the
-  device registry so that every character device has a name for free.
-  `libc/patches/37` rewrites `ttyname_r` on it. `tty(1)` wants the same
-  call.
+  1. `ttyname()` had no answer. picolibc reads `/proc/self/fd/N` and
+     there is no /proc. `TIOCGDEVNAME` asks a descriptor for the name
+     of the character device it is open on, answered from the device
+     registry, and `libc/patches/37` rewrites `ttyname_r` on it.
+  2. `chown` could not resolve a path under /dev. `walk_ok()` checks
+     search permission on every directory along a path and is skipped
+     entirely for root -- so `stat("/dev/pts/0")` worked and
+     `chown("/dev/pts/0", ...)` returned ENOENT, but only for a
+     non-root process. /dev and /dev/pts stat as directories now.
+  3. A device had nowhere to keep an owner or a mode -- `vfs_stat`
+     answered with a constant -- so chown and chmod on one could not
+     work whatever the path did. They live in the registry now.
+  4. A pseudo-terminal was owned by root rather than by whoever
+     allocated it. Dropbear drops to the user the moment
+     authentication succeeds and only then asks for a pty, so it had
+     to chown the thing as the user, which it may not do. Slaves come
+     up owned by their allocator, mode 0620, as devpts does -- and the
+     chown is then skipped because there is nothing to change.
 
-  **Next:** `chown(/dev/pts/0, 1000, 1000) failed: No such file or
-  directory`. Dropbear hands the pty to the user who logged in, and the
-  chown fails -- on a path the kernel resolves perfectly well for open,
-  which points at `chown` not resolving `/dev/` names rather than at
-  anything to do with ptys. `chmod` on the same path is the next line
-  and will need the same. Whether Dropbear should be doing this at all
-  is a separate question: the pty is already the right owner, since it
-  was created by a process that is about to become that user.
+  And a fifth, which was not about ssh at all but was found by it: the
+  FOREGROUND PROCESS GROUP was one global for the machine. The first
+  ssh session to reach a shell called for the terminal and took the
+  CONSOLE's, so whoever was at the keyboard fell outside it, got
+  SIGTTIN on their next read, and the console stopped dead while ssh
+  carried on working. `jobctl` goes through the caller's own
+  descriptor 0 now, so a pty keeps its own.
 
-  Found by `whotest.sh`, which logs in over ssh to check that `who`
-  sees a remote user. It still cannot, because nobody can -- and the
-  suite says so as a NOTE naming the current symptom, so the day the
-  symptom changes it goes back to being a failure.
+  `kernel/whotest.sh` logs in over ssh and checks who(1) sees both
+  people. 20 checks.
+
+  **Still not right, neither of them fatal:**
+
+  - `ssh machine command` with a TERMINAL forced (`ssh -t`) runs the
+    command and returns 0, and its output never arrives. Interactive
+    sessions and plain `ssh machine command` are both fine, so this is
+    the pty drain at the moment a short command exits; `pty_master_read`
+    and `pty_master_poll` both look right on inspection, which means
+    the next step is to measure rather than read.
+  - `TIOCNOTTY` and `TIOCSCTTY` are unimplemented, so Dropbear logs
+    "Failed to disconnect from controlling tty" and "ioctl(TIOCSCTTY):
+    Invalid argument" on every session. Harmless today because nothing
+    depends on a controlling terminal, and part of the sessions entry
+    below rather than a thing of its own.
+  - Dropbear's cleanup chowns the pty back to root as the user and is
+    refused; it logs and carries on. Linux does the same.
+
+  **A device's mode is recorded but NOT enforced.** `vfs_open` gives
+  out a device without asking `perm_ok`, as it always has, so a pty's
+  0620 is a statement rather than a rule and any user could open
+  somebody else's terminal. Every device defaults to 0666, which is
+  what they all effectively were, so switching the check on would deny
+  nothing that works today -- it wants its own change and its own
+  test.
 
 - **Nothing on this machine ever calls `setsid()`, so sessions are not
   what they claim to be.**

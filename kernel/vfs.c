@@ -249,6 +249,50 @@ static struct chardev *resolve_dev(const char *path)
 }
 
 /*
+ * IS THIS PATH A DIRECTORY IN /dev?
+ *
+ * /dev itself is, and so is any prefix a registered name sits under --
+ * "pts", because the pseudo-terminals are called "pts/0" and so on.
+ * There is no such directory anywhere: the whole of /dev is
+ * synthesised from the device registry, and the names with a slash in
+ * them are the only thing that makes it look like a tree.
+ *
+ * It has to answer, because the alternative is what this machine did
+ * until now: stat("/dev") failed, and walk_ok() -- which checks search
+ * permission on every directory along a path, and is skipped entirely
+ * for root -- therefore returned ENOENT for any path under /dev the
+ * moment a NON-ROOT process used one. The symptom was an interactive
+ * `ssh` that could not start, because Dropbear chowns the pty to
+ * whoever logged in and treats failing to do so as fatal; the error it
+ * printed was "chown(/dev/pts/0, ...) failed: No such file or
+ * directory", which names the pty and blames the wrong thing entirely.
+ * Root never saw it, which is why every test in the tree missed it.
+ */
+static int dev_is_dir(const char *path)
+{
+    struct chardev *d;
+    u32 n;
+
+    if (strcmp(path, "/dev") == 0 || strcmp(path, "/dev/") == 0) {
+        return 1;
+    }
+    if (strncmp(path, DEV_PREFIX, DEV_PREFIX_LEN) != 0) {
+        return 0;
+    }
+    path += DEV_PREFIX_LEN;
+    n = (u32)strlen(path);
+    if (n == 0) {
+        return 1;
+    }
+    for (d = dev_first_char(); d; d = d->next) {
+        if (strncmp(d->name, path, n) == 0 && d->name[n] == '/') {
+            return 1;           /* something lives under this name */
+        }
+    }
+    return 0;
+}
+
+/*
  * THE LEADING SLASH IS LOAD-BEARING AND MUST BE PASSED DOWN.
  *
  * There used to be a strip_root() here that removed it before handing
@@ -1530,9 +1574,25 @@ int vfs_stat(const char *path, struct stat *st)
 {
     struct chardev *cd = resolve_dev(path);
 
+    if (!cd && dev_is_dir(path)) {
+        /* A synthesised directory: /dev, and /dev/pts. Searchable and
+         * readable by everybody, writable by nobody -- nothing can be
+         * created in it, because what is in it is the registry. */
+        memset(st, 0, sizeof(*st));
+        st->st_mode = S_IFDIR | 0555;
+        st->st_nlink = 2;
+        return 0;
+    }
     if (cd) {
         memset(st, 0, sizeof(*st));
-        st->st_mode = S_IFCHR | S_IRUSR | S_IWUSR;
+        /* From the registry, not a constant. It used to be a constant
+         * -- S_IFCHR|0600, owner root -- which said every device
+         * belonged to root whatever chown had been told, and there was
+         * nowhere for chown to put an answer anyway. See dev.h. */
+        st->st_mode = S_IFCHR | (cd->mode & 07777);
+        st->st_uid = cd->uid;
+        st->st_gid = cd->gid;
+        st->st_nlink = 1;
         return 0;
     }
     if (!mounted_fs) {
@@ -1984,20 +2044,61 @@ static int may_setattr(const struct stat *stp, u32 *maskp, u32 *modep,
     return 0;
 }
 
-int vfs_setattr(const char *path, u32 mask, u32 mode, u32 uid, u32 gid)
+/*
+ * chown or chmod a DEVICE, whose owner and mode live in the registry
+ * rather than on the volume. Shares may_setattr() with the filesystem
+ * path, so "only root gives a file away" and "an ownership change
+ * clears set-user-id" mean the same thing here as anywhere.
+ */
+static int dev_setattr(struct chardev *cd, u32 mask, u32 mode,
+                       u32 uid, u32 gid)
 {
     struct stat st;
     int err;
 
+    memset(&st, 0, sizeof(st));
+    st.st_mode = S_IFCHR | (cd->mode & 07777);
+    st.st_uid = cd->uid;
+    st.st_gid = cd->gid;
+
+    err = may_setattr(&st, &mask, &mode, uid, gid);
+    if (err < 0) {
+        return err;
+    }
+    if (mask & ATTR_UID) {
+        cd->uid = uid;
+    }
+    if (mask & ATTR_GID) {
+        cd->gid = gid;
+    }
+    if (mask & ATTR_MODE) {
+        cd->mode = mode & 07777;
+    }
+    return 0;
+}
+
+int vfs_setattr(const char *path, u32 mask, u32 mode, u32 uid, u32 gid)
+{
+    struct chardev *cd;
+    struct stat st;
+    int err;
+
+    err = walk_ok(path);
+    if (err < 0) {
+        return err;
+    }
+    cd = resolve_dev(path);
+    if (cd) {
+        return dev_setattr(cd, mask, mode, uid, gid);
+    }
+    if (strncmp(path, DEV_PREFIX, DEV_PREFIX_LEN) == 0) {
+        return -ENXIO;          /* under /dev, but no such device */
+    }
     if (!mounted_fs) {
         return -ENODEV;
     }
     if (!mounted_fs->setattr) {
         return -ENOSYS;         /* a volume with nowhere to put it */
-    }
-    err = walk_ok(path);
-    if (err < 0) {
-        return err;
     }
     err = vfs_stat(path, &st);
     if (err < 0) {
@@ -2032,8 +2133,15 @@ int vfs_setattr(const char *path, u32 mask, u32 mode, u32 uid, u32 gid)
 int vfs_fsetattr(int fd, u32 mask, u32 mode, u32 uid, u32 gid)
 {
     struct stat st;
+    struct chardev *cd;
     int err;
 
+    /* fchmod on a terminal is ordinary -- and a descriptor is the only
+     * handle a program has on a pty it was given rather than opened. */
+    cd = dev_char_for(fd_get(fd));
+    if (cd) {
+        return dev_setattr(cd, mask, mode, uid, gid);
+    }
     if (!mounted_fs) {
         return -ENODEV;
     }
