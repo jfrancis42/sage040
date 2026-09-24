@@ -99,7 +99,8 @@ static void put_le32(u8 *p, u32 v)
 #define SECTOR_SIZE         512
 
 #define EXT2_SUPER_OFF      1024        /* always, whatever the block size */
-#define EXT2_SUPER_MAGIC    0xef53
+/* EXT2_SUPER_MAGIC is in uapi.h: statfs reports it, so a program needs
+ * to be able to name it too. */
 #define EXT2_ROOT_INO       2
 #define EXT2_GOOD_OLD_FIRST_INO   11
 #define EXT2_GOOD_OLD_INODE_SIZE  128

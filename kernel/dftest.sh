@@ -235,6 +235,14 @@ grep -q "volume" "$WORK/dfbuilt.out" 2>/dev/null &&
     ! grep -q "mounted on" "$WORK/dfbuilt.out" 2>/dev/null
 check "with /bin/df gone, the shell's built-in answers instead" $?
 
+# AND IT MUST NAME THE FILESYSTEM IT IS LOOKING AT. The built-in knew
+# one magic number, MSDOS_SUPER_MAGIC, and printed "?" for anything
+# else -- so from the day the machine became ext2 its own `df` could
+# not say what its own disk was, and nothing here noticed, because no
+# check read that column.
+grep -qE '^[^ ]+ +ext2' "$WORK/dfbuilt.out" 2>/dev/null
+check "  and names the filesystem ext2, not '?'" $?
+
 echo
 echo "  passed: $pass"
 echo "  failed: $fail"

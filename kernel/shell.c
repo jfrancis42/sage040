@@ -877,7 +877,11 @@ static void cmd_df(void)
     for (n = (int)strlen(name); n < 16; n++) {
         out_putc(' ');
     }
-    out_puts(sf.f_type == MSDOS_SUPER_MAGIC ? "fat16" : "?    ");
+    switch (sf.f_type) {
+    case EXT2_SUPER_MAGIC:  out_puts("ext2 "); break;
+    case MSDOS_SUPER_MAGIC: out_puts("fat16"); break;
+    default:                out_puts("?    "); break;
+    }
     out_putdec_pad(total, 12);
     out_putdec_pad(used, 11);
     out_putdec_pad(avail, 11);
