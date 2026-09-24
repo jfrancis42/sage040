@@ -3074,13 +3074,17 @@ void shell(void)
     env_set("PATH", "/bin:/usr/bin:.");
     /*
      * HOME comes from /etc/passwd, for whoever this task belongs to --
-     * which at boot is root, because there is nothing to log in to
-     * yet. A machine with no /etc/passwd falls back to "/", which is
-     * somewhere rather than nowhere.
+     * which at boot is root, because /etc/rc runs before the login
+     * prompt. A machine with no /etc/passwd falls back to "/", which
+     * is somewhere rather than nowhere.
      *
-     * /etc/rc is where a machine says whose it is: setting HOME there
-     * is a configuration choice and belongs in a file somebody can
-     * edit, not compiled into the shell.
+     * This is the value a SESSION gets when nobody logged in: the
+     * fallback root shell the machine falls back to when /bin/login
+     * is missing. For everybody else login(1) sets HOME from the same
+     * file after it has dropped privilege, and that is the answer
+     * that stands. /etc/rc used to set HOME and no longer does --
+     * doing so overrode login's answer for whoever had just typed
+     * their name.
      */
     {
         char home[PATH_MAX];
