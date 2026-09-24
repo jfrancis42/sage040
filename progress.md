@@ -108,18 +108,25 @@ Every suite in the tree passes, on ext2:
   pass, in a SINGLE run of the suite -- two copies of one suite share
   `/tmp/scratch/hd-page.img` and produce results that look like kernel
   bugs.
-- **MMU: turn the CACHES on. DONE.** `kernel/cache.c` says it plainly --
-  "the caches are OFF: nothing writes CACR" -- so 4 KB of instruction
-  and 4 KB of data cache sit idle. The groundwork is already right:
-  descriptors carry CM copyback for RAM and non-cachable for I/O, the
-  transparent-translation registers mark the I/O and framebuffer
-  windows non-cachable, and `cacheflush(2)` issues `cpusha`.
-  **THIS CANNOT BE VERIFIED HERE.** QEMU ignores the CM bits and
-  decodes `cinv` and `cpush` as no-ops, so on the emulator a correct
-  cache setup and a broken one are indistinguishable and there is no
-  speedup to measure either. It is for real hardware, and it is
-  correct by inspection rather than by test -- which is worth saying
-  wherever it is switched on.
+- **MMU: turn the CACHES on. DONE.** `cache_enable()` writes
+  CACR = 0x80008000 -- data cache bit 31, instruction cache bit 15 --
+  at the end of the boot sweep in `kernel/vm.c`, and the banner says
+  "caches : data on, instruction on, tables non-cachable".
+  The sweep is the part that is not obvious: it walks root -> pointer
+  -> page tables and marks every table page non-cachable
+  (`vm_table_nocache`, `kset_cachemode`), because **the 68040's table
+  walker does not snoop the data cache**. A descriptor written by the
+  kernel and still sitting dirty in the data cache is a descriptor the
+  hardware would not see. Everything else was already right:
+  descriptors carry CM copyback for RAM and non-cachable for I/O, and
+  the transparent-translation registers cover the I/O and framebuffer
+  windows.
+  **NONE OF IT CAN BE VERIFIED HERE.** QEMU models no cache: it
+  ignores the CM bits entirely and decodes `cinv` and `cpush` as
+  privileged no-ops, so a correct cache setup and a broken one are
+  indistinguishable and there is no speedup to measure either. It is
+  for real hardware, and it is correct by inspection rather than by
+  test -- which is why that is said at every place it is switched on.
 - **MMU: PTEST and MMUSR instead of walking the tables. LOOKED AT AND
   REJECTED, with the reason.** PTEST does the table search in hardware
   and reports the result in MMUSR, which sounded like a way to delete
@@ -161,30 +168,9 @@ Every suite in the tree passes, on ext2:
   undebuggable. And the benefit cannot be measured here: it is ATC
   refill traffic on hardware that does not exist yet.
 
-- **ssh by password.** dropbear authenticates by public key; it has to
-  be pointed at `/etc/shadow` and told to use `crypt(3)`, which exists
-  now (`$6$` SHA-512, `libc/picolibc/.../crypt.c`). The console asks
-  for a password already -- `/bin/login` -- so this is the same check
-  reached from a different direction, and the pieces are all present.
-- **Symbolic links.** ext2 stores them and `stat` reports `S_IFLNK`
-  rather than mistaking one for a short file, but nothing creates or
-  follows one. That is VFS and system-call work -- `symlink`,
-  `readlink`, `O_NOFOLLOW`, and following during a path walk, with a
-  depth limit so a loop is ELOOP rather than a hung kernel -- not
-  filesystem work. A fast symlink (the target in the inode, under 60
-  bytes) and a slow one (in a block) are both ext2 and both have to be
-  read.
-- **Hard links.** `link(2)` and `linkat(2)` answer -EPERM today, from
-  when the filesystem was FAT and could not have them. ext2 can: a
-  second directory entry pointing at the same inode, with `i_links_count`
-  raised -- and unlink already has to decrement it and free the inode
-  only at zero, which is what `fsck_inode_live()` reads. The awkward
-  part is not the making but everything that assumed one name per
-  inode.
 
 - **The POSIX gaps that are left** (30): FIFOs, `/dev/fd`, a listable
   `/dev`, and `diff`. Detailed below.
-- **Permission enforcement** (36), above.
 - **A Lisp** (48), above.
 - **libatomic** (50). Nothing has asked for it; the reasoning is below.
 - **gdb, native.** It is C++ and libstdc++ exists, so the remaining
@@ -338,8 +324,9 @@ interrupt-driven I/O -- and are in [`os.md`](os.md) and
 | 49 | a native toolchain | `toolchain.md` |
 | 51 | `df` and `du` | `os.md` "Programs" and "The shell" |
 | 52 | ext2, in place of FAT16 | `design.md` section 8, `os.md` "ext2" |
-| 33-36 | logins and passwords, `/etc/shadow`, `su`/`sudo`/`passwd`/`useradd` | `os.md` "Logging in" |
+| 36 | logins and passwords, `/etc/shadow`, `crypt(3)`, `login`/`su`/`sudo`/`passwd`/`useradd`/`userdel` | `os.md` "Logging in" |
 | 36 | permission enforcement, set-user-id on exec, real `chmod`/`chown` | `os.md` "What is enforced" |
+| | ssh by password, against the same shadow file | `os.md` "Logging in over it", `ports/dropbear/localoptions.h` |
 | | hard links and symlinks, fast and slow, `lstat` | `os.md` "Links" |
 | | the 68040's caches, and non-cachable page tables | `os.md` "Memory", `design.md` |
 | | `cacheflush(2)` | `programmer-guide.md` |
