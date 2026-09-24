@@ -28,7 +28,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: logintest fsimgtest fattest all boot run install src qemu world libc-if-missing toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest linktest sshtest nativetest qemutest libc cube programs clean distclean
+.PHONY: logintest fsimgtest fattest all boot run install src qemu world libc-if-missing toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest linktest sshtest whotest nativetest qemutest libc cube programs clean distclean
 
 all:
 	$(MAKE) -C bootrom
@@ -219,7 +219,7 @@ qemu:
 run:
 	$(MAKE) -C kernel run
 
-test: fsimgtest tests cryptotest fstest fattest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest logintest linktest sshtest qemutest
+test: fsimgtest tests cryptotest fstest fattest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest logintest linktest sshtest whotest qemutest
 
 # The host's end of the disk, before anything that uses it: every suite
 # below stages its files through tools/fsimg.sh, so a fault in it does
@@ -363,6 +363,14 @@ linktest:
 # and then transmitted nothing ever again.
 sshtest:
 	cd kernel && ./sshtest.sh
+
+# who(1) and w(1): who the machine says is logged in, with somebody at
+# the console AND somebody over ssh on a pty, and klogd running on the
+# console to be left out. The first rule this program used reported the
+# kernel's own idle task as a logged-in root and looked perfectly
+# reasonable doing it.
+whotest:
+	cd kernel && ./whotest.sh
 
 # The toolchain running on the machine: gcc and as and ld, compiling
 # and linking programs that then run -- and the object files compared

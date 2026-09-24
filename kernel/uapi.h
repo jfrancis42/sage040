@@ -1041,6 +1041,7 @@ struct pageinfo {
 #define JOBCTL_REAP    4        /* forget the finished ones          */
 #define JOBCTL_DROP    5        /* forget one by id                  */
 #define JOBCTL_ALL     6        /* every task, not just this one's    */
+#define JOBCTL_WHO     7        /* a2 = struct who_info *, by index   */
 
 /*
  * netctl() - ask about, or configure, the network interface.
@@ -1147,6 +1148,51 @@ struct job_info {
     int  status;
     int  signalled;
     int  ppid;
+    char cmd[128];
+};
+
+/*
+ * JOBCTL_WHO: who is using this machine, asked of the machine.
+ *
+ * A NEW STRUCT AND A NEW OP rather than fields added to job_info,
+ * because job_info has no size field: growing it would change what
+ * every already-built program thinks it is reading, and nothing would
+ * say so.
+ *
+ * WHY NOT utmp. The usual answer is a file that login(1) writes and
+ * who(1) reads, and it would have been wrong here: this machine's ssh
+ * sessions come from Dropbear, which is built --disable-utmp and execs
+ * the shell itself, so a utmp written only by login would have shown
+ * the console and silently omitted every ssh login. Asking the kernel
+ * covers both, because both are sessions however they were started,
+ * and it cannot go stale -- there is no record to leave behind when
+ * something exits badly.
+ *
+ * `start` is jiffies since boot, not a date: the wall clock can be set
+ * and jiffies cannot go backwards, so the caller subtracts it from the
+ * uptime to get a login time that is right even across a clock change.
+ * HZ is in this file for exactly this sort of arithmetic.
+ *
+ * `tty` is the device as it appears under /dev -- "console", "pts/0" --
+ * or empty for a session whose descriptor 0 is not a terminal at all.
+ */
+struct who_info {
+    int  pid;
+    int  ppid;                  /* its parent: how `w` finds its jobs  */
+    int  sid;                   /* the session this task belongs to   */
+    u32  uid;                   /* the real uid: who, not what it may */
+    u32  start;                 /* jiffies since boot                 */
+    char tty[16];
+    /*
+     * argv[0], EXACTLY as the task was started, dash and all -- which
+     * is the one thing that says a task is somebody's login shell.
+     * login(1) and dropbear both start an interactive shell with a
+     * leading '-' and a non-interactive `ssh host command` without
+     * one, so it separates the two without either of them being asked.
+     * Kept verbatim rather than reduced to a flag: the kernel reports
+     * what it knows, and who(1) decides what counts as a login.
+     */
+    char name[24];
     char cmd[128];
 };
 
