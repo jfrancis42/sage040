@@ -61,6 +61,16 @@
 #define DESC_WP         0x004           /* write protected              */
 #define DESC_CM_CB      0x020           /* cachable, copyback           */
 #define DESC_CM_NC      0x060           /* noncachable                  */
+/*
+ * The whole CM field, for clearing it before a new mode goes in.
+ *
+ * It has the same value as DESC_CM_NC, and that is a coincidence of
+ * noncachable being the mode with both bits set -- not a reason to use
+ * one as the other. `d & ~DESC_CM_NC` reads as "take the noncachable
+ * bit out", which is not what it does and would stop being right the
+ * day anything here changed.
+ */
+#define DESC_CM_MASK    0x060
 #define DESC_SUPER      0x080           /* supervisor only              */
 
 /*
@@ -353,7 +363,7 @@ static int kset_cachemode(u32 pa, u32 cm)
     if ((pt[idx] & PDT_RESIDENT) == 0) {
         return -1;
     }
-    pt[idx] = (pt[idx] & ~(u32)DESC_CM_NC) | cm;
+    pt[idx] = (pt[idx] & ~(u32)DESC_CM_MASK) | cm;
     /*
      * The old mode may be cached in the ATC, and with a cachable->NC
      * change any dirty lines for the page have to go out before the
