@@ -1,0 +1,82 @@
+picolibc answers ttyname(3) by reading /proc/self/fd/N, and this machine
+has no /proc. So ttyname() failed for every descriptor, always -- which
+is not academic: Dropbear calls ttyname() on the pty it has just opened
+and treats a failure as fatal, so `ssh machine` could not get an
+interactive session at all while `ssh machine command`, which needs no
+pty, worked perfectly. Ten of those pass in sshtest, which is why it
+took a suite that logs in to find this.
+
+The kernel knows the answer -- it is where who(1) gets "pts/0" -- and
+TIOCGDEVNAME asks a descriptor for the name of the character device it
+is open on. That is a local request, with no Linux equivalent, because
+Linux has no ioctl for this either; it has /proc instead.
+
+Also: ttyname_r returns an ERROR NUMBER, not -1. POSIX says so, and the
+stock version's `return -1` means a caller testing `if (ttyname_r(...))`
+is right by luck and one testing `== 0` is right, while one that prints
+the result gets -1 instead of a reason. errno is set either way.
+
+diff -ru a/libc/include/sys/ioctl.h b/libc/include/sys/ioctl.h
+--- a/libc/include/sys/ioctl.h
++++ b/libc/include/sys/ioctl.h
+@@ -68,6 +68,16 @@
+ #define TIOCGPTN    0x80045430 /* which /dev/pts/N a master is: int * */
+ #define TIOCSPTLCK  0x40045431 /* unlockpt: int *                    */
+ 
++/*
++ * WHAT TERMINAL IS THIS DESCRIPTOR OPEN ON -- the name as /dev has it,
++ * without the "/dev/": "console", "ttyS0", "pts/0". Fills a
++ * char[TTYNAME_MAX]. This one is NOT Linux's, because Linux has no
++ * ioctl for it: it answers ttyname(3) from /proc/self/fd, and a system
++ * without /proc has nowhere else to ask. See kernel/uapi.h.
++ */
++#define TIOCGDEVNAME 0x54F2
++#define TTYNAME_MAX  32
++
+ _END_STD_C
+ 
+ #endif /* _SYS_IOCTL_H_ */
+diff -ru a/libos/linux/ttyname_r.c b/libos/linux/ttyname_r.c
+--- a/libos/linux/ttyname_r.c	2026-09-24 07:53:36.912987339 -0600
++++ b/libos/linux/ttyname_r.c	2026-09-24 07:53:36.928964402 -0600
+@@ -36,19 +36,33 @@
+ #define _DEFAULT_SOURCE
+ #include <unistd.h>
+ #include <stdio.h>
++#include <errno.h>
++#include <sys/ioctl.h>
+ 
++/*
++ * SuckOS: the stock version is readlink("/proc/self/fd/N"), and there
++ * is no /proc here. The kernel answers instead -- see the head of
++ * libc/patches/37.
++ *
++ * POSIX: returns 0, or an error NUMBER. Not -1.
++ */
+ int
+ ttyname_r(int fd, char *buf, size_t bufsize)
+ {
+-    char    fdpath[sizeof("/proc/self/fd/") + 12];
++    char    name[TTYNAME_MAX];
+     int     iret;
+-    ssize_t ssret;
+ 
+-    iret = snprintf(fdpath, sizeof(fdpath), "/proc/self/fd/%d", fd);
++    if (buf == NULL)
++        return EINVAL;
++    if (ioctl(fd, TIOCGDEVNAME, name) < 0)
++        return errno;
++    /* The kernel zero fills the whole buffer, but a kernel that ever
++     * stopped doing so should not run this off the end of it. */
++    name[sizeof(name) - 1] = '\0';
++    iret = snprintf(buf, bufsize, "/dev/%s", name);
+     if (iret < 0)
+-        return iret;
+-    ssret = readlink(fdpath, buf, bufsize);
+-    if (ssret < 0)
+-        return -1;
++        return errno;
++    if ((size_t) iret >= bufsize)
++        return ERANGE;
+     return 0;
+ }

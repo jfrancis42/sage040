@@ -86,29 +86,35 @@ Every suite in the tree passes, on ext2:
 
 ### Open, and nothing is blocking them
 
-- **`ssh machine` cannot get an interactive session: "ttyname fails
-  for openpty device".**
+- **`ssh machine` still cannot get an interactive session. One cause
+  fixed, a second now visible.**
 
   `ssh machine command` works -- `sshtest.sh` runs ten of them, plus
-  scp and rsync -- and `ssh machine`, or any session that asks for a
-  terminal, is refused by Dropbear before the shell ever starts.
+  scp and rsync -- and any session that asks for a terminal is refused
+  by Dropbear before the shell starts.
 
-  The reason: Dropbear's `sshpty.c` calls `ttyname()` on the pty it has
-  just opened, and picolibc's `ttyname_r()` is `readlink("/proc/self/
-  fd/N")`. There is no /proc here, so it fails, and Dropbear treats
-  that as fatal. Nothing is wrong with the ptys themselves -- 
-  `ptytest.sh` passes and the kernel knows each one's name, since
-  `dev_char_name()` is what `who` gets "pts/0" from.
+  **Fixed:** Dropbear called `ttyname()` on the pty it had just opened,
+  picolibc answered `ttyname()` by reading `/proc/self/fd/N`, and there
+  is no /proc here. The kernel knows the answer -- it is where `who`
+  gets "pts/0" -- so `TIOCGDEVNAME` asks a descriptor for the name of
+  the character device it is open on, answered in `fd_ioctl` from the
+  device registry so that every character device has a name for free.
+  `libc/patches/37` rewrites `ttyname_r` on it. `tty(1)` wants the same
+  call.
 
-  The fix is to let a program ask what terminal a descriptor is open
-  on, and to answer `ttyname()` from that rather than from a filesystem
-  this machine does not have: an ioctl in the tty layer, a
-  machine-specific `ttyname_r` beside the crypt one in
-  `libc/picolibc/libos/linux/machine/m68k/`, then a libc and Dropbear
-  rebuild. `tty(1)` wants the same call.
+  **Next:** `chown(/dev/pts/0, 1000, 1000) failed: No such file or
+  directory`. Dropbear hands the pty to the user who logged in, and the
+  chown fails -- on a path the kernel resolves perfectly well for open,
+  which points at `chown` not resolving `/dev/` names rather than at
+  anything to do with ptys. `chmod` on the same path is the next line
+  and will need the same. Whether Dropbear should be doing this at all
+  is a separate question: the pty is already the right owner, since it
+  was created by a process that is about to become that user.
 
   Found by `whotest.sh`, which logs in over ssh to check that `who`
-  sees a remote user. It could not, because nobody could.
+  sees a remote user. It still cannot, because nobody can -- and the
+  suite says so as a NOTE naming the current symptom, so the day the
+  symptom changes it goes back to being a failure.
 
 - **Nothing on this machine ever calls `setsid()`, so sessions are not
   what they claim to be.**
