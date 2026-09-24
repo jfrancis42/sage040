@@ -155,6 +155,7 @@ static struct task *alloc_task(const char *name)
             }
             t->pid = next_pid++;
             t->tgid = t->pid;   /* its own thread group, until cloned */
+            t->start = timer_jiffies();
             strncpy(t->name, name, TASK_NAME_MAX - 1);
             t->name[TASK_NAME_MAX - 1] = '\0';
             t->slice = TASK_SLICE;

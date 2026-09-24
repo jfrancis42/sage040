@@ -108,6 +108,8 @@ struct chardev {
 int  dev_register_char(struct chardev *d);
 int  dev_unregister_char(struct chardev *d);
 struct chardev *dev_find_char(const char *name);
+/* Which registered device an open file is, or 0 if it is not one. */
+const char *dev_char_name(const struct file *f);
 struct chardev *dev_first_char(void);
 
 /* ---------------------------------------------------------------- */

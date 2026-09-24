@@ -1514,6 +1514,35 @@ static int do_jobctl(int cmd, int arg, u32 p)
         return store(p, &out, sizeof(out));
     }
 
+    case JOBCTL_WHO: {
+        struct who_info out;
+        const char *name;
+
+        t = task_nth(arg);
+        if (!t) {
+            return -ENOENT;
+        }
+        memset(&out, 0, sizeof(out));
+        out.pid = t->pid;
+        out.ppid = t->parent ? t->parent->pid : 0;
+        out.sid = t->sid;
+        out.uid = t->uid;       /* the REAL uid: who, not what it may do */
+        out.start = t->start;
+        /* The terminal is whatever descriptor 0 is open on, which is
+         * what a session's input actually comes from. A task with no
+         * descriptor 0, or one that is not a device, leaves tty empty
+         * rather than claiming a terminal it has not got. */
+        if (t->files && t->files->fd[0]) {
+            name = dev_char_name(t->files->fd[0]);
+            if (name) {
+                strncpy(out.tty, name, sizeof(out.tty) - 1);
+            }
+        }
+        strncpy(out.name, t->name, sizeof(out.name) - 1);
+        strncpy(out.cmd, t->cmd, sizeof(out.cmd) - 1);
+        return store(p, &out, sizeof(out));
+    }
+
     case JOBCTL_FG:
         /*
          * Bring it to the foreground: let it run again if it was

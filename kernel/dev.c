@@ -62,6 +62,35 @@ int dev_unregister_char(struct chardev *d)
     return -ENOENT;
 }
 
+/*
+ * The other direction: which device is this open file?
+ *
+ * `who` has to name the terminal a session is on, and the only handle
+ * it has is the session leader's descriptor 0. A struct file carries
+ * ops and priv but no back-pointer to the chardev it came from, so the
+ * registry is walked and matched on both: ops alone is not enough,
+ * because every pseudo-terminal slave shares one set of ops and is
+ * told apart only by priv.
+ *
+ * Returns 0 for a file that is not a character device -- a session
+ * whose input is a pipe or a file has no terminal, and `who` says so
+ * rather than inventing one.
+ */
+const char *dev_char_name(const struct file *f)
+{
+    struct chardev *d;
+
+    if (!f || !f->ops) {
+        return 0;
+    }
+    for (d = chars; d; d = d->next) {
+        if (d->ops == f->ops && d->priv == f->priv) {
+            return d->name;
+        }
+    }
+    return 0;
+}
+
 struct chardev *dev_find_char(const char *name)
 {
     struct chardev *d;

@@ -112,6 +112,8 @@ system/dmesg
 libc/test/ptytest
 system/reboot
 system/which
+system/who
+system/w
 
 # auth/: the privileged programs. Committed by accident when the
 # directory was made -- six m68k binaries carried in a public

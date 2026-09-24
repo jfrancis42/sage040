@@ -100,6 +100,15 @@ struct task {
     struct task *parent;
     int   pgid;                 /* process group: what ctrl-C reaches  */
     int   sid;                  /* session: the groups a login holds   */
+    /*
+     * When this task was made, in jiffies since boot. It is here so
+     * that `who` can say when somebody logged in: a session's login
+     * time is the moment its leader started, and nothing else on
+     * this machine records it. Userspace turns it into a wall clock
+     * by subtracting from the uptime, because the wall clock can be
+     * set and jiffies cannot go backwards.
+     */
+    u32   start;
 
     /*
      * THREADS. A task is a thread; a process is every task sharing a

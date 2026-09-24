@@ -202,7 +202,7 @@ the POSIX layer added to it.
 | `ports/sed`, `ports/grep` | GNU sed 4.10 and GNU grep 3.12 |
 | `ports/awk` | the one true awk |
 | `ports/uemacs`, `ports/vi` | uEmacs/PK and neatvi |
-| `system/` | the system's own programs: `ifconfig`, `ping`, `netstat`, `host`, `ntpdate`, `fsck`, `swapon`, `nvram`, `irqs`, `stty`, `df`, `id`, `sh` |
+| `system/` | the system's own programs: `ifconfig`, `ping`, `netstat`, `host`, `ntpdate`, `fsck`, `swapon`, `nvram`, `irqs`, `stty`, `df`, `id`, `who`, `w`, `sh` |
 | `apps/` | demonstrations and test programs: `cube`, `httpd`, `fetch`, `fbmap`, `pagetest` |
 
 ---
