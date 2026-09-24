@@ -16,7 +16,10 @@ Sage name is an homage and a design sensibility, not a claim of accuracy.
 preemptive multitasking, demand paging and swap, signals and job control, an
 ext2 filesystem, a TCP/IP stack, a framebuffer console, and a
 C library that ordinary POSIX programs build against, with threads,
-pseudo-terminals, users and a real terminfo database. **CPython 3.14**
+pseudo-terminals and a real terminfo database. It is **multi-user**:
+the console and ssh both ask for a name and a password, hashes live in
+`/etc/shadow`, and every path a system call takes is checked against
+the file's owner, group and mode. **CPython 3.14**
 runs on it -- with TLS, SQLite, compression and readline behind it -- and
 so do GNU bash, sed, grep, less, the one true awk, uEmacs, vi, ssh,
 rsync and 98 of suckless's utilities, each built from its own unmodified

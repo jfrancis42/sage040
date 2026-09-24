@@ -211,15 +211,13 @@ These are properties of the machine, written up in `design.md` and
 - **No thread-local storage.** The 68040 has no thread pointer
   register; `__thread` needs `PT_TLS` in `ld.so`, a per-thread block,
   and `__m68k_read_tp`, all three.
-- **No `crypt(3)`**, so no ssh password authentication. Public keys
-  work.
-- **Users protect nothing** -- the disk records owners and modes;
-  nothing enforces them.
 - **Object files built on the machine are not byte-reproducible.** The
   native assembler leaves uninitialised bytes in section padding where
   the cross one leaves zeroes. Every section a tool reads is identical.
-- **`xz` at its default preset will not run**: `-6` wants about 94 MB
-  and the machine has 64. `-1` works.
+- **`xz` at its default preset may still not run.** `-6` wants about
+  94 MB for its dictionary and the machine had 64, which is where this
+  entry came from; RAM_MB is 256 now, so the arithmetic no longer says
+  it must fail. **Not re-measured since.** `-1`, about 9 MB, works.
 - **A fault's own signal cannot be caught**, the 68040's access-fault
   frame not being redirectable in place.
 

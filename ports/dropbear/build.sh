@@ -33,12 +33,10 @@
 # it the call compiled as an implicit declaration and the build
 # stopped.
 #
-# PASSWORD AUTHENTICATION IS OFF, and that is not a shortcut either.
-# Verifying a password means crypt(3), which picolibc does not have,
-# and inventing one badly is worse than not having one. Public keys
-# work, which is the authentication anybody should be using anyway;
-# `dropbearkey` makes them. If passwords are wanted, crypt() belongs in
-# the C library and is written up in progress.md.
+# PASSWORD AUTHENTICATION IS ON, and was not: it needed crypt(3) and a
+# shadow file, and the machine now has both. The whole story, including
+# why the server and the client wanted it for different reasons, is at
+# the head of localoptions.h -- which is the file that decides it.
 
 set -eu
 
@@ -85,8 +83,9 @@ mkdir -p "$BUILD"
 # Makefile tests `$(wildcard ./localoptions.h)` and defines
 # LOCALOPTIONS_H_EXISTS from it, and "." is where make is running. Put
 # in the source tree it was never seen, and the build stopped on
-# "DROPBEAR_SVR_PASSWORD_AUTH requires `crypt()'" -- the default it
-# was supposed to be overriding.
+# "DROPBEAR_SVR_PASSWORD_AUTH requires `crypt()'" -- a build that
+# failed because the file meant to answer that requirement was never
+# read.
 cp "$HERE/localoptions.h" "$BUILD/localoptions.h"
 
 if [ ! -f "$BUILD/Makefile" ]; then
