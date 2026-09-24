@@ -256,11 +256,12 @@ The short version of the hardware gotchas:
 | `ldso/` | the dynamic linker, `/lib/ld.so` |
 | `lib/` | the small library programs written for this system link against |
 | `system/` | the system's own programs, installed into `/bin` |
+| `auth/` | login, su, sudo, passwd, useradd, userdel, and the account files |
 | `apps/` | everything else, installed at the disk root |
 | `ports/` | programs written by other people: bash, sbase, sed, grep, awk, uEmacs, vi |
 | `tools/` | `qemu-net.sh`, which decides how the guest reaches the network |
-| `scratch/` | everything the test suites write; `make clean` removes it |
-| `types.h`, `disk.mk` | the integer types, and the machine's disk, shared by everything |
+| `/tmp/scratch` | everything the test suites write -- outside the tree on purpose; `make clean` removes it, `SAGE_SCRATCH` moves it |
+| `types.h`, `disk.mk`, `machine.conf` | the integer types, the machine's disk, and its RAM and disk sizes -- shared by everything |
 
 ---
 
