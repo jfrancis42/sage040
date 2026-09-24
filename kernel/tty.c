@@ -853,7 +853,21 @@ static int tty_ioctl(struct file *f, u32 request, u32 arg)
 
         for (i = 0; (t = task_nth(i)) != 0; i++) {
             if (t->pgid == pg && t->state != TASK_ZOMBIE) {
-                fg_pgrp = pg;
+                /*
+                 * tty_set_foreground, not a bare fg_pgrp = pg, because
+                 * taking the terminal must also HAND OVER a ctrl-C that
+                 * landed in pending_sig while nobody had it. The shell
+                 * is a kernel task and takes no signals, so a ctrl-C
+                 * typed while it is between jobs -- setting up a
+                 * pipeline, say -- is not delivered to it; it waits in
+                 * pending_sig for whoever gets the terminal next. When
+                 * the shell then made a job the foreground group by
+                 * routing through this ioctl, a bare assignment left
+                 * that ctrl-C stuck, and a foreground pipeline that
+                 * should have died on it hung instead. tcsetpgrp(3)
+                 * from a program gets the same, correct, behaviour.
+                 */
+                tty_set_foreground(pg);
                 return 0;
             }
         }
