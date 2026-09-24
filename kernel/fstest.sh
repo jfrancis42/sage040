@@ -133,11 +133,20 @@ LC_ALL=C.UTF-8 fsimg put "$SCRATCH/lfn.tmp" $'/na\xc3\xafve r\xc3\xa9sum\xc3\xa9
 head -c 5242880 /dev/urandom > "$SCRATCH/huge.tmp"
 fsimg put "$SCRATCH/huge.tmp" /HUGE.BIN
 
-# A SYMLINK, which only the host can make: ext2 holds one and nothing
-# in the guest creates or follows one. What is checked is that the
-# kernel calls it what it is instead of handing back the target's NAME
-# as though it were the file's contents -- which is what a driver that
-# knows only S_IFREG and S_IFDIR does.
+# A SYMLINK THE HOST MADE, followed by the guest.
+#
+# This used to check the opposite. When ext2 could hold a symlink and
+# nothing in the kernel could follow one, the thing worth checking was
+# that reading it was REFUSED rather than handing back the target's
+# NAME as though it were the file's contents -- which is what a driver
+# that knows only S_IFREG and S_IFDIR does.
+#
+# The kernel follows them now (kernel/linktest.sh covers making and
+# reading them from the guest), so the same command that had to fail
+# has to work: `cat /alink` must produce HOST.TXT's contents. The old
+# expectation is not weakened, it is inverted -- and the "target's
+# name as contents" failure is still caught, because the name is not
+# what HOST.TXT holds.
 printf 'symlink /alink HOST.TXT\nquit\n' | debugfs -w "$DISK?offset=$OFFSET" >/dev/null 2>&1
 
 fsimg put -m 755 ../apps/hello /hello
@@ -544,11 +553,17 @@ echo "=== checks: a symlink the host made ==="
 
 awk '/^SYMLINK-TEST$/ { f = 1; next } /^LINK-RC=/ { f = 0 } f' \
     "$SCRATCH/lfn-log.tmp" > "$SCRATCH/link.tmp"
-! grep -q "written by the host" "$SCRATCH/link.tmp"
-check "reading a symlink does not hand back the target's name as contents" $?
+grep -q "written by the host" "$SCRATCH/link.tmp"
+check "a symlink is FOLLOWED: reading it gives the target's contents" $?
 
-grep -q "^LINK-RC=[1-9]" "$SCRATCH/lfn-log.tmp"
-check "  and it is refused, with a status that says so" $?
+# Not the target's NAME. A filesystem that knows only S_IFREG would
+# hand back "HOST.TXT" as though that were the file, and the check
+# above would not notice on its own.
+! grep -q "^HOST.TXT$" "$SCRATCH/link.tmp"
+check "  and not the target's name as though it were the contents" $?
+
+grep -q "^LINK-RC=0" "$SCRATCH/lfn-log.tmp"
+check "  with a status of 0" $?
 
 echo "=== checks: what e2fsck says ==="
 

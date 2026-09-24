@@ -178,6 +178,32 @@ region carries the bit on every one of its *page* descriptors; there is no
 way to mark a subtree. Get that wrong and nothing fails loudly, the kernel
 is simply readable from user mode.
 
+**The caches are ON, and the page tables are not cached.** Both of the
+68040's caches are enabled at the end of `vm_init` — `cinva` first,
+because they come out of reset with undefined tags, then
+`CACR = 0x80008000` (bit 31 data, bit 15 instruction). Device registers
+and the framebuffer are non-cachable through `DTT0`/`DTT1`, and RAM is
+copyback.
+
+Translation tables are marked NON-CACHABLE, and that is not tidiness.
+The 68040's table search reads descriptors from memory directly and
+writes the `U` and `M` bits back the same way; it does not go through
+the data cache and does not snoop it. With tables cached, the MMU walks
+descriptors the kernel has only written into the cache, and a writeback
+of an older line silently undoes bits the hardware has just set — for
+`M`, that is a modified page evicted as clean. Linux/m68k marks
+page-table pages non-cachable for exactly this reason. Tables are marked
+as they are allocated; the ones built before the map exists are swept
+once, from the root, before the caches come on.
+
+**None of that can be observed here.** QEMU has no cache model: it takes
+the `CACR` write, ignores the `CM` bits and decodes `cinv` and `cpush` as
+no-ops, so a correct setup and a broken one are identical under the
+emulator and there is no speedup to measure either. The boot line
+reporting `CACR` back is the only evidence available. It is written for
+real hardware and is correct by inspection — which is why the conditions
+that must hold before it are listed where it is switched on.
+
 Three more things about this MMU that cost real time:
 
 **`movec` does not flush the translation cache.** Every write to `TC`,
@@ -1134,6 +1160,14 @@ each, 256 open files -- but these three are structure.
 back in gives up its slot, so evicting it again writes it again. When
 memory is overcommitted and runs out, whoever faults is killed -- there is
 no chosen victim.
+
+A swap cache -- keeping the slot, and using the MMU's `M` bit to DROP a
+page nothing had written rather than write it again -- was built and
+taken back out; progress.md says what went wrong and what to know before
+trying it a second time. The short version is that `M` lives on a
+descriptor while a remembered slot belongs to a frame, and that the
+kernel writes user pages by physical address, so `read(2)` filling a
+buffer sets no `M` bit at all.
 
 **No floating point in the kernel.** Programs may use the FPU; `cube`
 does.

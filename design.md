@@ -21,7 +21,7 @@ is the machine, and the decisions behind it.
 
 | Function | Part | Why this part |
 |---|---|---|
-| CPU, FPU, MMU | Motorola **MC68040** | On-chip FPU and a working paged MMU |
+| CPU, FPU, MMU, caches | Motorola **MC68040** | On-chip FPU, a working paged MMU, and 4 KB each of instruction and data cache -- both enabled, with the page tables marked non-cachable because the table walker does not snoop the data cache (os.md, "Memory") |
 | Timers, interrupts, 2nd serial | Motorola **MC68901 MFP** | The classic 68k companion chip; one part gives timers, a vectored interrupt controller, a parallel port and a USART |
 | Console | National **NS16550A** | The most thoroughly documented UART ever made; a working console is ~20 lines |
 | Disk | **ATA taskfile** (WD1003 lineage) | Eight registers, polled PIO, no DMA or descriptors — ~60 lines for read and write |
