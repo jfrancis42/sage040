@@ -756,6 +756,7 @@ int exec_replace(const char *path, int argc, char **argv, char **envp,
 {
     struct addrspace *as, *old = current->as;
     u32 entry = 0, sp = 0;
+    u32 new_euid, new_egid;
     int err, sig;
 
     if (argc < 0 || argc > EXEC_MAX_ARGS) {
@@ -763,6 +764,43 @@ int exec_replace(const char *path, int argc, char **argv, char **envp,
     }
     if (!old) {
         return -EPERM;          /* a kernel task is not a program */
+    }
+
+    /*
+     * THE SAME TWO QUESTIONS exec_spawn ASKS, and for the same reasons:
+     * may this task run this file, and does running it change who it
+     * is? Asked here from one stat, before anything is torn down, so a
+     * refusal leaves the caller exactly as it was.
+     *
+     * NEITHER WAS ASKED HERE AT ALL until now, and both are the kind of
+     * absence that does not announce itself:
+     *
+     *   - the set-user-id bit did nothing, so `passwd` run from bash
+     *     could not read /etc/shadow and said "authentication failure"
+     *     for a correct password, while the same program run from the
+     *     kernel's own shell worked. The difference is nothing to do
+     *     with passwords: /bin/sh spawns, and bash forks and execve's,
+     *     and only the spawn path honoured the bit. `sudo` from bash
+     *     silently failed to gain privilege in the same way.
+     *   - execute permission went unchecked, so a program could execve
+     *     a file its own credentials say it may not run.
+     *
+     * Every suite ran its programs from the kernel shell, which is why
+     * thirty-odd of them passed over this.
+     */
+    {
+        struct stat st;
+
+        err = vfs_may(path, X_OK);
+        if (err < 0) {
+            return err;
+        }
+        err = vfs_stat(path, &st);
+        if (err < 0) {
+            return err;
+        }
+        new_euid = (st.st_mode & S_ISUID) ? st.st_uid : (u32)-1;
+        new_egid = (st.st_mode & S_ISGID) ? st.st_gid : (u32)-1;
     }
 
     /*
@@ -793,6 +831,25 @@ int exec_replace(const char *path, int argc, char **argv, char **envp,
     vm_switch(as);
     vm_destroy(old);
     vm_ready(as);
+
+    /*
+     * AND THEN THE IDS, once the image is known to be loadable and not
+     * one instruction before. Setting them earlier would leave a task
+     * running as root after a failed exec -- which is the whole reason
+     * exec_spawn takes them up this late too.
+     *
+     * The real uid is untouched: it is how a set-user-id program knows
+     * who actually asked. The saved uid follows the effective one, so
+     * the program can drop the privilege and take it back.
+     */
+    if (new_euid != (u32)-1) {
+        current->euid = new_euid;
+        current->suid = new_euid;
+    }
+    if (new_egid != (u32)-1) {
+        current->egid = new_egid;
+        current->sgid = new_egid;
+    }
 
     describe(current->cmd, JOB_CMD_MAX, argc, argv);
     strncpy(current->name, argv[0] ? argv[0] : path, TASK_NAME_MAX - 1);
