@@ -81,6 +81,8 @@ Every suite in the tree passes, on ext2:
 | | |
 |---|---|
 | **A Lisp: CLISP or ECL** | Both are possible now, and the choice is real rather than a formality. See below. |
+| **Rewriting published history, or not** | Three files named the private working-notes file, and `e568c44` took the name out of all three -- so no tracked file mentions it now. The references are still in HISTORY, in the two commits that introduced them: `68e3272` (`qemu-patch/build.sh` and the crypt backend) and `afa36e7` (`progress.md`). Both are pushed. Taking them out means rewriting those commits and force-pushing, which breaks every existing clone and every open checkout; leaving them means the name stays in a public repository's log. Nothing depends on the answer -- the working tree is clean either way. `git log -S <the name> origin/main` lists the commits, which is the one-line check that found this. |
+| **`type` and `varenv`: diagnose now, or leave them listed?** | Two of bash's own tests fail, for reasons nobody knows yet -- see "Broken, or not working" above for what is known. They are in `BASH_KNOWN` so `make test` completes, and each prints `NOT DIAGNOSED` every run, so they cannot be forgotten. The question is only whether they are worth an afternoon before the other open work. What makes them interesting rather than routine: they had never run once, so whatever is wrong has been wrong for as long as bash has been on this machine. |
 
 ### Open, and nothing is blocking them
 
