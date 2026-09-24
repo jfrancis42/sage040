@@ -382,8 +382,13 @@ struct dirent {
  * bug waiting in it.
  *
  * Linux's f_type is a MAGIC NUMBER, not a string. MSDOS_SUPER_MAGIC
- * is 0x4d44 ("MD"), which is what a FAT volume reports on Linux, and
- * what anything that recognises filesystems by magic will expect.
+ * is 0x4d44 ("MD") and EXT2_SUPER_MAGIC is 0xef53, which is what each
+ * volume reports on Linux and what anything that recognises
+ * filesystems by magic will expect. Both are here rather than in the
+ * driver that fills the field in, because a PROGRAM has to be able to
+ * tell them apart: the shell's `df` printed "?" for every ext2 volume
+ * -- that is to say, for the machine's own disk -- for as long as
+ * MSDOS_SUPER_MAGIC was the only name a program could say.
  *
  * f_bavail is what an unprivileged program may actually use, which on
  * a system with no reserved blocks and no users is f_bfree. f_files
@@ -394,9 +399,10 @@ struct dirent {
  * either -- see FSCTL_LABEL below.
  */
 #define MSDOS_SUPER_MAGIC 0x4d44
+#define EXT2_SUPER_MAGIC  0xef53
 
 struct statfs {
-    u32 f_type;                 /* MSDOS_SUPER_MAGIC                  */
+    u32 f_type;                 /* one of the *_SUPER_MAGIC above     */
     u32 f_bsize;                /* transfer block size (the cluster)  */
     u32 f_blocks;               /* total blocks                       */
     u32 f_bfree;                /* free blocks                        */
