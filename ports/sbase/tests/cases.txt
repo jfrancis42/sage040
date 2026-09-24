@@ -47,10 +47,10 @@ sha1|sha1sum big.txt
 sha256|sha256sum big.txt fruit.txt
 sha512|sha512sum c1.txt
 cksum|cksum big.txt
-findn|~find . -name '*.txt' -type f -print
+findn|@find . -name '*.txt' -type f -print
 findd|find . -type d
 xargs|~echo a b c | xargs -n 1 echo
-xargswc|~find . -name 'c?.txt' | xargs /bin/cat
+xargswc|@find . -name 'c?.txt' | xargs /bin/cat
 bc|echo '2^64' | bc
 bcl|echo 'scale=20; 4*a(1)' | bc -l
 dc|echo '2 64 ^ p' | dc

@@ -9,7 +9,11 @@
 # the same command run on the host with its own (GNU) tools. The two are
 # compared on the host -- sort orders, checksums, od dumps and CRCs are
 # answers two different implementations must agree on. A '~' compares
-# with whitespace squeezed, where column widths may fairly differ.
+# with whitespace squeezed, where column widths may fairly differ; a '@'
+# compares the lines SORTED, for output whose order is a directory's
+# readdir order -- neither find promises one, so comparing it byte for
+# byte would be a test of the two filesystems' entry order and not of
+# the utility.
 #
 # Then what only the disk can say: a tar archive the host's tar reads, a
 # dd whose size the host reports, a date touch set, make rebuilding a file
@@ -70,6 +74,7 @@ while IFS='|' read -r tag cmd; do
     case "$tag" in ''|'#'*) continue ;; esac
     cmd=${cmd#\~}
     cmd=${cmd#=}
+    cmd=${cmd#@}
     (cd "$WORK/host" && LC_ALL=C bash -c "$cmd" > "$WORK/expect/$tag.OUT" 2>&1
      echo "status $?" >> "$WORK/expect/$tag.OUT")
 done < "$T/cases.txt"
@@ -122,6 +127,7 @@ while IFS='|' read -r tag cmd; do
     case "$tag" in ''|'#'*) continue ;; esac
     cmd=${cmd#\~}
     cmd=${cmd#=}
+    cmd=${cmd#@}
     run "$cmd > $tag.OUT 2>&1; echo status \$? >> $tag.OUT" "c-$tag"
 done < "$T/cases.txt"
 
@@ -174,12 +180,15 @@ while IFS='|' read -r tag cmd; do
         cmp -s <(squeeze "$WORK/got/$tag.OUT") <(squeeze "$WORK/expect/$tag.OUT")
     elif [ "${cmd#=}" != "$cmd" ]; then
         cmp -s <(values "$WORK/got/$tag.OUT") <(values "$WORK/expect/$tag.OUT")
+    elif [ "${cmd#@}" != "$cmd" ]; then
+        cmp -s <(sort "$WORK/got/$tag.OUT") <(sort "$WORK/expect/$tag.OUT")
     else
         cmp -s "$WORK/got/$tag.OUT" "$WORK/expect/$tag.OUT"
     fi
     r=$?
     shown=${cmd#\~}
-    check "$tag: ${shown#=}" $r
+    shown=${shown#=}
+    check "$tag: ${shown#@}" $r
     [ $r -ne 0 ] && diff "$WORK/expect/$tag.OUT" "$WORK/got/$tag.OUT" 2>&1 | head -6 | sed 's/^/        /'
 done < "$T/cases.txt"
 
@@ -204,8 +213,19 @@ check "make: builds, then nothing to do, then rebuilds once the source is newer"
 check "ed: a script of commands edits the file in place" $?
 [ -d "$G/moved/er/est" ] && [ ! -e "$G/deep" ] && [ ! -e "$G/copied" ]
 check "mkdir -p, cp -r, mv, rm -r: the tree the host sees" $?
-grep -q "status 1" "$G/ln.out" && [ ! -e "$G/hard.txt" ]
-check "ln: refused, FAT has no hard links, and nothing made" $?
+# ln WORKS now. This checked that it was refused and left nothing
+# behind, which was true while the filesystem was FAT and had no link
+# count. ext2 has one, so the link is made -- and the two names must be
+# the SAME inode, not a copy, which is the thing worth checking.
+grep -q "status 0" "$G/ln.out" && [ -e "$G/hard.txt" ]
+check "ln: a second name is made" $?
+# ON THE IMAGE, not on the copy fetched out of it: `fsimg get -r`
+# writes two ordinary files for two names, so the host copy cannot
+# show that they were one inode. The image can.
+a=$(fsimg ls-l /ST 2>/dev/null | awk '$NF=="hard.txt"{print $1}')
+b=$(fsimg ls-l /ST 2>/dev/null | awk '$NF=="fruit.txt"{print $1}')
+[ -n "$a" ] && [ "$a" = "$b" ]
+check "  and it is the same inode as the original, not a copy ($a)" $?
 cmp -s "$G/uu.out" "$T/c1.txt"
 check "uuencode and uudecode: a round trip" $?
 [ "$(cat "$G/revutf.out")" = "$(printf '日éa')" ]
