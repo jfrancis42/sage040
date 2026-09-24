@@ -15,6 +15,8 @@
 # directory rather than scattered through the tree, removed by
 # `make clean`. hd.img at the top level is deliberately NOT here -- it
 # is the machine's disk, not a build product, and it is ignored below.
+# scratch/ moved to /tmp/scratch (it was churning Dropbox); kept
+# here so an old tree with one still ignores it.
 /scratch/
 
 # Emulator output captured during test runs
@@ -116,3 +118,11 @@ libc/test/ptytest
 *.core
 core
 core.*
+
+# DROPBOX CONFLICTED COPIES. This tree lives in Dropbox and is built on
+# more than one machine; when two of them write hd.img, Dropbox keeps
+# both and names the loser "hd (mother's conflicted copy DATE).img".
+# A `git add -A` then sweeps in a 512 MB file, and GitHub refuses the
+# whole push with "exceeds GitHub's file size limit of 100.00 MB" --
+# which is how this rule came to exist.
+*conflicted copy*

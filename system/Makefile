@@ -18,7 +18,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-PROGS := ifconfig ping netstat shutdown env stty resize fsck host ntpdate swapon swapoff irqs nvram klogd dmesg df id sh
+PROGS := ifconfig ping netstat shutdown reboot env stty resize fsck host ntpdate swapon swapoff irqs nvram klogd dmesg df id sh
 INSTALL_DIR := /bin
 
 include $(TOPDIR)/lib/program.mk
@@ -48,6 +48,28 @@ install-etc: $(DISK)
 	fi
 	@if ! $(FSIMG) exists /etc/group; then \
 	    $(FSIMG) put group /etc/group && echo "installed /etc/group"; \
+	fi
+	@# /etc/shadow, MODE 0600. The mode is the whole point of the file
+	@# existing separately, and it is only worth anything because the
+	@# kernel enforces one now. Installed if missing and never
+	@# replaced: overwriting it would reset every password on the
+	@# machine back to the shipped default.
+	@# /etc/profile and a ~/.profile for each account that has a home
+	@# on a fresh disk. Installed only if missing: these are files
+	@# somebody edits, and replacing an edited one would throw away
+	@# what they wrote.
+	@if ! $(FSIMG) exists /etc/profile; then \
+	    $(FSIMG) put profile /etc/profile && echo "installed /etc/profile"; \
+	fi
+	@for h in /root /home/jfrancis; do \
+	    if ! $(FSIMG) exists $$h/.profile; then \
+	        $(FSIMG) put dot-profile $$h/.profile && \
+	        echo "installed $$h/.profile"; \
+	    fi; \
+	 done
+	@if ! $(FSIMG) exists /etc/shadow; then \
+	    $(FSIMG) put -m 600 shadow /etc/shadow && \
+	    echo "installed /etc/shadow (root's password is 'root')"; \
 	fi
 	@if ! $(FSIMG) exists /etc/rc; then \
 	    $(FSIMG) put rc /etc/rc && echo "installed /etc/rc"; \

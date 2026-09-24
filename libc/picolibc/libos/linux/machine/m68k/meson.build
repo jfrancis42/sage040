@@ -47,6 +47,8 @@ srcs_os_linux_machine = [
   'posix-proc.c',
   'glob.c',
   'syslog.c',
+  'crypt.c',
+  'shadow.c',
 ]
 
 src_os_linux_machine = files(srcs_os_linux_machine)

@@ -215,6 +215,7 @@ void task_cred_inherit(struct task *t, struct task *from)
     if (!from) {
         t->uid = t->euid = t->suid = 0;
         t->gid = t->egid = t->sgid = 0;
+        t->ngroups = 0;
         return;
     }
     t->uid = from->uid;
@@ -223,6 +224,18 @@ void task_cred_inherit(struct task *t, struct task *from)
     t->gid = from->gid;
     t->egid = from->egid;
     t->sgid = from->sgid;
+    /* The supplementary groups travel with the rest. Leaving them
+     * behind would mean a login shell had them and everything it ran
+     * did not, so a group permission would work at the prompt and fail
+     * in a script -- which is a maddening thing to debug. */
+    {
+        int i;
+
+        t->ngroups = from->ngroups;
+        for (i = 0; i < from->ngroups && i < NGROUPS_MAX; i++) {
+            t->groups[i] = from->groups[i];
+        }
+    }
 }
 
 /*

@@ -442,16 +442,21 @@ int i8042_present(void)
  * the processor's RESET pin because there was nowhere else to put it.
  * Every PC has rebooted this way since, and QEMU models it: with
  * -no-reboot a guest-requested reset ends the emulator, which is what
- * makes `shutdown` able to actually stop this machine.
+ * makes `reboot` and `shutdown` able to actually stop this machine.
+ *
+ * This is a RESET and not a power-off, and the device model is told so.
+ * The difference is invisible under the emulator, where -no-reboot
+ * turns any reset into "the machine went away", and is the whole story
+ * on real hardware, where it restarts.
  *
  * Registered with the device model rather than called by name, so that
  * reboot() does not have to know a keyboard is involved. On a board with
- * a real power controller, that driver registers instead and nothing
- * above here changes.
+ * a real power controller, that driver registers a power-off and
+ * nothing above here changes.
  *
  * Returns only if the pulse did not take.
  */
-static int kbd_poweroff(void)
+static int kbd_reset(void)
 {
     if (kbd_command(KBD_CCMD_RESET) < 0) {
         return -EIO;
@@ -518,8 +523,9 @@ int i8042_init(void)
         return err;
     }
 
-    /* The one thing on this board that can stop the machine. */
-    dev_register_poweroff(kbd_poweroff);
+    /* The one thing on this board that can stop the machine. Nothing
+     * here can cut the supply, so no power-off is registered. */
+    dev_register_reset(kbd_reset);
 
     /* A source only. A keyboard is not somewhere output can go. */
     err = tty_add_source(&kbd_dev);

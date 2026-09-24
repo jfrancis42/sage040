@@ -21,7 +21,29 @@ SRC=$SRCDIR/mpfr-$VERSION
 BUILD=$SRCDIR/build-mpfr-sage040
 GMPOUT=$SRCDIR/build-gmp-sage040/sage040
 
-[ -d "$SRC" ] || { echo "mpfr: $SRC is not there" >&2; exit 1; }
+
+# Fetched if it is not here. The version is pinned and the tarball is
+# checked, so this cannot pick up a different one -- which was the
+# reason these used to refuse to fetch, and the reason the native
+# toolchain could only be built on a machine that already had the
+# source lying around from some earlier build.
+#
+# Checksum of the release verified against the GNU keyring:
+# "Good signature from Vincent Lefevre". (Some of these signing keys have since
+# EXPIRED; a key expiring after it signed does not unmake the
+# signature, and the SHA-256 below is what is actually enforced here.)
+# Change VERSION and you must change SHA256 with it.
+URL=https://ftp.gnu.org/gnu/mpfr/mpfr-$VERSION.tar.xz
+SHA256=0c98a3f1732ff6ca4ea690552079da9c597872d30e96ec28414ee23c95558a7f
+
+if [ ! -d "$SRC" ]; then
+    mkdir -p "$SRCDIR"
+    tarball=$SRCDIR/mpfr-$VERSION.tar.xz
+    [ -f "$tarball" ] || curl -L --fail -o "$tarball" "$URL"
+    echo "$SHA256  $tarball" | sha256sum -c -
+    tar -C "$SRCDIR" -xf "$tarball"
+fi
+
 [ -f "$GMPOUT/lib/libgmp.a" ] || "$HERE/../gmp/build.sh"
 
 libc_fresh "$BUILD" || true

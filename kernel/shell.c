@@ -3117,6 +3117,49 @@ void shell(void)
         }
     }
 
+    /*
+     * THE CONSOLE LOGIN.
+     *
+     * /bin/login asks who you are, checks the password against
+     * /etc/shadow and exec's that user's shell. It is run in a loop --
+     * when a session ends, another login prompt takes its place, which
+     * is what a getty does and is why the console does not simply go
+     * dead when somebody types `exit`.
+     *
+     * IF THERE IS NO /bin/login, this falls through to the built-in
+     * shell as a RESCUE. That is deliberate rather than an oversight:
+     * a disk with no login program, or one that cannot be exec'd, must
+     * still come up to a prompt, or a machine is lost to a bad install
+     * with no way in to repair it. It is also what every test suite in
+     * this tree relies on, since none of them has an account to log in
+     * to.
+     *
+     * This shell is a KERNEL task and runs as root, so what it spawns
+     * starts as root -- which is exactly what login needs, because
+     * dropping to the user is login's own job and it must have the
+     * privilege to do it.
+     */
+    {
+        struct stat st;
+
+        if (sys_stat("/bin/login", &st) == 0) {
+            for (;;) {
+                char *args[1];
+                int pid, status = 0;
+
+                args[0] = (char *)"login";
+                pid = sys_spawn("/bin/login", 1, args, env);
+                if (pid < 0) {
+                    out_puts("login: cannot start; falling back to "
+                             "a rescue shell\n");
+                    out_flush();
+                    break;
+                }
+                (void)sys_waitpid(pid, &status, 0);
+            }
+        }
+    }
+
     interactive();
 }
 
@@ -3221,6 +3264,51 @@ int shell_main(int argc, char **args, char **envp)
         out_flush();
         return last_status;
     }
+    /*
+     * A LOGIN SHELL READS THE STARTUP FILES.
+     *
+     * It knows it is one because argv[0] begins with '-' -- login(1)
+     * and `su -` spell it that way, and it is the only signal there
+     * is. Nothing else about the process distinguishes a login shell,
+     * which is why the convention exists at all and why login goes to
+     * the trouble of rewriting argv[0].
+     *
+     * /etc/profile first, for the machine, then ~/.profile for the
+     * person: the order lets somebody override what the machine set
+     * rather than the other way round. Neither is an error if it is
+     * missing -- a new account has no .profile and should still get a
+     * prompt.
+     *
+     * ~/.bashrc is NOT read here. That file belongs to bash, which
+     * reads it itself; this shell is not bash and pretending otherwise
+     * would run bash's settings under a shell that does not
+     * understand them.
+     */
+    if (args && args[0] && args[0][0] == '-') {
+        struct stat st;
+        const char *home = env_get("HOME");
+
+        if (sys_stat("/etc/profile", &st) == 0) {
+            run_script("/etc/profile");
+        }
+        if (home && *home) {
+            char rc[PATH_MAX];
+            u32 n = 0;
+
+            while (home[n] && n + 10 < sizeof(rc)) {
+                rc[n] = home[n];
+                n++;
+            }
+            if (n && rc[n - 1] == '/') {
+                n--;
+            }
+            memcpy(rc + n, "/.profile", 10);
+            if (sys_stat(rc, &st) == 0) {
+                run_script(rc);
+            }
+        }
+    }
+
     interactive();
     return last_status;
 }

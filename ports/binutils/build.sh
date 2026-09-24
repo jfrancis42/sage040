@@ -89,15 +89,31 @@ SRC=$SRCDIR/binutils-$VERSION
 BUILD=$SRCDIR/build-binutils-native
 STAGE=$BUILD/stage
 
-# The same source the CROSS binutils was built from, already here.
-# Nothing is fetched: if it is missing, say so rather than quietly
-# downloading a different version from the one the cross tools are.
-[ -d "$SRC" ] || {
-    echo "binutils: $SRC is not there. The cross toolchain was built"  >&2
-    echo "from it (see toolchain.md); the native one must be the same" >&2
-    echo "version, or the two disagree about object formats."          >&2
-    exit 1
-}
+# The same source the CROSS binutils was built from.
+#
+# This used to refuse to fetch, on the reasoning that downloading
+# something might get a DIFFERENT version from the one the cross tools
+# were built from, and then the two would disagree about object
+# formats. The reasoning is right and the conclusion was wrong: the
+# version is pinned here and the tarball is checked against a SHA-256,
+# so what is fetched cannot be a different version -- while refusing to
+# fetch meant the native toolchain could only ever be built on the one
+# machine that happened to still have the source lying around, and
+# `make install` failed everywhere else.
+#
+# The checksum was taken from the release verified against the GNU
+# keyring: "Good signature from Nick Clifton (Chief Binutils
+# Maintainer)". Change VERSION and you must change SHA256 with it.
+URL=https://ftp.gnu.org/gnu/binutils/binutils-$VERSION.tar.xz
+SHA256=c50c0e7f9cb188980e2cc97e4537626b1672441815587f1eab69d2a1bfbef5d2
+
+if [ ! -d "$SRC" ]; then
+    mkdir -p "$SRCDIR"
+    tarball=$SRCDIR/binutils-$VERSION.tar.xz
+    [ -f "$tarball" ] || curl -L --fail -o "$tarball" "$URL"
+    echo "$SHA256  $tarball" | sha256sum -c -
+    tar -C "$SRCDIR" -xf "$tarball"
+fi
 
 # Patches: each one a bug that only shows on a target where uint32_t
 # is not `unsigned int`. See the head of each.

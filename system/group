@@ -1,10 +1,13 @@
-# /etc/group - the groups, such as they are.
+# /etc/group - the groups.
 #
 # name:password:gid:members
 #
-# One group per user and nothing else, which is what a machine with
-# one person on it needs. Supplementary groups are not implemented:
-# getgroups() returns none, and there is nothing yet that a group
-# membership would decide.
+# One group per user, plus the ones a person is added to by name in the
+# fourth field. login(1) reads that field and calls setgroups(2), so a
+# membership here is a membership the KERNEL knows about and will honour
+# when it decides a group permission -- see perm_ok() in kernel/vfs.c.
+#
+# `wheel` is the group sudo trusts; see /etc/sudoers.
 root::0:
+wheel::10:jfrancis
 jfrancis::1000:

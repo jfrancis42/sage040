@@ -1714,11 +1714,114 @@ static u32 cwd_ino(void)
  * same shape fs/fat16.c's path_walk() has, because the callers above
  * are the same callers.
  */
+/*
+ * THE TWO SHAPES OF AN ext2 SYMLINK, and both have to be read.
+ *
+ * A FAST symlink keeps its target in the inode itself, in the 60 bytes
+ * that would otherwise be the fifteen block pointers. It has no blocks
+ * at all -- i_blocks is 0 -- and that is how it is recognised. Almost
+ * every symlink in practice is one of these: 60 bytes is a long path.
+ *
+ * A SLOW symlink is an ordinary file whose contents are the target,
+ * used when the target does not fit. Reading one is reading the file.
+ *
+ * i_size is the length either way, and the target is NOT
+ * null-terminated on disk -- writing the terminator is the reader's
+ * job, and forgetting it hands the rest of the inode to the caller as
+ * part of the path.
+ */
+#define SYMLINK_FAST_MAX  (EXT2_N_BLOCKS * 4)   /* 60 bytes */
+
+static int read_link(u32 ino, char *out, u32 size)
+{
+    struct einode ei;
+    int err = iread(ino, &ei);
+    u32 len;
+
+    if (err != 0) {
+        return err;
+    }
+    if (!S_ISLNK(ei.mode)) {
+        return -EINVAL;         /* what readlink(2) says for a non-link */
+    }
+    len = ei.size;
+    if (len == 0 || len >= size) {
+        return -ENAMETOOLONG;
+    }
+    if (ei.blocks == 0) {
+        /* Fast: the target is the block-pointer array, as bytes. The
+         * pointers are stored little-endian on disk and iread has
+         * already byte-swapped them into u32s, so they are put back
+         * the same way rather than memcpy'd -- a memcpy here would
+         * reverse every group of four characters on a big-endian
+         * machine, which reads as a corrupt link rather than as a
+         * byte-order mistake. */
+        u32 i;
+
+        for (i = 0; i < len; i++) {
+            out[i] = (char)((ei.block[i / 4] >> (8 * (i % 4))) & 0xff);
+        }
+    } else {
+        s32 n = inode_read(&ei, 0, out, len);
+
+        if (n < 0) {
+            return (int)n;
+        }
+        if ((u32)n != len) {
+            return -EIO;
+        }
+    }
+    out[len] = '\0';
+    return 0;
+}
+
+/*
+ * How many symlinks one path resolution may follow before giving up.
+ *
+ * A link that points at itself, or a pair that point at each other, is
+ * a loop with no end; without a limit the kernel walks it for ever
+ * with the filesystem lock held, which is not a crash but a machine
+ * that has stopped. Linux's limit is 40 and the number is arbitrary --
+ * what matters is that there is one and that exceeding it is ELOOP
+ * rather than a hang.
+ */
+#define SYMLINK_MAX_DEPTH 40
+
+/*
+ * THE SCRATCH FOR FOLLOWING LINKS IS STATIC, AND MUST BE.
+ *
+ * Two PATH_MAX buffers and a target is 3 KB; a kernel stack here is
+ * four pages, 16 KB, shared with everything else the call is doing.
+ * The first version of this put them on the stack of a function that
+ * also RECURSED once per link -- and it did not survive a plain `rm`,
+ * let alone a link: QEMU stopped with
+ *
+ *     qemu: fatal: DOUBLE MMU FAULT ... fault at 001afcd4
+ *
+ * with A7 sitting at 001afcd8, which is the stack overflowing into the
+ * unmapped page below it. A fault taken while pushing a fault frame is
+ * not an exception, it is the emulator aborting with no message from
+ * the kernel at all.
+ *
+ * Static is safe because the FILESYSTEM LOCK is held for the whole of
+ * every VFS operation, so exactly one task is ever inside here -- the
+ * same reason fs/ can keep any other state between calls. It is not
+ * safe to keep anything in them ACROSS a sleep, and nothing does: they
+ * are used and finished with inside one walk.
+ *
+ * Two path buffers, alternating: the remainder of the old path is
+ * still being read out of one while the new path is written into the
+ * other.
+ */
+static char sl_target[PATH_MAX];
+static char sl_path[2][PATH_MAX];
+
 static int path_walk(u32 start, const char *path, u32 *out_dir,
                      char *out_name, int *out_last_is_dir)
 {
     u32 d = start;
     const char *p = path;
+    int depth = 0, which = 0;
 
     if (out_last_is_dir) {
         *out_last_is_dir = 0;
@@ -1804,12 +1907,67 @@ static int path_walk(u32 start, const char *path, u32 *out_dir,
                 return -ENOTDIR;
             }
         } else if (type == EXT2_FT_SYMLINK) {
-            /* ext2 holds symlinks and a host tool can make one; nothing
-             * here follows one, so a path that goes through one cannot
-             * be resolved. ELOOP is Linux's answer for a symlink that
-             * cannot be followed, and is far better than walking into
-             * the target's NAME as though it were a directory. */
-            return -ELOOP;
+            /*
+             * FOLLOW IT. The target replaces the part of the path
+             * walked so far, the rest is appended, and the whole thing
+             * is walked again from the right place: from the ROOT if
+             * the target is absolute, otherwise from the directory the
+             * link lives in -- a relative target is relative to the
+             * link, not to the working directory, and getting that
+             * backwards makes `a/b -> c` resolve somewhere else
+             * entirely depending on where the caller happened to be.
+             */
+            const char *r = slash;
+            char *dst = sl_path[which];
+            u32 tn, rn;
+
+            if (++depth > SYMLINK_MAX_DEPTH) {
+                return -ELOOP;
+            }
+            err = read_link(ino, sl_target, sizeof(sl_target));
+            if (err != 0) {
+                return err;
+            }
+            while (*r == '/') {
+                r++;
+            }
+            tn = (u32)strlen(sl_target);
+            rn = (u32)strlen(r);
+            if (tn + 1 + rn + 1 > PATH_MAX) {
+                return -ENAMETOOLONG;
+            }
+            /* `r` may point into the OTHER buffer, which is why there
+             * are two: writing the new path must not overwrite the
+             * remainder of the old one while it is still being read. */
+            memcpy(dst, sl_target, tn);
+            if (rn) {
+                dst[tn] = '/';
+                memcpy(dst + tn + 1, r, rn);
+                dst[tn + 1 + rn] = '\0';
+            } else {
+                dst[tn] = '\0';
+            }
+            /* An absolute target restarts at the root; a relative one
+             * continues from the directory the LINK is in, which is
+             * where `d` already points. */
+            if (sl_target[0] == '/') {
+                d = root_ino();
+            }
+            p = dst;
+            /*
+             * AND PAST THE LEADING SLASHES. The top of this loop does
+             * not strip them -- that happens once, before it -- so a
+             * rewritten path beginning with '/' was read as an empty
+             * FIRST component, which this loop takes to mean "the path
+             * ended in a slash" and returns the directory. `cat
+             * /dlink/one.txt` opened /adir itself and reported
+             * "Is a directory".
+             */
+            while (*p == '/') {
+                p++;
+            }
+            which ^= 1;
+            continue;
         } else if (type != EXT2_FT_DIR) {
             return -ENOTDIR;
         }
@@ -1822,7 +1980,17 @@ static int path_walk(u32 start, const char *path, u32 *out_dir,
 }
 
 /* The inode a whole path names. */
-static int path_resolve(const char *path, u32 *ino)
+/*
+ * Resolve a path WITHOUT following a symlink in its last component.
+ *
+ * Interior components are still followed -- `a/b/c` where `b` is a
+ * link has to go through it -- because what lstat, readlink, unlink
+ * and rename mean is "the last name as it stands", not "no links at
+ * all".
+ */
+static int ext2_dir_path(u32 ino, char *out, u32 size);
+
+static int path_resolve_nofollow(const char *path, u32 *ino)
 {
     char name[NAME_MAX + 1];
     u32 d;
@@ -1837,6 +2005,93 @@ static int path_resolve(const char *path, u32 *ino)
         return 0;
     }
     return dir_lookup(d, name, name_len_of(name), ino, 0);
+}
+
+/*
+ * Resolve a path, FOLLOWING a symlink in the last component too.
+ *
+ * This is what open(2) and stat(2) mean: a link is a way to reach the
+ * thing, and asking about `link` gives you the file. lstat, readlink,
+ * unlink and rename want the other one -- path_resolve_nofollow.
+ *
+ * The loop is here rather than recursion because a chain of links
+ * ending in a link is the ordinary case (`a -> b -> c`), and the depth
+ * limit has to count the whole chain, not each step separately.
+ */
+static int path_resolve(const char *path, u32 *ino)
+{
+    /* Static for the same reason path_walk's are: three PATH_MAX
+     * buffers is 3 KB, and a kernel stack is 16 KB shared with
+     * everything else in the call. The filesystem lock makes it safe.
+     * `rbuf` is the path being rewritten; `rtmp` builds the next one
+     * because the old is still being read from the first. */
+    static char rbuf[PATH_MAX], rtmp[PATH_MAX], rdir[PATH_MAX];
+    char name[NAME_MAX + 1];
+    const char *cur = path;
+    u32 d;
+    int last_is_dir, err, depth = 0;
+
+    for (;;) {
+        u32 got;
+        struct einode ei;
+
+        err = path_walk(cwd_ino(), cur, &d, name, &last_is_dir);
+        if (err != 0) {
+            return err;
+        }
+        if (last_is_dir || name[0] == '\0') {
+            *ino = d;
+            return 0;
+        }
+        err = dir_lookup(d, name, name_len_of(name), &got, 0);
+        if (err != 0) {
+            return err;
+        }
+        err = iread(got, &ei);
+        if (err != 0) {
+            return err;
+        }
+        if (!S_ISLNK(ei.mode)) {
+            *ino = got;
+            return 0;
+        }
+        if (++depth > SYMLINK_MAX_DEPTH) {
+            return -ELOOP;
+        }
+        err = read_link(got, rbuf, sizeof(rbuf));
+        if (err != 0) {
+            return err;
+        }
+        if (rbuf[0] == '/') {
+            cur = rbuf;
+        } else {
+            /* Relative to the DIRECTORY THE LINK IS IN. The walk above
+             * left that in `d`, and it is not necessarily the working
+             * directory -- `sub/link -> file` means sub/file. */
+            u32 dn, bn, k;
+
+            err = ext2_dir_path(d, rdir, sizeof(rdir));
+            if (err != 0) {
+                return err;
+            }
+            dn = (u32)strlen(rdir);
+            bn = (u32)strlen(rbuf);
+            if (dn && rdir[dn - 1] == '/') {
+                dn--;           /* the root is "/": do not double it */
+            }
+            if (dn + 1 + bn + 1 > PATH_MAX) {
+                return -ENAMETOOLONG;
+            }
+            memcpy(rtmp, rdir, dn);
+            rtmp[dn] = '/';
+            memcpy(rtmp + dn + 1, rbuf, bn);
+            rtmp[dn + 1 + bn] = '\0';
+            for (k = 0; k <= dn + 1 + bn; k++) {
+                rbuf[k] = rtmp[k];
+            }
+            cur = rbuf;
+        }
+    }
 }
 
 /*
@@ -2384,6 +2639,9 @@ static void fill_stat(const struct einode *ei, struct stat *st)
     st->st_mtime = ei->mtime;
     st->st_blocks = ei->blocks;
     st->st_ino = ei->ino;
+    st->st_uid = ei->uid;
+    st->st_gid = ei->gid;
+    st->st_nlink = ei->links;
 }
 
 static int ext2_file_fstat(struct file *f, struct stat *st)
@@ -2491,10 +2749,31 @@ static int ext2_open(const char *path, int flags, struct file *f)
             return err;
         }
         if (S_ISLNK(ei.mode)) {
-            /* Reading it would hand the program the target's NAME as
-             * though it were the file's contents. Nothing follows a
-             * symlink here yet, so say so. */
-            return -ELOOP;
+            /*
+             * FOLLOW IT, which is what opening a symlink means: the
+             * link is a way to reach the file, and open(2) opens the
+             * file. This used to refuse with ELOOP because nothing
+             * could follow one -- so with links working, `cat link`
+             * reported "Too many symbolic links" for a link that was
+             * perfectly good.
+             *
+             * O_NOFOLLOW is the caller saying they meant the link
+             * itself, and ELOOP is exactly what Linux answers then.
+             */
+            if (flags & O_NOFOLLOW) {
+                return -ELOOP;
+            }
+            err = path_resolve(path, &ino);
+            if (err != 0) {
+                return err;
+            }
+            err = iread(ino, &ei);
+            if (err != 0) {
+                return err;
+            }
+            if (S_ISLNK(ei.mode)) {
+                return -ELOOP;  /* a chain that never ends */
+            }
         }
         if (S_ISDIR(ei.mode)) {
             /* vfs.c decides what opening a directory means and handles
@@ -2759,6 +3038,240 @@ static int dir_is_within(u32 c, u32 anc)
         c = parent;
     }
     return c == anc;
+}
+
+/*
+ * A second name for a file that is already there.
+ *
+ * WHAT A HARD LINK IS: one inode, two directory entries. There is no
+ * original and no copy -- the two names are equal in every way, and
+ * the file goes when the LAST of them does, which is what
+ * `i_links_count` counts and what drop_link() already honours.
+ *
+ * DIRECTORIES ARE REFUSED. A link to a directory makes a cycle that
+ * `..` cannot describe and that any tree walk -- fsck's included --
+ * will follow for ever. Unix forbade it early and only ever let root
+ * do it on systems that then regretted allowing it. `.` and `..` are
+ * the exception the filesystem writes itself.
+ *
+ * A link to an inode whose links are already 0 is refused too: that is
+ * a file on the orphan list, unlinked but still open, and giving it a
+ * new name would resurrect something the kernel has promised to free.
+ */
+static int ext2_link(const char *from, const char *to)
+{
+    char fnm[NAME_MAX + 1], tnm[NAME_MAX + 1];
+    u32 fdir, tdir, fino, tino, fnl, tnl;
+    u8 ftype, ttype;
+    int last_is_dir, err;
+    struct einode fe;
+
+    if (!mounted) {
+        return -ENODEV;
+    }
+    err = path_walk(cwd_ino(), from, &fdir, fnm, &last_is_dir);
+    if (err != 0) {
+        return err;
+    }
+    if (last_is_dir || fnm[0] == '\0') {
+        return -EINVAL;
+    }
+    err = path_walk(cwd_ino(), to, &tdir, tnm, &last_is_dir);
+    if (err != 0) {
+        return err;
+    }
+    if (last_is_dir || tnm[0] == '\0') {
+        return -EINVAL;
+    }
+    fnl = name_len_of(fnm);
+    tnl = name_len_of(tnm);
+
+    err = dir_lookup(fdir, fnm, fnl, &fino, &ftype);
+    if (err != 0) {
+        return err;
+    }
+    err = iread(fino, &fe);
+    if (err != 0) {
+        return err;
+    }
+    if (S_ISDIR(fe.mode)) {
+        return -EPERM;          /* never a directory; see above */
+    }
+    if (fe.links == 0) {
+        return -ENOENT;         /* unlinked and still open: let it go */
+    }
+    /* The new name must not exist. Unlike rename, link never replaces:
+     * silently unlinking something to make room for a new name for
+     * something else is not what anybody asked for. */
+    if (dir_lookup(tdir, tnm, tnl, &tino, &ttype) == 0) {
+        return -EEXIST;
+    }
+
+    /*
+     * The COUNT FIRST, then the entry.
+     *
+     * If the machine stops between the two, the order decides which
+     * kind of damage is left. Count-then-entry leaves a count one too
+     * high: fsck sees a link count larger than the names it can find
+     * and lowers it, and no data is lost. Entry-then-count leaves a
+     * count one too LOW, and then unlinking one of the two names frees
+     * an inode the other name still points at -- which is a file that
+     * silently becomes somebody else's.
+     */
+    fe.links++;
+    fe.ctime = now_secs();
+    err = iwrite(&fe);
+    if (err != 0) {
+        return err;
+    }
+    err = dir_add(tdir, tnm, tnl, fino, ftype);
+    if (err != 0) {
+        /* Put the count back, so a failure leaves nothing behind. */
+        fe.links--;
+        (void)iwrite(&fe);
+        return err;
+    }
+    return bcache_flush_all();
+}
+
+/*
+ * Make a symbolic link: a file whose contents are a path.
+ *
+ * THE TARGET IS NOT CHECKED, and must not be. A symlink to something
+ * that does not exist is a DANGLING link, which is legal, useful and
+ * common -- it is how a link is made before the thing it points at,
+ * and how a link to a removable volume survives the volume being
+ * away. Refusing one here would be inventing a rule Unix does not
+ * have.
+ *
+ * Short targets go in the inode (see read_link): no block is
+ * allocated, so a symlink normally costs an inode and nothing else.
+ */
+static int ext2_symlink(const char *target, const char *linkpath)
+{
+    char nm[NAME_MAX + 1];
+    u32 dir, ino, nl, tlen;
+    int last_is_dir, err;
+    struct einode ei;
+
+    if (!mounted) {
+        return -ENODEV;
+    }
+    tlen = (u32)strlen(target);
+    if (tlen == 0) {
+        return -ENOENT;         /* an empty target names nothing */
+    }
+    if (tlen > PATH_MAX - 1) {
+        return -ENAMETOOLONG;
+    }
+    err = path_walk(cwd_ino(), linkpath, &dir, nm, &last_is_dir);
+    if (err != 0) {
+        return err;
+    }
+    if (last_is_dir || nm[0] == '\0') {
+        return -EEXIST;
+    }
+    nl = name_len_of(nm);
+    if (dir_lookup(dir, nm, nl, &ino, 0) == 0) {
+        return -EEXIST;
+    }
+
+    /* 0777 is what Linux gives a symlink, and it means nothing: the
+     * permission that decides anything is the TARGET's, and the walk
+     * checks that when it gets there. */
+    err = make_inode(dir, nm, nl, (u16)(S_IFLNK | 0777),
+                     EXT2_FT_SYMLINK, &ino);
+    if (err != 0) {
+        return err;
+    }
+    err = iread(ino, &ei);
+    if (err != 0) {
+        return err;
+    }
+    if (tlen <= SYMLINK_FAST_MAX) {
+        u32 i;
+
+        /* Into the block-pointer array, byte by byte and little-endian
+         * within each word -- the inverse of read_link, and for the
+         * same reason. */
+        for (i = 0; i < EXT2_N_BLOCKS; i++) {
+            ei.block[i] = 0;
+        }
+        for (i = 0; i < tlen; i++) {
+            ei.block[i / 4] |= (u32)(u8)target[i] << (8 * (i % 4));
+        }
+        ei.size = tlen;
+        ei.blocks = 0;
+        err = iwrite(&ei);
+    } else {
+        s32 n = inode_write(&ei, 0, target, tlen);
+
+        if (n < 0) {
+            err = (int)n;
+        } else if ((u32)n != tlen) {
+            err = -EIO;
+        } else {
+            err = inode_set_size(&ei, tlen);
+            if (err == 0) {
+                /*
+                 * AND WRITE THE INODE. inode_write and inode_set_size
+                 * both work on the in-memory copy and neither calls
+                 * iwrite -- so without this the link was created with
+                 * size 0 and no blocks, and e2fsck reported "Symlink
+                 * /longlink (inode #34) is invalid". The fast path
+                 * above writes it; this one forgot to.
+                 */
+                err = iwrite(&ei);
+            }
+        }
+    }
+    if (err != 0) {
+        /* Leave nothing behind: the name and the inode both go. */
+        (void)dir_del(dir, nm, nl, 0);
+        (void)inode_release(ino);
+        return err;
+    }
+    return bcache_flush_all();
+}
+
+/* stat, without following a symlink in the last component. */
+static int ext2_lstat(const char *path, struct stat *st)
+{
+    struct einode ei;
+    u32 ino;
+    int err;
+
+    if (!mounted) {
+        return -ENODEV;
+    }
+    err = path_resolve_nofollow(path, &ino);
+    if (err != 0) {
+        return err;
+    }
+    err = iread(ino, &ei);
+    if (err != 0) {
+        return err;
+    }
+    fill_stat(&ei, st);
+    return 0;
+}
+
+/* The target of a symlink, without following it. */
+static int ext2_readlink(const char *path, char *out, u32 size)
+{
+    u32 ino;
+    int err;
+
+    if (!mounted) {
+        return -ENODEV;
+    }
+    /* NOT path_resolve: that follows the last component, and following
+     * the link is exactly what readlink must not do. */
+    err = path_resolve_nofollow(path, &ino);
+    if (err != 0) {
+        return err;
+    }
+    return read_link(ino, out, size);
 }
 
 static int ext2_rename(const char *from, const char *to)
@@ -3117,6 +3630,65 @@ static int set_times(u32 ino, u32 mtime, u32 atime)
         return err;
     }
     return bcache_flush_all();
+}
+
+/*
+ * Mode and ownership. Only the bits `mask` names are touched.
+ *
+ * The file TYPE bits of i_mode are kept whatever the caller passed:
+ * chmod(2) takes a mode with them zeroed, and letting them through
+ * would let a chmod turn a directory into a regular file on disk --
+ * which e2fsck reports and the kernel would then refuse to open.
+ * (fsimg.sh met the other half of this: `sif <file> mode 0755` sets the
+ * WHOLE of i_mode, so it has to be written 0100755.)
+ */
+static int set_attr(u32 ino, u32 mask, u32 mode, u32 uid, u32 gid)
+{
+    struct einode ei;
+    int err = iread(ino, &ei);
+
+    if (err != 0) {
+        return err;
+    }
+    if (mask & ATTR_MODE) {
+        ei.mode = (u16)((ei.mode & S_IFMT) | (mode & 07777));
+    }
+    if (mask & ATTR_UID) {
+        ei.uid = (u16)uid;
+    }
+    if (mask & ATTR_GID) {
+        ei.gid = (u16)gid;
+    }
+    /* ctime is "when the inode last changed", which is exactly this. */
+    ei.ctime = now_secs();
+    err = iwrite(&ei);
+    if (err != 0) {
+        return err;
+    }
+    return bcache_flush_all();
+}
+
+static int ext2_setattr(const char *path, u32 mask, u32 mode, u32 uid, u32 gid)
+{
+    u32 ino;
+    int err;
+
+    if (!mounted) {
+        return -ENODEV;
+    }
+    err = path_resolve(path, &ino);
+    if (err != 0) {
+        return err;
+    }
+    return set_attr(ino, mask, mode, uid, gid);
+}
+
+static int ext2_fsetattr(struct file *f, u32 mask, u32 mode, u32 uid, u32 gid)
+{
+    if (!mounted) {
+        return -ENODEV;
+    }
+    return set_attr((u32)f->priv, mask, mode, uid, gid);
 }
 
 static int ext2_utime(const char *path, u32 mtime, u32 atime)
@@ -4014,6 +4586,12 @@ static struct fs_type ext2_fs = {
     ext2_dir_path_op,
     ext2_utime,
     ext2_futime,
+    ext2_setattr,
+    ext2_fsetattr,
+    ext2_link,
+    ext2_symlink,
+    ext2_readlink,
+    ext2_lstat,
     ext2_check,
     ext2_label,
     ext2_bmap,

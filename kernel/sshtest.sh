@@ -33,7 +33,7 @@ SRCDIR=${SAGE_SRC:-$HOME/m68k/src}
 DBOUT=$SRCDIR/build-dropbear-sage040/sage040
 RSOUT=$SRCDIR/build-rsync-sage040/sage040
 
-SCRATCH=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}
+SCRATCH=${SAGE_SCRATCH:-/tmp/scratch}
 mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-ssh.img"
 PART_LBA=2048
@@ -100,6 +100,12 @@ for p in $(ls ../ports/sbase/bin); do
     fsimg put "../ports/sbase/bin/$p" /bin/$p 2>/dev/null
 done
 fsimg put "$KEY.pub" /root/.ssh/authorized_keys
+# The account files, so the server can check a PASSWORD as well as a
+# key. /etc/shadow is 0600: dropbear runs as root and reads it with
+# getspnam(), and the whole split is pointless if the mode is wrong.
+fsimg put ../system/passwd /etc/passwd
+fsimg put ../system/group  /etc/group
+fsimg put -m 600 ../system/shadow /etc/shadow
 printf 'hello from the machine\n' > "$WORK/greet.txt"
 fsimg put "$WORK/greet.txt" /ST/greet.txt
 
@@ -139,6 +145,32 @@ done
 echo "=== checks ==="
 [ "$ready" = yes ]
 check "the machine accepts an ssh connection and runs a command" $?
+
+# --- BY PASSWORD, not by key -----------------------------------------
+#
+# The key above proves the protocol works. This proves the machine can
+# answer the same question the console asks: a hash in /etc/shadow,
+# checked with crypt(3). dropbear reads it through getspnam(), which
+# picolibc has now -- before that this was switched off in
+# ports/dropbear/localoptions.h with a comment saying why.
+#
+# PubkeyAuthentication=no, or the key that is already installed would
+# be used and this would pass without a password ever being checked --
+# a test that cannot fail. The wrong-password case below is the
+# control: if that one succeeds, the server is accepting anything.
+PWO="-p $PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+     -o PubkeyAuthentication=no -o PreferredAuthentications=password \
+     -o NumberOfPasswordPrompts=1 -o LogLevel=ERROR"
+# shellcheck disable=SC2086
+r=$(timeout 30 sshpass -p root ssh $PWO root@127.0.0.1 'echo PWOK' 2>/dev/null)
+test "$r" = "PWOK"
+check "ssh accepts the right password, checked against /etc/shadow" $?
+
+# shellcheck disable=SC2086
+r=$(timeout 30 sshpass -p wrongpassword ssh $PWO root@127.0.0.1 'echo NOPE' \
+    2>/dev/null)
+test "$r" != "NOPE"
+check "  and refuses the wrong one" $?
 
 if [ "$ready" != yes ]; then
     exec 3>&-; kill "$qemu_pid" 2>/dev/null

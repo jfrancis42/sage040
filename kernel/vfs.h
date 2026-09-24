@@ -33,6 +33,16 @@
  * different read/write behaviour per file -- a device node inside the
  * volume, say -- gets it for free that way.
  */
+/*
+ * What a setattr means. ATTR_MODE is the permission bits AND the
+ * set-user-id, set-group-id and sticky bits -- the file TYPE bits are
+ * never taken from the caller, because chmod may not turn a directory
+ * into a file.
+ */
+#define ATTR_MODE   0x01
+#define ATTR_UID    0x02
+#define ATTR_GID    0x04
+
 struct fs_type {
     const char *name;
     int (*mount)(struct blockdev *dev);
@@ -72,6 +82,43 @@ struct fs_type {
      * (u32)-1 leaves that one alone. By name, or by open file. */
     int (*utime)(const char *path, u32 mtime, u32 atime);
     int (*futime)(struct file *f, u32 mtime, u32 atime);
+
+    /*
+     * A file's mode and ownership.
+     *
+     * One call with a MASK rather than a chmod and a chown, because
+     * chown(2) sets a uid and a gid together and either may be "leave
+     * it alone" -- and because the next thing to want changing this way
+     * (a timestamp, a flag) then costs a mask bit rather than another
+     * member. Only the bits named in `mask` are meant; the rest of the
+     * arguments are not even read.
+     *
+     * The permission RULES are not here. A filesystem stores what it is
+     * told; whether the caller was allowed to ask is settled in vfs.c
+     * before this is reached, so a second filesystem cannot get the
+     * policy subtly different.
+     */
+    int (*setattr)(const char *path, u32 mask, u32 mode, u32 uid, u32 gid);
+    int (*fsetattr)(struct file *f, u32 mask, u32 mode, u32 uid, u32 gid);
+
+    /* A second name for an existing file: one inode, two entries. A
+     * filesystem that cannot (FAT) leaves this null and the VFS says
+     * -EPERM, which is what link(2) reports for a filesystem that does
+     * not support links. */
+    int (*link)(const char *from, const char *to);
+
+    /* A symbolic link: a file whose contents are a path. `readlink`
+     * gives that path back without following it. A filesystem with no
+     * such thing leaves both null and the VFS answers -EPERM for
+     * making one and -EINVAL for reading one, which is what Linux
+     * says. */
+    int (*symlink)(const char *target, const char *linkpath);
+    int (*readlink)(const char *path, char *out, u32 size);
+
+    /* stat WITHOUT following a symlink in the last component: what
+     * lstat(2) and `ls -l` mean. Null on a filesystem with no symlinks,
+     * where it would be the same call -- the VFS falls back to stat. */
+    int (*lstat)(const char *path, struct stat *st);
 
     /* Check the volume, and with FSCK_REPAIR put it right. */
     int (*check)(int flags, struct fsck_report *r);
@@ -205,6 +252,22 @@ int  vfs_sync(void);
 u32  vfs_cwd_ino(void);
 u32  vfs_root_ino(void);                /* where "/" is for this task */
 void vfs_cred(u32 *uid, u32 *gid);      /* the caller's effective ids */
+
+/*
+ * May the caller do `want` (R_OK/W_OK/X_OK) to this path, or to the
+ * directory it names an entry in? Both check SEARCH permission on every
+ * directory above the target first. See the head of the section in
+ * vfs.c: the rules are Unix's, including the two that surprise people.
+ */
+int  vfs_may(const char *path, int want);
+/* chmod and chown in one, by mask. Who may is decided here; see vfs.c. */
+int  vfs_link(const char *from, const char *to);
+int  vfs_symlink(const char *target, const char *linkpath);
+int  vfs_readlink(const char *path, char *out, u32 size);
+int  vfs_lstat(const char *path, struct stat *st);
+int  vfs_setattr(const char *path, u32 mask, u32 mode, u32 uid, u32 gid);
+int  vfs_fsetattr(int fd, u32 mask, u32 mode, u32 uid, u32 gid);
+int  vfs_may_parent(const char *path, int want);
 int  vfs_chroot(const char *path);
 void vfs_cwd_set(u32 ino, const char *path);
 const char *vfs_cwd_path(void);

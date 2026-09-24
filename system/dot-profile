@@ -1,0 +1,11 @@
+# ~/.profile - read by a login shell, after /etc/profile.
+#
+# Yours to edit. Anything set here overrides the machine's defaults,
+# because this is read second.
+#
+# NO COMMAND SUBSTITUTION. /bin/sh on this machine has variables,
+# pipelines, redirection and a command list; it does not have $(...).
+# `echo "$(whoami)"` prints those characters rather than your name.
+# bash has it, and bash reads ~/.bashrc rather than this file.
+
+echo "profile: welcome to $HOSTNAME"

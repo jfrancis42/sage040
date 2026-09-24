@@ -226,7 +226,8 @@ cp -r "$HERE/net/include/." "$PREFIX/include/"
 # And the headers the m68k backend adds that meson does not know to
 # install (the overlay puts them where the build finds them).
 cp "$HERE/picolibc/libc/include/sys/utsname.h" "$PREFIX/include/sys/"
-cp "$HERE/picolibc/libc/include/stdio_ext.h" "$HERE/picolibc/libc/include/syslog.h" "$PREFIX/include/"
+cp "$HERE/picolibc/libc/include/stdio_ext.h" "$HERE/picolibc/libc/include/syslog.h" \
+   "$HERE/picolibc/libc/include/shadow.h" "$PREFIX/include/"
 cp "$HERE/picolibc/libc/include/sys/random.h" "$HERE/picolibc/libc/include/sys/sysmacros.h" \
     "$PREFIX/include/sys/"
 

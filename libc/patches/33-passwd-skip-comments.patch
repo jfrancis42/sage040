@@ -19,12 +19,6 @@ account on the system.
 
 --- a/libc/posix/fgetpwent_r.c
 +++ b/libc/posix/fgetpwent_r.c
-@@ -44,17 +44,36 @@
-     enum pw_id id;
-     ptrdiff_t  offset;
-     void      *ptr;
---- a/libc/posix/fgetpwent_r.c
-+++ b/libc/posix/fgetpwent_r.c
 @@ -80,6 +80,7 @@
      ptrdiff_t  offset;
      void      *ptr;

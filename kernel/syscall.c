@@ -312,25 +312,54 @@ static void do_reboot(int cmd)
     vfs_shutdown();
 
     /*
-     * RB_HALT_SYSTEM stops the CPU and leaves the machine sitting there,
-     * which is what `halt` has always done here: the emulator keeps
-     * running and a harness watching the serial output is what notices.
+     * Three things are being asked for and they are not the same.
      *
-     * The other two ask for the machine to actually go away, and a
-     * driver may know how to make it. On this board one does -- the
-     * keyboard controller has a reset line, which is how every PC since
-     * 1984 has rebooted itself. If none does, saying so and halting is
-     * better than pretending, because "shutdown" that silently did
-     * nothing would be worse than one that says it cannot.
+     * RB_HALT_SYSTEM stops the CPU and leaves the machine sitting
+     * there, which is what `halt` has always done here: the emulator
+     * keeps running and a harness watching the serial output is what
+     * notices.
+     *
+     * RB_AUTOBOOT restarts it. This board can: the keyboard controller
+     * pulls the processor's reset line, which is how every PC since
+     * 1984 has rebooted itself.
+     *
+     * RB_POWER_OFF asks for the machine to go away, which needs
+     * something that can cut the supply. Nothing on this board can, so
+     * the reset is used instead and the machine is told so -- under the
+     * emulator, started with -no-reboot, a reset ends the process, so
+     * "off" and "reset" are the same event and `shutdown` does what it
+     * says. On real hardware they are not, and somebody reading the
+     * console deserves to know which one they got. Saying so beats
+     * pretending, because a `shutdown` that silently restarted the
+     * machine would be worse than one that admits what it can do.
      */
-    if ((u32)cmd != RB_HALT_SYSTEM) {
-        if (dev_poweroff() == 0) {
-            /* It worked; the machine is already going. */
-            for (;;) {
-                halt();
-            }
-        }
-        kputln("reboot: nothing on this board can cut the power; halting");
+    /*
+     * Note for anyone editing this: dev_reset() and dev_poweroff()
+     * return ONLY when they did not work. Success is the machine
+     * ceasing to exist, which no return value can report -- so there is
+     * no "== 0" case to write, and a `for (;;) halt()` after a
+     * successful one would be unreachable.
+     */
+    switch ((u32)cmd) {
+    case RB_HALT_SYSTEM:
+        break;
+
+    case RB_AUTOBOOT:
+        dev_reset();
+        kputln("reboot: nothing on this board can reset it; halting");
+        break;
+
+    case RB_POWER_OFF:
+        dev_poweroff();
+        /* Printed before the attempt, because a reset that works never
+         * comes back to print anything. */
+        kputln("shutdown: no power control on this board; resetting");
+        dev_reset();
+        kputln("shutdown: nothing on this board can stop it; halting");
+        break;
+
+    default:
+        break;
     }
     halt();
 }

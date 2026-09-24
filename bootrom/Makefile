@@ -26,6 +26,11 @@ OBJDUMP := $(TOOLCHAIN)-objdump
 SIZE    := $(TOOLCHAIN)-size
 
 TOPDIR := ..
+
+# SPEED / ICOUNT: shared with kernel and cube. AFTER TOPDIR, which it
+# uses -- an include above that expands to /speed.mk and silently
+# includes nothing.
+include $(TOPDIR)/speed.mk
 include $(TOPDIR)/machine.conf
 
 MACHINE := -M sage040 -cpu m68040 -m $(RAM_MB)
@@ -107,7 +112,7 @@ fsck: disk-fsck
 # Boot the machine. The ROM is loaded by -kernel; everything after that
 # comes off the disk.
 boot: bootrom.elf $(DISK)
-	../tools/qemu-net.sh $(QEMU) $(MACHINE) -no-reboot -kernel bootrom.elf \
+	../tools/qemu-net.sh $(QEMU) $(MACHINE) $(ICOUNT) -no-reboot -kernel bootrom.elf \
 	    -drive file=$(DISK),format=raw,if=ide \
 	    -serial stdio
 

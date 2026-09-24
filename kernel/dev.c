@@ -234,22 +234,38 @@ struct fbdev *dev_first_fb(void)
 }
 
 /* ---------------------------------------------------------------- */
-/* Cutting the power                                                 */
+/* Stopping the machine                                              */
 /* ---------------------------------------------------------------- */
 
+static int (*reset_fn)(void);
 static int (*poweroff_fn)(void);
+
+/*
+ * First one wins, for both. There is only ever one way to reset a given
+ * board and one way to turn it off, and a second registration would
+ * mean two drivers each think they own it -- worth keeping the first
+ * rather than silently preferring whichever happened to start last.
+ */
+void dev_register_reset(int (*fn)(void))
+{
+    if (!reset_fn) {
+        reset_fn = fn;
+    }
+}
 
 void dev_register_poweroff(int (*fn)(void))
 {
-    /*
-     * First one wins. There is only ever one way to turn a given board
-     * off, and a second registration would mean two drivers each think
-     * they own it -- worth keeping the first rather than silently
-     * preferring whichever happened to start last.
-     */
     if (!poweroff_fn) {
         poweroff_fn = fn;
     }
+}
+
+int dev_reset(void)
+{
+    if (!reset_fn) {
+        return -ENODEV;
+    }
+    return reset_fn();
 }
 
 int dev_poweroff(void)

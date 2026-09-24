@@ -604,10 +604,47 @@ int exec_spawn(const char *path, int argc, char **argv, char **envp)
     struct addrspace *as;
     struct task *t;
     u32 entry = 0, sp = 0;
+    u32 new_euid, new_egid;
     int err;
 
     if (argc < 0 || argc > EXEC_MAX_ARGS) {
         return -E2BIG;
+    }
+
+    /*
+     * MAY THIS TASK RUN THIS FILE, and does running it change who it
+     * is?
+     *
+     * Both questions are asked here, from one stat, before an address
+     * space exists -- so a refusal costs nothing and cannot leave a
+     * half-built task behind.
+     *
+     * SET-USER-ID IS WHAT su, sudo AND passwd ARE. A program owned by
+     * root with the set-user-id bit runs with euid 0 whoever started
+     * it, and that is the only mechanism by which an ordinary user can
+     * do a privileged thing. The real uid is left alone, which is how
+     * the program knows who asked; the SAVED uid becomes the new
+     * effective one, which is what lets a program drop privilege and
+     * pick it up again.
+     *
+     * The order matters: permission is checked against the OLD identity
+     * and the new one is taken up only once the image is known to be
+     * loadable. Setting the ids first would leave a task running as
+     * root after a failed exec.
+     */
+    {
+        struct stat st;
+
+        err = vfs_may(path, X_OK);
+        if (err < 0) {
+            return err;
+        }
+        err = vfs_stat(path, &st);
+        if (err < 0) {
+            return err;
+        }
+        new_euid = (st.st_mode & S_ISUID) ? st.st_uid : (u32)-1;
+        new_egid = (st.st_mode & S_ISGID) ? st.st_gid : (u32)-1;
     }
 
     as = vm_create();
@@ -667,6 +704,28 @@ int exec_spawn(const char *path, int argc, char **argv, char **envp)
      */
     task_cwd_inherit(t, current);
     task_cred_inherit(t, current);
+
+    /*
+     * AND THEN THE SET-USER-ID BITS, AFTER the inherit and not before.
+     *
+     * task_cred_inherit() copies the parent's six ids wholesale, so a
+     * set-user-id taken up any earlier is silently overwritten here and
+     * the bit does nothing at all -- which is the kind of failure that
+     * looks like `su` being broken rather than like exec being wrong.
+     *
+     * The real uid is left alone: it is how a set-user-id program knows
+     * who actually asked. The SAVED uid follows the effective one, and
+     * that is what a program drops privilege to and picks it up from
+     * again.
+     */
+    if (new_euid != (u32)-1) {
+        t->euid = new_euid;
+        t->suid = new_euid;
+    }
+    if (new_egid != (u32)-1) {
+        t->egid = new_egid;
+        t->sgid = new_egid;
+    }
 
     /*
      * The new task joins its spawner's process group, as a forked one

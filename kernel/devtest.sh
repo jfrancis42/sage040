@@ -13,9 +13,14 @@
 #   it while the others work -- every byte checked, and the volume
 #   checked afterwards with the host's e2fsck.
 #   Every static limit filled and then passed. Settings written to the
-#   NVRAM, the machine reset -- this QEMU runs WITHOUT -no-reboot, so
-#   `shutdown` resets it -- and the settings read back, and an interface
-#   configured from them.
+#   NVRAM, the machine reset -- this QEMU runs WITHOUT -no-reboot, so a
+#   reset really restarts it -- and the settings read back, and an
+#   interface configured from them. Both ways of stopping it are
+#   exercised: `reboot`, which asks for the reset the 8042 can actually
+#   do, and `shutdown`, which asks to go away and has to settle for the
+#   same reset because nothing on this board can cut the supply. That
+#   they are different requests reaching the same line is the point --
+#   the console says so, and this checks that it does.
 #
 # Runs on a scratch image.
 
@@ -30,7 +35,7 @@ SAGE_QEMU=${SAGE_QEMU:-$HOME/m68k/sage040-qemu}
 QEMU=${QEMU:-$SAGE_QEMU/bin/qemu-system-m68k}
 [ -x "$QEMU" ] || QEMU=qemu-system-m68k
 
-SCRATCH=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}
+SCRATCH=${SAGE_SCRATCH:-/tmp/scratch}
 mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-dev.img"
 PART_LBA=2048
@@ -142,18 +147,25 @@ run 'nvram greeting' nv4
 run 'nvram -d greeting' nv5
 run 'nvram greeting; echo NV6=$?' nv6
 run 'nvram' nvlist
-# The reset. The boot banner is the sign it happened.
-printf 'shutdown\r' >&3
-sleep 1
-n0=$(grep -c "kernel ready" "$LOG")
-for _ in $(seq 1 100); do
-    [ "$(grep -c "kernel ready" "$LOG")" -gt "$n0" ] && break
-    [ "$n0" -ge 2 ] && break
-    sleep 0.2
-done
-sleep "$BOOT_WAIT"
+# The reset, with `reboot` -- the command that asks for exactly what
+# this board can do. The boot banner is the sign it happened.
+reset_with() {
+    n0=$(grep -c "kernel ready" "$LOG")
+    printf '%s\r' "$1" >&3
+    for _ in $(seq 1 300); do
+        [ "$(grep -c "kernel ready" "$LOG")" -gt "$n0" ] && break
+        kill -0 "$qemu_pid" 2>/dev/null || break
+        sleep 0.2
+    done
+    sleep "$BOOT_WAIT"
+}
+reset_with reboot
 run 'nvram net.ip' after
 run 'ifconfig nvram' ifc
+# And `shutdown`, which wants the power cut, cannot have it, and says
+# what it is doing instead of pretending.
+reset_with shutdown
+run 'nvram net.ip' after2
 # Not run(): a halted machine never prints the DONE marker.
 printf 'shutdown -h\r' >&3
 wait_for "halting."
@@ -258,9 +270,26 @@ between nvram nvlist | grep -qx "net.ip=10.9.8.7" &&
     between nvram nvlist | grep -qx "net.mask=255.255.255.0"
 check "  listed" $?
 [ "$(grep -c "kernel ready" "$SCRATCH/clean.tmp")" -ge 2 ]
-check "the machine was reset and booted again" $?
+check "reboot reset the machine and it booted again" $?
+grep -qx "restarting." "$SCRATCH/clean.tmp"
+check "  and said so before it went" $?
 between 'nvram net.ip' after | grep -qx "10.9.8.7"
 check "  and the setting survived it" $?
+
+# The distinction between the two requests is the thing being checked:
+# RB_AUTOBOOT gets the reset it asked for and says nothing about power,
+# RB_POWER_OFF cannot have what it asked for and says so. If this ever
+# starts failing because the message moved, move it here too -- do not
+# delete the check, because without it `reboot` and `shutdown` being
+# one function with two names would pass just as well.
+[ "$(grep -c "kernel ready" "$SCRATCH/clean.tmp")" -ge 3 ]
+check "shutdown reset it too -- this board has no other way to stop" $?
+grep -q "no power control on this board; resetting" "$SCRATCH/clean.tmp"
+check "  and said that a reset is not the power cut it asked for" $?
+! between 'reboot' after | grep -q "no power control"
+check "  while reboot, which asked for the reset, said no such thing" $?
+between 'nvram net.ip' after2 | grep -qx "10.9.8.7"
+check "  and the setting survived that reset as well" $?
 between 'ifconfig nvram' ifc | grep -q "inet 10.9.8.7  netmask 255.255.255.0"
 check "ifconfig nvram configured the interface from it" $?
 

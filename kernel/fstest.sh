@@ -47,7 +47,7 @@ QEMU=${QEMU:-$SAGE_QEMU/bin/qemu-system-m68k}
 # failed when it was run by path, which is a difference nobody should
 # have to notice.
 #
-SCRATCH=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}
+SCRATCH=${SAGE_SCRATCH:-/tmp/scratch}
 mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-test.img"
 PART_LBA=2048
@@ -105,6 +105,13 @@ for i in $(seq 1 200); do
     printf 'line %03d 0123456789abcdefghijklmnopqrstuvwxyz\n' "$i" >> "$SCRATCH/big.tmp"
 done
 fsimg put "$SCRATCH/big.tmp" /BIG.TXT
+# The same bytes with the x bits set. Running a program is now refused
+# for TWO different reasons and they are worth telling apart: no x bit
+# is "permission denied" and never reaches the loader, while an x bit
+# on something that is not an ELF file gets all the way to exec.c and
+# is refused on its first four bytes. One file can only ever test one
+# of them.
+fsimg put -m 755 "$SCRATCH/big.tmp" /XBITS.TXT
 
 # A program, to check that the ELF loader runs one and that its exit
 # status comes back. No extension: the kernel decides what is executable
@@ -167,6 +174,7 @@ printf '%s\n' \
   'hello -x' \
   'nosuchprogram' \
   'BIG.TXT' \
+  'XBITS.TXT' \
   'uptime' \
   'console' \
   'console fbcon off' \
@@ -314,8 +322,11 @@ check "a non-zero exit status came back to the shell" $?
 contains "$LOG" "nosuchprogram: command not found"
 check "a missing program is reported as not found" $?
 
-contains "$LOG" "BIG.TXT: not an executable"
-check "a data file is refused as a program, by its contents" $?
+contains "$LOG" "BIG.TXT: permission denied"
+check "a data file with no x bit is refused, on its mode" $?
+
+contains "$LOG" "XBITS.TXT: not an executable"
+check "  and with the x bits set, on its contents" $?
 
 grep -qE "ticks at 100 Hz" "$LOG" && \
   ! grep -qE "^0 ticks" "$LOG"

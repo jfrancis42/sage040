@@ -832,6 +832,38 @@ int fd_open(const char *path, int flags)
         if (exists && (flags & O_TRUNC) && path_is_swapfile(path)) {
             return -ETXTBSY;
         }
+
+        /*
+         * MAY THE CALLER. Before the filesystem is asked to do
+         * anything, so that a refusal cannot have created or truncated
+         * the file on its way to saying no.
+         *
+         * A file that is not there and O_CREAT is a change to the
+         * DIRECTORY, so that is where the permission has to be -- and
+         * it needs write AND search, because adding a name means
+         * finding the place to put it.
+         */
+        {
+            int want = 0;
+            int acc = flags & O_ACCMODE;
+
+            if (acc == O_RDONLY || acc == O_RDWR) {
+                want |= R_OK;
+            }
+            if (acc == O_WRONLY || acc == O_RDWR || (flags & O_TRUNC)) {
+                want |= W_OK;
+            }
+            if (exists) {
+                err = vfs_may(path, want);
+            } else if (flags & O_CREAT) {
+                err = vfs_may_parent(path, W_OK | X_OK);
+            } else {
+                err = 0;        /* no such file: let it say ENOENT */
+            }
+            if (err < 0) {
+                return err;
+            }
+        }
     }
 
     fd = fd_alloc();
@@ -1199,8 +1231,11 @@ int vfs_mkdir(const char *path)
         return -ENOSYS;
     }
     {
-        int r;
+        int r = vfs_may_parent(path, W_OK | X_OK);
 
+        if (r < 0) {
+            return r;
+        }
         fs_lock();
         r = mounted_fs->mkdir(path);
         fs_unlock();
@@ -1214,8 +1249,11 @@ int vfs_rmdir(const char *path)
         return -ENOSYS;
     }
     {
-        int r;
+        int r = vfs_may_parent(path, W_OK | X_OK);
 
+        if (r < 0) {
+            return r;
+        }
         fs_lock();
         r = mounted_fs->rmdir(path);
         fs_unlock();
@@ -1229,8 +1267,11 @@ int vfs_chdir(const char *path)
         return -ENOSYS;
     }
     {
-        int r;
+        int r = vfs_may(path, X_OK);
 
+        if (r < 0) {
+            return r;
+        }
         fs_lock();
         r = mounted_fs->chdir(path);
         fs_unlock();
@@ -1267,6 +1308,20 @@ int vfs_unlink(const char *path)
     if (path_is_swapfile(path)) {
         return -ETXTBSY;
     }
+    /*
+     * Removing a name changes the DIRECTORY, so that is what has to be
+     * writable -- not the file. A read-only file in a directory you own
+     * is yours to delete, which is Unix and surprises somebody every
+     * time. Checked before the textcache is told anything, so a refused
+     * unlink leaves no trace.
+     */
+    {
+        int r = vfs_may_parent(path, W_OK | X_OK);
+
+        if (r < 0) {
+            return r;
+        }
+    }
     /* Before, while the name still leads to the inode number: once the
      * entry is gone its slot can be a different file's. */
     textcache_forget_path(path);
@@ -1275,6 +1330,130 @@ int vfs_unlink(const char *path)
 
         fs_lock();
         r = mounted_fs->unlink(path);
+        fs_unlock();
+        return r;
+    }
+}
+
+/*
+ * link(2). The permission is on the DIRECTORY the new name goes in,
+ * not on the file: making a second name for a file does not change the
+ * file, and you need no right over it beyond being able to reach it.
+ */
+int vfs_link(const char *from, const char *to)
+{
+    int err;
+
+    if (resolve_dev(from) || resolve_dev(to)) {
+        return -EPERM;          /* device nodes are not files */
+    }
+    if (!mounted_fs) {
+        return -ENODEV;
+    }
+    if (!mounted_fs->link) {
+        return -EPERM;          /* what link(2) says for a volume that
+                                 * has no such thing */
+    }
+    err = vfs_may(from, 0);     /* reachable: search permission above it */
+    if (err < 0) {
+        return err;
+    }
+    err = vfs_may_parent(to, W_OK | X_OK);
+    if (err < 0) {
+        return err;
+    }
+    {
+        int r;
+
+        fs_lock();
+        r = mounted_fs->link(from, to);
+        fs_unlock();
+        return r;
+    }
+}
+
+/*
+ * symlink(2). The permission is on the directory the link goes in.
+ * Nothing is checked about the target -- it need not exist, and the
+ * caller need have no right over it: a symlink grants nothing, it only
+ * names something, and the check happens when somebody follows it.
+ */
+/*
+ * lstat: the LINK, not what it points at.
+ *
+ * Falls back to stat on a filesystem that has no symlinks, where the
+ * two questions have the same answer -- rather than making every such
+ * filesystem write the same function twice.
+ */
+int vfs_lstat(const char *path, struct stat *st)
+{
+    if (!mounted_fs) {
+        return -ENODEV;
+    }
+    if (!mounted_fs->lstat) {
+        return vfs_stat(path, st);
+    }
+    {
+        int r;
+
+        fs_lock();
+        r = mounted_fs->lstat(path, st);
+        fs_unlock();
+        return r;
+    }
+}
+
+int vfs_symlink(const char *target, const char *linkpath)
+{
+    int err;
+
+    if (resolve_dev(linkpath)) {
+        return -EEXIST;
+    }
+    if (!mounted_fs) {
+        return -ENODEV;
+    }
+    if (!mounted_fs->symlink) {
+        return -EPERM;
+    }
+    err = vfs_may_parent(linkpath, W_OK | X_OK);
+    if (err < 0) {
+        return err;
+    }
+    {
+        int r;
+
+        fs_lock();
+        r = mounted_fs->symlink(target, linkpath);
+        fs_unlock();
+        return r;
+    }
+}
+
+/*
+ * readlink(2). Needs only to REACH the link -- no read permission on
+ * the link itself, whose mode is 0777 and means nothing, and none on
+ * the target, which may not even exist.
+ */
+int vfs_readlink(const char *path, char *out, u32 size)
+{
+    int err;
+
+    if (!mounted_fs) {
+        return -ENODEV;
+    }
+    if (!mounted_fs->readlink) {
+        return -EINVAL;         /* what readlink says for a non-link */
+    }
+    err = vfs_may_parent(path, X_OK);
+    if (err < 0) {
+        return err;
+    }
+    {
+        int r;
+
+        fs_lock();
+        r = mounted_fs->readlink(path, out, size);
         fs_unlock();
         return r;
     }
@@ -1293,6 +1472,19 @@ int vfs_rename(const char *from, const char *to)
     }
     if (path_is_swapfile(from) || path_is_swapfile(to)) {
         return -ETXTBSY;
+    }
+    /* BOTH directories: a rename removes a name from one and adds one
+     * to the other, and either may be refused. */
+    {
+        int r = vfs_may_parent(from, W_OK | X_OK);
+
+        if (r < 0) {
+            return r;
+        }
+        r = vfs_may_parent(to, W_OK | X_OK);
+        if (r < 0) {
+            return r;
+        }
     }
     /* Both: the moved file's inode number is where its entry was, and a
      * file it replaces is going. */
@@ -1522,6 +1714,331 @@ static int looks_executable(const char *path)
            magic[2] == 'L'  && magic[3] == 'F';
 }
 
+/* --- who may do what ------------------------------------------------- */
+/*
+ * THE ONE PLACE THAT DECIDES.
+ *
+ * Every permission question in this kernel comes here, so that a second
+ * filesystem cannot get the policy subtly different and so that there
+ * is exactly one piece of code to read when asking "why was I allowed
+ * to do that". The rules are Unix's, and they are worth stating because
+ * two of them surprise people:
+ *
+ *   - The three sets are tried in order OWNER, GROUP, OTHER and the
+ *     FIRST match decides. They are not OR'd together. A file with
+ *     mode 0077 is unreadable BY ITS OWNER and readable by everybody
+ *     else, which looks like a bug and is the specification.
+ *
+ *   - Root (euid 0) may do anything, with one exception: it may only
+ *     execute a file if SOMEBODY could, that is if any of the three x
+ *     bits is set. Otherwise every data file on the disk would be a
+ *     program to root.
+ *
+ * `want` is the R_OK/W_OK/X_OK bits, the same ones access(2) takes.
+ */
+static int perm_ok(const struct stat *st, int want)
+{
+    u32 mode = st->st_mode;
+    u32 bits;
+    int i;
+
+    if (!current) {
+        return 0;               /* early boot: nobody to check against */
+    }
+
+    if (current->euid == 0) {
+        if (want & X_OK) {
+            if (S_ISDIR(mode)) {
+                return 0;
+            }
+            return (mode & 0111) ? 0 : -EACCES;
+        }
+        return 0;
+    }
+
+    if (current->euid == st->st_uid) {
+        bits = (mode >> 6) & 7;
+    } else {
+        int member = (current->egid == st->st_gid);
+
+        for (i = 0; !member && i < current->ngroups; i++) {
+            if (current->groups[i] == st->st_gid) {
+                member = 1;
+            }
+        }
+        bits = member ? ((mode >> 3) & 7) : (mode & 7);
+    }
+
+    if ((want & R_OK) && !(bits & 4)) {
+        return -EACCES;
+    }
+    if ((want & W_OK) && !(bits & 2)) {
+        return -EACCES;
+    }
+    if ((want & X_OK) && !(bits & 1)) {
+        return -EACCES;
+    }
+    return 0;
+}
+
+/*
+ * May the caller reach `path` at all, and then do `want` to it?
+ *
+ * Reaching it means SEARCH permission on every directory above it --
+ * the x bit on a directory, which is what makes a mode 0711 home
+ * directory work: anyone may walk through it to a named file and
+ * nobody may list it. Checking only the final object would leave a
+ * private directory no protection at all beyond its own entry.
+ *
+ * Each prefix is stat'd in turn, so a path d deep costs d stats. They
+ * come out of the block cache and this is not the expensive part of a
+ * system call, but it is why the walk stops at the first refusal.
+ */
+static int walk_ok(const char *path)
+{
+    char dir[PATH_MAX];
+    struct stat st;
+    u32 i, n = 0;
+    int err;
+
+    if (!current || current->euid == 0) {
+        return 0;               /* root searches anything that exists */
+    }
+    for (i = 0; path[i]; i++) {
+        if (path[i] != '/' || i == 0) {
+            continue;
+        }
+        if (i >= sizeof(dir)) {
+            return -ENAMETOOLONG;
+        }
+        memcpy(dir, path, i);
+        dir[i] = '\0';
+        n++;
+        err = vfs_stat(dir, &st);
+        if (err < 0) {
+            return err;
+        }
+        if (!S_ISDIR(st.st_mode)) {
+            return -ENOTDIR;
+        }
+        err = perm_ok(&st, X_OK);
+        if (err < 0) {
+            return err;
+        }
+    }
+    (void)n;
+    return 0;
+}
+
+/*
+ * The check every path-taking system call makes. Refuses before the
+ * filesystem is asked to do anything, so a denied call cannot have a
+ * side effect.
+ */
+int vfs_may(const char *path, int want)
+{
+    struct stat st;
+    int err = walk_ok(path);
+
+    if (err < 0) {
+        return err;
+    }
+    err = vfs_stat(path, &st);
+    if (err < 0) {
+        return err;
+    }
+    return perm_ok(&st, want);
+}
+
+/*
+ * The same question about the DIRECTORY a path names an entry in, which
+ * is what creating, deleting and renaming actually need: those change
+ * the directory, not the file. Unlink does not ask whether you may
+ * write the file -- a read-only file in a directory you own is yours to
+ * remove, which is Unix and surprises people every time.
+ */
+int vfs_may_parent(const char *path, int want)
+{
+    char dir[PATH_MAX];
+    struct stat st;
+    u32 i, cut = 0;
+    int err;
+
+    for (i = 0; path[i]; i++) {
+        if (path[i] == '/') {
+            cut = i;
+        }
+    }
+    if (cut == 0) {
+        dir[0] = '/';
+        dir[1] = '\0';
+    } else {
+        if (cut >= sizeof(dir)) {
+            return -ENAMETOOLONG;
+        }
+        memcpy(dir, path, cut);
+        dir[cut] = '\0';
+    }
+    err = walk_ok(dir);
+    if (err < 0) {
+        return err;
+    }
+    err = vfs_stat(dir, &st);
+    if (err < 0) {
+        return err;
+    }
+    return perm_ok(&st, want);
+}
+
+/*
+ * chmod and chown, and the rules about who may.
+ *
+ *   - Only the OWNER or root may change a mode. Not somebody with
+ *     write permission: being allowed to change a file is not being
+ *     allowed to change who else may.
+ *
+ *   - Only ROOT may give a file away. This is the "restricted chown"
+ *     every modern Unix does; the alternative lets a user dodge a disk
+ *     quota, and worse, plant a set-user-id file owned by somebody
+ *     else.
+ *
+ *   - An owner may change the GROUP, but only to a group they are in.
+ *
+ *   - Changing the owner or group CLEARS set-user-id and set-group-id.
+ *     Otherwise `chown root file` on a file somebody had already made
+ *     set-user-id would hand them the machine. Root is not exempt:
+ *     making root exempt is how this is usually got wrong.
+ */
+static int may_setattr(const struct stat *stp, u32 *maskp, u32 *modep,
+                       u32 uid, u32 gid)
+{
+    const struct stat st = *stp;
+    u32 mask = *maskp, mode = *modep;
+
+    if (current && current->euid != 0) {
+        if (current->euid != st.st_uid) {
+            return -EPERM;
+        }
+        if ((mask & ATTR_UID) && uid != (u32)-1 && uid != st.st_uid) {
+            return -EPERM;      /* only root gives a file away */
+        }
+        if ((mask & ATTR_GID) && gid != (u32)-1 && gid != st.st_gid) {
+            int i, member = (current->egid == gid);
+
+            for (i = 0; !member && i < current->ngroups; i++) {
+                if (current->groups[i] == gid) {
+                    member = 1;
+                }
+            }
+            if (!member) {
+                return -EPERM;
+            }
+        }
+    }
+
+    /* (u32)-1 means "leave this one": chown(path, -1, gid) is how a
+     * group is changed by itself, and the caller's own value must not
+     * be written back over the file's. */
+    if ((mask & ATTR_UID) && uid == (u32)-1) {
+        mask &= ~ATTR_UID;
+    }
+    if ((mask & ATTR_GID) && gid == (u32)-1) {
+        mask &= ~ATTR_GID;
+    }
+
+    /* An ownership change drops set-user-id and set-group-id, for
+     * everybody including root. */
+    if ((mask & (ATTR_UID | ATTR_GID)) && !(mask & ATTR_MODE) &&
+        (st.st_mode & (S_ISUID | S_ISGID))) {
+        mask |= ATTR_MODE;
+        mode = st.st_mode & ~(u32)(S_ISUID | S_ISGID);
+    }
+    *maskp = mask;
+    *modep = mode;
+    return 0;
+}
+
+int vfs_setattr(const char *path, u32 mask, u32 mode, u32 uid, u32 gid)
+{
+    struct stat st;
+    int err;
+
+    if (!mounted_fs) {
+        return -ENODEV;
+    }
+    if (!mounted_fs->setattr) {
+        return -ENOSYS;         /* a volume with nowhere to put it */
+    }
+    err = walk_ok(path);
+    if (err < 0) {
+        return err;
+    }
+    err = vfs_stat(path, &st);
+    if (err < 0) {
+        return err;
+    }
+    err = may_setattr(&st, &mask, &mode, uid, gid);
+    if (err < 0) {
+        return err;
+    }
+    if (mask == 0) {
+        return 0;
+    }
+    {
+        int r;
+
+        fs_lock();
+        r = mounted_fs->setattr(path, mask, mode, uid, gid);
+        fs_unlock();
+        return r;
+    }
+}
+
+/*
+ * The same, by open descriptor.
+ *
+ * Shares the rules with vfs_setattr through may_setattr() rather than
+ * repeating them: two copies of "who may chown" is one copy that will
+ * be wrong later. What it cannot share is the path walk -- a
+ * descriptor is already open, so search permission was settled when it
+ * was opened, which is exactly what an fd-based call means.
+ */
+int vfs_fsetattr(int fd, u32 mask, u32 mode, u32 uid, u32 gid)
+{
+    struct stat st;
+    int err;
+
+    if (!mounted_fs) {
+        return -ENODEV;
+    }
+    if (!mounted_fs->fsetattr) {
+        return -ENOSYS;
+    }
+    err = vfs_fstat(fd, &st);
+    if (err < 0) {
+        return err;
+    }
+    err = may_setattr(&st, &mask, &mode, uid, gid);
+    if (err < 0) {
+        return err;
+    }
+    if (mask == 0) {
+        return 0;
+    }
+    {
+        struct file *f = fd_get(fd);
+        int r;
+
+        if (!f) {
+            return -EBADF;
+        }
+        fs_lock();
+        r = mounted_fs->fsetattr(f, mask, mode, uid, gid);
+        fs_unlock();
+        return r;
+    }
+}
+
 int vfs_access(const char *path, int mode)
 {
     struct stat st;
@@ -1530,15 +2047,31 @@ int vfs_access(const char *path, int mode)
     if (err < 0) {
         return err;
     }
+    err = walk_ok(path);
+    if (err < 0) {
+        return err;
+    }
+    /*
+     * A file with no x bit is not a program however it starts, and a
+     * file with one still has to look like one: exec.c decides what is
+     * executable from the first four bytes, because that is the only
+     * thing that can work where a name means nothing. Both have to
+     * agree, or `access(X_OK)` would promise an exec that then fails.
+     */
     if (mode & X_OK) {
         if (S_ISDIR(st.st_mode)) {
-            return 0;           /* a directory is "executable": you can cd */
+            return perm_ok(&st, X_OK);
+        }
+        err = perm_ok(&st, X_OK);
+        if (err < 0) {
+            return err;
         }
         if (!looks_executable(path)) {
             return -EACCES;
         }
+        return 0;
     }
-    return 0;
+    return perm_ok(&st, mode & (R_OK | W_OK));
 }
 
 int vfs_statfs(struct statfs *s)

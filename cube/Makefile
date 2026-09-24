@@ -25,23 +25,10 @@ include $(TOPDIR)/machine.conf
 
 MACHINE   := -M sage040 -cpu m68040 -m $(RAM_MB)
 
-# CPU speed model.  QEMU's -icount charges every guest instruction
-# 2^SPEED nanoseconds, so the machine runs at 10^9 / 2^SPEED instructions
-# per second and virtual time becomes deterministic.
-#
-#   SPEED=5    31.2 M instr/sec   faster than any 68040 ever shipped
-#   SPEED=6    15.6 M instr/sec   about a 25 MHz 68040   <- default
-#   SPEED=7     7.8 M instr/sec   about a 68020
-#   SPEED=off  host speed, non-deterministic
-#
-# Powers of two only; see ../programmer-guide.md for what this does and
-# does not model.
-SPEED ?= 6
-ifeq ($(SPEED),off)
-  ICOUNT :=
-else
-  ICOUNT := -icount shift=$(SPEED),sleep=on
-endif
+# SPEED / ICOUNT, shared with kernel and bootrom. This defaulted to 6
+# here long before the rest of the tree did; speed.mk is that default,
+# moved somewhere all three can read it.
+include $(TOPDIR)/speed.mk
 
 SUP       := ../tests
 CPUFLAGS  := -mcpu=68040

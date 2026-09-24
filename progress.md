@@ -64,6 +64,66 @@ Every suite in the tree passes, on ext2:
 
 ### Open, and nothing is blocking them
 
+- **MMU: use the M (modified) bit when evicting.** `evict()` in
+  `kernel/vm.c` writes every page to swap unconditionally. The hardware
+  already records, for nothing, whether a page was ever stored to -- so
+  a page read in from swap and never written has an identical copy on
+  disk already and can simply be DROPPED, and a read-only text page can
+  be re-read from its executable rather than copied into swap at all.
+  The work is keeping the slot association across a page-in instead of
+  freeing it. `pagetest` can prove it: pages-written-out should fall
+  while the same program still runs.
+- **MMU: turn the CACHES on.** `kernel/cache.c` says it plainly --
+  "the caches are OFF: nothing writes CACR" -- so 4 KB of instruction
+  and 4 KB of data cache sit idle. The groundwork is already right:
+  descriptors carry CM copyback for RAM and non-cachable for I/O, the
+  transparent-translation registers mark the I/O and framebuffer
+  windows non-cachable, and `cacheflush(2)` issues `cpusha`.
+  **THIS CANNOT BE VERIFIED HERE.** QEMU ignores the CM bits and
+  decodes `cinv` and `cpush` as no-ops, so on the emulator a correct
+  cache setup and a broken one are indistinguishable and there is no
+  speedup to measure either. It is for real hardware, and it is
+  correct by inspection rather than by test -- which is worth saying
+  wherever it is switched on.
+- **MMU: PTEST and MMUSR instead of walking the tables.** The access
+  fault frame's SSW says nothing about WHY a fault happened, so
+  `vm_fault()` walks the page tables in software to find out. PTEST
+  does that walk in hardware and reports resident / write-protected /
+  supervisor-violation / modified in MMUSR. Shorter, faster, and one
+  less hand-written walk to keep in step with the descriptor layout.
+- **MMU: the G (global) bit.** Global ATC entries survive a selective
+  `pflush`; this kernel uses `pflusha` -- flush everything -- on every
+  mapping change, COW fault and reclaim sweep, which throws away the
+  kernel's own entries every time. The 68040's ATCs hold 64 entries
+  between them, so that is real refill traffic.
+  **CHECK THE BIT LAYOUT FIRST.** `DESC_SW_LAZY` is 0x400 and
+  `DESC_SW_SWAP` is 0x200, which is U0/U1/G territory on a 68040 page
+  descriptor. They are only ever read on INVALID descriptors, where
+  the MMU ignores everything but the type field, so nothing is broken
+  today -- but using G means reading the manual and proving there is
+  no collision on a RESIDENT one.
+
+- **ssh by password.** dropbear authenticates by public key; it has to
+  be pointed at `/etc/shadow` and told to use `crypt(3)`, which exists
+  now (`$6$` SHA-512, `libc/picolibc/.../crypt.c`). The console asks
+  for a password already -- `/bin/login` -- so this is the same check
+  reached from a different direction, and the pieces are all present.
+- **Symbolic links.** ext2 stores them and `stat` reports `S_IFLNK`
+  rather than mistaking one for a short file, but nothing creates or
+  follows one. That is VFS and system-call work -- `symlink`,
+  `readlink`, `O_NOFOLLOW`, and following during a path walk, with a
+  depth limit so a loop is ELOOP rather than a hung kernel -- not
+  filesystem work. A fast symlink (the target in the inode, under 60
+  bytes) and a slow one (in a block) are both ext2 and both have to be
+  read.
+- **Hard links.** `link(2)` and `linkat(2)` answer -EPERM today, from
+  when the filesystem was FAT and could not have them. ext2 can: a
+  second directory entry pointing at the same inode, with `i_links_count`
+  raised -- and unlink already has to decrement it and free the inode
+  only at zero, which is what `fsck_inode_live()` reads. The awkward
+  part is not the making but everything that assumed one name per
+  inode.
+
 - **The POSIX gaps that are left** (30): FIFOs, `/dev/fd`, a listable
   `/dev`, and `diff`. Detailed below.
 - **Permission enforcement** (36), above.

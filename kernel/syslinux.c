@@ -107,28 +107,44 @@ static int at_path(int dirfd, u32 upath, char *path)
 /* ---------------------------------------------------------------- */
 
 /*
- * From this system's struct stat to Linux's statx. The permission bits
- * are made up the way a Linux FAT mount makes them up: readable by all,
- * writable by the owner if not read-only, and executable if it is a
- * program -- judged by the same four bytes exec() judges it by, so the
- * two never disagree.
+ * From this system's struct stat to Linux's statx.
+ *
+ * IF THE FILESYSTEM RECORDED PERMISSIONS, REPORT THEM. ext2 does, and
+ * the kernel enforces them (perm_ok in vfs.c) -- so a statx that made
+ * up a mode would show `ls -l` one thing while open(2) did another,
+ * and every chmod would appear to have no effect.
+ *
+ * The making-up is kept for a volume that has NO permission bits at
+ * all, which is FAT: there the mode is invented the way a Linux FAT
+ * mount invents it -- readable by all, writable by the owner if not
+ * read-only, executable if it is a program, judged by the same four
+ * bytes exec() judges it by so the two never disagree.
+ *
+ * "No permission bits at all" is the test, rather than asking which
+ * filesystem is mounted: a file really can be mode 0, and one that is
+ * should read as 0 rather than as 0444.
  */
 static void to_statx(const struct stat *st, int is_prog, struct statx *sx)
 {
     u32 mode = st->st_mode;
+    int have_perms = (mode & 07777) != 0;
 
     memset(sx, 0, sizeof(*sx));
-    if (S_ISDIR(mode)) {
-        mode = (mode & S_IFMT) | 0755;
-    } else if (S_ISREG(mode)) {
-        mode = (mode & (S_IFMT | S_IWUSR)) | 0444 | (is_prog ? 0111 : 0);
-    } else {
-        mode = (mode & S_IFMT) | 0666;
+    if (!have_perms) {
+        if (S_ISDIR(mode)) {
+            mode = (mode & S_IFMT) | 0755;
+        } else if (S_ISREG(mode)) {
+            mode = (mode & (S_IFMT | S_IWUSR)) | 0444 | (is_prog ? 0111 : 0);
+        } else {
+            mode = (mode & S_IFMT) | 0666;
+        }
     }
 
     sx->stx_mask = STATX_BASIC_STATS;
     sx->stx_blksize = 4096;
-    sx->stx_nlink = 1;
+    sx->stx_nlink = st->st_nlink ? st->st_nlink : 1;
+    sx->stx_uid = st->st_uid;
+    sx->stx_gid = st->st_gid;
     sx->stx_mode = (u16)mode;
     sx->stx_ino = st->st_ino ? st->st_ino : 1;
     sx->stx_size = st->st_size;
@@ -180,7 +196,15 @@ static s32 do_statx(int dirfd, u32 upath, int flags, u32 ubuf)
     if (err < 0) {
         return err;
     }
-    err = vfs_stat(path, &st);
+    /*
+     * AT_SYMLINK_NOFOLLOW: report the LINK rather than its target.
+     * `ls -l` passes it, and without it a symlink shows up as whatever
+     * it points at -- so a directory full of links looks like a
+     * directory full of copies, and a DANGLING link looks like a
+     * missing file rather than a broken link.
+     */
+    err = (flags & AT_SYMLINK_NOFOLLOW) ? vfs_lstat(path, &st)
+                                        : vfs_stat(path, &st);
     if (err < 0) {
         return err;
     }
@@ -415,14 +439,14 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
     case __NR_statx:
         return do_statx((int)a1, a2, (int)a3, a5);
 
-    case __NR_lstat: {          /* there are no links: it is stat */
+    case __NR_lstat: {          /* the LINK, not what it points at */
         struct stat st;
 
         err = fetch_str(path, a1, sizeof(path));
         if (err < 0) {
             return err;
         }
-        err = vfs_stat(path, &st);
+        err = vfs_lstat(path, &st);
         return err < 0 ? err : store(a2, &st, sizeof(st));
     }
 
@@ -461,14 +485,14 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
 
     case __NR_chmod:
     case __NR_fchmodat: {
-        struct stat st;
+        u32 mode = (nr == __NR_chmod) ? a2 : a3;
 
         if (nr == __NR_chmod) {
             err = fetch_str(path, a1, sizeof(path));
         } else {
             err = at_path((int)a1, a2, path);
         }
-        return err < 0 ? err : vfs_stat(path, &st);
+        return err < 0 ? err : vfs_setattr(path, ATTR_MODE, mode, 0, 0);
     }
 
     /*
@@ -628,11 +652,8 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         return vfs_fchdir((int)a1);
 
     /* No permissions to change, as chmod: the descriptor must be open. */
-    case __NR_fchmod: {
-        struct stat st;
-
-        return vfs_fstat((int)a1, &st);
-    }
+    case __NR_fchmod:
+        return vfs_fsetattr((int)a1, ATTR_MODE, a2, 0, 0);
 
     /*
      * Owners. Everything belongs to root, and there is only root, so
@@ -667,16 +688,43 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
             uid = (uid & 0xffff) == 0xffff ? 0xffffffffUL : (uid & 0xffff);
             gid = (gid & 0xffff) == 0xffff ? 0xffffffffUL : (gid & 0xffff);
         }
-        if ((uid != 0 && uid != 0xffffffffUL) ||
-            (gid != 0 && gid != 0xffffffffUL)) {
-            return -EPERM;
+        /* A descriptor is changed through the descriptor: search
+         * permission was settled when it was opened, which is what an
+         * fd-based call means. */
+        if (nr == __NR_fchown || nr == __NR_fchown32) {
+            return vfs_fsetattr((int)a1, ATTR_UID | ATTR_GID, 0, uid, gid);
         }
-        return 0;
+        return vfs_setattr(path, ATTR_UID | ATTR_GID, 0, uid, gid);
     }
 
-    /* FAT has no hard links and no device nodes or FIFOs on disk. */
+    /*
+     * link(2) and linkat(2). These answered -EPERM from when the
+     * filesystem was FAT, which has no link count and no way to have
+     * two names for one file; ext2 has both, and vfs_link does it.
+     *
+     * linkat's flags are ignored except AT_SYMLINK_FOLLOW, which is
+     * about symbolic links and so means nothing until there are any.
+     */
     case __NR_link:
-    case __NR_linkat:
+    case __NR_linkat: {
+        char to[PATH_MAX];
+
+        if (nr == __NR_link) {
+            err = fetch_str(path, a1, sizeof(path));
+            if (err >= 0) {
+                err = fetch_str(to, a2, sizeof(to));
+            }
+        } else {
+            err = at_path((int)a1, a2, path);
+            if (err >= 0) {
+                err = at_path((int)a3, a4, to);
+            }
+        }
+        return err < 0 ? err : vfs_link(path, to);
+    }
+
+    /* Device nodes and FIFOs still have nowhere to live: making one
+     * needs a node type on disk that nothing here writes yet. */
     case __NR_mknod:
     case __NR_mknodat:
         return -EPERM;
@@ -696,7 +744,9 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
 
     case __NR_readlink:
     case __NR_readlinkat: {
-        struct stat st;
+        char target[PATH_MAX];
+        u32 want = (nr == __NR_readlink) ? a3 : a4;
+        u32 n;
 
         if (nr == __NR_readlink) {
             err = fetch_str(path, a1, sizeof(path));
@@ -706,8 +756,22 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         if (err < 0) {
             return err;
         }
-        err = vfs_stat(path, &st);
-        return err < 0 ? err : -EINVAL;     /* there, and not a link */
+        err = vfs_readlink(path, target, sizeof(target));
+        if (err < 0) {
+            return err;
+        }
+        /*
+         * readlink does NOT null-terminate, and returns how many bytes
+         * it wrote. A caller that expects a terminator adds its own;
+         * one that gets a terminator it did not ask for gets a path
+         * one byte too long. Truncation is silent, as Linux's is.
+         */
+        n = (u32)strlen(target);
+        if (n > want) {
+            n = want;
+        }
+        err = store((nr == __NR_readlink) ? a2 : a3, target, n);
+        return err < 0 ? err : (int)n;
     }
 
     case __NR_swapon:
@@ -758,8 +822,24 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         return err;
     }
 
-    case __NR_symlinkat:
-        return -EPERM;          /* FAT cannot hold one */
+    case __NR_symlink:
+    case __NR_symlinkat: {
+        char target[PATH_MAX];
+
+        /* The TARGET is a string, not a path to resolve -- it is
+         * stored as given and may name nothing at all. Only the link's
+         * own location is a path. */
+        err = fetch_str(target, a1, sizeof(target));
+        if (err < 0) {
+            return err;
+        }
+        if (nr == __NR_symlink) {
+            err = fetch_str(path, a2, sizeof(path));
+        } else {
+            err = at_path((int)a2, a3, path);
+        }
+        return err < 0 ? err : vfs_symlink(target, path);
+    }
 
     case __NR_pipe2: {
         int fds[2];
@@ -853,6 +933,21 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         struct task *t;
         int i;
 
+        /*
+         * WAS IT ROOT? Decided BEFORE the loop, and this is not a
+         * tidying-up: the loop assigns t->euid, and when t is current
+         * that overwrites current->euid -- so a test of
+         * `current->euid == 0` inside the loop is false by the time it
+         * is reached, on the very first iteration.
+         *
+         * The effect was that root's setuid(N) moved only the
+         * effective id and left the real and saved ones at 0, so the
+         * process could setuid(0) straight back. su reported "could
+         * not drop privilege", which is the good outcome; the bad one
+         * is a program that does not check and believes it dropped.
+         */
+        int was_root = (current->euid == 0);
+
         if (current->euid != 0 &&
             want != current->uid && want != current->suid) {
             return -EPERM;
@@ -868,7 +963,7 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
                 continue;
             }
             t->euid = want;
-            if (current->euid == 0) {
+            if (was_root) {
                 t->uid = t->suid = want;
             }
         }
@@ -878,9 +973,16 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
     case __NR_setgid:  case __NR_setgid32: {
         u32 want = a1;
         struct task *t;
+        /* Hoisted for the same reason as setuid's above. It is not
+         * actually unsafe here -- this loop writes egid and reads
+         * euid, so it does not overwrite what it tests -- but the two
+         * cases are the same shape, and one written the dangerous way
+         * beside one written the safe way invites the wrong one being
+         * copied. */
+        int was_root = (current->euid == 0);
         int i;
 
-        if (current->euid != 0 &&
+        if (!was_root &&
             want != current->gid && want != current->sgid) {
             return -EPERM;
         }
@@ -889,7 +991,7 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
                 continue;
             }
             t->egid = want;
-            if (current->euid == 0) {
+            if (was_root) {
                 t->gid = t->sgid = want;
             }
         }
@@ -1010,13 +1112,70 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         return 0;
     }
 
+    /*
+     * The supplementary groups. These used to answer "none" and refuse
+     * anything else, which was honest while nothing could decide a
+     * group permission. perm_ok() in vfs.c decides one now, and login
+     * sets the list from /etc/group, so they are real.
+     *
+     * getgroups(0, ...) is "how many are there", and must not touch
+     * the buffer -- that is how a caller sizes one.
+     */
     case __NR_getgroups:
-    case __NR_getgroups32:
-        return 0;               /* no supplementary groups */
+    case __NR_getgroups32: {
+        int n = current ? current->ngroups : 0;
+        int want = (int)a1;
+        u32 buf[NGROUPS_MAX];
+        int i;
+
+        if (want == 0) {
+            return n;
+        }
+        if (want < n) {
+            return -EINVAL;
+        }
+        for (i = 0; i < n; i++) {
+            buf[i] = current->groups[i];
+        }
+        if (n > 0) {
+            err = store(a2, buf, (u32)n * sizeof(u32));
+            if (err < 0) {
+                return err;
+            }
+        }
+        return n;
+    }
 
     case __NR_setgroups:
-    case __NR_setgroups32:
-        return a1 == 0 ? 0 : -EINVAL;
+    case __NR_setgroups32: {
+        int n = (int)a1;
+        u32 buf[NGROUPS_MAX];
+        int i;
+
+        if (!current) {
+            return -EPERM;
+        }
+        /* ONLY ROOT. Otherwise any user could join any group simply by
+         * saying so, and every group permission on the disk would mean
+         * nothing at all. */
+        if (current->euid != 0) {
+            return -EPERM;
+        }
+        if (n < 0 || n > NGROUPS_MAX) {
+            return -EINVAL;
+        }
+        if (n > 0) {
+            err = fetch(buf, a2, (u32)n * sizeof(u32));
+            if (err < 0) {
+                return err;
+            }
+        }
+        for (i = 0; i < n; i++) {
+            current->groups[i] = buf[i];
+        }
+        current->ngroups = n;
+        return 0;
+    }
 
     /* --- processes --- */
     case __NR_wait4: {

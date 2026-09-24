@@ -21,7 +21,7 @@ set -u
 cd "$(dirname "$0")/.."
 TOP=$(pwd)
 F=$TOP/tools/fsimg.sh
-SCRATCH=$TOP/scratch
+SCRATCH=${SAGE_SCRATCH:-/tmp/scratch}
 mkdir -p "$SCRATCH"
 IMG=$SCRATCH/fsimgtest.img
 LOG=$SCRATCH/fsimgtest.log

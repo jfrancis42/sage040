@@ -39,7 +39,7 @@ SRCDIR=${SAGE_SRC:-$HOME/m68k/src}
 PYSTAGE=$SRCDIR/build-python-sage040/stage
 HOSTPY=${BUILD_PYTHON:-$(command -v python3)}
 
-SCRATCH=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}
+SCRATCH=${SAGE_SCRATCH:-/tmp/scratch}
 mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-python.img"
 PART_LBA=2048
