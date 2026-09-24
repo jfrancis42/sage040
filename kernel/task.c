@@ -648,6 +648,30 @@ int task_count(void)
     return n;
 }
 
+/*
+ * The run-queue length: tasks that have the processor or want it, with
+ * the idle task left out. It is what the load average samples every few
+ * seconds (loadavg.c). The currently running task counts -- its state
+ * is still RUNNING inside the tick that samples this -- so a machine
+ * with one busy program reads a load of about 1.00.
+ */
+int task_nr_active(void)
+{
+    int i, n = 0;
+
+    for (i = 0; i < TASK_MAX; i++) {
+        struct task *t = &tasks[i];
+
+        if (t == idle) {
+            continue;
+        }
+        if (t->state == TASK_RUNNING || t->state == TASK_READY) {
+            n++;
+        }
+    }
+    return n;
+}
+
 const char *task_state_name(int state)
 {
     switch (state) {

@@ -359,6 +359,10 @@ int  task_wait(int pid, int *status, int options);
 void task_reap(struct task *t);
 
 int  task_count(void);
+
+/* How many tasks are runnable right now -- RUNNING or READY,
+ * excluding the idle task. What the load average samples. */
+int  task_nr_active(void);
 const char *task_state_name(int state);
 
 #endif /* TASK_H */

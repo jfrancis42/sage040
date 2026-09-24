@@ -255,4 +255,96 @@ static inline int who_descends_from(int pid, int ancestor)
     return 0;
 }
 
+/*
+ * A load average, fixed point with SI_LOAD_SHIFT fractional bits (what
+ * the kernel puts in struct sysinfo), printed as "N.NN". No printf and
+ * no floating point here -- the integer part is the top bits, the two
+ * decimals are the low bits scaled by 100.
+ */
+static inline void print_load(u32 v)
+{
+    char n[16];
+    u32 whole = v >> SI_LOAD_SHIFT;
+    u32 frac = ((v & ((1u << SI_LOAD_SHIFT) - 1)) * 100) >> SI_LOAD_SHIFT;
+
+    num(whole, n);
+    puts(n);
+    puts(".");
+    if (frac < 10) {
+        puts("0");
+    }
+    num(frac, n);
+    puts(n);
+}
+
+/*
+ * THE UPTIME LINE, shared by uptime(1) and w(1) because it is the same
+ * line -- w's header is literally what uptime prints. Time of day, how
+ * long the machine has been up, who is on it, and the load average:
+ *
+ *    14:53:33 up 2 days,  4:07,  3 users,  load average: 0.42, 0.19, 0.06
+ *
+ * The clock is UTC, as everything ulib prints is: there is no
+ * localtime() here and TZ is the shell's business, not a ulib program's.
+ * The duration follows uptime(1): days when there are any, then H:MM,
+ * or "N min" for the first hour after boot.
+ */
+static inline void print_status(u32 now, u32 uptime, int users,
+                                const u32 loads[3])
+{
+    char n[16];
+    u32 secs = now % 86400;
+    u32 days = uptime / 86400;
+    u32 hours = uptime % 86400 / 3600;
+    u32 mins = uptime % 3600 / 60;
+    int i;
+
+    /* time of day, HH:MM:SS */
+    puts(" ");
+    for (i = 2; i >= 0; i--) {
+        u32 field = i == 2 ? secs / 3600 : (i == 1 ? secs % 3600 / 60
+                                                    : secs % 60);
+        if (i != 2) {
+            puts(":");
+        }
+        if (field < 10) {
+            puts("0");
+        }
+        num(field, n);
+        puts(n);
+    }
+
+    puts(" up ");
+    if (days) {
+        num(days, n);
+        puts(n);
+        puts(days == 1 ? " day, " : " days, ");
+    }
+    if (days || hours) {
+        num(hours, n);
+        puts(n);
+        puts(":");
+        if (mins < 10) {
+            puts("0");
+        }
+        num(mins, n);
+        puts(n);
+    } else {
+        num(mins, n);           /* the first hour: "N min", as uptime(1) */
+        puts(n);
+        puts(" min");
+    }
+
+    puts(",  ");
+    num((u32)users, n);
+    puts(n);
+    puts(users == 1 ? " user,  load average: " : " users,  load average: ");
+    print_load(loads[0]);
+    puts(", ");
+    print_load(loads[1]);
+    puts(", ");
+    print_load(loads[2]);
+    puts("\n");
+}
+
 #endif /* WHOCOMMON_H */

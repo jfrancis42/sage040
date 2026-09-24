@@ -150,6 +150,7 @@ fsimg put "$SCRATCH/huge.tmp" /HUGE.BIN
 printf 'symlink /alink HOST.TXT\nquit\n' | debugfs -w "$DISK?offset=$OFFSET" >/dev/null 2>&1
 
 fsimg put -m 755 ../apps/hello /hello
+fsimg put -m 755 ../system/uptime /uptime
 fsimg put -m 755 ../apps/fbtest /fbtest
 
 echo "=== running the kernel ==="
@@ -184,7 +185,7 @@ printf '%s\n' \
   'nosuchprogram' \
   'BIG.TXT' \
   'XBITS.TXT' \
-  'uptime' \
+  '/uptime' \
   'console' \
   'console fbcon off' \
   'console ttyS0 off' \
@@ -337,9 +338,8 @@ check "a data file with no x bit is refused, on its mode" $?
 contains "$LOG" "XBITS.TXT: not an executable"
 check "  and with the x bits set, on its contents" $?
 
-grep -qE "ticks at 100 Hz" "$LOG" && \
-  ! grep -qE "^0 ticks" "$LOG"
-check "the timer tick is running" $?
+contains "$LOG" "load average:"
+check "the uptime program runs from the disk and reports load" $?
 
 contains "$LOG" "mfp-timer-d at"
 check "the MC68901 registered as the system timer" $?

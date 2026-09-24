@@ -519,7 +519,6 @@ static void cmd_help(void)
         "date                 show the date and time\n"
         "date -s DATE [TIME]  set them: YYYY-MM-DD and HH:MM[:SS]\n"
         "uname [-a]           system name, or name and version\n"
-        "uptime               how long the machine has been up\n"
         "console [DEV on|off] show or change where console output goes\n"
         "sync                 flush pending writes to the disk\n"
         "ps                   every task on the machine\n"
@@ -2026,21 +2025,6 @@ static int run_builtin(int argc)
             out_putdec(si.procs);
             out_puts(" job(s)\n");
         }
-
-    } else if (strcmp(argv[0], "uptime") == 0) {
-        u32 t = sys_times();
-        u32 secs = t / HZ;
-
-        out_putdec(secs / 3600);
-        out_putc(':');
-        out_put2((secs / 60) % 60);
-        out_putc(':');
-        out_put2(secs % 60);
-        out_puts("  (");
-        out_putdec(t);
-        out_puts(" ticks at ");
-        out_putdec(HZ);
-        out_puts(" Hz)\n");
 
     } else if (strcmp(argv[0], "sync") == 0) {
         err = sys_sync();
