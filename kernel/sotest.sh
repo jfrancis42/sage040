@@ -104,6 +104,12 @@ fsimg put "$SCRATCH/cccc.tmp" /C.SO
 fsimg put "$SCRATCH/eeee.tmp" /E.SO
 rm -f "$SCRATCH/bbbb.tmp" "$SCRATCH/cccc.tmp" "$SCRATCH/eeee.tmp"
 fsimg put $T/sotest /sotest
+# The same program, set-user-id to somebody who is NOT root. Run by
+# root, that makes uid 0 and euid 1000 -- which is what ld.so uses to
+# decide that it must not take a library path from the environment.
+# Owned by root it would prove nothing: uid and euid would both be 0.
+fsimg put -m 4755 $T/sotest /sosetuid
+fsimg chown /sosetuid 1000:1000
 fsimg put $T/libctest.dyn /libctest.dyn
 
 rm -f "$SCRATCH/in.fifo"
@@ -139,6 +145,7 @@ run 'cp /libsot2.so /lib/libsot.so' swap
 run '/sotest value' v2
 run 'export LD_LIBRARY_PATH=/nowhere:/opt' lpset
 run '/sotest value' vpath
+run '/sosetuid value' vsuid
 run 'unset LD_LIBRARY_PATH' lpunset
 run '/sotest overwrite /opt/libsot.so /lib/libsot.so' ovw
 run '/sotest value' vover
@@ -202,6 +209,15 @@ between '/sotest value' v2 | grep -qx "sotest: value 2"
 check "replaced on the disk, and the next program gets the new one" $?
 between '/sotest value' vpath | grep -qx "sotest: value 1"
 check "LD_LIBRARY_PATH is searched first, past a directory that is not there" $?
+
+# AND A SET-USER-ID PROGRAM MUST NOT LISTEN TO IT. The line above is
+# this one's positive control: the same variable, the same /opt, and an
+# ordinary program does take the library from there. A program whose
+# euid is not its uid must take /lib's instead -- otherwise whoever
+# runs it chooses the code that runs with the privilege, which is the
+# oldest hole in dynamic linking.
+between '/sosetuid value' vsuid | grep -qx "sotest: value 2"
+check "  but a set-user-id program ignores it, and gets /lib's library" $?
 between '/sotest overwrite' ovw | grep -q "sotest: overwrote" &&
     between '/sotest value' vover | grep -qx "sotest: value 1"
 check "rewritten in place, not truncated, and the next program sees it" $?

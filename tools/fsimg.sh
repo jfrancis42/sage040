@@ -327,6 +327,21 @@ mtime)
 mkdir)
     fs_mkdir_p "${1:?mkdir: need a path}"
     ;;
+# OWNERSHIP, which `put -m` cannot express.
+#
+# Needed because a set-user-id file owned by root and run by root is
+# not privileged at all -- uid and euid are both 0 and nothing can tell
+# the two cases apart. A test of what privilege changes has to be able
+# to give a file away.
+chown)
+    P=${1:?chown: need a path}
+    OWNER=${2:?chown: need UID or UID:GID}
+    U=${OWNER%%:*}
+    G=${OWNER#*:}
+    args=("sif $(q "$P") uid $U")
+    [ "$G" != "$OWNER" ] && args+=("sif $(q "$P") gid $G")
+    dbg "${args[@]}" >/dev/null
+    ;;
 rm)
     [ $# -gt 0 ] || die "rm: need a path"
     args=()
