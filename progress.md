@@ -64,16 +64,52 @@ Every suite in the tree passes, on ext2:
 
 ### Open, and nothing is blocking them
 
-- **MMU: use the M (modified) bit when evicting.** `evict()` in
-  `kernel/vm.c` writes every page to swap unconditionally. The hardware
-  already records, for nothing, whether a page was ever stored to -- so
-  a page read in from swap and never written has an identical copy on
-  disk already and can simply be DROPPED, and a read-only text page can
-  be re-read from its executable rather than copied into swap at all.
-  The work is keeping the slot association across a page-in instead of
-  freeing it. `pagetest` can prove it: pages-written-out should fall
-  while the same program still runs.
-- **MMU: turn the CACHES on.** `kernel/cache.c` says it plainly --
+- **MMU: use the M (modified) bit when evicting. ATTEMPTED AND
+  REVERTED -- read this before trying again.**
+
+  The idea is sound: `evict()` writes every page to swap
+  unconditionally, and a page read in from swap and never written
+  since has an identical copy on disk already, so it could be DROPPED
+  for nothing. The hardware records "was this written" in the M bit at
+  no cost.
+
+  It was built -- a per-frame swap-slot association in pmm, kept across
+  a page-in, consulted at eviction -- and it corrupted memory. Six
+  separate defects were found and fixed and `pagetest forkswap` still
+  failed, so the whole thing was taken back out. What was learned is
+  worth more than the code was:
+
+  **1. THE KERNEL WRITES USER PAGES BY PHYSICAL ADDRESS.**
+  `uaccess_chunk()` calls `vm_translate()` and memcpy's through the
+  kernel's identity map, so a `read(2)` filling a program's buffer sets
+  no M bit on that program's descriptor. Anything that ever trusts M
+  has to account for this. It is a landmine independent of swap.
+
+  **2. M IS PER-DESCRIPTOR; A REMEMBERED SLOT IS PER-FRAME.** For a
+  page two address spaces share, one space's M says nothing about what
+  the other has done. Restricting the optimisation to refcount-1
+  non-COW pages was still not enough to make forkswap pass.
+
+  **3. HOLDING A SLOT PER RESIDENT PAGE SHRINKS THE SWAP FILE.** A
+  resident page and its slot hold the same data, so a program needing
+  most of swap fails with "out of memory" on a machine with plenty. The
+  association has to be reclaimable.
+
+  **4. A STALE ASSOCIATION ON A REUSED FRAME IS CORRUPTION, NOT A
+  LEAK.** Clear it where the frame is handed out, not only where it is
+  freed.
+
+  **5. NEVER WRITE OVER THE SLOT A PAGE CAME FROM.** Another address
+  space may still have a swapped descriptor pointing at it, and the
+  slot's refcount does not always say so. pagetest says this in its own
+  words: "the slot it came from is still the child's, and must not be
+  the one reused."
+
+  Anyone picking this up should start by making `pagetest forkswap`
+  pass, in a SINGLE run of the suite -- two copies of one suite share
+  `/tmp/scratch/hd-page.img` and produce results that look like kernel
+  bugs.
+- **MMU: turn the CACHES on. DONE.** `kernel/cache.c` says it plainly --
   "the caches are OFF: nothing writes CACR" -- so 4 KB of instruction
   and 4 KB of data cache sit idle. The groundwork is already right:
   descriptors carry CM copyback for RAM and non-cachable for I/O, the
