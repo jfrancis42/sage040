@@ -28,7 +28,7 @@ TOPDIR=$(cd ../.. && pwd)
 . "$TOPDIR/ports/cross.sh"
 
 QEMU_USER=${QEMU_USER:-qemu-m68k}
-WORK=${SAGE_SCRATCH:-$TOPDIR/scratch}/qemuuser
+WORK=${SAGE_SCRATCH:-/tmp/scratch}/qemuuser
 rm -rf "$WORK"; mkdir -p "$WORK"
 
 pass=0
