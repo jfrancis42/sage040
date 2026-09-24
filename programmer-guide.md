@@ -876,16 +876,20 @@ caches, so a program that writes instructions into memory and then
 jumps to them has stored bytes that may still be in the data cache
 while the instruction cache holds what used to be there. Only the
 supervisor can do anything about that, so the program has to ask.
-libffi's closures are the caller. `kernel/cache.c` is honest that the
-caches are off today and that QEMU decodes `cpusha` as a no-op, so it
-cannot be observed to work by running it.
+libffi's closures are the caller. **Both caches are on**, but QEMU
+decodes `cpusha`, `cpushl` and `cinv` as privileged no-ops and models
+no cache at all, so a correct flush and a missing one are
+indistinguishable on the emulator: this is trusted by inspection, not
+by measurement, and real hardware is where it will first matter.
 
 **`statfs` is Linux's structure now**, and was not: it used to be this
 system's own five fields behind Linux's number, one of which was a
 `const char *` pointing at a string **in the kernel** -- readable by
-the kernel's own shell and an access fault for a program. `f_type` is
-`MSDOS_SUPER_MAGIC`. The volume label, which Linux's `statfs` has no
-field for, is `fsctl(FSCTL_LABEL, 0, &label)`.
+the kernel's own shell and an access fault for a program. `f_type` is the
+volume's magic number -- `EXT2_SUPER_MAGIC` or `MSDOS_SUPER_MAGIC`,
+both named in `uapi.h` because a program has to be able to tell them
+apart. The volume label, which Linux's `statfs` has no field for, is
+`fsctl(FSCTL_LABEL, 0, &label)`.
 
 The ones at 1000 and above are local because Linux has nothing to match. They
 were at 400-402 until it turned out Linux/m68k gives those to `msgsnd`,

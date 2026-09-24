@@ -461,14 +461,6 @@ does not need `e2fsck` to notice.
 
 ### What is deliberately not there
 
-- **Symlinks.** ext2 holds them and `stat` reports `S_IFLNK` rather than
-  mistaking one for a short regular file, but nothing creates or follows
-  one: that is a VFS and system-call change (`symlink`, `readlink`,
-  `O_NOFOLLOW`, following during a path walk), not a filesystem one.
-- **Permission enforcement.** Modes, uids and gids are stored faithfully and
-  reported, and nothing checks them on open yet. Enforcement touches every
-  system call and is its own piece of work; storing them right first is what
-  makes it possible later without rewriting every file on the disk.
 - **Hashed directories**, for the reason above.
 - **Updating the superblock backups.** The primary is written; e2fsck
   reconciles. Linux does not update them either, except on resize.
@@ -506,12 +498,14 @@ what remains to be built is listed in [`progress.md`](progress.md). Two
 items belong here rather than there, because they are decisions about the
 machine:
 
-- **Permissions and ownership need a filesystem that can hold them.** FAT
-  cannot (§8), so a genuinely multi-user system means a second filesystem
-  type under the VFS, not a change to `fat16.c`. The USERS are there now
-  -- a task carries a real, effective and saved uid and gid, `/etc/passwd`
-  names them, and ssh authenticates into them -- so what is missing is
-  only the enforcement, and the enforcement is the filesystem's.
+- **Permissions and ownership needed a filesystem that could hold them.**
+  FAT cannot (§8), which is the largest single reason the machine's
+  filesystem is ext2. Both halves are built now: the disk records an
+  owner, a group and a mode, and every path a system call takes is
+  checked against them -- see `os.md`, "What is enforced". This is
+  recorded here because it was a decision about the machine and not
+  about a filesystem: the alternative was permissions that FAT could
+  only pretend to store.
 - **`dlopen` is the loader's, not the library's.** `ld.so` resolves what
   a program was linked against and stops. libffi is built and works, and
   Python's `ctypes` still cannot be built, because it opens libraries by

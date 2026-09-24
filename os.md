@@ -959,17 +959,19 @@ same ssh. `dropbearkey` generates the Ed25519 host key **on the
 Dropbear rather than OpenSSH, and the reasoning is at the head of
 `ports/dropbear/build.sh`: OpenSSH separates privilege by forking a
 child, setuid-ing it to a dedicated account and chrooting it into an
-empty directory -- a design that rests on a filesystem enforcing
-ownership, which this one does not yet do. Running it with privilege
-separation off is the configuration its own authors warn about.
-Dropbear was written for machines this size and carries its own crypto,
-so it need not agree with OpenSSL about anything. The protocol is the
-same protocol.
+empty directory. That rested on a filesystem enforcing ownership,
+which this one did not do at the time the choice was made; it does
+now, but Dropbear was also written for machines this size and carries
+its own crypto, so it need not agree with OpenSSL about anything. The
+protocol is the same protocol.
 
-**Password authentication is off.** Checking a password means
-`crypt(3)` against a hash, picolibc has none, and inventing one badly
-is worse than not having one. Public keys work and are what should be
-used anyway.
+**Password authentication is on**, and was not. Checking a password
+means `crypt(3)` against a hash in `/etc/shadow`, and the machine had
+neither; it has both, so ssh asks the same question the console asks
+and gets its answer from the same file. Dropbear reads the hash
+through `getpwnam`'s `pw_passwd`, so the C library hands it the shadow
+hash rather than the `x` that is in `/etc/passwd`. Public keys work
+too, and are still the better authentication.
 
 **`rsync -a` asks for ownership to be preserved** and reports
 `chown ... failed`. `-rlt` is the flag set that matches what this
