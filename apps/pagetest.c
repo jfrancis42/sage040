@@ -438,6 +438,23 @@ static void oom(u32 mb)
     u32 i;
     char c;
 
+    /*
+     * SIGPIPE IGNORED, or this test can kill itself instead of
+     * measuring anything.
+     *
+     * The two sides meet over a pipe. If the one being waited for is
+     * taken by the OOM killer first -- which is a perfectly good
+     * outcome, and half the point -- the other's write() to a pipe
+     * with no reader raises SIGPIPE and it dies with status 141. The
+     * run then shows neither "out of memory" nor a SIGKILL, and reads
+     * as the kernel having failed to kill anybody.
+     *
+     * Ignored, the write returns EPIPE, the survivor carries on to
+     * waitpid and reports what actually happened. The race is in the
+     * test, not in the kernel, and this is where it belongs.
+     */
+    signal(SIGPIPE, SIG_IGN);
+
     pipe(ready);                /* child -> parent */
     pipe(go);                   /* parent -> child */
     pid = fork();
