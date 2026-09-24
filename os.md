@@ -1111,8 +1111,8 @@ drive it over its serial line.
 |---|---|---|
 | `tests/` | 12 programs | the devices: CPU and FPU, UART, ATA, MFP and its timers, MMU, SM501, RTC, keyboard |
 | `kernel/cryptotest.sh` | 4 | ChaCha20 and BLAKE2s against the RFCs, built for the host |
-| `kernel/fstest.sh` | 65 | the filesystem, names of any shape included, and a file past what one indirect block reaches -- verified with the host's debugfs and e2fsck |
-| `kernel/apitest.sh` | 368 | the system call surface a ported program expects |
+| `kernel/fstest.sh` | 69 | the filesystem, names of any shape included, and a file past what one indirect block reaches -- verified with the host's debugfs and e2fsck |
+| `kernel/apitest.sh` | 376 | the system call surface a ported program expects |
 | `kernel/edittest.sh` | 41 | the line editor, history, job control, command lists, scripts, shutdown |
 | `kernel/vmtest.sh` | 18 | what a program cannot touch |
 | `kernel/pagetest.sh` | 51 | demand paging, copy-on-write, swap, and running out of memory |
@@ -1121,18 +1121,18 @@ drive it over its serial line.
 | `kernel/dnstest.sh` | 57 | both resolvers and `ntpdate`, against servers on the host |
 | `kernel/tcptest.sh` | 24 | TCP's options, loss, keepalives and TIME_WAIT |
 | `kernel/vttest.sh` | 95 | the VT102 console, checked against screenshots |
-| `kernel/devtest.sh` | 36 | interrupts, the filesystem under concurrency, the limits, the NVRAM, `mmap` of the framebuffer |
-| `kernel/libctest.sh` | 232 | picolibc and the POSIX layer added to it |
-| `kernel/sotest.sh` | 119 | shared libraries, `ld.so`, and the sharing of their pages |
+| `kernel/devtest.sh` | 41 | interrupts, the filesystem under concurrency, the limits, the NVRAM, `mmap` of the framebuffer |
+| `kernel/libctest.sh` | 255 | picolibc and the POSIX layer added to it |
+| `kernel/sotest.sh` | 126 | shared libraries, `ld.so`, and the sharing of their pages |
 | `kernel/fscktest.sh` | 23 | `fsck`, against seven kinds of damage made on the host, each repaired and then agreed with by e2fsck |
 | `kernel/fattest.sh` | 10 | the FAT16 fallback, which is no longer the machine's own filesystem |
-| `tools/fsimgtest.sh` | 34 | the host's end of the disk, which every other suite stages its files through |
+| `tools/fsimgtest.sh` | 40 | the host's end of the disk, which every other suite stages its files through |
 | `kernel/uemacstest.sh` `kernel/vitest.sh` | 9, 9 | the two editors |
 | `kernel/awktest.sh` | 40 | awk's own regression tests, and eleven more against the host's awk |
 | `kernel/sedtest.sh` | 21 | sed, against the same sed built for the host |
 | `kernel/greptest.sh` | 37 | grep's own 329 pattern cases, and its options against the host's grep |
-| `kernel/sbasetest.sh` | 76 | the utilities, against the host's own, and what only the disk can say |
-| `kernel/bashtest.sh` | | the shell language against the host's bash, and part of bash's own suite |
+| `kernel/sbasetest.sh` | 77 | the utilities, against the host's own, and what only the disk can say |
+| `kernel/bashtest.sh` | 13 + 4 known | the shell language against the host's bash, and part of bash's own suite. Four of bash's tests are expected to fail and are reported `[KNOWN]` with the reason -- `func` and `glob` want `/dev/fd` and a locale, which this system has not got; `type` and `varenv` are not diagnosed (progress.md). One that starts PASSING is a loud failure |
 | `kernel/threadtest.sh` | 52 | threads: clone, futexes, and the pthread layer, with the lock's own negative control |
 | `kernel/ptytest.sh` | 34 | pseudo-terminals, and that the pairs are given back |
 | `kernel/curstest.sh` | 28 | terminfo and curses, with the database renamed away as the control |
@@ -1140,6 +1140,13 @@ drive it over its serial line.
 | `kernel/logtest.sh` | 10 | the kernel's log, klogd, and /var/log/syslog |
 | `kernel/crontest.sh` | 8 | something the machine does by itself, later |
 | `kernel/pytest.sh` | 43 | CPython, against the host's Python's answers to the same questions |
+| `kernel/usertest.sh` | 16 | uids and gids, `/etc/passwd` and `/etc/group`, and what an ordinary user is refused |
+| `kernel/logintest.sh` | 11 | logging in: the right password gets that user's shell in that user's home and the wrong one does not, `su`, `sudo`, and the modes on them |
+| `kernel/linktest.sh` | 26 | hard links and symlinks -- one inode with two names, fast targets and slow ones, loops, dangling targets -- agreed with by the host's e2fsck |
+| `kernel/dftest.sh` | 15 | `df` and `du` against the host's own figures for the same volume, with the shell's built-in as the control |
+| `kernel/sshtest.sh` | 10 | ssh, scp and rsync against the workstation's own OpenSSH, which knows nothing about this project -- so the protocol is either right or it is not |
+| `kernel/pylibtest.sh` | 27 | the libraries CPython is built against, proven by the programs that ship with them, every stream crossing the host boundary both ways |
+| `libc/test/qemutest.sh` | 8 | a program built for this machine, run as a Linux/m68k binary by qemu-m68k user mode -- the system call numbers and errnos are Linux's, so something else can check them |
 
 `make bashsuite` runs every one of bash's 83 tests instead of the subset,
 which takes hours: one test is minutes of work for a 25 MHz 68040.
