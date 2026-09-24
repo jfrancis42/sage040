@@ -473,6 +473,30 @@ static void oom(u32 mb)
         exit(4);
     }
     /*
+     * BOTH MMAPS BEFORE EITHER TOUCHES A PAGE, and that is the whole
+     * reason for this first meeting.
+     *
+     * mmap does not take the memory, it promises it, and vm_commit_ok
+     * grants the promise out of what is FREE AT THAT MOMENT rather
+     * than out of a ledger of what has been promised. So whichever of
+     * the two runs first can map its half and start touching it, and
+     * by the time the other asks, the pages it is asking about are
+     * gone -- its mmap is refused, it exits, and nobody is ever killed.
+     * The run then shows "mmap refused" and reads as a kernel that has
+     * stopped overcommitting.
+     *
+     * That is a race between two processes with nothing ordering them,
+     * and it is in the test. Both are past their mmap before either
+     * begins, so both promises are made against the same free memory.
+     */
+    if (pid == 0) {
+        write(ready[1], "m", 1);
+        read(go[0], &c, 1);
+    } else {
+        read(ready[0], &c, 1);
+        write(go[1], "g", 1);
+    }
+    /*
      * Both touch half, meet, then touch the rest. Without the meeting
      * one could touch everything and exit before the other began --
      * it happened, one run in six -- and then nobody runs out of
