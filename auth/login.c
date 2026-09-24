@@ -56,16 +56,32 @@ static void fail(void)
  * what makes one function do both hashing and checking: the stored
  * string carries its own scheme, salt and rounds.
  */
+/*
+ * A $6$ hash of a random string that was never written down, used when
+ * the account does not exist or its password is locked.
+ *
+ * It is here so that THE CRYPT ALWAYS RUNS. Returning early for an
+ * unknown name skips a full SHA-512 and answers in no time at all,
+ * while a name that does exist takes as long as the hashing does --
+ * which tells whoever is guessing which of the two they found, one
+ * name per attempt. The fixed delay in fail() does not hide it: it is
+ * added to both.
+ *
+ * Nothing anybody can type hashes to this, so a locked or absent
+ * account still fails; it fails after the same work.
+ */
+static const char absent_hash[] =
+    "$6$NoSuchAccount00$2Br9IP7f.vtq4DjWiHcS58UcpRfK1EJRpzUhEuB6oCFR"
+    "/qO3micgdbdJaQEItMxb1nR/bSy5LgMXVVmQXDhsb1";
+
 static int password_ok(const char *name, const char *pw)
 {
     char stored[256];
     char *got;
 
-    if (sh_hash(name, stored, sizeof(stored)) != 0) {
-        return 0;
-    }
-    if (stored[0] == '\0' || stored[0] == '*' || stored[0] == '!') {
-        return 0;
+    if (!name || sh_hash(name, stored, sizeof(stored)) != 0 ||
+        stored[0] == '\0' || stored[0] == '*' || stored[0] == '!') {
+        memcpy(stored, absent_hash, sizeof(absent_hash));
     }
     got = crypt(pw, stored);
     return got && strcmp(got, stored) == 0;
@@ -125,7 +141,12 @@ int main(int argc, char **argv)
          */
         {
             int known = (pw_by_name(name, &e) == 0);
-            int ok = known && (preauth || password_ok(name, pw));
+            /* NOT `known && password_ok(...)`: && short-circuits, so an
+             * unknown name skipped the crypt entirely and came back
+             * fast. password_ok hashes against absent_hash when it has
+             * no account, so both paths do the same work. */
+            int good = preauth || password_ok(known ? name : 0, pw);
+            int ok = known && good;
 
             memset(pw, 0, sizeof(pw));
             if (!ok) {
