@@ -28,18 +28,18 @@ klogd -q &
 # (Both at 02:00 local, which is the default when no time is given.)
 export TZ=MST7MDT,M3.2.0,M11.1.0
 
-# WHOSE MACHINE THIS IS.
+# WHOSE MACHINE THIS IS -- nothing, any more, and that is the point.
 #
-# The console session runs as root, because there is nothing to log in
-# to yet -- the machine boots straight into a shell. HOME therefore
-# comes out of /etc/passwd as /root, which is correct and is not what
-# somebody sitting at this machine wants.
+# HOME used to be set here, because the machine booted straight into a
+# root shell and there was nothing to log in to. There is now: the
+# console asks who you are, /bin/login checks the password, and it sets
+# HOME, SHELL, USER and LOGNAME from that person's line in /etc/passwd
+# before it execs their shell. Setting HOME here would override the
+# answer for whoever logs in, which is the opposite of what it was for.
 #
-# So it is set here. /etc/rc is where a machine says whose it is: a
-# policy choice belongs in a file that can be edited, not compiled into
-# the shell. When there is a login -- ssh -- a session as jfrancis will
-# get /home/jfrancis from the passwd file without this line.
-export HOME=/home/jfrancis
+# /etc/rc runs BEFORE the login prompt and as root. Put machine-wide
+# policy here; put a person's settings in their own ~/.profile, which
+# their login shell reads.
 
 # The network, from what /bin/nvram has stored -- `nvram net=dhcp`, or
 # net.ip/net.mask/net.gw for a fixed address. Uncomment when the machine

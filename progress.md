@@ -46,6 +46,7 @@ Every suite in the tree passes, on ext2:
 `fscktest` (23) · `devtest` (36) · `sotest` (119) · `vmtest` ·
 `edittest` · `usertest` · `threadtest` (52) · `ptytest` (34) ·
 `vttest` (95) · `nettest` (19) · `tcptest` (24) · `lotest` ·
+`linktest` · `logintest` ·
 `crontest` · `dnstest` (57) · `pagetest` · `logtest` · `cryptotest` ·
 `uemacstest` · `vitest` · `lesstest` · `curstest` · `sedtest` ·
 `awktest` · `apitest` · `greptest` · `sbasetest` · `dftest` ·
@@ -59,8 +60,6 @@ Every suite in the tree passes, on ext2:
 | | |
 |---|---|
 | **A Lisp: CLISP or ECL** | Both are possible now, and the choice is real rather than a formality. See below. |
-| **Permission enforcement (36)** | The disk records an owner, a group and a mode, and a file a user creates belongs to that user. Nothing checks any of it. See below. |
-| **Symlinks** | ext2 holds them and `stat` reports `S_IFLNK` rather than mistaking one for a short file, but nothing creates or follows one. That is VFS and system-call work -- `symlink`, `readlink`, `O_NOFOLLOW`, and following during a path walk -- not filesystem work. |
 
 ### Open, and nothing is blocking them
 
@@ -260,27 +259,6 @@ whether or not anything needs them yet. Pseudo-terminals and
   awk's `space` and `system-status` cases, skipped for the same
   reason, with them.
 
-### 36. Permission enforcement
-
-The first half is done: ext2 records a uid, a gid and a mode on every
-file, a file a user creates belongs to that user, and `ls -l` prints
-what is there. Storing them correctly was the prerequisite, and doing
-it first is what makes enforcement possible later without rewriting
-every file on the disk.
-
-What is left is the part that **checks**: no open, no unlink, no
-rename and no directory search consults a mode bit. It touches every
-system call that takes a path, and it needs a decision about what root
-means here.
-
-`kernel/usertest.sh` ends with a check that reads root's file as an
-ordinary user and PASSES, on purpose, so that nothing in the suite can
-be read as evidence of a protection that does not exist.
-
-Two smaller pieces belong with it: **`chmod` and `chown` are no-ops**
-that answer 0 for root and EPERM otherwise, and the **set-user-id bit**
-is stored and not honoured.
-
 ### 48. A Lisp: CLISP or ECL
 
 **The dependencies are all built** -- libiconv, gettext's runtime,
@@ -362,5 +340,9 @@ interrupt-driven I/O -- and are in [`os.md`](os.md) and
 | 49 | a native toolchain | `toolchain.md` |
 | 51 | `df` and `du` | `os.md` "Programs" and "The shell" |
 | 52 | ext2, in place of FAT16 | `design.md` section 8, `os.md` "ext2" |
+| 33-36 | logins and passwords, `/etc/shadow`, `su`/`sudo`/`passwd`/`useradd` | `os.md` "Logging in" |
+| 36 | permission enforcement, set-user-id on exec, real `chmod`/`chown` | `os.md` "What is enforced" |
+| | hard links and symlinks, fast and slow, `lstat` | `os.md` "Links" |
+| | the 68040's caches, and non-cachable page tables | `os.md` "Memory", `design.md` |
 | | `cacheflush(2)` | `programmer-guide.md` |
 | | the gcc integer-type fix | `ports/gcc/patches/02`, `toolchain.md` |

@@ -735,8 +735,8 @@ checks by taking every one, closing them, and taking them all again.
 ## Users
 
 A task has a real, effective and saved user id and the same three group
-ids. They are inherited by `fork` and kept across `exec` -- the disk records
-a set-user-id bit and nothing honours it -- and moved by `setuid`,
+ids. They are inherited by `fork` and kept across `exec` -- except where
+the file carries the set-user-id bit, below -- and moved by `setuid`,
 `setgid`, `setreuid`, `setregid`, `setresuid` and `setresgid` under the
 rules POSIX gives: root may become anybody, and anybody else may only
 move between the identities they already hold, which is exactly enough to
@@ -752,11 +752,87 @@ the shell reads `/etc/passwd` itself, with `open` and `read`, because the
 shell may not call the C library -- which leaves two independent
 implementations of the same lookup, and a test that checks they agree.
 
-`HOME` comes from the passwd file. `/etc/rc` overrides it, because whose
-machine this is belongs in a file somebody can edit rather than compiled
-into the shell.
+### Logging in
 
-**None of this enforces anything.** See "What it is not".
+The console and `sshd` both go through **`/bin/login`**: it asks for a
+name and a password, checks the password against `/etc/shadow`, and on
+success drops to that person -- `setgroups`, then `setgid`, then
+`setuid`, **in that order**, because a `setuid` done first gives away
+the privilege the other two need and leaves a process holding groups it
+has no right to. Each of the three has to have *worked*; a failed drop
+that is not noticed is a root shell handed out by accident.
+
+It then `chdir`s to the home directory from `/etc/passwd`, sets `HOME`,
+`SHELL`, `USER` and `LOGNAME` from the same line, and execs the shell
+named there with a leading `-` on `argv[0]` -- which is how a shell is
+told it is a login shell and so reads `~/.profile`.
+
+The shell spawns `login` again when a session ends, so the console
+returns to a prompt rather than to a root shell. **If `/bin/login` is
+missing or will not exec**, the shell says so and falls back to the
+built-in root session: a disk with no login program has to be
+recoverable.
+
+Passwords are hashed with **`$6$` SHA-512 crypt**, salt from
+`/dev/urandom`, and live in `/etc/shadow`, which is root-only.
+`/etc/passwd` carries `x` in that field and stays world-readable,
+because every `getpwuid` reads it to turn a number into a name and a
+hash everybody can read is a hash everybody can attack offline.
+
+`passwd`, `su` and `sudo` are installed **4755**: they need root to
+read the shadow file or to become somebody, and the set-user-id bit on
+exec is what gives it to them. `sudo` consults `/etc/sudoers`; the
+group it trusts is `wheel`. `useradd` and `userdel` edit the four files
+together, by writing a new copy and renaming it over the old one, so an
+interrupted edit leaves the previous file rather than half of a new one.
+
+### What is enforced
+
+Every path a system call takes is checked (`perm_ok`, `walk_ok` in
+`kernel/vfs.c`):
+
+- **owner, then group, then other -- first match wins.** Not "the most
+  permissive that applies": a file mode `0607` denies its owner the
+  write that `other` is given, and that is the POSIX rule rather than an
+  accident. Group membership counts the effective gid *and* the
+  supplementary groups `login` set from `/etc/group`.
+- **every directory in a path needs its search bit**, which is what
+  makes a mode `0700` home directory private even when a file inside it
+  is world-readable.
+- **root bypasses all of it**, with one exception that matters: root may
+  execute a file only if *some* execute bit is set. Otherwise every data
+  file on the disk would be a program to root.
+- **set-user-id and set-group-id on exec** are honoured (`kernel/exec.c`),
+  and `chown` **clears both**, because otherwise giving a file away
+  would hand over the privilege with it.
+- `chown` to another user is root's alone; changing only the group is
+  allowed to the owner, for a group they belong to.
+
+`chmod`, `chown`, `fchmod` and `fchown` are real, and `ls -l` prints
+what they set. `kernel/usertest.sh` used to end with a check that read
+root's file as an ordinary user and *passed*, so that nothing could be
+read as evidence of a protection that did not exist; it now checks that
+the read is refused.
+
+### Links
+
+`link`, `symlink` and `readlink` work, and `lstat` reports the link
+rather than what it points at. ext2's **fast symlinks** keep a target of
+60 bytes or less in the inode's block pointers -- the 60 bytes that
+would otherwise hold `i_block` -- with no data block at all; longer ones get a block, which is a different write path and so has
+its own tests.
+
+Following happens in the path walk, **iteratively**, with a depth limit
+of 40 and `ELOOP` past it -- a pair of links pointing at each other is
+otherwise not a crash but a machine that has stopped, with the
+filesystem lock held. The scratch buffers are static rather than
+automatic: two `PATH_MAX` paths and a target is 3 KB against a 16 KB
+kernel stack shared with everything else the call is doing, and the
+recursive first version overflowed it into a double fault. Static is
+safe here only because the filesystem lock is held throughout.
+
+`unlink`, `rename` and `lstat` need the *other* resolution -- the one
+that stops at the link -- so the walk exists in both forms.
 
 ## The log
 
@@ -1093,35 +1169,17 @@ seconds later" landed before the program existed and went to the shell.
 
 Named, so that nobody has to discover them by trying.
 
-**Users exist and protect nothing -- but the disk now remembers them.** A
-task carries a real, effective and saved uid and gid; they are inherited
-across fork and exec, `setuid` and its relatives move them under POSIX's
-rules, and `/etc/passwd` turns them into names -- `id`, `whoami` and
-`~user` all work. Since the filesystem became ext2, a file also carries an
-owner, a group and a mode, and a file created by a user belongs to that
-user. What is still missing is the part that *checks* any of it: no open,
-no unlink and no directory search consults a mode bit. So this remains
-**identity without authority** -- it is what a login authenticates into,
-and ssh does -- and `kernel/usertest.sh` ends with a check that reads
-root's file as anybody and passes, so that nobody mistakes it for
-protection.
+**What is executable is still decided by a file's first four bytes**, not
+by the execute bit. The mode is checked -- `perm_ok` refuses an exec
+without an execute bit -- but what makes a file a *program* rather than a
+script or data is its header, which is also how `exec` decides. Two
+different questions that a Unix answers with one bit are answered with
+two things here.
 
-Storing them faithfully first is what makes enforcement possible later
-without rewriting every file on the disk; enforcement itself touches every
-system call and is its own piece of work.
-
-**`chmod` is still a no-op**, for the same reason: the mode is recorded and
-nothing reads it. What is executable is decided by a file's first four
-bytes, which is also how `exec` decides. There are no passwords and no
-`/etc/shadow`: ssh authenticates by public key, and verifying a password
-would need `crypt(3)`, which the C library has not got.
-
-**No links, no symlinks, no FIFOs, no device nodes on disk.** `link`,
-`symlink`, `mkfifo` and `mknod` answer `EPERM`. ext2 holds hard links and
-symlinks perfectly well -- `stat` already reports `S_IFLNK` for one a host
-tool made, rather than mistaking it for a short regular file -- so what is
-missing is the VFS and system-call side, not the filesystem. A FIFO could
-live in the VFS instead of on the disk, and does not yet.
+**No FIFOs and no device nodes on disk.** `mkfifo` and `mknod` answer
+`EPERM`. The devices are the ones the kernel makes; a FIFO could live in
+the VFS rather than on the disk, and does not yet. Hard links and
+symlinks, which used to be in this paragraph, work -- see "Users".
 
 **No `/dev/fd`, and so no process substitution in bash.** `<(...)` needs
 either that or a FIFO.
