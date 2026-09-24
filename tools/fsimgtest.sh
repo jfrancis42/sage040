@@ -103,6 +103,19 @@ notok "ls-l does not echo debugfs's own commands as output"
 "$F" "$IMG" ls-l / | grep -q "100755.*prog"
 check "put -m sets the mode AND keeps the regular-file bits" $?
 
+# OWNERSHIP, which put -m cannot express. A set-user-id file owned by
+# root and run by root is not privileged at all -- uid and euid are
+# both 0 -- so a test of what privilege changes has to be able to give
+# a file away, and sotest's does.
+"$F" "$IMG" put -m 4755 "$SCRATCH/a.txt" /suid; check "put -m 4755 exits 0" $?
+"$F" "$IMG" chown /suid 1000:1001;            check "chown exits 0" $?
+"$F" "$IMG" ls-l / | grep -qE "104755 +\(1\) +1000 +1001 .*suid"
+check "  and sets uid and gid while leaving the set-user-id bit alone" $?
+# Taken away again: the block-count invariant below compares what is
+# on the volume at the end with what was there at the start, so a file
+# left behind here fails a check that has nothing to do with ownership.
+"$F" "$IMG" rm /suid
+
 # --- rename and delete, and their exit status -------------------------
 "$F" "$IMG" mv /a.txt /renamed.txt; check "mv exits 0 when it succeeds" $?
 "$F" "$IMG" exists /renamed.txt;    check "the new name is there" $?
