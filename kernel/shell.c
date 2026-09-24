@@ -62,7 +62,19 @@ static char *argv[MAX_ARGS];
 /* ---------------------------------------------------------------- */
 
 #define ENV_MAX      16
-#define ENV_ENTRY    64
+/*
+ * One environment entry: the whole "NAME=VALUE" and its NUL.
+ *
+ * It was 64, and 64 is not enough for things people actually set.
+ * bashtest exports BASH_TESTS with eleven test names in it -- 74 bytes
+ * with the name -- and got the first NINE back, because env_set
+ * truncated in silence and said it had worked. Two of bash's own tests
+ * then never ran, and the check that exists to notice that could not
+ * fail (see bashtest.sh). A variable that is WRONG is worse than one
+ * that is missing: nothing looks wrong, and the answer is quietly
+ * short.
+ */
+#define ENV_ENTRY    256
 
 static char env_store[ENV_MAX][ENV_ENTRY];
 static char *env[ENV_MAX + 1];
@@ -116,20 +128,28 @@ static const char *env_get(const char *name)
 
 static int env_set(const char *name, const char *value)
 {
-    int i = env_find(name);
+    int i;
     u32 n = 0;
 
+    /* IT FITS OR IT IS REFUSED. The loops below used to stop at the
+     * end of the buffer and return 0, so `export` reported success and
+     * stored something shorter than what was asked for. Whoever set it
+     * then debugs the program that read it. */
+    if (strlen(name) + 1 + strlen(value) + 1 > ENV_ENTRY) {
+        return -ENAMETOOLONG;
+    }
+    i = env_find(name);
     if (i < 0) {
         if (env_count == ENV_MAX) {
             return -ENOSPC;
         }
         i = env_count++;
     }
-    while (*name && n + 2 < ENV_ENTRY) {
+    while (*name) {
         env_store[i][n++] = *name++;
     }
     env_store[i][n++] = '=';
-    while (*value && n + 1 < ENV_ENTRY) {
+    while (*value) {
         env_store[i][n++] = *value++;
     }
     env_store[i][n] = '\0';
