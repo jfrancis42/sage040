@@ -20,9 +20,13 @@
  *   20 bytes is dropped. Options are essentially extinct on the modern
  *   internet and are the source of a long history of parsing bugs.
  *
- *   No routing table. There is one interface, one subnet and one
- *   gateway, so "route" is an if statement. A table would be three
- *   fields and a loop pretending to be a subsystem.
+ *   A routing table -- a real one, since task-24-ish: net/route.c holds
+ *   the routes and arp_resolve asks it for the next hop. This used to be
+ *   an if statement (on my subnet, or the gateway), which was enough
+ *   until there was a reason to SEE the table and add to it. There
+ *   still is one interface and, usually, one gateway; the table is what
+ *   lets a second subnet reach a second router, and lets `route` show
+ *   what DHCP set.
  */
 #include "net.h"
 #include "timer.h"
