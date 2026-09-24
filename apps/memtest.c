@@ -217,9 +217,20 @@ static void test_mmap(void)
     report("SHARED and PRIVATE together are refused", r == -EINVAL);
     r = syscall(__NR_mmap2, 0, PAGE, PROT_READ, MAP_ANONYMOUS, -1, 0);
     report("  and neither is refused", r == -EINVAL);
+    /* Derived, for the same reason as the sbrk check below: a flat
+     * 200 MB is not "more than exists" on a 256 MB machine. */
     before = free_pages();
-    r = syscall(__NR_mmap2, 0, 200UL * 1024 * 1024, PROT_READ, ANON, -1, 0);
-    report("more memory than exists is refused with ENOMEM", r == -ENOMEM);
+    {
+        struct sysinfo si;
+        unsigned long huge = 200UL * 1024 * 1024;
+
+        if (sysinfo(&si) == 0 && si.totalram) {
+            huge = (unsigned long)si.totalram * PAGE + 16UL * 1024 * 1024;
+        }
+        r = syscall(__NR_mmap2, 0, huge, PROT_READ, ANON, -1, 0);
+        report("more memory than exists is refused with ENOMEM",
+               r == -ENOMEM);
+    }
     report("  and cost nothing", free_pages() == before);
     report("munmap at an unaligned address is refused",
            munmap(a + 1, PAGE) == -EINVAL);
@@ -384,11 +395,31 @@ int main(int argc, char **argv)
            sbrk(0x7ff00000L) == (void *)-1);
     report("  and none of those moved the break", sbrk(0) == q);
 
-    /* More than the machine has. The kernel maps until it runs out,
-     * then has to give every one of those pages back. */
+    /*
+     * More than the machine has.
+     *
+     * DERIVED, NOT A CONSTANT. This asked for a flat 200 MB, which was
+     * comfortably more than a 64 MB machine had -- and then the
+     * default became 256 MB and the request was one the kernel could
+     * honour, so the check failed while nothing was wrong. A test of
+     * "more than exists" has to ask the machine what exists.
+     *
+     * Total RAM plus a margin, so it is out of reach however the
+     * machine is configured; if that also exceeds what the user
+     * address space can hold, it is refused for that reason instead,
+     * which is just as good an answer.
+     */
     before = free_pages();
-    report("sbrk of more memory than exists is refused",
-           sbrk(200L * 1024 * 1024) == (void *)-1);
+    {
+        struct sysinfo si;
+        unsigned long huge = 200UL * 1024 * 1024;
+
+        if (sysinfo(&si) == 0 && si.totalram) {
+            huge = (unsigned long)si.totalram * PAGE + 16UL * 1024 * 1024;
+        }
+        report("sbrk of more memory than exists is refused",
+               sbrk((long)huge) == (void *)-1);
+    }
     report("  and the break did not move", sbrk(0) == q);
     report("  and every page it took on the way was returned",
            free_pages() == before);

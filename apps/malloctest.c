@@ -124,8 +124,18 @@ static void fixed_checks(void)
     report("calloc whose product overflows returns NULL",
            calloc(0x10000, 0x10001) == 0);
 
-    report("malloc of more than exists returns NULL",
-           malloc(200UL * 1024 * 1024) == 0);
+    /* More than the machine has, ASKED OF THE MACHINE rather than
+     * written down: a flat 200 MB stopped being "more than exists" the
+     * day the default RAM became 256 MB. See memtest.c, same change. */
+    {
+        struct sysinfo si;
+        unsigned long huge = 200UL * 1024 * 1024;
+
+        if (sysinfo(&si) == 0 && si.totalram) {
+            huge = (unsigned long)si.totalram * 4096UL + 16UL * 1024 * 1024;
+        }
+        report("malloc of more than exists returns NULL", malloc(huge) == 0);
+    }
     report("  and the heap is still sound", malloc_check() == 0);
 
     /* realloc keeps the contents, and grows in place when it can. */
