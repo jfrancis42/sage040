@@ -72,6 +72,7 @@ drivers/smc91c111.c
 # The network stack.
 net/net.c
 net/arp.c
+net/route.c
 net/ip.c
 net/icmp.c
 net/udp.c

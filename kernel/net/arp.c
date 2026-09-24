@@ -18,6 +18,7 @@
  * switch's; one that does not is invisible whatever else it implements.
  */
 #include "net.h"
+#include "route.h"
 #include "timer.h"
 #include "console.h"
 #include "errno.h"
@@ -95,6 +96,25 @@ static struct arp_entry *lookup(ip4_t addr)
         }
     }
     return 0;
+}
+
+
+/* Remove one entry by address (arp -d). -ENOENT if it is not cached. */
+int arp_delete(ip4_t addr)
+{
+    struct arp_entry *e = lookup(addr);
+
+    if (!e) {
+        return -ENOENT;
+    }
+    e->valid = 0;
+    return 0;
+}
+
+/* Empty the cache. */
+void arp_flush(void)
+{
+    memset(cache, 0, sizeof(cache));
 }
 
 static void learn(ip4_t addr, const u8 *mac)
@@ -233,17 +253,23 @@ int arp_resolve(ip4_t addr, u8 *mac)
     }
 
     /*
-     * Anything off our subnet goes to the gateway, so that is whose
-     * hardware address is actually wanted. The destination IP does not
-     * change -- only the ethernet address it is wrapped in.
+     * The routing table says which NEIGHBOUR the frame goes to: the
+     * destination itself when it is on-link, or a router when it is
+     * not. Either way the destination IP is unchanged -- only the
+     * ethernet address it is wrapped in. A destination with no route at
+     * all is unreachable. This used to be "on my subnet? no: the
+     * gateway"; it is a table now so it can be seen and added to (route.c).
      */
-    if (!net_is_local(addr)) {
-        struct netif *n = net_if();
+    {
+        ip4_t nexthop = 0;
+        int is_lo = 0, r = route_lookup(addr, &nexthop, &is_lo);
 
-        if (!n->gateway) {
-            return -ENETUNREACH;
+        if (r < 0) {
+            return r;           /* -ENETUNREACH */
         }
-        addr = n->gateway;
+        if (nexthop) {
+            addr = nexthop;     /* through a router */
+        }
     }
 
     e = lookup(addr);
