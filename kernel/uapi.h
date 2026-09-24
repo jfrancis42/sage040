@@ -1091,6 +1091,31 @@ struct pageinfo {
  */
 #define NETCTL_TCPLOSS 9        /* arg = N                            */
 #define NETCTL_TCPOPTS 10       /* arg = mask of options to turn off  */
+/* --- routing table and ARP, viewable and editable ------------------ */
+#define NETCTL_ROUTE   11       /* arg = index, p = struct routeinfo * */
+#define NETCTL_ROUTEADD 12      /* p = struct routeinfo * (dest/mask/gw) */
+#define NETCTL_ROUTEDEL 13      /* p = struct routeinfo * (dest/mask)  */
+#define NETCTL_ARPDEL  14       /* arg = IPv4 address, host order      */
+
+/*
+ * Route flags, Linux's names and letters. RTF_STATIC marks a route a
+ * person added by hand, which is what keeps `route add` from being
+ * wiped by the next DHCP renewal; the interface's own routes carry no
+ * such flag and are re-derived from its address.
+ */
+#define RTF_UP       0x0001     /* U -- usable                        */
+#define RTF_GATEWAY  0x0002     /* G -- through a router, not on-link */
+#define RTF_HOST     0x0004     /* H -- a single host (/32)           */
+#define RTF_STATIC   0x0008     /* survives a re-address              */
+
+struct routeinfo {
+    u32  dest;                  /* network, host order                */
+    u32  mask;                  /* 0 for the default route            */
+    u32  gateway;               /* 0 for an on-link route             */
+    u32  metric;
+    u32  flags;                 /* RTF_*                              */
+    char iface[8];              /* "eth0" or "lo"                     */
+};
 
 struct netinfo {
     char name[8];

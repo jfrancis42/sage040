@@ -4,6 +4,7 @@
  * net.c - the bottom of the stack: frames in, frames out.
  */
 #include "net.h"
+#include "route.h"
 #include "dev.h"
 #include "tty.h"
 #include "tcp.h"
@@ -102,6 +103,7 @@ int net_init(void)
     iface.up = 1;
 
     arp_init();
+    route_init();
     tcp_init();
     ring_head = ring_tail = 0;
 
@@ -121,6 +123,10 @@ void net_set_addr(ip4_t ip, ip4_t mask, ip4_t gw)
     iface.ip = ip;
     iface.netmask = mask;
     iface.gateway = gw;
+    /* Keep the routing table in step: the on-link subnet route and the
+     * default route are derived from the address, and re-derived here
+     * whenever it changes. Routes added by hand are left alone. */
+    route_iface_update(ip, mask, gw);
 }
 
 int net_is_local(ip4_t addr)

@@ -54,6 +54,8 @@ apps/httpd
 system/ifconfig
 system/ping
 system/netstat
+system/route
+system/arp
 system/shutdown
 system/env
 system/sh

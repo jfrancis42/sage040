@@ -18,7 +18,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-PROGS := ifconfig ping netstat shutdown reboot env stty resize fsck host ntpdate swapon swapoff irqs nvram klogd dmesg df id who w uptime sh
+PROGS := ifconfig ping netstat route arp shutdown reboot env stty resize fsck host ntpdate swapon swapoff irqs nvram klogd dmesg df id who w uptime sh
 INSTALL_DIR := /bin
 
 include $(TOPDIR)/lib/program.mk

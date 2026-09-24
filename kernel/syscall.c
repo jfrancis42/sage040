@@ -40,6 +40,7 @@
 #include "pipe.h"
 #include "ptregs.h"
 #include "net.h"
+#include "route.h"
 #include "tcp.h"
 #include "errno.h"
 #include "string.h"
@@ -1420,6 +1421,40 @@ static int do_netctl(int cmd, u32 arg, u32 p)
         memcpy(out.mac, mac, 6);
         out.age_ms = age;
         return store(p, &out, sizeof(out));
+    }
+
+    case NETCTL_ARPDEL:
+        /* arg is the address to forget, host order. */
+        return arp_delete((ip4_t)arg);
+
+    case NETCTL_ROUTE: {
+        struct routeinfo out;
+        int err = route_get((int)arg, &out);
+
+        if (err < 0) {
+            return err;         /* -ENOENT past the last */
+        }
+        return store(p, &out, sizeof(out));
+    }
+
+    case NETCTL_ROUTEADD: {
+        struct routeinfo in;
+        int err = fetch(&in, p, sizeof(in));
+
+        if (err < 0) {
+            return err;
+        }
+        return route_add(in.dest, in.mask, in.gateway, in.metric, in.flags);
+    }
+
+    case NETCTL_ROUTEDEL: {
+        struct routeinfo in;
+        int err = fetch(&in, p, sizeof(in));
+
+        if (err < 0) {
+            return err;
+        }
+        return route_del(in.dest, in.mask);
     }
 
     default:

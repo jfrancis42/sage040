@@ -242,6 +242,11 @@ void arp_input(const void *frame, u32 len);
  */
 int  arp_resolve(ip4_t addr, u8 *mac);
 
+/* Remove one entry (arp -d), or every entry. Returns -ENOENT if
+ * there is no entry for that address. */
+int  arp_delete(ip4_t addr);
+void arp_flush(void);
+
 /* Just send the request, for `arping`. */
 int  arp_request(ip4_t addr);
 
