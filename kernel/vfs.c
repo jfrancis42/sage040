@@ -1205,6 +1205,32 @@ int fd_ioctl(int fd, u32 request, u32 arg)
     if (!f) {
         return -EBADF;
     }
+    /*
+     * The name of the device this descriptor is open on, answered here
+     * from the registry rather than by the driver: every character
+     * device has one, none of them has to implement it, and a driver
+     * added later cannot forget to. This is what ttyname(3) is built
+     * on -- see the note in uapi.h.
+     */
+    if (request == TIOCGDEVNAME) {
+        const char *name = dev_char_name(f);
+        u32 n;
+
+        if (!name) {
+            return -ENOTTY;    /* not a character device: no name */
+        }
+        n = strlen(name);
+        if (n >= TTYNAME_MAX) {
+            return -ENAMETOOLONG;
+        }
+        /* arg is a kernel buffer of TTYNAME_MAX: the syscall layer
+         * fetched and will store it, from its ioctl table. Zero the
+         * whole of it, so no tail of kernel memory goes out with a
+         * short name. */
+        memset((void *)arg, 0, TTYNAME_MAX);
+        memcpy((void *)arg, name, n);
+        return 0;
+    }
     if (!f->ops->ioctl) {
         return -ENOTTY;
     }

@@ -399,6 +399,7 @@ static const struct {
     { TCSETSF2,     sizeof(struct termios2),      IO_IN  },
     { TIOCGCONS,    sizeof(struct console_info),  IO_IN | IO_OUT },
     { TIOCSCONS,    sizeof(struct console_set),   IO_IN  },
+    { TIOCGDEVNAME, TTYNAME_MAX,                  IO_OUT },
     { TIOCGPGRP,    sizeof(int),                  IO_OUT },
     { TIOCSPGRP,    sizeof(int),                  IO_IN  },
     { TIOCGPTN,     sizeof(int),                  IO_OUT },

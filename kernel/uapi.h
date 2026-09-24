@@ -86,6 +86,27 @@
 #define TIOCGCONS     0x54F0    /* struct console_info *, in and out  */
 #define TIOCSCONS     0x54F1    /* struct console_set *, in           */
 
+/*
+ * WHAT TERMINAL IS THIS DESCRIPTOR OPEN ON? -- the name, as /dev has
+ * it: "console", "ttyS0", "pts/0". Fills a char[TTYNAME_MAX] and
+ * returns -ENOTTY for a descriptor that is not a character device.
+ *
+ * Local, and in the same 0x54F0 block, because Linux has no ioctl for
+ * this at all: it answers ttyname(3) by reading /proc/self/fd/N, and
+ * there is no /proc here. Without it a program cannot learn the name
+ * of its own terminal -- which is not academic, since Dropbear calls
+ * ttyname() on the pty it has just opened and treats a failure as
+ * fatal, so an interactive `ssh machine` could not get a session at
+ * all while `ssh machine command`, which needs no pty, worked.
+ *
+ * Answered by the file layer from the device registry rather than by
+ * each driver, so every character device has a name for free and a new
+ * one cannot forget to implement it. tty(1) and ttyname(3) are the
+ * callers.
+ */
+#define TIOCGDEVNAME  0x54F2    /* char[TTYNAME_MAX] out              */
+#define TTYNAME_MAX   32
+
 #define CONS_SINK     1         /* somewhere output goes              */
 #define CONS_SOURCE   2         /* somewhere input comes from         */
 

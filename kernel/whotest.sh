@@ -264,11 +264,13 @@ if grep -q 'SSH-IN' "$WORK/ssh.out" 2>/dev/null; then
     F=$(body '==F1' '==F2')
     [ "$(lines "$F")" -eq 1 ]
     check "the ssh session ending takes it off the list" $?
-elif grep -q 'ttyname fails' "$CLEAN"; then
-    echo "  [NOTE] no ssh login: the machine refused the pty with"
-    echo "         \"ttyname fails for openpty device\" -- known, and in"
-    echo "         progress.md. The remote half of this suite is not"
-    echo "         graded until that is fixed."
+elif grep -q 'chown(/dev/pts' "$CLEAN"; then
+    echo "  [NOTE] no ssh login: Dropbear could not chown the pty."
+    echo "         Known, and in progress.md -- the SECOND thing in the"
+    echo "         way of an interactive ssh session. The first was"
+    echo "         ttyname(), which is fixed; this is what it uncovered."
+    echo "         The remote half of this suite is not graded until"
+    echo "         that is fixed either."
 else
     check "the ssh login got in, or failed for the known reason" 1
     echo "         (neither SSH-IN nor a ttyname failure: something"
