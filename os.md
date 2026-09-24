@@ -1103,9 +1103,9 @@ the machine instead of ending it.
 ## Testing
 
 Everything here is tested, and `make test` runs the lot: the twelve
-bare-metal device tests, the crypto vectors on the host, and twenty-one
-scripted suites that each boot the machine and drive it over its serial
-line.
+bare-metal device tests, the crypto vectors and the disk staging on the
+host, and thirty-five scripted suites that each boot the machine and
+drive it over its serial line.
 
 | | | |
 |---|---|---|
@@ -1146,7 +1146,10 @@ which takes hours: one test is minutes of work for a 25 MHz 68040.
 
 The picolibc suites need `make libc` first.
 
-Everything they write goes in `scratch/`, and `make clean` removes the lot.
+Everything they write goes in **`/tmp/scratch`**, and `make clean` removes
+the lot -- outside the tree on purpose, because this one lives in Dropbox
+and four 16 MB disk images rewritten by every run is a great deal of
+syncing for files rebuilt from nothing each time. `SAGE_SCRATCH` moves it.
 `hd.img` is not in there: that is the machine's disk, not a build product.
 
 Two things about this that are load-bearing:
