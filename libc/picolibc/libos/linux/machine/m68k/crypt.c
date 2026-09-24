@@ -19,9 +19,9 @@
  * a mistake. libc/test/crypttest.c checks this against the published
  * test vectors AND against what the host's OpenSSL produces for the
  * same inputs, which is somebody else's implementation of the same
- * document. See the rule in CLAUDE.md: for anything whose job is a
- * wire format or an encoding, the port building is the start of the
- * test, not the end of it.
+ * document. The rule this follows: for anything whose job is a wire
+ * format or an encoding, the code building is the start of the test,
+ * not the end of it.
  *
  * The 64-bit arithmetic is plain C. The 68040 has no 64-bit registers,
  * so gcc synthesises every operation from 32-bit ones; that is slow and

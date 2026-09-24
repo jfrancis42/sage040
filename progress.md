@@ -164,8 +164,7 @@ Every suite in the tree passes, on ext2:
   selective flushes at each of its call sites, and every one of those
   needs its own argument about what may still be cached afterwards. A
   wrong one is not a crash, it is a stale translation used later
-  somewhere unrelated, which CLAUDE.md already records as close to
-  undebuggable. And the benefit cannot be measured here: it is ATC
+  somewhere unrelated, which is close to undebuggable. And the benefit cannot be measured here: it is ATC
   refill traffic on hardware that does not exist yet.
 
 

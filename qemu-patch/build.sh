@@ -11,11 +11,10 @@
 # It exists because the procedure was a block of shell in that README
 # to be typed by hand, which made the emulator the one part of this
 # project that only existed on whichever machine somebody had last
-# built it on. CLAUDE.md carries the consequence as a standing warning:
-# "After adding a device to the machine model, every host that runs
-# this needs its QEMU rebuilt; the tree on minime was deleted after the
-# last build, so rebuilding there means re-fetching the tarball."
-# Re-fetching the tarball is now one command.
+# built it on. The consequence is worth stating plainly: after adding a
+# device to the machine model, every host that runs this needs its QEMU
+# rebuilt -- and a host whose source tree has been deleted since the
+# last build has to re-fetch the tarball first. That is now one command.
 #
 #   ./build.sh          build and install into ~/m68k/sage040-qemu
 #   ./build.sh clean    remove the build directory
