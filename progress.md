@@ -169,6 +169,17 @@ Every suite in the tree passes, on ext2:
   refill traffic on hardware that does not exist yet.
 
 
+- **`sudo` passes the caller's whole environment through, and searches
+  the caller's `PATH`.** Real sudo resets both (`env_reset`,
+  `secure_path`). Here `execvp` means `sudo make` runs whatever `make`
+  the caller's PATH finds first, as root.
+  **This is not an escalation as sudoers stands**, and the reason is
+  worth writing down rather than rediscovering: the only rule the
+  parser accepts is `ALL`, so anybody sudo will run anything for could
+  equally have typed the full path. It becomes a hole the moment
+  sudoers learns to restrict WHICH commands, because then the command
+  name is a decision and PATH decides what it means. Whoever adds
+  command lists has to do `secure_path` in the same change.
 - **The POSIX gaps that are left** (30): FIFOs, `/dev/fd`, a listable
   `/dev`, and `diff`. Detailed below.
 - **A Lisp** (48), above.
