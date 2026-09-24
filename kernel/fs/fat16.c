@@ -2623,6 +2623,12 @@ static int fat_stat(const char *name, struct stat *st)
     st->st_size = de.d_size;
     st->st_mtime = de.d_mtime;
     st->st_ino = de.d_ino;
+    /* FAT16 records no owner. Everything on it belongs to root, which
+     * is a statement rather than a default: there is nowhere to put
+     * anything else, so a mode on this volume protects nothing. */
+    st->st_uid = 0;
+    st->st_gid = 0;
+    st->st_nlink = 1;          /* FAT has no second name for a file */
     st->st_blocks = block_bytes ?
                     (de.d_size + block_bytes - 1) / block_bytes : 0;
     return 0;
@@ -3376,6 +3382,9 @@ static int fat_file_fstat(struct file *f, struct stat *st)
     st->st_mode = S_IFREG | S_IRUSR | S_IWUSR;
     st->st_ino = ((ff->node->dir.cluster + 1) << 16) |
                  (ff->node->dir_index & 0xffffUL);
+    st->st_uid = 0;
+    st->st_gid = 0;
+    st->st_nlink = 1;          /* FAT has no second name for a file */
     st->st_size = ff->node->size;
     st->st_mtime = 0;
     st->st_blocks = block_bytes
@@ -3820,6 +3829,23 @@ static struct fs_type fat16_type = {
     fat_dir_path,
     fat_utime,
     fat_futime,
+    /*
+     * setattr, fsetattr: FAT16 has no owner and no permission bits, so
+     * there is nothing to store and nothing to pretend. Null, which the
+     * VFS turns into -ENOSYS -- the honest answer, where a 0 would tell
+     * the caller a chmod happened that did not.
+     */
+    0,
+    0,
+    /* link, symlink, readlink: FAT has no link count, no second name
+     * for a file, and no symbolic links. Null, so the VFS says -EPERM
+     * and -EINVAL rather than pretending. */
+    0,
+    0,
+    0,
+    /* lstat: no symlinks, so it would be stat. Null, and the VFS uses
+     * stat -- rather than a second copy of the same function. */
+    0,
     fat_check,
     fat_label_get,
     fat_bmap,

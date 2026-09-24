@@ -1,0 +1,16 @@
+# /etc/sudoers - who may run what as somebody else.
+#
+# Read by sudo(8), which is set-user-id root: the file decides whether
+# to keep that privilege or give it back. Mode 0440 -- readable by
+# root and by nobody who could edit it into something else.
+#
+#   user    ALL=(ALL) ALL             # anything, after a password
+#   user    ALL=(ALL) NOPASSWD: ALL   # anything, no password
+#   %group  ALL=(ALL) ALL             # a group rather than a person
+#
+# The password sudo asks for is the CALLER'S OWN, not the target
+# user's. That is the whole point of it over su: proving you are who
+# you already are, rather than sharing root's password around.
+root     ALL=(ALL) ALL
+%wheel   ALL=(ALL) ALL
+jfrancis ALL=(ALL) NOPASSWD: ALL

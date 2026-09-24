@@ -29,7 +29,7 @@ SAGE_QEMU=${SAGE_QEMU:-$HOME/m68k/sage040-qemu}
 QEMU=${QEMU:-$SAGE_QEMU/bin/qemu-system-m68k}
 [ -x "$QEMU" ] || QEMU=qemu-system-m68k
 
-SCRATCH=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}
+SCRATCH=${SAGE_SCRATCH:-/tmp/scratch}
 mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-user.img"
 PART_LBA=2048
@@ -81,7 +81,11 @@ for p in whoami ls echo cat pwd; do
 done
 echo "belongs to root" > "$WORK/rootfile.txt"
 echo "belongs to jfrancis" > "$WORK/jefffile.txt"
-fsimg put "$WORK/rootfile.txt" /root/rootfile.txt
+# 0600 root:root -- a file only root may read, now that a mode means
+# something. The session below IS root, so what this demonstrates is
+# the root bypass; the other half, that a non-root user is refused,
+# needs `su` to change user and is checked there.
+fsimg put -m 600 "$WORK/rootfile.txt" /root/rootfile.txt
 fsimg put "$WORK/jefffile.txt" /home/jfrancis/jefffile.txt
 
 rm -f "$SCRATCH/user.fifo"; mkfifo "$SCRATCH/user.fifo"
@@ -125,7 +129,8 @@ run 'cat ~jfrancis/jefffile.txt > /ST/cat.out' cat
 run 'cd ~jfrancis'                             cd
 run 'pwd > /ST/pwd.out'                        pwd
 run 'cd /'                                     cdback
-# Anybody may read anybody's file, and the suite says so on purpose.
+# Root reads a 0600 file of its own: the bypass, not the absence of a
+# fence. See the check at the end.
 run 'cat /root/rootfile.txt > /ST/nofence.out'  nofence
 run 'echo ALL-DONE'                            end
 wait_for "ALL-DONE"
@@ -195,15 +200,20 @@ check "~user/path reaches the file" $?
 test "$(say pwd.out)" = "/home/jfrancis"
 check "cd ~jfrancis goes there" $?
 
-# --- and what is NOT true --------------------------------------------
+# --- what this does and does not show --------------------------------
 #
-# THE POINT OF THIS CHECK is that it passes. There are user ids, and
-# they protect nothing: FAT cannot record an owner, so root's file is
-# readable by anybody and would be even if this were not running as
-# root. A suite that left this out could be read as evidence of a
-# protection that does not exist.
+# This USED to be here to say the opposite: that ids protected nothing,
+# because FAT could record no owner and root's file was readable by
+# anybody. ext2 records one and vfs_may() enforces it, so the check has
+# been turned round -- but carefully, because this session is root and
+# root may read anything.
+#
+# So what passes here is the ROOT BYPASS on a 0600 file, which is worth
+# checking in its own right. That an ordinary user is REFUSED the same
+# file is the other half, and it cannot be asked until something can
+# change user: it lives with `su`.
 test "$(say nofence.out)" = "belongs to root"
-check "files are NOT protected by owner -- FAT has none (task 36)" $?
+check "root reads a 0600 file it owns -- the bypass" $?
 
 echo
 echo "  passed: $pass"

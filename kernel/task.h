@@ -176,24 +176,34 @@ struct task {
      * properly rather than reported as a constant 0 -- which is what
      * this did until there were users at all.
      *
-     * BE CLEAR WHAT THIS DOES AND DOES NOT BUY. The identity is real:
-     * it is inherited across fork, kept across exec, changed by
-     * setuid() under the usual rules, and reported by getuid() and
-     * friends. What it cannot yet do is DECIDE ANYTHING ABOUT A FILE,
-     * because a FAT volume has nowhere to record an owner or a mode --
-     * so there is no such thing here as a file another user may not
-     * read. Enforcement waits for a filesystem that can hold it
-     * (task 36); until then this is identity without authority, which
-     * is worth having by itself: it is what lets /etc/passwd mean
-     * something, what `id` and `whoami` answer from, what a login
-     * would set, and what ssh will authenticate into.
+     * The identity is real: inherited across fork, kept across exec
+     * (except set-user-id, below), changed by setuid() under the usual
+     * rules, reported by getuid() and friends -- and now DECIDES WHAT
+     * MAY BE OPENED. It used to be identity without authority, because
+     * FAT16 had nowhere to record an owner or a mode; ext2 has, and
+     * vfs_may() in vfs.c is where the deciding happens.
      *
-     * Saying so plainly matters more than the feature does. A system
-     * that reports users and enforces nothing is a system somebody
-     * could mistake for one that enforces something.
+     * euid is what every permission check uses. uid is what it can go
+     * back to, and suid is what a set-user-id program may return to
+     * after dropping privilege -- which is the whole mechanism `su`,
+     * `sudo` and `passwd` are built on.
      */
     u32   uid, euid, suid;      /* real, effective, saved-set          */
     u32   gid, egid, sgid;
+
+    /*
+     * The supplementary groups, from /etc/group, set by whatever
+     * logged this session in.
+     *
+     * They are here and not worked out in userspace because the kernel
+     * is what decides a group permission, and a check that consulted
+     * only egid would deny a member of a group their own files
+     * whenever that group was not the one they happened to be running
+     * under. getgroups(2)/setgroups(2) are the interface; only root
+     * may set them, or any user could join any group.
+     */
+    int   ngroups;
+    u32   groups[NGROUPS_MAX];
 
     char  name[TASK_NAME_MAX];
     char  cmd[JOB_CMD_MAX];     /* the command line, for `jobs`        */

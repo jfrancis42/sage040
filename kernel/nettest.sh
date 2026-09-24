@@ -45,7 +45,7 @@ QEMU=${QEMU:-$SAGE_QEMU/bin/qemu-system-m68k}
 # failed when it was run by path, which is a difference nobody should
 # have to notice.
 #
-SCRATCH=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}
+SCRATCH=${SAGE_SCRATCH:-/tmp/scratch}
 mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-net.img"
 PART_LBA=2048

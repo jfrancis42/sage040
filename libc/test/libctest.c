@@ -43,6 +43,11 @@
 /* POSIX has programs declare it themselves; picolibc declares it nowhere. */
 extern char **environ;
 
+/* picolibc declares crypt nowhere. libc/picolibc/.../crypt.c defines
+ * it; this is the declaration a caller needs, and the same two lines
+ * any program on this machine will want. */
+extern char *crypt(const char *key, const char *salt);
+
 #define TMPFILE "/LCTEST.TXT"
 
 static int fails;
@@ -571,6 +576,58 @@ static void test_tty(void)
     }
 }
 
+/* --- crypt(3) ------------------------------------------------------ */
+/*
+ * The hashes below are not this implementation's own output written
+ * down. Two are the published SHA-crypt test vectors, and every one of
+ * them was checked on the workstation against OpenSSL and against
+ * glibc's crypt through perl -- somebody else's implementation of the
+ * same specification, which is the only kind of check worth anything
+ * for an encoding.
+ *
+ * That mattered: a third "known" vector written from memory disagreed
+ * with this code, and it was the REMEMBERED VECTOR that was wrong. Had
+ * it been believed, correct code would have been changed to match it.
+ */
+static void test_crypt(void)
+{
+    static const struct { const char *pw, *salt, *want; } v[] = {
+        { "Hello world!", "$6$saltstring",
+          "$6$saltstring$svn8UoSVapNtMuq1ukKS4tPQd8iKwSMHWjl/O817G3uB"
+          "nIFNjnQJuesI68u4OTLiBFdcbYEdFCoEOfaS35inz1" },
+        { "Hello world!", "$6$rounds=10000$saltstringsaltstring",
+          "$6$rounds=10000$saltstringsaltst$OW1/O6BYHV6BcXZu8QVeXbDWra"
+          "3Oeqh0sbHbbMCVNSnCM/UrjmM0Dp8vOuZeHBy/YTBmSK6H9qs/y3RnOaw5v." },
+        { "a short string", "$6$rounds=1000$roundstoolow",
+          "$6$rounds=1000$roundstoolow$p0QXZcxveYsQa.2B25KCJS4FS.AduSe"
+          "TvzacwAre/390sZzW4t6YB3IQ9MuUHRy2Ay665mftgtdsnKf4ghjRI0" },
+    };
+    unsigned i;
+    char *r;
+
+    printf("crypt:\n");
+    for (i = 0; i < sizeof(v) / sizeof(v[0]); i++) {
+        r = crypt(v[i].pw, v[i].salt);
+        report("a published SHA-512 vector", r && strcmp(r, v[i].want) == 0);
+    }
+
+    /* The salt is taken from a whole hash, which is how a password is
+     * CHECKED: hash the offered password with the stored hash as the
+     * setting and compare the strings. */
+    r = crypt("Hello world!", v[0].want);
+    report("  a stored hash works as its own salt", r &&
+           strcmp(r, v[0].want) == 0);
+
+    r = crypt("Hello world?", v[0].want);
+    report("  and a wrong password does not match", r &&
+           strcmp(r, v[0].want) != 0);
+
+    /* Anything that is not $6$ is refused rather than approximated: a
+     * wrong answer here reads as a wrong password for ever. */
+    r = crypt("x", "$1$abcdefgh");
+    report("  an unsupported scheme is refused, not guessed", r == 0);
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 2 && strcmp(argv[1], "child") == 0) {
@@ -589,6 +646,8 @@ int main(int argc, char **argv)
     test_signals();
     test_time();
     test_tty();
+
+    test_crypt();
 
     atexit(at_exit_handler);
     printf("libctest: %d failed", fails);   /* no newline: exit flushes */

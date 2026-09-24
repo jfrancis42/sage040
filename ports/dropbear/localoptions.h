@@ -9,17 +9,25 @@
  */
 
 /*
- * NO SERVER PASSWORD AUTHENTICATION. Checking a password means
- * crypt(3) against a hash in /etc/shadow, and picolibc has no crypt
- * and this system has no /etc/shadow. Public keys are what is left,
- * and are what should be used anyway.
+ * SERVER PASSWORD AUTHENTICATION IS ON.
  *
- * The CLIENT keeps password auth: sending a password to somebody
- * else's server needs no crypt here, and refusing to type one at a
- * machine that asks would make this client useless against half the
- * hosts in the world.
+ * It was off, and the comment here said why: checking a password means
+ * crypt(3) against a hash in /etc/shadow, and this machine had
+ * neither. It has both now -- crypt is $6$ SHA-512 in
+ * libc/picolibc/libos/linux/machine/m68k/crypt.c, and /etc/shadow is
+ * written by passwd(1) and useradd(8) -- so ssh can ask the same
+ * question the console asks.
+ *
+ * Dropbear reads the hash through getpwnam()'s pw_passwd, so the C
+ * library has to hand it the SHADOW hash rather than the 'x' that is
+ * in /etc/passwd; see the shadow patch in patches/.
+ *
+ * The CLIENT keeps password auth for the separate reason it always
+ * did: sending a password to somebody else's server needs no crypt
+ * here, and refusing to type one would make this client useless
+ * against half the hosts in the world.
  */
-#define DROPBEAR_SVR_PASSWORD_AUTH 0
+#define DROPBEAR_SVR_PASSWORD_AUTH 1
 #define DROPBEAR_SVR_PUBKEY_AUTH 1
 #define DROPBEAR_CLI_PASSWORD_AUTH 1
 #define DROPBEAR_CLI_PUBKEY_AUTH 1

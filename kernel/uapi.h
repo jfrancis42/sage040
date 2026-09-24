@@ -57,7 +57,7 @@
 #define O_CLOEXEC     0x80000   /* the new descriptor is FD_CLOEXEC       */
 #define O_EXCL        0x0080    /* with O_CREAT: fail if it exists        */
 #define O_DIRECTORY   0x4000    /* m68k's value, not the generic 0x10000 */
-#define O_NOFOLLOW    0x8000    /* accepted: there are no symlinks        */
+#define O_NOFOLLOW    0x8000    /* do not follow a final symlink          */
 #define O_LARGEFILE   0x20000   /* accepted: no file is over 4 GB         */
 
 /*
@@ -281,6 +281,13 @@ struct fb_palette {
 #define SEEK_END      2
 
 /* st_mode, as far as this kernel has a use for it */
+/*
+ * How many supplementary groups one task may be in. Linux's is 65536,
+ * which would be 256 KB per task here for a number nothing approaches;
+ * 32 is what a person is realistically in and what early Unix allowed.
+ */
+#define NGROUPS_MAX   32
+
 #define S_IFMT        0170000
 #define S_IFREG       0100000
 #define S_IFDIR       0040000
@@ -337,6 +344,21 @@ struct stat {
     time_t st_mtime;
     u32    st_blocks;
     u32    st_ino;              /* see ino_for() in fs/fat16.c         */
+    /*
+     * APPENDED, not inserted, and every ulib program rebuilt with it.
+     * This is not a Linux struct -- it is this system's own, used by
+     * lib/ulib; picolibc programs get statx, which is Linux-shaped and
+     * has had these all along. Putting them at the end means a program
+     * built before this still finds st_mode and st_ino where it left
+     * them, but one that is NOT rebuilt will read past its own idea of
+     * the structure, so `make programs` is not optional here.
+     *
+     * The kernel needs them for a reason nothing else did: vfs_may()
+     * cannot decide who owns a file without being told.
+     */
+    u32    st_uid;
+    u32    st_gid;
+    u32    st_nlink;           /* how many names this inode has */
 };
 
 struct dirent {
@@ -1395,6 +1417,7 @@ struct sigcontext {
 #define __NR_getrlimit      76
 #define __NR_getgroups      80
 #define __NR_setgroups      81
+#define __NR_symlink        83
 #define __NR_readlink       85
 #define __NR_fstatfs       100
 #define __NR_lstat         107  /* this system's struct stat, like stat */

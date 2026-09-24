@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Jeff Francis
+#
+# /usr/src/kernel/Makefile -- the kernel, built ON the machine.
+#
+# Installed as `Makefile` there by `make install-src` on the
+# workstation. It is NOT the cross build's Makefile: this machine's
+# make is sbase's, which is a POSIX make with no $(wildcard), $(filter)
+# or $(shell), so the real work is in build.sh and this is the handle
+# somebody expects to find.
+#
+#   make            build kernel.elf and kernel.rom
+#   make install    build, then write /KERNEL.ROM
+#   make clean      remove the objects
+#
+# Then `reboot`: the boot ROM reads /KERNEL.ROM off the filesystem, so
+# the machine comes back up on what was just built.
+
+# `bash build.sh`, not `./build.sh`.
+#
+# This kernel's exec() loads ELF and nothing else: a text file with a
+# #! line is ENOEXEC, and /bin/sh then runs the script ITSELF -- which
+# for build.sh means the small shell meeting `set -u` and
+# `$(dirname "$0")` and printing its environment instead of building a
+# kernel. Naming the interpreter is what works whatever exec() can do,
+# and it is also what has to happen while BOOTSTRAPPING: the kernel
+# being built here is the one that adds #! support, so the kernel
+# running the build cannot have it.
+all:
+	bash build.sh
+
+install:
+	bash build.sh install
+
+clean:
+	bash build.sh clean

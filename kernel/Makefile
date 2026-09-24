@@ -35,6 +35,10 @@ include $(TOPDIR)/disk.mk
 
 MACHINE := -M sage040 -cpu m68040 -m $(RAM_MB)
 
+# How fast the machine runs: SPEED, default 6 (~25 MHz 68040).
+# Overridable -- see speed.mk, which kernel, bootrom and cube share.
+include $(TOPDIR)/speed.mk
+
 # Hardware register definitions are shared with the device tests.
 SUP := ../tests
 CPUFLAGS := -mcpu=68040
@@ -45,20 +49,15 @@ CFLAGS := $(CPUFLAGS) -ffreestanding -nostdlib -nostdinc -O2 \
 LDFLAGS := $(CPUFLAGS) -ffreestanding -nostdlib -T kernel.ld \
  -Wl,--build-id=none -Wl,--no-warn-rwx-segments -Wl,-Map=kernel.map
 
-# The kernel proper, then the drivers, then the filesystems. Nothing in
-# the first group names a chip; everything in the second does, and only
-# there.
-SRCS := main.c version.c console.c trap.c syscall.c syslinux.c sysuser.c vfs.c dev.c \
- time.c timer.c errno.c string.c exec.c tty.c edit.c \
- pmm.c vm.c mmap.c textcache.c swap.c poll.c pipe.c uaccess.c task.c wait.c signal.c futex.c random.c crypto.c memdev.c fb.c fbcon.c klog.c pty.c cache.c \
- font8x16.c \
- probe.c shell.c \
- drivers/ns16550.c drivers/ata.c drivers/m48t59.c \
- drivers/mfp.c drivers/sm501.c drivers/i8042.c \
- drivers/smc91c111.c \
- net/net.c net/arp.c net/ip.c net/icmp.c net/udp.c net/dhcp.c net/tcp.c net/socket.c \
- fs/fat16.c \
- fs/ext2.c
+# THE SOURCE LIST LIVES IN `SOURCES`, not here.
+#
+# Read by this Makefile and by build.sh, which is the same build run
+# ON the machine with its own compiler. Two copies of this list is a
+# kernel that builds on the workstation and fails to link natively,
+# discovered by whoever tries it next -- so there is one copy, and
+# both builds split it on the extension.
+ALLSRC := $(shell sed -e 's/\#.*//' SOURCES)
+SRCS   := $(filter %.c,$(ALLSRC))
 
 # Every header, by wildcard. The list used to be written out and had
 # fallen well behind -- task.h, signal.h and most of the rest were not
@@ -66,11 +65,11 @@ SRCS := main.c version.c console.c trap.c syscall.c syslinux.c sysuser.c vfs.c d
 HDRS := $(wildcard *.h drivers/*.h fs/*.h net/*.h) ../types.h \
  $(SUP)/sage040.h
 
-.PHONY: all run install boot disasm syms clean distclean
+.PHONY: all run install install-src boot disasm syms clean distclean
 
 all: kernel.rom
 
-ASMS := start.s memprobe.s taskasm.s
+ASMS := $(filter %.s,$(ALLSRC))
 
 # The layering rule is checked before the link, not documented and hoped
 # for. shell.c and edit.c are programs: they reach the system through
@@ -80,7 +79,7 @@ ASMS := start.s memprobe.s taskasm.s
 # So is the ABI: every system call number Linux/m68k has must be Linux's
 # number (abicheck.sh, against linux-m68k-syscalls.txt).
 kernel.elf: $(ASMS) $(SRCS) $(HDRS) kernel.ld layercheck.sh abicheck.sh \
-            linux-m68k-syscalls.txt
+            linux-m68k-syscalls.txt SOURCES
 	@./layercheck.sh
 	@./abicheck.sh
 	$(CC) $(CFLAGS) $(LDFLAGS) \
@@ -115,7 +114,7 @@ kernel.rom: kernel.elf
 NET := ../tools/qemu-net.sh
 
 run: kernel.elf $(DISK)
-	$(NET) $(QEMU) $(MACHINE) -no-reboot -kernel kernel.elf \
+	$(NET) $(QEMU) $(MACHINE) $(ICOUNT) -no-reboot -kernel kernel.elf \
 	 -drive file=$(DISK),format=raw,if=ide \
 	 -serial mon:stdio
 
@@ -126,7 +125,49 @@ install: kernel.rom $(DISK)
 
 # The real thing: the boot ROM finds KERNEL.ROM on the filesystem and runs it.
 boot: install
-	$(MAKE) -C ../bootrom boot
+	$(MAKE) -C ../bootrom boot SPEED=$(SPEED)
+
+# THE KERNEL'S OWN SOURCE, ON THE MACHINE, SO IT CAN REBUILD ITSELF.
+#
+# Staged into a tree first and copied in one go: `fsimg put -r` is a
+# single debugfs session for the whole thing, where a file at a time is
+# 120 process starts.
+#
+# The layout keeps the include paths the build already uses -- the
+# kernel compiles with -I.. and -I../tests, so types.h and sage040.h
+# have to sit beside the kernel directory exactly as they do here. That
+# is why this copies to /usr/src and not to /usr/src/kernel alone.
+#
+#   /usr/src/types.h
+#   /usr/src/tests/sage040.h
+#   /usr/src/kernel/...
+#
+# Build it there with ./build.sh, not make: see the head of that script
+# for why.
+install-src: $(DISK)
+	@rm -rf .srcstage
+	@mkdir -p .srcstage/kernel/drivers .srcstage/kernel/net \
+	          .srcstage/kernel/fs .srcstage/tests
+	@cp ../types.h .srcstage/
+	@cp $(SUP)/sage040.h .srcstage/tests/
+	@cp *.c *.h *.s kernel.ld SOURCES build.sh \
+	    layercheck.sh abicheck.sh linux-m68k-syscalls.txt \
+	    .srcstage/kernel/
+	@cp Makefile.native .srcstage/kernel/Makefile
+	@# Whatever each one HAS: fs/ has no headers, and a bare
+	@# `cp fs/*.h` fails the whole target on the glob that matched
+	@# nothing rather than on anything being wrong.
+	@for d in drivers net fs; do \
+	    for f in $$d/*.c $$d/*.h; do \
+	        [ -f "$$f" ] && cp "$$f" .srcstage/kernel/$$d/; \
+	    done; \
+	done; true
+	@chmod 755 .srcstage/kernel/build.sh .srcstage/kernel/layercheck.sh \
+	           .srcstage/kernel/abicheck.sh
+	@$(FSIMG) put -r .srcstage /usr/src
+	@rm -rf .srcstage
+	@echo "kernel source -> /usr/src  ($$(find . -path ./.srcstage -prune -o -type f -print 2>/dev/null | wc -l) files)"
+	@echo "on the machine:  cd /usr/src/kernel && make install && reboot"
 
 disasm: kernel.elf
 	$(OBJDUMP) -d kernel.elf
@@ -136,5 +177,7 @@ syms: kernel.elf
 
 clean:
 	rm -f kernel.elf kernel.rom kernel.map
+	rm -f *.o drivers/*.o fs/*.o net/*.o
+	rm -rf .srcstage
 
 distclean: clean

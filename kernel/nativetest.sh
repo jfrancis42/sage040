@@ -36,7 +36,7 @@ BINOUT=$SRCDIR/build-binutils-native/sage040
 GCCOUT=$SRCDIR/build-gcc-native/sage040
 SAGE_LIBC=${SAGE_LIBC:-$HOME/m68k/sage040-libc}
 
-SCRATCH=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}
+SCRATCH=${SAGE_SCRATCH:-/tmp/scratch}
 mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-native.img"
 PART_LBA=2048

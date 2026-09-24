@@ -67,3 +67,46 @@ fini:
 4:      movem.l (%sp)+,%a2-%a3
         rts
         .size   fini, . - fini
+
+| --- __dso_handle -----------------------------------------------------
+|
+| WHAT THIS IS. A C++ program with a static object registers its
+| destructor with __cxa_atexit(fn, obj, &__dso_handle), and the third
+| argument names WHICH shared object the destructor belongs to, so that
+| unloading one runs only its own. Every executable is supposed to
+| define its own; on Linux that definition comes from crtbegin.o, which
+| gcc's driver links in. This toolchain's specs link crt0 and nothing
+| else -- picolibc's crt0 already walks the init and fini arrays, which
+| is the other half of what crtbegin does -- so nothing provided one.
+|
+| WHY IT MATTERS, AND WHY IT ONLY BIT ON ONE MACHINE. gcc marks the
+| reference HIDDEN when its configure finds an assembler that supports
+| hidden visibility, and a hidden reference may not be satisfied by a
+| shared library -- that is what hidden means. On a machine whose gcc
+| had decided the assembler could not, the reference was DEFAULT
+| visibility and quietly bound to libc.so's copy through a copy
+| relocation, and the native compiler built. On a machine whose gcc
+| decided it could, the same source stopped with
+|
+|     ld: Tcollect2: hidden symbol `__dso_handle' isn't defined
+|
+| in the middle of building gcc, three steps from anything to do with
+| this. The second machine was RIGHT; the first was getting away with
+| using libc's handle to identify the program, which is the wrong
+| object.
+|
+| Defined here rather than by dragging in crtbegin.o: crt0 is already
+| linked into every program, and crtbegin brings constructor machinery
+| that picolibc's crt0 does itself. Hidden, so it is this program's own
+| and never exported; pointing at itself, which is what glibc's
+| crtbegin does for an executable -- the VALUE is never dereferenced,
+| only its address is used, so what matters is that it is unique to the
+| program.
+        .data
+        .globl  __dso_handle
+        .hidden __dso_handle
+        .p2align 2
+        .type   __dso_handle,@object
+        .size   __dso_handle, 4
+__dso_handle:
+        .long   __dso_handle

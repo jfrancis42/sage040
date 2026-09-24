@@ -1,0 +1,83 @@
+# The kernel's source files, in link order, named once.
+#
+# Read by BOTH the cross build (Makefile) and the native one
+# (build.sh, which runs on the machine itself). It exists because
+# those two had separate copies of this list for about ten minutes
+# and that was long enough to see how it would end: a file added to
+# one, absent from the other, and a kernel that builds on the
+# workstation and fails to link on the machine.
+#
+# Order matters. start.s is first because the vector table has to be
+# at the start of the image -- the boot ROM reads its first two
+# longwords as the initial SSP and PC.
+#
+# .s here is assembler-with-cpp, .c is C; the consumers split on the
+# extension rather than being told twice.
+
+start.s
+memprobe.s
+taskasm.s
+
+# The kernel proper. Nothing in this group names a chip.
+main.c
+version.c
+console.c
+trap.c
+syscall.c
+syslinux.c
+sysuser.c
+vfs.c
+dev.c
+time.c
+timer.c
+errno.c
+string.c
+exec.c
+tty.c
+edit.c
+pmm.c
+vm.c
+mmap.c
+textcache.c
+swap.c
+poll.c
+pipe.c
+uaccess.c
+task.c
+wait.c
+signal.c
+futex.c
+random.c
+crypto.c
+memdev.c
+fb.c
+fbcon.c
+klog.c
+pty.c
+cache.c
+font8x16.c
+probe.c
+shell.c
+
+# The drivers. Everything here names a chip, and only here.
+drivers/ns16550.c
+drivers/ata.c
+drivers/m48t59.c
+drivers/mfp.c
+drivers/sm501.c
+drivers/i8042.c
+drivers/smc91c111.c
+
+# The network stack.
+net/net.c
+net/arp.c
+net/ip.c
+net/icmp.c
+net/udp.c
+net/dhcp.c
+net/tcp.c
+net/socket.c
+
+# The filesystems.
+fs/fat16.c
+fs/ext2.c

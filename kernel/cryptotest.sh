@@ -8,7 +8,7 @@
 
 set -u
 cd "$(dirname "$0")"
-SCRATCH=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}
+SCRATCH=${SAGE_SCRATCH:-/tmp/scratch}
 mkdir -p "$SCRATCH"
 cc -O2 -Wall -Wextra -iquote . -o "$SCRATCH/cryptotest" cryptotest.c crypto.c || exit 1
 "$SCRATCH/cryptotest"

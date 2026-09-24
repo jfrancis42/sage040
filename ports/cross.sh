@@ -78,8 +78,27 @@ unset _crt
 cross_configure() {             # cross_configure SRCDIR [configure args...]
     local src=$1
     shift
+    #
+    # C++ IS POINTED AT THE C COMPILER, WITH THE C FRONT END FORCED.
+    #
+    # The cross toolchain has no g++ -- no cc1plus -- and several of
+    # these configure scripts run AC_PROG_CXXCPP whether or not the
+    # package has any C++ in it. With nothing said, autoconf falls back
+    # to the HOST's /lib/cpp and then hands it our CPPFLAGS, which say
+    # -nostdinc and point at picolibc; a host preprocessor with no host
+    # headers fails the sanity check, and the build stops in a package
+    # that never needed C++ at all. Naming the cross compiler is not
+    # enough either: it refuses a .cpp input with "C++ compiler not
+    # installed on this system". -x c makes it preprocess the probe as
+    # C, which is all these tests actually require.
+    #
+    # Safe because nothing that uses cross_configure compiles C++:
+    # libffi, less, grep, readline, sed, ncurses and xz. gcc and
+    # libstdcxx, which do, set their own CXX and do not come through
+    # here.
     "$src/configure" --host="$HOST_TRIPLET" --build="$("$src/build-aux/config.guess")" \
         CC="$CROSS_CC" \
+        CXX="$CROSS_CC -x c" CXXCPP="$CROSS_CC -E -x c" \
         AR="$CROSS_BIN/m68k-elf-ar" RANLIB="$CROSS_BIN/m68k-elf-ranlib" \
         CPPFLAGS="$CROSS_CPPFLAGS" CFLAGS="$CROSS_CFLAGS" \
         LDFLAGS="$STATIC_LDFLAGS" LIBS="$STATIC_LIBS" \
@@ -103,3 +122,78 @@ libc_fresh() {
     return 1
 }
 
+
+# ---------------------------------------------------------------------
+# THE GCC SOURCE, AND THE SECOND CROSS COMPILER BUILT FROM IT
+#
+# Three things want gcc's source -- ports/gcc, ports/libstdcxx, and the
+# cross g++ below -- so the version, the URL and the checksum are said
+# once, here. They were about to be said in three files, which is how
+# two of them end up on different versions and the third finds out.
+# ---------------------------------------------------------------------
+GCC_VERSION=15.2.0
+GCC_SHA256=438fd996826b0c82485a29da03a72d71d6e3541a83ec702df4271f6fe025d24e
+GCC_URL=https://ftp.gnu.org/gnu/gcc/gcc-$GCC_VERSION/gcc-$GCC_VERSION.tar.xz
+
+# Unpack gcc's source if it is not already there; print where it is.
+gcc_source() {
+    local src=$SRCDIR/gcc-$GCC_VERSION
+    if [ ! -d "$src" ]; then
+        mkdir -p "$SRCDIR"
+        local tarball=$SRCDIR/gcc-$GCC_VERSION.tar.xz
+        [ -f "$tarball" ] || curl -L --fail -o "$tarball" "$GCC_URL"
+        echo "$GCC_SHA256  $tarball" | sha256sum -c - >&2
+        tar -C "$SRCDIR" -xf "$tarball"
+    fi
+    echo "$src"
+}
+
+# The SECOND cross compiler: gcc for m68k with C++, in a prefix of its
+# own. toolchain.md, "Why there is a second cross compiler", says why it
+# has to exist: gcc 15 is written in C++, so a gcc that runs on the
+# machine needs a libstdc++ for the machine, and building that needs a
+# C++ compiler targeting m68k -- which the C-only cross toolchain in
+# ~/m68k/install is not.
+#
+# It was a block of shell in that document, to be typed by hand. That
+# made it the one step of the toolchain a fresh machine could not do,
+# and `make install` failed there with a note telling the reader to go
+# and read the document. Automating it is the difference between a tree
+# that builds anywhere and one that builds where somebody once did this.
+#
+# A SEPARATE PREFIX ON PURPOSE: ~/m68k/install is the C compiler
+# everything else here depends on, and adding a language to it is not
+# worth the risk. Same version, same target, so their objects link.
+cross_cxx() {
+    local prefix=${SAGE_CXX:-$HOME/m68k/install-cxx}
+    [ -x "$prefix/bin/m68k-elf-g++" ] && { echo "$prefix"; return 0; }
+
+    local src build
+    src=$(gcc_source)
+    build=$SRCDIR/build-gcc-cxx
+    echo "cross g++: building gcc $GCC_VERSION (c,c++) into $prefix" >&2
+    echo "           once, and it takes a while." >&2
+    mkdir -p "$build"
+    if [ ! -f "$build/Makefile" ]; then
+        # CXX="g++ -std=gnu++17" because a host g++ defaulting to C++20
+        # -- GCC 16 does -- compiles gcc 15's own libcody wrongly: u8""
+        # literals became char8_t in C++20 and libcody predates it.
+        ( cd "$build" && PATH="$CROSS_BIN:$PATH" "$src/configure" \
+            --target=m68k-elf --prefix="$prefix" \
+            --disable-nls --enable-languages=c,c++ --without-headers \
+            --with-gnu-as --with-gnu-ld --disable-multilib \
+            --with-cpu=68040 \
+            CXX="g++ -std=gnu++17" CXX_FOR_BUILD="g++ -std=gnu++17" \
+            > configure.log 2>&1 ) \
+            || { tail -30 "$build/configure.log" >&2; return 1; }
+    fi
+    # all-gcc/install-gcc: the compiler and NOT the target libgcc, which
+    # is why this prefix has no libgcc.a and the ports -B at the C
+    # toolchain's instead. Same version, same target, and libgcc does
+    # not depend on which front ends were built.
+    ( cd "$build" && PATH="$CROSS_BIN:$PATH" \
+        make -j"$(nproc)" all-gcc > make.log 2>&1 \
+        && make install-gcc >> make.log 2>&1 ) \
+        || { tail -30 "$build/make.log" >&2; return 1; }
+    echo "$prefix"
+}

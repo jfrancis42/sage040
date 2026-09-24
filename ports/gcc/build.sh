@@ -58,8 +58,7 @@ cd "$(dirname "$0")"
 HERE=$(pwd)
 . ../cross.sh
 
-VERSION=15.2.0
-SRC=$SRCDIR/gcc-$VERSION
+VERSION=$GCC_VERSION      # cross.sh; shared with libstdcxx and the cross g++
 BUILD=$SRCDIR/build-gcc-native
 STAGE=$BUILD/stage
 GMPOUT=$SRCDIR/build-gmp-sage040/sage040
@@ -69,11 +68,11 @@ BINOUT=$SRCDIR/build-binutils-native/sage040
 CXXLIB=$SRCDIR/build-libstdcxx-sage040/sage040
 CXXPREFIX=${SAGE_CXX:-$HOME/m68k/install-cxx}
 
-[ -d "$SRC" ] || {
-    echo "gcc: $SRC is not there. The cross compiler was built from it" >&2
-    echo "(toolchain.md); the native one must be the same version."     >&2
-    exit 1
-}
+# The gcc source, fetched if it is not here. Version, URL and checksum
+# live in cross.sh, shared with ports/libstdcxx and the cross g++ --
+# said once so the three cannot drift onto different versions.
+SRC=$(gcc_source)
+
 for d in "$GMPOUT/lib/libgmp.a" "$MPFROUT/lib/libmpfr.a" "$MPCOUT/lib/libmpc.a"; do
     [ -f "$d" ] || { echo "gcc: missing $d -- build ports/gmp, mpfr, mpc" >&2; exit 1; }
 done

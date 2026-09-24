@@ -244,8 +244,15 @@ put)
         # sif sets the WHOLE of i_mode, so the file-type bits have to be
         # part of it: a mode of plain 0755 leaves an inode that is not a
         # regular file, which e2fsck reports and the kernel will not run.
+        #
+        # COMPUTED, NOT PASTED TOGETHER. This was "0100${MODE#0}", which
+        # is right for a three-digit mode and silently wrong for four:
+        # -m 4755 came out as 01004755, an eight-digit nonsense, so a
+        # set-user-id binary could not be installed at all -- and the
+        # failure would have shown up as `su` not working rather than as
+        # anything to do with this.
         if [ -n "$MODE" ]; then
-            modes+=("sif $(q "$TARGET") mode 0100${MODE#0}")
+            modes+=("sif $(q "$TARGET") mode $(printf '0%o' $(( 0100000 | 0$MODE )))")
         fi
     done
     out=$(dbg "${cmds[@]}" ${modes[@]+"${modes[@]}"})

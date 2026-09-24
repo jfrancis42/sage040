@@ -44,14 +44,17 @@ OUT=$BUILD/sage040
 # The host interpreter that builds the target one. It must be the same
 # version, to the minor number: the build runs it over the target's own
 # source and unpickles what it writes.
-BUILD_PYTHON=${BUILD_PYTHON:-$(command -v python3)}
-host_ver=$("$BUILD_PYTHON" -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+#
+# If the machine has not got one, BUILD IT, from the same tarball this
+# port already downloads. This used to be an error telling whoever ran
+# it to go and find a 3.14 -- which on a distro whose python3 is 3.12
+# means building one by hand, and made `make install` fail on a machine
+# where nothing was actually wrong. CPython's own cross-build
+# instructions say to do exactly this, and it costs a few minutes once.
 want_ver=${VERSION%.*}
-if [ "$host_ver" != "$want_ver" ]; then
-    echo "python: the build interpreter is $host_ver and the target is $want_ver." >&2
-    echo "        Set BUILD_PYTHON to a $want_ver, or change VERSION here." >&2
-    exit 1
-fi
+BUILD_PYTHON=${BUILD_PYTHON:-$(command -v python3)}
+host_ver=$("$BUILD_PYTHON" -c 'import sys; print("%d.%d" % sys.version_info[:2])' \
+           2>/dev/null || echo none)
 
 if [ ! -d "$SRC" ]; then
     mkdir -p "$SRCDIR"
@@ -63,6 +66,33 @@ if [ ! -d "$SRC" ]; then
         [ -f "$p" ] || continue
         patch -d "$SRC" -p1 -s < "$p"
     done
+fi
+
+# Now that the source is here, a build interpreter can be made from it.
+#
+# Out of tree, in a directory of its own, exactly as the cross build is:
+# $SRC stays clean, so the two builds cannot tread on each other. It is
+# an ordinary native CPython -- no cross flags, nothing from picolibc --
+# and it is never installed anywhere.
+if [ "$host_ver" != "$want_ver" ]; then
+    HOSTBUILD=$SRCDIR/build-python-host
+    if [ ! -x "$HOSTBUILD/python" ]; then
+        echo "python: this machine's python3 is $host_ver, the target is $want_ver;"
+        echo "        building a $want_ver to build it with (once, a few minutes)."
+        mkdir -p "$HOSTBUILD"
+        (cd "$HOSTBUILD" && "$SRC/configure" --without-ensurepip \
+            > configure.log 2>&1) \
+            || { tail -30 "$HOSTBUILD/configure.log"; exit 1; }
+        make -C "$HOSTBUILD" -j8 > "$HOSTBUILD/make.log" 2>&1 \
+            || { tail -30 "$HOSTBUILD/make.log"; exit 1; }
+    fi
+    BUILD_PYTHON=$HOSTBUILD/python
+    got=$("$BUILD_PYTHON" -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+    [ "$got" = "$want_ver" ] || {
+        echo "python: built a build interpreter and it is $got, not $want_ver" >&2
+        exit 1
+    }
+    echo "python: build interpreter $BUILD_PYTHON ($got)"
 fi
 
 # PKG_CONFIG=/bin/false, and the curses flags given outright.

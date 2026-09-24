@@ -32,15 +32,19 @@ cd "$(dirname "$0")"
 HERE=$(pwd)
 . ../cross.sh
 
-VERSION=15.2.0
-SRC=$SRCDIR/gcc-$VERSION
+VERSION=$GCC_VERSION
 BUILD=$SRCDIR/build-libstdcxx-sage040
-CXXPREFIX=${SAGE_CXX:-$HOME/m68k/install-cxx}
 
-[ -x "$CXXPREFIX/bin/m68k-elf-g++" ] || {
-    echo "libstdc++: no cross g++ in $CXXPREFIX." >&2
-    echo "It is gcc $VERSION configured --enable-languages=c,c++"  >&2
-    echo "into a prefix of its own; see progress.md, task 49."     >&2
+# The gcc source, shared with ports/gcc and the cross g++ (cross.sh).
+SRC=$(gcc_source)
+
+# The cross g++, built if this machine has not got one. It used to be
+# an error telling the reader to go and build it by hand out of
+# toolchain.md -- which made this the one step of the toolchain a fresh
+# machine could not take, and it is exactly where `make install` stopped
+# on a second machine.
+CXXPREFIX=$(cross_cxx) || {
+    echo "libstdc++: could not build the cross g++" >&2
     exit 1
 }
 
@@ -53,8 +57,28 @@ CXXCXX=$CXXPREFIX/bin/m68k-elf-g++
 # stdarg.h, the ones the compiler ships rather than the C library. Used
 # with a DIFFERENT gcc they are the wrong copy, and the failure is
 # "cannot compute suffix of object files", which says nothing at all.
+#
+# AND THE C TOOLCHAIN'S gcc HEADERS AFTER ITS OWN, for unwind.h.
+#
+# install-cxx was made with `make install-gcc`, which installs the
+# compiler and not the target library -- and unwind.h ships with
+# libgcc, so that prefix has not got one. libsupc++ includes it on the
+# first file it compiles: "unwind-cxx.h:36:10: fatal error: unwind.h:
+# No such file or directory".
+#
+# Borrowing it from the C toolchain is the same argument already made
+# below for libgcc.a itself: same gcc version, same target, same ABI,
+# and unwind.h is generated per target from libgcc/unwind-generic.h
+# rather than per front end. Its own directory comes FIRST, so every
+# header it does have is still its own copy; this is only a fallback
+# for the ones libgcc would have installed.
+#
+# Not -B$CXX_LIBGCC/: -B appends "include" to the prefix, and that
+# prefix is the m68040 MULTILIB directory, which has no include
+# subdirectory at all. That is why this was not already working.
 CXX_CPPFLAGS="-nostdinc -isystem $SAGE_LIBC/include \
--isystem $("$CXXCC" -print-file-name=include) -D_GNU_SOURCE"
+-isystem $("$CXXCC" -print-file-name=include) \
+-isystem $("$CROSS_CC" -print-file-name=include) -D_GNU_SOURCE"
 
 # AND ITS ASSEMBLER AND LINKER HAVE TO BE m68k's. install-cxx holds a
 # compiler and nothing else -- only `make install-gcc` was run into it,

@@ -32,7 +32,7 @@ SAGE_QEMU=${SAGE_QEMU:-$HOME/m68k/sage040-qemu}
 QEMU=${QEMU:-$SAGE_QEMU/bin/qemu-system-m68k}
 [ -x "$QEMU" ] || QEMU=qemu-system-m68k
 
-SCRATCH=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}
+SCRATCH=${SAGE_SCRATCH:-/tmp/scratch}
 mkdir -p "$SCRATCH"
 DISK="$SCRATCH/hd-page.img"
 PART_LBA=2048
@@ -162,12 +162,21 @@ A="$SCRATCH/page-a.tmp"
 B="$SCRATCH/page-b.tmp"
 
 # --- the first machine: plenty of memory, no swap --------------------
-boot "$RAM_MB" 16 0
+#
+# ITS OWN SIZE, not machine.conf's. What "plenty" means here is "enough
+# to run, little enough that filling three quarters of it is quick":
+# the oom check below touches PAGE_RAM_MB*3/4 of memory, and following
+# the machine's own RAM_MB made that 192 MB the day RAM_MB became 256 --
+# the same test, four times the emulated page faults, for no more
+# coverage. The second machine below has always named its own size for
+# the same reason.
+PAGE_RAM_MB=64
+boot "$PAGE_RAM_MB" 16 0
 run 'free' free0
 run '/pagetest lazy' lazy
 run '/pagetest cow' cow
 run '/pagetest hog; echo HOG=$?' hog
-run "/pagetest oom $(( RAM_MB * 3 / 4 )); echo OOM=\$?" oom
+run "/pagetest oom $(( PAGE_RAM_MB * 3 / 4 )); echo OOM=\$?" oom
 # When the PARENT is the one killed, its child is orphaned mid-way
 # through touching its memory, and still running when the shell prompts
 # again -- so "every page came back" is only a fair question once the

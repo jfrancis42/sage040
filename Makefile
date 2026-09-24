@@ -7,7 +7,14 @@
 # common things.
 #
 #   make            build the boot ROM and the kernel
-#   make boot       put the kernel and programs on the disk, and boot
+#   make install    put EVERYTHING on the disk: the system, every port,
+#                   Python, the native toolchain, and the kernel source
+#   make copy-src   put the kernel's own source on the disk, so the
+#                   machine can rebuild its own kernel
+#   make qemu       build and install the patched emulator itself
+#   make boot       install everything, then boot it
+#   make programs   the system's own programs only -- the short way round
+#                   when iterating on one of them
 #   make test       device tests, then the kernel filesystem test
 #   make libc       build picolibc for programs (needed by libctest)
 #   make disk       create the disk image if it is not there
@@ -21,17 +28,25 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: fsimgtest fattest all boot run world toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest sshtest nativetest qemutest libc cube programs clean distclean
+.PHONY: logintest fsimgtest fattest all boot run install src qemu world libc-if-missing toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest sshtest nativetest qemutest libc cube programs clean distclean
 
 all:
 	$(MAKE) -C bootrom
 	$(MAKE) -C kernel
 	$(MAKE) -C system
 	$(MAKE) -C apps
+	$(MAKE) -C auth
 
 # The machine as it is meant to run: the ROM loads KERNEL.ROM off the
 # filesystem and jumps to it.
-boot: programs
+#
+# This installs EVERYTHING, because the alternative cost a boot with an
+# empty-looking /bin. `boot` used to depend on `programs`, which is the
+# system's own programs and nothing else -- so every port was built,
+# tested and absent, and `em`, `vi` and `which` were "missing" from a
+# machine that had all three. Installing the lot is the default; a
+# short loop on one program is `make programs`, which is still there.
+boot: install
 	$(MAKE) -C kernel boot
 
 #
@@ -51,6 +66,7 @@ programs:
 	$(MAKE) -C system install
 	$(MAKE) -C apps install
 	$(MAKE) -C ldso install
+	$(MAKE) -C auth install
 
 # EVERYTHING PORTED, onto the machine's disk.
 #
@@ -85,8 +101,9 @@ ports:
 	$(MAKE) -C ports/libiconv install
 	$(MAKE) -C ports/gettext install
 	@echo
-	@echo "Python is not in the list above: it is 45 MB and 2,244 files,"
-	@echo "and copying it takes minutes. 'make python' installs it."
+	@echo "Python is not in the list above -- it is 45 MB and 2,244 files,"
+	@echo "and copying it takes minutes. 'make python' installs it, and"
+	@echo "'make install' installs it along with everything else."
 
 # WHAT CPYTHON IS BUILT AGAINST. Each of these is a standard library
 # module that exists or does not depending on whether its library was
@@ -144,14 +161,65 @@ toolchain:
 	@echo
 	@echo "the machine can now compile and link its own programs."
 
-# The whole machine: the system, every port, Python, and the toolchain.
-world: programs ports python toolchain
+# THE KERNEL'S SOURCE, ON THE MACHINE.
+#
+# With the native toolchain already there, this is what makes the
+# machine able to rebuild its own kernel and install it:
+#
+#   cd /usr/src/kernel && make install && reboot
+#
+# `copy-src` is the name to use; `src` is the same target under the
+# name it had first, kept because `install` names it.
+copy-src src:
+	$(MAKE) -C kernel install-src
+
+# The whole machine: the system, every port, Python, the toolchain, and
+# the kernel's own source.
+#
+# `install` is the name to reach for -- it is what `boot` does and what
+# somebody setting a disk up wants. `world` is kept because it is what
+# this has always been called.
+# A RECIPE, NOT A PREREQUISITE LIST, AND IN THIS ORDER.
+#
+# picolibc has to exist before anything that links against it -- ldso,
+# every port and the native toolchain all do -- and `make install` on a
+# machine that had never built it failed at the first port with
+# "cross.sh: no picolibc ... run 'make libc'". A default that installs
+# everything has to be able to do it from a clean tree, so it builds
+# what it needs.
+#
+# Written as sequential $(MAKE) calls rather than prerequisites because
+# prerequisites have no guaranteed order under `make -j`, and this one
+# genuinely does: ports before libc is the same failure again.
+install:
+	$(MAKE) libc-if-missing
+	$(MAKE) programs
+	$(MAKE) ports
+	$(MAKE) python
+	$(MAKE) toolchain
+	$(MAKE) src
+
+world: install
+
+# THE EMULATOR ITSELF.
+#
+# Not part of `install`, which fills the machine's disk -- this builds
+# the machine. Separate because it is a host tool and a long build, and
+# because nothing on the disk depends on it.
+#
+# It is here at all because the procedure was a block of shell in
+# qemu-patch/README.md to be typed by hand, so the emulator existed
+# only where somebody had last done that. A host whose QEMU predates a
+# device gets a bus error inside that device's driver and a panic that
+# reads like a kernel bug, which has happened once already.
+qemu:
+	qemu-patch/build.sh
 
 # The kernel without the boot ROM in the way. Same kernel, quicker loop.
 run:
 	$(MAKE) -C kernel run
 
-test: fsimgtest tests cryptotest fstest fattest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest sshtest qemutest
+test: fsimgtest tests cryptotest fstest fattest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest logintest sshtest qemutest
 
 # The host's end of the disk, before anything that uses it: every suite
 # below stages its files through tools/fsimg.sh, so a fault in it does
@@ -278,6 +346,9 @@ dftest:
 
 # Users, /etc/passwd and home directories -- and a check that the
 # absence of file ownership is honest rather than accidental.
+logintest:
+	cd kernel && ./logintest.sh
+
 usertest:
 	cd kernel && ./usertest.sh
 
@@ -312,8 +383,40 @@ bashsuite:
 	cd kernel && BASH_TESTS=all ./bashtest.sh
 
 # picolibc, built and installed outside the tree (libc/README.md). Once.
+#
+# `make libc` always rebuilds, which is what somebody changing it wants.
+# `libc-if-missing` is what `install` uses: building it again on every
+# install would add minutes to a step that had nothing to do with it.
+SAGE_LIBC ?= $(HOME)/m68k/sage040-libc
+
 libc:
 	libc/build.sh
+
+# MISSING **OR STALE**.
+#
+# "Already built" is not the same as "built from this source". A second
+# machine had a picolibc from before crypt.c was added to the overlay,
+# and this said "already built" and went on -- so `make install` got
+# all the way to linking /bin/login and stopped with "undefined
+# reference to crypt", which names neither the C library nor the reason.
+#
+# Anything under libc/ newer than the installed library means rebuild.
+# That is coarse: touching a README rebuilds picolibc, which takes a
+# couple of minutes. Rebuilding when it was not needed costs minutes;
+# NOT rebuilding when it was costs an error three steps away from its
+# cause, which is the trade every stale-artifact bug in this tree has
+# been on the wrong side of.
+libc-if-missing:
+	@if [ ! -f "$(SAGE_LIBC)/lib/libc.so" ]; then \
+	    echo "picolibc: not built yet -- building it first"; \
+	    $(MAKE) libc; \
+	elif [ -n "$$(find libc -type f -newer $(SAGE_LIBC)/lib/libc.so \
+	              -not -path 'libc/test/*' -print -quit 2>/dev/null)" ]; then \
+	    echo "picolibc: $(SAGE_LIBC) is older than libc/ -- rebuilding"; \
+	    $(MAKE) libc; \
+	else \
+	    echo "picolibc: up to date in $(SAGE_LIBC)"; \
+	fi
 
 # The system call surface a ported program expects. Grows with the
 # porting work; see progress.md.
@@ -332,11 +435,11 @@ clean:
 	$(MAKE) -C ldso clean
 	$(MAKE) -C tests clean
 	#
-	# Everything the test suites write lives in scratch/ -- the disk
+	# Everything the test suites write lives in /tmp/scratch -- the disk
 	# images most of all, which are 16 MB each and used to sit beside
 	# the source with names that looked like part of it. hd.img is NOT
 	# in there: that is the machine's own disk, not a build product.
 	#
-	rm -rf scratch
+	rm -rf /tmp/scratch
 
 distclean: clean disk-clean

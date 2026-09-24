@@ -44,11 +44,29 @@ VERSION=6.2.1
 SRC=$SRCDIR/gmp-$VERSION
 BUILD=$SRCDIR/build-gmp-sage040
 
-[ -d "$SRC" ] || {
-    echo "gmp: $SRC is not there -- gcc's download_prerequisites puts it" >&2
-    echo "in the gcc source tree; this expects it unpacked in $SRCDIR."   >&2
-    exit 1
-}
+
+# Fetched if it is not here. The version is pinned and the tarball is
+# checked, so this cannot pick up a different one -- which was the
+# reason these used to refuse to fetch, and the reason the native
+# toolchain could only be built on a machine that already had the
+# source lying around from some earlier build.
+#
+# Checksum of the release verified against the GNU keyring:
+# "Good signature from Niels Moller". (Some of these signing keys have since
+# EXPIRED; a key expiring after it signed does not unmake the
+# signature, and the SHA-256 below is what is actually enforced here.)
+# Change VERSION and you must change SHA256 with it.
+URL=https://ftp.gnu.org/gnu/gmp/gmp-$VERSION.tar.xz
+SHA256=fd4829912cddd12f84181c3451cc752be224643e87fac497b69edddadc49b4f2
+
+if [ ! -d "$SRC" ]; then
+    mkdir -p "$SRCDIR"
+    tarball=$SRCDIR/gmp-$VERSION.tar.xz
+    [ -f "$tarball" ] || curl -L --fail -o "$tarball" "$URL"
+    echo "$SHA256  $tarball" | sha256sum -c -
+    tar -C "$SRCDIR" -xf "$tarball"
+fi
+
 
 libc_fresh "$BUILD" || true
 if [ ! -f "$BUILD/Makefile" ]; then

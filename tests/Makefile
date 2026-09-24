@@ -38,9 +38,14 @@ TESTS  := t1-cpu t2-uart t3-ata t4-net t5-mmu t6-irq \
 ELFS   := $(addsuffix .elf,$(TESTS))
 COMMON := crt0.s uart.c mfp.c sage040.h sage040.ld
 
+# OUT OF THE SOURCE TREE. This is in Dropbox, and four 16 MB disk
+# images rewritten by every test run is a great deal of syncing for
+# files that are rebuilt from nothing each time. Override with
+# SAGE_SCRATCH.
+#
 # The scratch image lives with every other test artefact, not beside the
 # source. runtest.sh derives the same path.
-SCRATCH := $(abspath ..)/scratch
+SCRATCH := $(if $(SAGE_SCRATCH),$(SAGE_SCRATCH),/tmp/scratch)
 DISK   := $(SCRATCH)/disk.img
 
 .PHONY: all run clean $(addprefix run-,$(TESTS))

@@ -37,7 +37,7 @@ QEMU="${QEMU:-$SAGE_QEMU}"
 # failed when it was run by path, which is a difference nobody should
 # have to notice.
 #
-SCRATCH=${SAGE_SCRATCH:-$(cd .. && pwd)/scratch}
+SCRATCH=${SAGE_SCRATCH:-/tmp/scratch}
 mkdir -p "$SCRATCH"
 out="$SCRATCH/$t.out"
 rm -f "$out" "$t.usart"; : > "$out"
