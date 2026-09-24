@@ -78,7 +78,7 @@ printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
 fsimg mkfs SAGE040
 fsimg put kernel.rom /KERNEL.ROM
 fsimg mkdir /bin
-for p in irqs nvram ifconfig shutdown; do
+for p in irqs nvram ifconfig shutdown reboot; do
     fsimg put -m 755 ../system/$p "/bin/$p"
 done
 fsimg put -m 755 ../apps/fsstress /fsstress
