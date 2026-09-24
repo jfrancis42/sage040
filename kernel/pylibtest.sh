@@ -128,13 +128,12 @@ ls -l "$WORK/data.bin" | awk '{print "    data.bin is " $5 " bytes"}'
 
 # The host's compressed copies, for the guest to decompress.
 bzip2  -9 -c "$WORK/data.bin" > "$WORK/host.bz2"
-# XZ AT -1, NOT AT ITS DEFAULT, and that is a fact about this machine
-# rather than a preference. LZMA's memory use is set by the dictionary
-# size: -6, which is what plain `xz` uses, wants about 94 MB to
-# compress and this machine has 64 MB of RAM in total. It does not
-# crash -- it says "Not enough space" and exits 1 -- but it cannot run.
-# -1 needs about 9 MB. The check below records that the default really
-# does fail, so this line is not mistaken for timidity.
+# XZ AT -1 for the HOST's copy, so that what the guest has to DECODE
+# needs a small dictionary whatever the machine's memory is. Decoding
+# costs far less than compressing, but it still scales with the
+# dictionary the encoder chose, and this file exists to test the
+# decoder rather than to find its limit. Where the limit is gets its
+# own checks below, against RAM_MB.
 xz     -1 -c "$WORK/data.bin" > "$WORK/host.xz"
 zstd   -19 -q -c "$WORK/data.bin" > "$WORK/host.zst"
 
@@ -232,9 +231,32 @@ run 'bzip2 -c data.bin > guest.bz2'      bz-c
 run 'bzip2 -d -c host.bz2 > from-host.bz.bin' bz-d
 run 'xz -1 -c data.bin > guest.xz'       xz-c
 run 'xz -d -c host.xz > from-host.xz.bin'     xz-d
-# The default preset, which this machine cannot afford: it must fail
-# cleanly and say so, not crash and not silently produce a short file.
-run 'xz -c data.bin > toobig.xz' xz-default
+# A PRESET THE MACHINE CANNOT AFFORD -- chosen from what it HAS.
+#
+# LZMA's memory use follows the dictionary size, so which preset is too
+# big is a property of RAM_MB and not a constant. -9 wants about 674 MB
+# to compress and -6 (the default) about 94 MB; this was written when
+# the machine had 64 MB, so the DEFAULT was unaffordable and the check
+# asserted it failed. RAM_MB became 256 and the default started
+# working, so a check that had been passing began to fail -- with
+# nothing wrong.
+#
+# What is worth testing is not which preset is too big. It is that when
+# one IS too big, xz refuses cleanly and says so rather than crashing
+# or writing a short file that looks like a stream. So: the biggest
+# preset this machine cannot afford is the one to ask for.
+if [ "$RAM_MB" -lt 674 ]; then
+    XZ_TOOBIG=-9
+elif [ "$RAM_MB" -lt 1400 ]; then
+    XZ_TOOBIG=-9e
+else
+    XZ_TOOBIG=                  # nothing left that it cannot afford
+fi
+if [ -n "$XZ_TOOBIG" ]; then
+    run "xz $XZ_TOOBIG -c data.bin > toobig.xz" xz-toobig
+fi
+# And the DEFAULT preset, which it now can afford, has to work.
+run 'xz -c data.bin > default.xz' xz-default
 run 'zstd -q -c data.bin > guest.zst'    zst-c
 run 'zstd -q -d -c host.zst > from-host.zst.bin' zst-d
 
@@ -278,7 +300,7 @@ sed 's/^/  | /' "$WORK/session.txt" | tail -25
 # Everything the machine wrote, taken off the disk with the HOST's
 # the host's own tools rather than read back by the machine itself.
 get() { fsimg get /ST/$1 $WORK/$1 2>/dev/null; }
-for f in guest.bz2 from-host.bz.bin guest.xz from-host.xz.bin toobig.xz \
+for f in guest.bz2 from-host.bz.bin guest.xz from-host.xz.bin toobig.xz default.xz \
          guest.zst from-host.zst.bin guest.db sql-sel.out sql-host.out \
          sql-ver.out md5.out sha1.out sha256.out sha512.out empty.out \
          guest.aes ssl-ver.out; do
@@ -306,13 +328,23 @@ for fmt in bz2:bzip2:bz xz:xz:xz zst:zstd:zst; do
     check "  and the machine decompresses what the HOST compressed" $?
 done
 
-# xz at its default preset asks for more memory than the machine has.
-# It must refuse rather than crash or truncate: the session says so,
-# and the file it did not manage to write must not be a valid stream.
-grep -q "Not enough space" "$WORK/session.txt"
-check "xz: the default preset refuses cleanly (64 MB is not enough)" $?
-! xz -t "$WORK/toobig.xz" 2>/dev/null
-check "  and left nothing that pretends to be a compressed file" $?
+# A preset it cannot afford must be REFUSED, not crashed through and
+# not half-written. picolibc spells ENOMEM "Not enough space".
+if [ -n "$XZ_TOOBIG" ]; then
+    grep -q "Not enough space" "$WORK/session.txt"
+    check "xz: $XZ_TOOBIG refuses cleanly (${RAM_MB} MB is not enough)" $?
+    ! xz -t "$WORK/toobig.xz" 2>/dev/null
+    check "  and left nothing that pretends to be a compressed file" $?
+else
+    skip "no xz preset exceeds ${RAM_MB} MB, so nothing to refuse"
+fi
+# The default preset is affordable now, and must therefore WORK -- this
+# is the other half, and it is what caught the change: a machine that
+# has grown has to compress with the setting everybody gets by default.
+xz -t "$WORK/default.xz" 2>/dev/null
+check "xz: the default preset works on a ${RAM_MB} MB machine" $?
+xz -d -c "$WORK/default.xz" 2>/dev/null | cmp -s - "$WORK/data.bin"
+check "  and the host decodes it back to the original" $?
 
 # The stream the machine produced must not merely decode -- it must be
 # a DIFFERENT file from the input, or a compressor that copied its

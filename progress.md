@@ -231,10 +231,15 @@ These are properties of the machine, written up in `design.md` and
 - **Object files built on the machine are not byte-reproducible.** The
   native assembler leaves uninitialised bytes in section padding where
   the cross one leaves zeroes. Every section a tool reads is identical.
-- **`xz` at its default preset may still not run.** `-6` wants about
-  94 MB for its dictionary and the machine had 64, which is where this
-  entry came from; RAM_MB is 256 now, so the arithmetic no longer says
-  it must fail. **Not re-measured since.** `-1`, about 9 MB, works.
+- **`xz` at its default preset WORKS now, and that is a change.** `-6`
+  wants about 94 MB for its dictionary; the machine had 64 when this
+  was written and has 256, so it is affordable. `pylibtest` had a check
+  asserting the default FAILED -- correct at 64 MB, wrong since -- and
+  it is what caught this. The suite now picks the preset to refuse from
+  RAM_MB (`-9` wants ~674 MB) and separately asserts the default
+  succeeds, so neither half goes stale when the machine's size changes
+  again. What is being tested is that an unaffordable preset is refused
+  cleanly, not which preset that is.
 - **A fault's own signal cannot be caught**, the 68040's access-fault
   frame not being redirectable in place.
 
