@@ -237,12 +237,24 @@ static void test_owners(void)
     report("chown to root, which everything already is",
            chown("/owners.tmp", 0, 0) == 0);
     report("  and to -1, leave it alone", chown("/owners.tmp", (uid_t)-1, (gid_t)-1) == 0);
-    errno = 0;
-    report("  but to anybody else is EPERM: FAT cannot record it",
-           chown("/owners.tmp", 1000, 1000) < 0 && errno == EPERM);
+    /*
+     * GIVING A FILE AWAY IS ROOT'S, and this runs as root, so it
+     * WORKS. It was refused for everybody while FAT had nowhere to
+     * record an owner; ext2 has, and vfs_setattr applies the ordinary
+     * rule -- only root may change a file's owner.
+     */
+    report("  and to somebody else, because this is root",
+           chown("/owners.tmp", 1000, 1000) == 0);
+    {
+        struct stat ost;
+
+        report("    and the owner really changed",
+               stat("/owners.tmp", &ost) == 0 && ost.st_uid == 1000);
+    }
+    report("chown back to root", chown("/owners.tmp", 0, 0) == 0);
     report("fchown and lchown answer the same",
            fchown(f, 0, 0) == 0 && lchown("/owners.tmp", 0, 0) == 0 &&
-           fchown(f, 5, 0) < 0);
+           fchown(f, 5, 0) == 0);
     errno = 0;
     report("chown of nothing is ENOENT",
            chown("/nothere.tmp", 0, 0) < 0 && errno == ENOENT);
@@ -250,9 +262,25 @@ static void test_owners(void)
     errno = 0;
     report("  and of a closed one is EBADF", fchmod(77, 0600) < 0 && errno == EBADF);
     errno = 0;
-    report("link is EPERM: FAT has no hard links",
-           link("/owners.tmp", "/owners2.tmp") < 0 && errno == EPERM &&
-           !exists("/owners2.tmp"));
+    /*
+     * HARD LINKS WORK. This said "link is EPERM: FAT has no hard
+     * links", which was true of the filesystem and not of the call.
+     * ext2 keeps a link count, so a second name is a second name.
+     * kernel/linktest.sh checks what that means in full; here it is
+     * enough that the call succeeds and both names are one inode.
+     */
+    report("link makes a second name",
+           link("/owners.tmp", "/owners2.tmp") == 0 &&
+           exists("/owners2.tmp"));
+    {
+        struct stat la, lb;
+
+        report("  and it is the SAME file, not a copy",
+               stat("/owners.tmp", &la) == 0 &&
+               stat("/owners2.tmp", &lb) == 0 &&
+               la.st_ino == lb.st_ino && la.st_nlink == 2);
+    }
+    unlink("/owners2.tmp");
     errno = 0;
     report("mkfifo is EPERM: nor FIFOs",
            mkfifo("/fifo.tmp", 0644) < 0 && errno == EPERM && !exists("/fifo.tmp"));
