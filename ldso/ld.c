@@ -61,6 +61,10 @@ extern long dl_syscall(long nr, long a1, long a2, long a3, long a4,
 #define SYS_munmap      91
 #define SYS_mprotect    125
 #define SYS_mmap2       192
+#define SYS_getuid32    199
+#define SYS_getgid32    200
+#define SYS_geteuid32   201
+#define SYS_getegid32   202
 
 #define PROT_NONE       0
 #define PROT_READ       1
@@ -258,6 +262,37 @@ struct obj {
 static struct obj objs[MAX_OBJS];
 static int nobjs;
 static char **envp;
+
+/*
+ * IS THIS PROGRAM PRIVILEGED? Linux answers this with AT_SECURE in the
+ * auxiliary vector, set by the kernel at exec; here the same question
+ * is asked directly, because uid != euid is exactly what a set-user-id
+ * exec leaves behind and there is nothing else that sets it.
+ *
+ * It matters because of LD_LIBRARY_PATH. A set-user-id program that
+ * took its library search path from whoever ran it would load a libc
+ * of their choosing AS ROOT, which is a root shell for anybody who can
+ * write a directory -- the oldest hole in dynamic linking.
+ *
+ * Nothing on this disk is both set-user-id and dynamic today: su, sudo
+ * and passwd are static, and auth/Makefile fails the build if one of
+ * them comes out with a PT_INTERP. But that invariant lives in one
+ * Makefile, and any `fsimg put -m 4755` anywhere would escape it. The
+ * loader is where the check belongs, because the loader is what the
+ * variable talks to.
+ */
+static int privileged(void)
+{
+    static int known;           /* 0 unasked, 1 no, 2 yes */
+
+    if (!known) {
+        known = (dl_syscall(SYS_getuid32, 0, 0, 0, 0, 0, 0) !=
+                     dl_syscall(SYS_geteuid32, 0, 0, 0, 0, 0, 0) ||
+                 dl_syscall(SYS_getgid32, 0, 0, 0, 0, 0, 0) !=
+                     dl_syscall(SYS_getegid32, 0, 0, 0, 0, 0, 0)) ? 2 : 1;
+    }
+    return known == 2;
+}
 
 static const char *getenv_(const char *name)
 {
@@ -458,7 +493,7 @@ static int try_open(struct obj *o, const char *dir, u32 dlen, const char *name)
  * slash in it is a path and is used as it stands. */
 static int find_library(struct obj *o, const char *name)
 {
-    const char *lp = getenv_("LD_LIBRARY_PATH");
+    const char *lp = privileged() ? 0 : getenv_("LD_LIBRARY_PATH");
     int fd;
 
     if (lp) {
@@ -757,7 +792,7 @@ u32 dl_main(u32 *sp)
     load_needed();
 
     /* ldd, as glibc spells it: list what was loaded, and stop. */
-    if (getenv_("LD_TRACE_LOADED_OBJECTS")) {
+    if (!privileged() && getenv_("LD_TRACE_LOADED_OBJECTS")) {
         for (k = 1; k < nobjs; k++) {
             const char *p = objs[k].path, *base = p;
 
