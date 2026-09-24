@@ -417,6 +417,33 @@ static const struct {
 
 #define IOCTL_BUF_MAX  64
 
+/*
+ * HAND THE TERMINAL TO A PROCESS GROUP -- the terminal THIS TASK IS
+ * ON, which is descriptor 0, and not "the terminal".
+ *
+ * It used to call tty_set_foreground() directly, and tty.c's
+ * fg_pgrp is a single global: one foreground group for the whole
+ * machine. That was invisible while the console was the only
+ * terminal, and wrong the moment there were two. The symptom was
+ * spectacular and pointed nowhere near here: the first `ssh` session
+ * to reach a shell took the CONSOLE's foreground group with it, so
+ * whoever was sitting at the keyboard was outside it, got SIGTTIN on
+ * their next read, and the console stopped dead -- while the machine
+ * carried on serving ssh perfectly.
+ *
+ * A pseudo-terminal keeps its own (pty.c's p->pgrp), so going through
+ * the descriptor puts each answer where it belongs. A task whose
+ * descriptor 0 is not a terminal has no foreground group to set, and
+ * the error is ignored for the same reason tcsetpgrp's would be: a
+ * shell reading a script is not doing job control.
+ */
+static void take_terminal(int pgid)
+{
+    int pg = pgid;
+
+    (void)fd_ioctl(0, TIOCSPGRP, (u32)&pg);
+}
+
 static int do_ioctl(int fd, u32 request, u32 arg)
 {
     u8 buf[IOCTL_BUF_MAX];
@@ -1556,7 +1583,7 @@ static int do_jobctl(int cmd, int arg, u32 p)
          * finished.
          */
         if (arg == 0) {
-            tty_set_foreground(current->pgid);
+            take_terminal(current->pgid);
             return 0;
         }
         t = task_find(arg);
@@ -1566,7 +1593,7 @@ static int do_jobctl(int cmd, int arg, u32 p)
         t->background = 0;
         /* The job's whole GROUP gets the terminal: every command of a
          * pipeline, and anything those started. */
-        tty_set_foreground(t->pgid);
+        take_terminal(t->pgid);
         continue_group(t->pgid);
         return 0;
 
@@ -1578,7 +1605,7 @@ static int do_jobctl(int cmd, int arg, u32 p)
         t->background = 1;
         /* The terminal goes back to whoever asked, because a background
          * job is precisely one that does not have it. */
-        tty_set_foreground(current->pgid);
+        take_terminal(current->pgid);
         continue_group(t->pgid);
         return 0;
 

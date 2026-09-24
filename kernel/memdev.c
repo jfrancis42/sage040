@@ -108,11 +108,11 @@ MEM_OPS(full_ops, zero_read, full_write);
 MEM_OPS(random_ops, random_read, random_dev_write);
 MEM_OPS(urandom_ops, urandom_read, random_dev_write);
 
-static struct chardev null_dev = { "null", &null_ops, 0, 0 };
-static struct chardev zero_dev = { "zero", &zero_ops, 0, 0 };
-static struct chardev full_dev = { "full", &full_ops, 0, 0 };
-static struct chardev random_dev = { "random", &random_ops, 0, 0 };
-static struct chardev urandom_dev = { "urandom", &urandom_ops, 0, 0 };
+static struct chardev null_dev = { .name = "null", .ops = &null_ops };
+static struct chardev zero_dev = { .name = "zero", .ops = &zero_ops };
+static struct chardev full_dev = { .name = "full", .ops = &full_ops };
+static struct chardev random_dev = { .name = "random", .ops = &random_ops };
+static struct chardev urandom_dev = { .name = "urandom", .ops = &urandom_ops };
 
 int memdev_init(void)
 {

@@ -138,12 +138,23 @@ send 'sudo dropbear -r /etc/hostkey -p 22 -E &' 8
 SSHO="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 SSHO="$SSHO -o PreferredAuthentications=password -o PubkeyAuthentication=no"
 SSHO="$SSHO -o ConnectTimeout=15 -o LogLevel=ERROR -p $PORT"
-# -tt forces a pty even though the command is not interactive: a pty is
-# what makes this a LOGIN rather than a remote command, and telling the
-# two apart is half of what the rule under test does.
+# A REAL LOGIN SHELL, not `ssh host command`. The two are different on
+# purpose and the difference is exactly what who(1) keys on: Dropbear
+# starts an interactive session with argv[0] of "-sh" and a remote
+# command with a plain "sh", so a remote command is NOT somebody logged
+# in and must not be listed. Testing the second would have proved
+# nothing about the first.
+#
+# Fed from a fifo rather than a pipe, so the session stays up while the
+# console is asked who is logged in -- a pipe closes when the feeding
+# subshell exits and the shell would see end of input at once.
+rm -f "$WORK/sshin"; mkfifo "$WORK/sshin"
 ( sshpass -p jfrancis ssh $SSHO -tt jfrancis@127.0.0.1 \
-      'echo SSH-IN; sleep 50' > "$WORK/ssh.out" 2>&1 ) &
+      < "$WORK/sshin" > "$WORK/ssh.out" 2>&1 ) &
 ssh_pid=$!
+exec 4> "$WORK/sshin"
+sleep 8
+printf 'echo SSH-IN\r' >&4
 for i in $(seq 1 40); do
     grep -q 'SSH-IN' "$WORK/ssh.out" 2>/dev/null && break
     sleep 1
@@ -153,6 +164,9 @@ send 'echo ==D1'; send 'w' 4;      send 'echo ==D2'
 send 'echo ==E1'; send 'who -a' 4; send 'echo ==E2'
 
 # --- and what it looks like once that session has gone ---------------
+printf 'exit\r' >&4
+sleep 3
+exec 4>&-
 kill $ssh_pid 2>/dev/null; wait $ssh_pid 2>/dev/null
 sleep 5
 send 'echo ==F1'; send 'who' 4; send 'echo ==F2'
@@ -187,9 +201,22 @@ between() {   # between START END -> the lines strictly between them
         on' "$CLEAN"
 }
 # What `who` printed: the lines between the markers, without the
-# heading and without the echoed command line the guest sends back.
+# heading, the echoed command line, the marker coming back, or anything
+# the machine said on its own.
+#
+# THAT LAST ONE IS NOT PARANOIA. The shell announces a finished job --
+# "[10]  sudo dropbear ... &" -- and Dropbear logs to the console
+# because it was started with -E, and either can land between the
+# marker and the output being graded. One of them did: a check for
+# "exactly two people are logged in" counted four lines and failed
+# against a `who` that had printed precisely the right two.
 body() {      # body START END
-    between "$1" "$2" | grep -v '^USER ' | grep -v '\$ ' | sed '/^$/d'
+    between "$1" "$2" \
+        | grep -v '^USER ' \
+        | grep -v '\$ ' \
+        | grep -v '^\[' \
+        | grep -v '==' \
+        | sed '/^$/d'
 }
 lines() { echo "$1" | grep -c . ; }
 
@@ -259,22 +286,20 @@ if grep -q 'SSH-IN' "$WORK/ssh.out" 2>/dev/null; then
     [ "$(echo "$B" | grep -c '^jfrancis ')" -eq 2 ]
     check "  and both are jfrancis, at the console and over ssh" $?
     D=$(body '==D1' '==D2')
-    echo "$D" | grep -q 'sleep'
-    check "w says the ssh session is running the sleep it was given" $?
+    echo "$D" | grep -q '2 users'
+    check "w's header counts both of them" $?
+    echo "$D" | grep -q 'pts/'
+    check "  and names the remote one on its pseudo-terminal" $?
     F=$(body '==F1' '==F2')
     [ "$(lines "$F")" -eq 1 ]
     check "the ssh session ending takes it off the list" $?
-elif grep -q 'chown(/dev/pts' "$CLEAN"; then
-    echo "  [NOTE] no ssh login: Dropbear could not chown the pty."
-    echo "         Known, and in progress.md -- the SECOND thing in the"
-    echo "         way of an interactive ssh session. The first was"
-    echo "         ttyname(), which is fixed; this is what it uncovered."
-    echo "         The remote half of this suite is not graded until"
-    echo "         that is fixed either."
 else
-    check "the ssh login got in, or failed for the known reason" 1
-    echo "         (neither SSH-IN nor a ttyname failure: something"
-    echo "          ELSE went wrong, and it is not the known defect)"
+    check "the ssh login got in" 1
+    echo "         Three separate defects used to stop this, and each"
+    echo "         one hid the next: ttyname() had no answer without"
+    echo "         /proc, chown could not resolve a /dev path for a"
+    echo "         non-root process, and a pty was not owned by whoever"
+    echo "         allocated it. See progress.md, and $WORK/ssh.out." 
 fi
 
 echo

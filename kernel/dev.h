@@ -102,8 +102,42 @@ struct chardev {
     const char *name;           /* as it appears under /dev         */
     const struct file_ops *ops;
     void *priv;
+    /*
+     * WHO OWNS IT AND WHO MAY USE IT.
+     *
+     * A device node is not a file on the volume -- there is no /dev on
+     * the disk, these names are synthesised from this list -- so there
+     * is nowhere else to keep an owner and a mode, and stat() used to
+     * answer with a constant. That made chown() and chmod() on a
+     * device fail with ENOENT, because the path went to the filesystem
+     * which had never heard of it, and it is why an interactive `ssh`
+     * could not start: Dropbear hands the pseudo-terminal to whoever
+     * logged in, and treats failing to do so as fatal.
+     *
+     * Here rather than on disk, and so they last only as long as the
+     * machine runs. That is right for a pty, which lasts one session;
+     * for the hardware it means a chmod does not survive a reboot, and
+     * /etc/rc is where that belongs anyway.
+     *
+     * A zeroed entry means "not set" and dev_register_char() fills in
+     * DEV_MODE_DEFAULT, so every driver that registers a static
+     * structure keeps the behaviour it had.
+     */
+    u32  uid;
+    u32  gid;
+    u32  mode;                  /* permission bits, no S_IFCHR      */
     struct chardev *next;       /* the registry is a plain list     */
 };
+
+/* What a device is openable by everybody, which is what they all were
+ * when nothing recorded a mode at all. A driver that wants otherwise
+ * sets d->mode before registering. */
+#define DEV_MODE_DEFAULT  0666
+
+/* The registry entry a descriptor is open on, or null if it is not a
+ * character device. dev_char_name() is this, then ->name. */
+struct file;
+struct chardev *dev_char_for(const struct file *f);
 
 int  dev_register_char(struct chardev *d);
 int  dev_unregister_char(struct chardev *d);
