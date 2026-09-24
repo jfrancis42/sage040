@@ -110,6 +110,20 @@ libc/test/threadtest
 system/klogd
 system/dmesg
 libc/test/ptytest
+system/reboot
+system/which
+
+# auth/: the privileged programs. Committed by accident when the
+# directory was made -- six m68k binaries carried in a public
+# repository, which is the same mistake /system/df and /system/id are
+# named above for. A set-user-id program is the worst one to ship a
+# stale build of.
+auth/login
+auth/su
+auth/sudo
+auth/passwd
+auth/useradd
+auth/userdel
 
 # Core dumps. qemu-m68k's user-mode emulation drops them in the
 # working directory when a program it is running faults, which is
