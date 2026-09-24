@@ -45,6 +45,7 @@
  * that out.
  */
 #include "vm.h"
+#include "cache.h"
 #include "pmm.h"
 #include "swap.h"
 #include "textcache.h"
@@ -280,6 +281,8 @@ static u32 page_bits(int flags)
 static u32 ktbl_page;
 static u32 ktbl_off;
 
+static void vm_table_nocache(u32 pa);
+
 static u32 ktable_alloc(void)
 {
     u32 t;
@@ -290,10 +293,86 @@ static u32 ktable_alloc(void)
             return 0;
         }
         ktbl_off = 0;
+        /* Tables are not cachable; see kset_cachemode. Before the map
+         * exists this does nothing and the boot sweep catches it. */
+        vm_table_nocache(ktbl_page);
     }
     t = ktbl_page + ktbl_off;
     ktbl_off += 512;
     return t;
+}
+
+/*
+ * THE CACHE MODE OF ONE PAGE, in the kernel's own identity map.
+ *
+ * Only ever used to make a page NON-CACHABLE, and only for one kind of
+ * page: memory holding TRANSLATION TABLES. The reason is a property of
+ * the 68040 rather than a choice.
+ *
+ * The MMU's table search reads descriptors from memory DIRECTLY and
+ * writes the U and M bits back the same way. It does not go through
+ * the data cache and does not snoop it. So with the data cache on and
+ * tables cachable, two things go wrong and both are silent:
+ *
+ *   - the kernel writes a descriptor, it sits dirty in the cache, and
+ *     the MMU walks the STALE copy still in memory;
+ *   - the MMU sets U or M in memory, the cache later writes back its
+ *     own older copy of that line, and the bits are lost -- which for
+ *     M means a modified page is evicted as clean and the program's
+ *     writes are thrown away.
+ *
+ * Linux/m68k does exactly this for the same reason: mmu_page_ctor()
+ * calls nocache_page() on every page-table page for the 040.
+ *
+ * Returns 0 if the mode was set. Before the MMU is on this still works
+ * -- the map is being built in ordinary memory and the descriptors are
+ * just words -- which is what lets the tables built during boot be
+ * marked before the caches are ever enabled.
+ */
+static int kset_cachemode(u32 pa, u32 cm)
+{
+    u32 va = pa;                        /* the kernel map is identity */
+    u32 *root = table(kernel_root);
+    u32 rd, pd, *ptr, *pt;
+    int idx;
+
+    if (!kernel_root) {
+        return -1;
+    }
+    rd = root[ROOT_INDEX(va)];
+    if ((rd & UDT_RESIDENT) == 0) {
+        return -1;
+    }
+    ptr = table(rd & PTR_TABLE_MASK);
+    pd = ptr[PTR_INDEX(va)];
+    if ((pd & UDT_RESIDENT) == 0) {
+        return -1;
+    }
+    pt = table(pd & PAGE_TABLE_MASK);
+    idx = (int)PAGE_INDEX(va);
+    if ((pt[idx] & PDT_RESIDENT) == 0) {
+        return -1;
+    }
+    pt[idx] = (pt[idx] & ~(u32)DESC_CM_NC) | cm;
+    /*
+     * The old mode may be cached in the ATC, and with a cachable->NC
+     * change any dirty lines for the page have to go out before the
+     * hardware stops looking at the cache for it. cpusha is a superset
+     * of the push this needs and costs nothing while the caches are
+     * off.
+     */
+    cache_flush_all();
+    pflusha();
+    return 0;
+}
+
+/*
+ * Mark a page that holds translation tables non-cachable. Safe to call
+ * before the MMU is on and safe to call twice.
+ */
+void vm_table_nocache(u32 pa)
+{
+    (void)kset_cachemode(pa & ~(u32)PAGE_MASK, DESC_CM_NC);
 }
 
 static int kmap_page(u32 va, u32 pa, int flags)
@@ -405,6 +484,57 @@ void vm_init(u32 ram_bytes)
         kputln("vm: the MMU did not come on");
         halt();
     }
+
+    /*
+     * THE TABLES BUILT ON THE WAY HERE, marked now.
+     *
+     * vm_table_nocache() does nothing while the map is still being
+     * built -- there is no descriptor to change yet -- so every table
+     * page allocated during the loop above is still cachable. They are
+     * swept here, once, before the caches are turned on, which is the
+     * only moment at which "every table page" is a finite list that
+     * can be walked from the root.
+     *
+     * Every page table reachable from the kernel root, plus the root
+     * and the pointer tables themselves. ktable_alloc hands out 512
+     * bytes at a time, so several tables share a page and marking the
+     * page twice is harmless.
+     */
+    {
+        u32 *root = table(kernel_root);
+        int ri, pi;
+
+        vm_table_nocache(kernel_root);
+        for (ri = 0; ri < ROOT_ENTRIES; ri++) {
+            u32 rd = root[ri];
+            u32 *ptr;
+
+            if ((rd & UDT_RESIDENT) == 0) {
+                continue;
+            }
+            vm_table_nocache(rd & PTR_TABLE_MASK);
+            ptr = table(rd & PTR_TABLE_MASK);
+            for (pi = 0; pi < PTR_ENTRIES; pi++) {
+                u32 pd = ptr[pi];
+
+                if ((pd & UDT_RESIDENT) == 0) {
+                    continue;
+                }
+                vm_table_nocache(pd & PAGE_TABLE_MASK);
+            }
+        }
+    }
+
+    /*
+     * And now the caches. Everything cache_enable() requires is true:
+     * the MMU is on, the device and video windows are CM_NC through
+     * DTT0 and DTT1, and every translation table is non-cachable.
+     *
+     * None of it can be observed here -- QEMU has no cache model -- so
+     * this is the one part of the memory system that is correct by
+     * inspection rather than by test. See the head of cache.c.
+     */
+    cache_enable();
 }
 
 int vm_enabled(void)
@@ -461,6 +591,10 @@ static u32 as_table_alloc(struct addrspace *as)
         as->tables = pg;
         as->slot_page = pg;
         as->slot_off = AS_SLOT;
+        /* Written BEFORE the mode changes: the link word above goes
+         * through the cache, and the push inside kset_cachemode is
+         * what gets it to memory where the MMU will look. */
+        vm_table_nocache(pg);
     }
     t = as->slot_page + as->slot_off;
     as->slot_off += AS_SLOT;

@@ -29,6 +29,7 @@
 #include "console.h"
 #include "pmm.h"
 #include "vm.h"
+#include "cache.h"
 #include "net.h"
 #include "random.h"
 #include "dev.h"
@@ -151,6 +152,29 @@ static void start_memory(void)
     kputs("on, 4 KB pages, kernel identity-mapped supervisor-only, ");
     kputdec(pmm_total() - pmm_available());
     kputs(" pages of tables\n");
+
+    /*
+     * The caches, and what CACR reads back as. Printed because it is
+     * the ONLY evidence available that they were switched on: the
+     * emulator has no cache model, so nothing else about the machine
+     * behaves differently and a silent failure here would look exactly
+     * like success. On real hardware the same line says what state the
+     * machine came up in.
+     */
+    status("caches");
+    {
+        u32 cacr = cache_state();
+
+        if (cacr == 0) {
+            kputs("off (CACR reads back 0 -- not a 68040?)\n");
+        } else {
+            kputs("data ");
+            kputs((cacr & 0x80000000UL) ? "on" : "off");
+            kputs(", instruction ");
+            kputs((cacr & 0x00008000UL) ? "on" : "off");
+            kputs(", tables non-cachable\n");
+        }
+    }
 }
 
 static void start_drivers(void)

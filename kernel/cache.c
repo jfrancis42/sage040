@@ -54,6 +54,62 @@ void cache_flush_all(void)
 }
 
 /*
+ * Turn both caches on.
+ *
+ * CACR on the 68040 has exactly two bits that mean anything: bit 31
+ * enables the data cache and bit 15 the instruction cache. Everything
+ * else is reserved and reads back zero -- QEMU masks a write with
+ * 0x80008000 for the 040, which is a second source for the same two
+ * bits.
+ *
+ * INVALIDATE FIRST. The caches come out of reset with undefined tags,
+ * so enabling them without `cinva` lets the processor answer a read
+ * from a line that was never loaded. cpusha is not enough on its own:
+ * pushing writes dirty lines OUT, and what is needed here is throwing
+ * whatever is in them AWAY.
+ *
+ * WHAT HAS TO BE TRUE BEFORE THIS IS CALLED, because none of it can be
+ * checked here and none of it can be observed on the emulator:
+ *
+ *   - the MMU is on, so the CM bits in the page descriptors are what
+ *     decide cachability per page (before that, everything would be
+ *     cached according to the transparent translation registers alone);
+ *   - device registers are NON-CACHABLE -- DTT0 covers the I/O window
+ *     and DTT1 the framebuffer, both CM_NC, or the first read of a UART
+ *     status register would be answered from the cache for ever;
+ *   - every page holding TRANSLATION TABLES is non-cachable, because
+ *     the MMU's table walker neither reads through the data cache nor
+ *     snoops it (vm.c, kset_cachemode).
+ *
+ * THIS CANNOT BE TESTED HERE. QEMU has no cache model: it accepts the
+ * CACR write, ignores the CM bits entirely, and decodes cinv and cpush
+ * as no-ops. A correct cache setup and a broken one are identical
+ * under the emulator, and there is no speedup to measure either. It is
+ * written for real hardware and it is correct by inspection -- which
+ * is the reason for the list above rather than a comment saying it
+ * works.
+ */
+#define CACR_DATA_ENABLE    0x80000000UL
+#define CACR_INSTR_ENABLE   0x00008000UL
+
+void cache_enable(void)
+{
+    u32 cacr = CACR_DATA_ENABLE | CACR_INSTR_ENABLE;
+
+    /* Throw away whatever the tags happen to hold, both caches. */
+    __asm__ __volatile__("cinva %%bc" ::: "memory");
+    __asm__ __volatile__("movec %0,%%cacr" :: "d"(cacr) : "memory");
+}
+
+u32 cache_state(void)
+{
+    u32 cacr;
+
+    __asm__ __volatile__("movec %%cacr,%0" : "=d"(cacr));
+    return cacr;
+}
+
+/*
  * cacheflush(addr, scope, cache, len), Linux/m68k's call.
  *
  * Linux restricts FLUSH_SCOPE_ALL to root because a process could
