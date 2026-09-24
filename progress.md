@@ -30,7 +30,28 @@ of this file. Dated, because it goes stale.
 
 ### Broken, or not working
 
-**Nothing known.**
+**Two of bash's own tests fail: `type` and `varenv`.** Found on
+2026-09-24, not yet diagnosed. They are listed in `BASH_KNOWN` in
+`kernel/bashtest.sh` so that `make test` can reach the twenty suites
+after it, and each prints its reason every run.
+
+- `type` -- a function body comes back differently from what bash's
+  own `type.right` has. The expected output contains a literal control
+  character (`^A`, 0x01) inside the function, which makes the terminal
+  or the shell's own quoting the first thing to suspect.
+- `varenv` -- three `expect ...` lines are missing from the output
+  entirely, so something is not being printed rather than printed
+  wrongly.
+
+**They had never run.** `export BASH_TESTS='...'` is 74 bytes with the
+name, `ENV_ENTRY` in `shell.c` was 64, and `env_set` truncated in
+silence and returned success -- so the last two of the eleven names
+fell off the end. The check that counts how many ran could not fail
+either: its message contained `$(echo $BASH_TESTS | wc -w)`, and the
+shell expands arguments left to right, so `wc` set `$?` to 0 before the
+`$?` that was meant to carry the result of the comparison. It printed
+"[ OK ] every test asked for ran (9 of 11)" for as long as it existed.
+Both are fixed; that is how these two came to light.
 
 ### Unverified -- believed working, not proven
 
