@@ -114,6 +114,7 @@ system/reboot
 system/which
 system/who
 system/w
+system/uptime
 
 # auth/: the privileged programs. Committed by accident when the
 # directory was made -- six m68k binaries carried in a public

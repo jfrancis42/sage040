@@ -1264,9 +1264,18 @@ struct timespec {
  * works in, so reporting anything else would be arithmetic performed in
  * order to be undone.
  */
+/*
+ * The load averages in struct sysinfo are fixed point with this many
+ * fractional bits, which is what Linux's sysinfo(2) returns -- so a
+ * program reads the real number as loads[i] / (1 << SI_LOAD_SHIFT), and
+ * the two-digit fraction as ((loads[i] & ((1<<SI_LOAD_SHIFT)-1)) * 100)
+ * >> SI_LOAD_SHIFT.
+ */
+#define SI_LOAD_SHIFT  16
+
 struct sysinfo {
     u32 uptime;                 /* seconds since boot            */
-    u32 loads[3];               /* always 0: no load average     */
+    u32 loads[3];               /* 1/5/15-min load, << SI_LOAD_SHIFT */
     u32 totalram;               /* in mem_unit                   */
     u32 freeram;
     u32 sharedram;              /* pages more than one space holds */

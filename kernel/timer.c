@@ -4,6 +4,7 @@
  * timer.c - jiffies, and sleeping on them.
  */
 #include "timer.h"
+#include "loadavg.h"
 #include "dev.h"
 #include "tty.h"
 #include "task.h"
@@ -154,6 +155,11 @@ void timer_tick(void)
      * kernel was in the middle of.
      */
     task_tick();
+
+    /* The load average: a sample of the run queue folded into the one,
+     * five and fifteen minute averages. Almost every call just counts a
+     * tick down; the sampling itself is every few seconds. */
+    loadavg_tick();
 }
 
 u32 timer_jiffies(void)

@@ -38,29 +38,12 @@
  */
 #include "whocommon.h"
 
-static void hhmmss(u32 secs, char *out)
-{
-    u32 h = secs / 3600, m = secs % 3600 / 60, s = secs % 60;
-    int i = 0;
-
-    out[i++] = (char)('0' + h / 10);
-    out[i++] = (char)('0' + h % 10);
-    out[i++] = ':';
-    out[i++] = (char)('0' + m / 10);
-    out[i++] = (char)('0' + m % 10);
-    out[i++] = ':';
-    out[i++] = (char)('0' + s / 10);
-    out[i++] = (char)('0' + s % 10);
-    out[i] = '\0';
-}
-
 int main(int argc, char **argv)
 {
     struct sysinfo si;
     u32 now = (u32)time(0);
     u32 uptime = 0;
     int i, users = 0;
-    char t[16], n[16];
 
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") != 0) {   /* -h: no heading, as usual */
@@ -68,6 +51,7 @@ int main(int argc, char **argv)
             return 2;
         }
     }
+    memset(&si, 0, sizeof(si));
     if (sysinfo(&si) == 0) {
         uptime = si.uptime;
     }
@@ -80,27 +64,10 @@ int main(int argc, char **argv)
     }
 
     if (argc == 1) {
-        hhmmss(now % 86400, t);
-        puts(" ");
-        puts(t);
-        puts(" up ");
-        if (uptime >= 86400) {
-            num(uptime / 86400, n);
-            puts(n);
-            puts(uptime / 86400 == 1 ? " day, " : " days, ");
-        }
-        num(uptime % 86400 / 3600, n);
-        puts(n);
-        puts(":");
-        if (uptime % 3600 / 60 < 10) {
-            puts("0");
-        }
-        num(uptime % 3600 / 60, n);
-        puts(n);
-        puts(",  ");
-        num((u32)users, n);
-        puts(n);
-        puts(users == 1 ? " user\n" : " users\n");
+        /* The header IS the uptime line -- time, how long up, who is on,
+         * and the load average -- shared with uptime(1) so the two can
+         * never disagree. */
+        print_status(now, uptime, users, si.loads);
         puts("USER      TTY       LOGIN@            WHAT\n");
     }
 

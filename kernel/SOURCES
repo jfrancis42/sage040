@@ -44,6 +44,7 @@ poll.c
 pipe.c
 uaccess.c
 task.c
+loadavg.c
 wait.c
 signal.c
 futex.c

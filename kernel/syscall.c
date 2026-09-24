@@ -25,6 +25,7 @@
 #include "wait.h"
 #include "tty.h"
 #include "timer.h"
+#include "loadavg.h"
 #include "dev.h"
 #include "console.h"
 #include "uaccess.h"
@@ -1854,6 +1855,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         }
         si.mem_unit = (u32)PAGE_SIZE;
         si.procs = (u16)task_count();
+        loadavg_get(si.loads);
         return store(a1, &si, sizeof(si));
     }
 
