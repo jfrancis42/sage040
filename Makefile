@@ -15,7 +15,7 @@
 #   make boot       install everything, then boot it
 #   make programs   the system's own programs only -- the short way round
 #                   when iterating on one of them
-#   make test       every suite in the tree, ~37 of them
+#   make test       every suite in the tree (see the `test:` target)
 #   make libc       build picolibc for programs (needed by libctest)
 #   make disk       create the disk image if it is not there
 #   make disk-ls    partition table and directory listing
