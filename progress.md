@@ -121,23 +121,46 @@ Every suite in the tree passes, on ext2:
   speedup to measure either. It is for real hardware, and it is
   correct by inspection rather than by test -- which is worth saying
   wherever it is switched on.
-- **MMU: PTEST and MMUSR instead of walking the tables.** The access
-  fault frame's SSW says nothing about WHY a fault happened, so
-  `vm_fault()` walks the page tables in software to find out. PTEST
-  does that walk in hardware and reports resident / write-protected /
-  supervisor-violation / modified in MMUSR. Shorter, faster, and one
-  less hand-written walk to keep in step with the descriptor layout.
+- **MMU: PTEST and MMUSR instead of walking the tables. LOOKED AT AND
+  REJECTED, with the reason.** PTEST does the table search in hardware
+  and reports the result in MMUSR, which sounded like a way to delete
+  `vm_fault()`'s software walk.
+  It cannot be, and the reason is this kernel's own design: demand
+  paging keeps its state -- lazy, in-swap (with the SLOT NUMBER in bits
+  31..12), copy-on-write, PROT_NONE -- in INVALID descriptors, because
+  the MMU ignores every bit but the type field on those and they fault
+  exactly as an unmapped page would. PTEST stops at an invalid
+  descriptor and reports nothing about it: in QEMU's implementation,
+  `if (!M68K_PDT_VALID(next)) return -1;` returns before MMUSR is
+  filled in at all, and a real 68040 likewise reports R=0 and no
+  descriptor bits. So PTEST can say "not resident", which vm_fault
+  already knows from having been called, and cannot say WHICH of the
+  four cases it is or what slot to read.
+  It would still serve as a diagnostic -- a way to ask the hardware
+  what it thinks of an address, independently of the walk -- and that
+  is the only thing worth building it for.
 - **MMU: the G (global) bit.** Global ATC entries survive a selective
   `pflush`; this kernel uses `pflusha` -- flush everything -- on every
   mapping change, COW fault and reclaim sweep, which throws away the
   kernel's own entries every time. The 68040's ATCs hold 64 entries
   between them, so that is real refill traffic.
-  **CHECK THE BIT LAYOUT FIRST.** `DESC_SW_LAZY` is 0x400 and
-  `DESC_SW_SWAP` is 0x200, which is U0/U1/G territory on a 68040 page
-  descriptor. They are only ever read on INVALID descriptors, where
-  the MMU ignores everything but the type field, so nothing is broken
-  today -- but using G means reading the manual and proving there is
-  no collision on a RESIDENT one.
+  **THE BIT LAYOUT, CHECKED.** On a 68040 page descriptor bit 8 is U0,
+  bit 9 is U1 and **bit 10 is G** -- so `DESC_SW_LAZY`, which is 0x400,
+  sits exactly on the global bit, and `DESC_SW_SWAP` (0x200) on U1.
+  (Taken from QEMU's own `M68K_MMU_G_040` and friends, which match the
+  manual.)
+  Nothing is broken by that and nothing needs moving: SW_LAZY is only
+  ever read on an INVALID descriptor and G only means anything on a
+  RESIDENT one, so the two never coexist. Setting G on resident kernel
+  pages is safe as the numbering stands.
+  **What makes this NOT worth doing yet** is the other end: the gain
+  only arrives if `pflusha` -- flush everything -- is replaced by
+  selective flushes at each of its call sites, and every one of those
+  needs its own argument about what may still be cached afterwards. A
+  wrong one is not a crash, it is a stale translation used later
+  somewhere unrelated, which CLAUDE.md already records as close to
+  undebuggable. And the benefit cannot be measured here: it is ATC
+  refill traffic on hardware that does not exist yet.
 
 - **ssh by password.** dropbear authenticates by public key; it has to
   be pointed at `/etc/shadow` and told to use `crypt(3)`, which exists
