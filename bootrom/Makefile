@@ -111,10 +111,14 @@ fsck: disk-fsck
 
 # Boot the machine. The ROM is loaded by -kernel; everything after that
 # comes off the disk.
+# signal=off so every control key -- Ctrl-A, Ctrl-C, Ctrl-Z -- reaches
+# the guest and behaves as it would on a real console, rather than QEMU
+# catching Ctrl-C and killing the machine. Stop a wedged boot by killing
+# QEMU from another terminal: pkill -f 'qemu-system-m6[8]k'.
 boot: bootrom.elf $(DISK)
 	../tools/qemu-net.sh $(QEMU) $(MACHINE) $(ICOUNT) -no-reboot -kernel bootrom.elf \
 	    -drive file=$(DISK),format=raw,if=ide \
-	    -serial stdio
+	    -chardev stdio,id=con,signal=off -serial chardev:con
 
 run: boot
 
