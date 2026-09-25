@@ -67,6 +67,29 @@ install-etc: $(DISK)
 	        echo "installed $$h/.profile"; \
 	    fi; \
 	 done
+	@# jfrancis logs into bash, and a bash LOGIN shell reads ~/.bash_profile
+	@# (or ~/.profile), never ~/.bashrc -- so without a .bash_profile that
+	@# sources it, a personal .bashrc silently never runs at login. Ship
+	@# both: the .bash_profile that sources .bashrc, and a starter .bashrc.
+	@if ! $(FSIMG) exists /home/jfrancis/.bash_profile; then \
+	    $(FSIMG) put dot-bash_profile /home/jfrancis/.bash_profile && \
+	    echo "installed /home/jfrancis/.bash_profile"; \
+	fi
+	@if ! $(FSIMG) exists /home/jfrancis/.bashrc; then \
+	    $(FSIMG) put dot-bashrc /home/jfrancis/.bashrc && \
+	    echo "installed /home/jfrancis/.bashrc"; \
+	fi
+	@# THE HOME DIRECTORY MUST BE OWNED BY ITS PERSON, or they cannot
+	@# create a file in it -- mkdir above made it root's, and the symptom
+	@# is "I have to sudo to write to my own home". jfrancis is uid/gid
+	@# 1000 in the shipped passwd; chown the directory and everything the
+	@# fresh install put in it. Idempotent, so re-running install is safe.
+	@$(FSIMG) chown /home/jfrancis 1000:1000
+	@for f in .profile .bash_profile .bashrc; do \
+	    if $(FSIMG) exists /home/jfrancis/$$f; then \
+	        $(FSIMG) chown /home/jfrancis/$$f 1000:1000; \
+	    fi; \
+	 done
 	@if ! $(FSIMG) exists /etc/shadow; then \
 	    $(FSIMG) put -m 600 shadow /etc/shadow && \
 	    echo "installed /etc/shadow (root's password is 'root')"; \

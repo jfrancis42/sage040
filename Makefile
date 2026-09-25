@@ -28,7 +28,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: logintest fsimgtest fattest all boot run install src qemu world libc-if-missing toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest linktest sshtest whotest uptimetest routetest nativetest qemutest libc cube programs clean distclean
+.PHONY: logintest fsimgtest fattest all boot run install src qemu world libc-if-missing toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest linktest sshtest whotest uptimetest routetest homeenvtest nativetest qemutest libc cube programs clean distclean
 
 all:
 	$(MAKE) -C bootrom
@@ -219,7 +219,7 @@ qemu:
 run:
 	$(MAKE) -C kernel run
 
-test: fsimgtest tests cryptotest fstest fattest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest logintest linktest sshtest whotest uptimetest routetest qemutest
+test: fsimgtest tests cryptotest fstest fattest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest logintest linktest sshtest whotest uptimetest routetest homeenvtest qemutest
 
 # The host's end of the disk, before anything that uses it: every suite
 # below stages its files through tools/fsimg.sh, so a fault in it does
@@ -383,6 +383,14 @@ uptimetest:
 # duplicate is refused, and arp -d makes the resolver re-learn.
 routetest:
 	cd kernel && ./routetest.sh
+
+# A person can write to their own home, and their shell startup files
+# run at login: install-etc chowns the home to its owner, and the
+# shipped ~/.bash_profile sources ~/.bashrc so a bash login shell reads
+# it. Both were silently broken because no suite logged in and USED the
+# account.
+homeenvtest:
+	cd kernel && ./homeenvtest.sh
 
 # The toolchain running on the machine: gcc and as and ld, compiling
 # and linking programs that then run -- and the object files compared
