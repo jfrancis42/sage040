@@ -473,7 +473,7 @@ static int kbd_reset(void)
 static void kbd_isr(void *arg)
 {
     (void)arg;
-    tty_input_irq();
+    tty_input_irq(&kbd_dev);
 }
 
 int i8042_init(void)

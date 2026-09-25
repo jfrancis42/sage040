@@ -8,8 +8,12 @@
 # on the disk, by keystrokes down the serial line: a line opened below
 # the last, a word inserted mid-line, a line deleted and the deletion
 # undone, an ex substitution across the buffer, :wq. The host reads the
-# file back from the image, and vcsnap's copy of /dev/vcsa shows what vi
-# drew while it was up.
+# file back from the image, and that the edits landed is the whole test.
+#
+# vi runs on the serial line -- the terminal this session drives -- so
+# what it DREW is not read back here: the screen is a separate terminal
+# now, with its own getty, and nothing vi does reaches it. A full-screen
+# program's rendering on the framebuffer is proven directly by vttest.
 #
 # Runs on a scratch image.
 
@@ -74,7 +78,6 @@ fsimg mkdir /bin; fsimg mkdir /lib
 fsimg put ../ldso/ld.so /lib/ld.so
 fsimg put "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" /lib/libc.so
 fsimg put -m 755 ../ports/vi/vi /bin/vi
-fsimg put -m 755 ../apps/vcsnap /bin/vcsnap
 fsimg put -m 755 ../system/stty /bin/stty
 printf 'the first line\nthe second line\n' > "$SCRATCH/edit.tmp"
 LC_ALL=C.UTF-8 fsimg put "$SCRATCH/edit.tmp" "/Notes To Edit.txt"
@@ -85,7 +88,6 @@ mkfifo "$SCRATCH/in.fifo"
     -kernel ../bootrom/bootrom.elf \
     -drive file="$DISK",format=raw,if=ide \
     -display none -no-reboot \
-    -monitor "unix:$SCRATCH/vi-mon.sock,server,nowait" \
     -chardev stdio,id=con,signal=off -serial chardev:con \
     < "$SCRATCH/in.fifo" > "$LOG" 2>&1 &
 qemu_pid=$!
@@ -101,10 +103,6 @@ wait_for() {
     return 1
 }
 
-# The snapshot is taken 14 s from now: after the editing below (about
-# 10.6 s in), before the :wq (about 15.6 s).
-printf 'vcsnap 14000 /SNAP.BIN &\r' >&3
-sleep 1
 printf 'vi "Notes To Edit.txt"\r' >&3
 sleep 4
 send() { printf '%b' "$1" >&3; sleep 0.4; }
@@ -113,10 +111,6 @@ send '1G'; send '0'; send '4l'; send 'i'; send 'very '; send '\033'
 send '2G'; send 'dd'; send 'u'                      # delete, and undo it
 send ':%s/second/2nd/\r'                            # ex, across the buffer
 sleep 3
-# A picture of it, for the documentation: scratch/vi.png.
-printf 'screendump %s\n' "$SCRATCH/vi.ppm" |
-    socat - "unix:$SCRATCH/vi-mon.sock" >/dev/null 2>&1
-sleep 2
 send ':wq\r'
 sleep 2
 printf '\r' >&3; sleep 0.5
@@ -135,7 +129,6 @@ rm -f "$SCRATCH/in.fifo"
 
 tr -d '\r' < "$LOG" > "$SCRATCH/clean.tmp"
 LC_ALL=C.UTF-8 fsimg cat "/Notes To Edit.txt" 2>/dev/null > "$SCRATCH/edited.tmp"
-fsimg cat /SNAP.BIN > "$SCRATCH/snap.tmp" 2>/dev/null
 
 echo "=== guest session (escape sequences shown as ^[) ==="
 sed 's/\x1b/^[/g; s/^/  | /' "$SCRATCH/clean.tmp" | cut -c1-160 | tail -40
@@ -152,28 +145,8 @@ check "G then o opened a line below the last" $?
 test "$(wc -l < "$SCRATCH/edited.tmp")" -eq 3
 check "  and nothing else" $?
 
-echo "=== checks: the screen, while it was up ==="
-python3 - "$SCRATCH/snap.tmp" > "$SCRATCH/screen.tmp" <<'PY'
-import sys
-d = open(sys.argv[1], "rb").read()
-if len(d) < 4:
-    sys.exit(0)
-rows, cols = d[0], d[1]
-for r in range(rows):
-    line = "".join(chr(d[4 + (r * cols + c) * 2]) for c in range(cols))
-    attr = d[5 + (r * cols) * 2]
-    rev = "R" if (attr & 0x07) < ((attr >> 4) & 0x07) else "-"
-    print(rev, line.rstrip())
-PY
-sed 's/^/  | /' "$SCRATCH/screen.tmp"
-
-grep -q "^. the very first line$" "$SCRATCH/screen.tmp"
-check "the edited first line was on the screen" $?
-grep -q "^. the 2nd line$" "$SCRATCH/screen.tmp" &&
-    grep -q "^. typed in vi$" "$SCRATCH/screen.tmp"
-check "and the substituted line and the typed one" $?
-grep -q "^. ~" "$SCRATCH/screen.tmp"
-check "the lines past the end of the file were vi's tildes" $?
+# (What vi drew on the screen is no longer read back here -- see the
+# note at the top of this file.)
 
 echo "=== checks: afterwards ==="
 grep -qx "VI-DONE" "$SCRATCH/clean.tmp"
@@ -181,10 +154,7 @@ check "vi exited and the shell came back" $?
 grep -q "^icrnl opost onlcr isig icanon echo$" "$SCRATCH/clean.tmp"
 check "  with the terminal's modes put back as they were" $?
 
-sleep 0.2
-magick "$SCRATCH/vi.ppm" "$SCRATCH/vi.png" 2>/dev/null
-rm -f "$SCRATCH/edit.tmp" "$SCRATCH/edited.tmp" "$SCRATCH/snap.tmp" "$SCRATCH/screen.tmp" \
-      "$SCRATCH/vi.ppm" "$SCRATCH/vi-mon.sock"
+rm -f "$SCRATCH/edit.tmp" "$SCRATCH/edited.tmp"
 
 echo
 echo "  passed: $pass"

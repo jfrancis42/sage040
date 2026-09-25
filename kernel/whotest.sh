@@ -229,7 +229,7 @@ C=$(body '==A1' '==A2')
 check "one person is logged in at the console, and who says one" $?
 echo "$C" | grep -q '^jfrancis '
 check "  and it is jfrancis, who is the one who logged in" $?
-echo "$C" | grep -q ' tty '
+echo "$C" | grep -q ' console '
 check "  on the console terminal" $?
 
 # THE NEGATIVE, and the half that matters. These are the tasks the
@@ -247,7 +247,7 @@ check "  -- and klogd really is running, so that was a real exclusion" $?
 W=$(body '==B1' '==B2')
 echo "$W" | grep -q '1 user'
 check "w's header counts the one user" $?
-echo "$W" | grep -q '^jfrancis .* tty '
+echo "$W" | grep -q '^jfrancis .* console '
 check "  and names jfrancis at the console" $?
 
 # --- who -a is a different question and must answer more -------------

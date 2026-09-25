@@ -34,57 +34,56 @@ struct chardev;
 #define TTY_MAX_SOURCES  4
 #define TTY_MAX_SINKS    4
 
-/* Register /dev/console and /dev/tty, and bind descriptors 0, 1 and 2. */
+/* Register the two terminals (/dev/tty1, /dev/console), point kernel
+ * messages at the serial line, and bind the boot task's 0, 1 and 2. */
 int  tty_init(void);
 
-/* Somewhere characters can come from, or go to. A device may be both --
- * a serial port usually is. */
+/* Bind the current task's 0, 1 and 2 to a named terminal ("tty1",
+ * "console"): how a getty attaches to the line it serves. */
+int  tty_attach(const char *name);
+
+/*
+ * Wire a raw device into its terminal. The keyboard and framebuffer
+ * belong to the screen (tty1); the serial UART to the serial line
+ * (console). A device may be both a source and a sink -- a UART is.
+ */
 int  tty_add_source(struct chardev *d);
+int  tty_add_sink(struct chardev *d);
 
 /*
  * The source's driver takes its receive interrupt and calls
- * tty_input_irq() from it; the source is not polled any more. See the
- * ring in tty.c.
+ * tty_input_irq(dev) from it, passing its own device so the right
+ * terminal is drained; the source is not polled any more.
  */
 int  tty_source_irq(struct chardev *d);
-void tty_input_irq(void);
+void tty_input_irq(struct chardev *d);
 u32  tty_overruns(void);
-int  tty_add_sink(struct chardev *d);
 
-/* Turn one sink off without removing it, which is what the shell's
- * `console` command does. A source cannot be turned off: silently
- * ignoring a keystroke somebody typed is never the helpful answer. */
-int  tty_sink_enable(const char *name, int on);
+/* Walk the terminals' devices, for the boot banner: returns the device
+ * and, through the arguments, which terminal it belongs to and whether
+ * it is a source. 0 past the end. */
+struct chardev *tty_nth(int index, const char **ttyname, int *is_source);
 
-/* Walk the sinks, for anything that wants to report them. */
-struct chardev *tty_sink(int index, int *enabled);
-struct chardev *tty_source(int index);
-
+/* /dev/console: the serial line, where kernel messages go. */
 struct chardev *tty_device(void);
 
 /*
- * Look for an interrupt or stop character, from the timer tick.
- *
- * Only useful while a program is running and reading nothing -- which is
- * exactly the program that would otherwise be impossible to interrupt.
- * Anything it finds that is not a signal is handed to the next reader
- * untouched.
+ * Look for an interrupt or stop character on every terminal, from the
+ * timer tick -- the program running and reading nothing would otherwise
+ * be impossible to interrupt -- and wake anything waiting for input.
  */
 void tty_poll_signals(void);
 
 /*
- * Which task ctrl-C and ctrl-Z are aimed at.
- *
- * The shell sets it to whatever it is waiting for, and back to itself
- * afterwards. A background task is never the foreground one, which is
- * exactly what `&` means from the terminal's point of view.
+ * Hand the SERIAL terminal to a process group. Used by the boot task
+ * as it starts the first getty; per-terminal handoff after that goes
+ * through TIOCSPGRP on each terminal's own descriptor.
  */
 void tty_set_foreground(int pid);
-int  tty_foreground(void);
 
-/* Canonical mode, echo on, signals on: the state a shell hands to a
- * program, and the state to put back after one that changed it was
- * killed before it could. */
-void tty_reset(void);
+/* Canonical mode, echo on, signals on for the terminal a descriptor is
+ * open on: the state a shell hands a program, put back after one that
+ * changed it was killed before it could. */
+void tty_reset_fd(int fd);
 
 #endif /* TTY_H */

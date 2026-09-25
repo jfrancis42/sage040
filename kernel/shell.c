@@ -519,7 +519,6 @@ static void cmd_help(void)
         "date                 show the date and time\n"
         "date -s DATE [TIME]  set them: YYYY-MM-DD and HH:MM[:SS]\n"
         "uname [-a]           system name, or name and version\n"
-        "console [DEV on|off] show or change where console output goes\n"
         "sync                 flush pending writes to the disk\n"
         "ps                   every task on the machine\n"
         "kill [-SIG] PID      send a signal\n"
@@ -1055,87 +1054,6 @@ static void cmd_date(int argc, char **args)
     show_clock(&t);
 }
 
-/* ---------------------------------------------------------------- */
-/* Where the console goes                                            */
-/* ---------------------------------------------------------------- */
-
-/*
- * Console output goes to every enabled sink at once -- the screen and
- * the serial line both -- and input is taken from every source. So this
- * does not move the shell anywhere; it turns one of the places output
- * appears on or off.
- *
- * That is the useful shape for a machine like this. The serial log stays
- * complete whatever the screen is doing, which is exactly when you want
- * it, and the test harnesses drive the machine over the wire with the
- * display switched off entirely.
- */
-static void list_console(int which, const char *heading)
-{
-    struct console_info ci;
-    int i;
-
-    out_puts(heading);
-    for (i = 0; ; i++) {
-        ci.which = which;
-        ci.index = i;
-        if (sys_ioctl(STDIN_FILENO, TIOCGCONS, (u32)&ci) < 0) {
-            break;
-        }
-        out_puts("  ");
-        out_puts(ci.name);
-        if (which == CONS_SINK) {
-            out_puts(ci.enabled ? "   on\n" : "   off\n");
-        } else {
-            out_putc('\n');
-        }
-    }
-}
-
-static void cmd_console(int argc, char **args)
-{
-    struct console_set cs;
-    int on, err, i;
-
-    if (argc == 1) {
-        list_console(CONS_SINK, "output to:\n");
-        list_console(CONS_SOURCE, "input from:\n");
-        out_puts("\nturn one off with `console NAME off`\n");
-        return;
-    }
-
-    if (argc < 3) {
-        err_usage("console [NAME on|off]");
-        return;
-    }
-
-    if (strcmp(args[2], "on") == 0) {
-        on = 1;
-    } else if (strcmp(args[2], "off") == 0) {
-        on = 0;
-    } else {
-        err_usage("console [NAME on|off]");
-        return;
-    }
-
-    for (i = 0; i < (int)sizeof(cs.name); i++) {
-        cs.name[i] = '\0';
-    }
-    strncpy(cs.name, args[1], sizeof(cs.name) - 1);
-    cs.on = on;
-
-    /*
-     * Flushed first, because the very next thing that happens may be
-     * the device this output was going to being switched off.
-     */
-    out_flush();
-    err = sys_ioctl(STDIN_FILENO, TIOCSCONS, (u32)&cs);
-    if (err == -EBUSY) {
-        err_puts("console: that is the only one left\n");
-    } else if (err < 0) {
-        err_report(args[1], err);
-    }
-}
 
 
 
@@ -1979,8 +1897,6 @@ static int run_builtin(int argc)
     } else if (strcmp(argv[0], "uname") == 0) {
         cmd_uname(argc, argv);
 
-    } else if (strcmp(argv[0], "console") == 0) {
-        cmd_console(argc, argv);
 
     } else if (strcmp(argv[0], "free") == 0) {
         struct sysinfo si;
@@ -3060,7 +2976,12 @@ static void interactive(void)
 }
 
 /* The machine's own shell: a kernel task, started at boot. */
-void shell(void)
+/*
+ * The environment a session starts with when nobody has logged in yet
+ * -- the boot task, and the rescue shell when there is no /bin/login.
+ * login(1) sets its own for whoever it lets in.
+ */
+static void shell_defaults(void)
 {
     /*
      * The defaults, before /etc/rc gets a chance to change them.
@@ -3111,24 +3032,10 @@ void shell(void)
      * machine in Colorado, daylight saving included.
      */
     env_set("TZ", "UTC0");
+}
 
-    /*
-     * /etc/rc, if there is one. Not an error if there is not: a machine
-     * with a blank disk should still come up to a prompt, and saying
-     * "no such file" at every boot would be noise rather than news.
-     *
-     * Note the name. rc.local would be the conventional one and is not
-     * a legal 8.3 name -- five characters of extension -- so the
-     * filesystem chose this, not taste.
-     */
-    {
-        struct stat st;
-
-        if (sys_stat("/etc/rc", &st) == 0) {
-            run_script("/etc/rc");
-        }
-    }
-
+static void run_getty(void)
+{
     /*
      * THE CONSOLE LOGIN.
      *
@@ -3174,6 +3081,43 @@ void shell(void)
 
     interactive();
 }
+
+void shell(void)
+{
+    shell_defaults();
+
+    /*
+     * /etc/rc, if there is one. Not an error if there is not: a machine
+     * with a blank disk should still come up to a prompt, and saying
+     * "no such file" at every boot would be noise rather than news.
+     *
+     * Note the name. rc.local would be the conventional one and is not
+     * a legal 8.3 name -- five characters of extension -- so the
+     * filesystem chose this, not taste.
+     */
+    {
+        struct stat st;
+
+        if (sys_stat("/etc/rc", &st) == 0) {
+            run_script("/etc/rc");
+        }
+    }
+
+    run_getty();
+}
+
+/*
+ * A getty on a SECOND terminal (the screen). Same as shell() without
+ * /etc/rc, which belongs to the machine and runs once, on the serial
+ * line. The kernel binds this task's descriptors to its terminal and
+ * makes it that terminal's foreground group before calling it.
+ */
+void shell_getty(void)
+{
+    shell_defaults();
+    run_getty();
+}
+
 
 /*
  * /bin/sh: this same shell, built as a program. `sh -c 'COMMAND'` runs

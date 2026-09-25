@@ -1,44 +1,41 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 Jeff Francis */
 /*
- * tty.c - the line discipline, the fan-out, and where ctrl-C goes.
+ * tty.c - the line discipline, once per terminal.
  *
- * This used to live inside the NS16550A driver, which worked for exactly
- * as long as there was one place characters could come from and one
- * place they could go. There is now a screen and a keyboard as well as a
- * serial port, so it moved out to where it belongs.
+ * This used to be ONE console that fanned every byte out to the screen
+ * AND the serial line and merged their input, so the machine had a
+ * single terminal wearing two faces. That is what made the size wrong:
+ * a full-screen program had to fit on the smaller of the two, so a
+ * 640x480 screen that is really 80x30 was clamped to the serial line's
+ * assumed 80x24 and the bottom of the screen was wasted.
  *
- * What a terminal does here:
+ * There are two INDEPENDENT terminals now, each with its own line
+ * discipline -- its own input ring, termios, foreground group and size:
  *
- *   read()   in canonical mode, assembles one line, echoing as it goes,
- *            with erase and kill doing what a person expects. In raw
- *            mode, hands over whatever has arrived as soon as anything
- *            has. Characters come from whichever source has one.
+ *   tty1      the screen: keyboard in, framebuffer out. 80x30, because
+ *             that is what the framebuffer measures, and nothing else
+ *             gets a vote.
+ *   console   the serial line: /dev/ttyS0's UART in and out. 80x24
+ *             until `stty`/`resize` says otherwise. Kernel messages go
+ *             here.
  *
- *   write()  turns a newline into carriage return and newline, and sends
- *            the result to every enabled sink.
+ * A getty runs on each, so you log in wherever you are sitting; neither
+ * echoes onto the other. `struct tty` is the whole of a terminal, and
+ * the machine has two of them.
  *
- *   signals  INTR and SUSP are recognised here and nowhere else, and go
- *            to the foreground job. This is the only part of the system
- *            that turns a keystroke into something that happens to a
- *            running program.
+ * What a terminal does (unchanged from when there was one):
  *
- * The flags are termios flags, with Linux's names and Linux's numbers,
- * because they are the right vocabulary and because the line editor in
- * the shell drives them exactly as readline drives a real terminal:
- * ICANON and ECHO off, edit, put them back. None of the editing is in
- * here. That is deliberate -- bash's line editor is in userspace, and
- * this one moves there unchanged the day programs stop running as the
- * kernel.
+ *   read()   canonical mode assembles a line, echoing, with erase and
+ *            kill; raw mode hands over whatever has arrived. Input comes
+ *            from any of this terminal's sources.
+ *   write()  turns \n into \r\n and sends it to this terminal's output.
+ *   signals  INTR and SUSP go to this terminal's foreground group.
  *
- * A device is a source if its ioctl answers FIONREAD, which is how this
- * asks "is there a character waiting" without committing to a read that
- * would block. The serial port and the keyboard are INTERRUPT-DRIVEN:
- * each marks itself with tty_source_irq(), its receive interrupt calls
- * tty_input_irq(), and that drains every such source into the one ring
- * below. Polling is what is left for a source with no interrupt -- the
- * console's own replies on fbcon -- and for resuming a drain that
- * stopped because the ring was full.
+ * Interrupt-driven input: a source whose driver takes its receive
+ * interrupt is marked, and the interrupt calls tty_input_irq(dev),
+ * which drains that source's terminal. A source with no interrupt (the
+ * screen's own VT replies) is polled, from the reader and the tick.
  */
 #include "poll.h"
 #include "tty.h"
@@ -52,171 +49,135 @@
 #include "string.h"
 
 #define CTRL(x)    ((x) & 0x1f)
+#define IN_RING    256
+#define TTY_SRC_MAX 3
 
-struct sink {
-    struct chardev *dev;
-    int enabled;
-};
+struct tty {
+    const char *name;                   /* the /dev node                */
+    struct chardev dev;                 /* this terminal as a device    */
 
-static struct chardev *sources[TTY_MAX_SOURCES];
-static int nsources;
+    struct chardev *src[TTY_SRC_MAX];   /* where input comes from       */
+    u8    src_irq[TTY_SRC_MAX];         /* which of them interrupt      */
+    int   nsrc;
+    struct chardev *out;                /* where output goes (one)      */
 
-static struct sink sinks[TTY_MAX_SINKS];
-static int nsinks;
+    struct termios tio;
 
-static struct chardev tty_dev;
-static struct chardev tty_alias;
+    u8    ring[IN_RING];                /* interrupt-driven input        */
+    u32   head, tail, overruns;
+    int   stalled;
+    int   pushback;                     /* one char taken and not wanted */
+    struct waitq wait;
 
-/*
- * The current settings.
- *
- * Canonical, echoing, signals on, both newline translations on: what a
- * terminal looks like when a shell hands it to a program, and what this
- * one looks like at boot.
- */
-static struct termios tio = {
-    ICRNL,                      /* c_iflag */
-    OPOST | ONLCR,              /* c_oflag */
-    0,                          /* c_cflag: no baud rate to set here */
-    ISIG | ICANON | ECHO,       /* c_lflag */
-    0,                          /* c_line  */
-    {
-        CTRL('C'),              /* VINTR  */
-        CTRL('\\'),             /* VQUIT  */
-        0x7f,                   /* VERASE: DEL, as a modern terminal sends */
-        CTRL('U'),              /* VKILL  */
-        CTRL('D'),              /* VEOF   */
-        0, 1, 0, 0, 0,          /* VTIME, VMIN, ...                       */
-        CTRL('Z'),              /* VSUSP  */
-        0, 0, 0, 0, 0, 0, 0, 0
-    }
+    int   fg_pgrp;                      /* ctrl-C's target here          */
+    int   pending_sig;                  /* a ctrl-C waiting for a group  */
+
+    struct winsize ws;                  /* assumed size; a self-sizing
+                                         * output overrides it           */
+    int   selfsize;                     /* the output measures itself    */
 };
 
 /*
- * One character that was taken from a source and not wanted yet.
+ * THE TWO TERMINALS.
  *
- * The timer tick looks for a pending ctrl-C while a program is running,
- * and the only way to tell whether a waiting character is one is to take
- * it. Anything else it finds goes here and is handed to the next reader,
- * in order, as though it had never been touched.
+ * Their termios starts canonical, echoing, signals on -- what a shell
+ * hands a program, and what each looks like at boot. The serial line is
+ * a VT100's 80x24 until told otherwise; the screen's size is taken from
+ * the framebuffer when it is wired, so the {0,0} here is a placeholder
+ * the wiring fills.
  */
-static int pushback = -1;
+#define TIO_DEFAULT { \
+    ICRNL, OPOST | ONLCR, 0, ISIG | ICANON | ECHO, 0, \
+    { CTRL('C'), CTRL('\\'), 0x7f, CTRL('U'), CTRL('D'), 0, 1, 0, 0, 0, \
+      CTRL('Z'), 0, 0, 0, 0, 0, 0, 0, 0 } }
 
-/*
- * INTERRUPT-DRIVEN INPUT (task 22). A source whose driver takes its
- * chip's receive interrupt is marked here, and its interrupt handler
- * calls tty_input_irq(), which drains the chip into this ring -- acting
- * on ctrl-C and ctrl-Z as it goes -- and wakes whoever is waiting. Such
- * a source is never polled: the ring is where its characters are.
- *
- * Sources without an interrupt (the console's own replies, fbcon) are
- * polled as before, from the reader and from the tick.
- */
-#define IN_RING 256
+static struct tty tty_screen = {
+    .name = "tty1", .pushback = -1, .tio = TIO_DEFAULT,
+    .ws = { 30, 80, 0, 0 }, .selfsize = 1,
+};
+static struct tty tty_serial = {
+    .name = "console", .pushback = -1, .tio = TIO_DEFAULT,
+    .ws = { 24, 80, 0, 0 }, .selfsize = 0,
+};
+static struct tty *ttys[] = { &tty_screen, &tty_serial };
+#define NTTY ((int)(sizeof(ttys) / sizeof(ttys[0])))
 
-static u8  in_ring[IN_RING];
-static u32 in_head, in_tail;            /* written at head, read at tail */
-static u32 in_overruns;
-static int in_stalled;                  /* left in the chip: ring full */
-static u8  source_irq[TTY_MAX_SOURCES];
-
-static int ring_empty(void)
+/* Which terminal a raw device belongs to, by name: the keyboard and the
+ * framebuffer are the screen's; the serial UART is the serial line's. */
+static struct tty *tty_for_dev(const struct chardev *d)
 {
-    return in_head == in_tail;
+    if (!d) {
+        return 0;
+    }
+    if (strcmp(d->name, "ttyS0") == 0) {
+        return &tty_serial;
+    }
+    return &tty_screen;         /* kbd0, fbcon */
 }
 
-/*
- * Who ctrl-C and ctrl-Z are aimed at: the foreground PROCESS GROUP.
- *
- * A group, not a task, because a pipeline is several programs and the
- * key has to reach all of them. The shell puts each job in a group of
- * its own and hands the terminal to that group while it waits. A job in
- * the background is in a group that does not have the terminal, which
- * is the whole difference between running something with & and without
- * -- and a background task that tries to READ is sent SIGTTIN, so it
- * stops instead of taking keystrokes meant for somebody else.
- */
-static int fg_pgrp;
-
-/*
- * A ctrl-C or ctrl-Z typed while the foreground group has no program in
- * it -- the shell is between reading a line and handing the terminal to
- * the job it started. Starting a program sleeps now (the disk is
- * interrupt-driven), so the stages of a pipeline already started run,
- * and print, while the shell is still starting the rest; a person who
- * sees that and types ctrl-C expects it to reach them. It used to go to
- * the shell's own group, reach nobody, and leave the shell waiting for
- * a pipeline nothing would end. Now it is kept, and delivered to the
- * group the terminal is handed to next -- by then every stage exists,
- * which is why it is not simply given to the group as it grows.
- *
- * The ctrl-C character itself also goes in the input ring, and whoever
- * READS it -- the shell's line editor, when the shell was at its prompt
- * -- clears this (signal_char): a key typed at a prompt must not kill
- * the next command.
- */
-static int pending_sig;
-
-void tty_set_foreground(int pgrp)
+/* The terminal a descriptor is open on: its priv is the struct tty. */
+static struct tty *tty_of(struct file *f)
 {
-    int sig = pending_sig;
+    return f ? (struct tty *)f->priv : 0;
+}
 
-    fg_pgrp = pgrp;
-    pending_sig = 0;
+static int ring_empty(struct tty *t)
+{
+    return t->head == t->tail;
+}
+
+/* ---------------------------------------------------------------- */
+/* Foreground group and read permission                              */
+/* ---------------------------------------------------------------- */
+
+static void set_foreground(struct tty *t, int pgrp)
+{
+    int sig = t->pending_sig;
+
+    t->fg_pgrp = pgrp;
+    t->pending_sig = 0;
     if (sig && pgrp && (!current || pgrp != current->pgid)) {
         signal_group(pgrp, sig);
     }
 }
 
-int tty_foreground(void)
+/*
+ * tty_set_foreground kept for the boot task, which hands its terminal
+ * to the first getty it starts. It acts on the SERIAL terminal, because
+ * that is where the boot task's own descriptors are (kernel messages).
+ * Per-terminal handoff after that goes through TIOCSPGRP on the
+ * terminal's own descriptor.
+ */
+void tty_set_foreground(int pgrp)
 {
-    return fg_pgrp;
+    set_foreground(&tty_serial, pgrp);
 }
 
 /*
- * May the current task read the terminal? 0 if so. A task outside the
- * foreground group is sent SIGTTIN, whose default is to stop it; the
- * read returns -EINTR, and when `fg` continues it the read is restarted
- * as if nothing had happened (see signal.c). A task that ignores or
- * blocks SIGTTIN would never be stopped, so it gets EIO instead --
- * POSIX's rule, and what stops such a task spinning on the signal.
+ * May the current task read this terminal? 0 if so. A task outside the
+ * foreground group is sent SIGTTIN (default: stop); the read returns
+ * -EINTR and restarts on `fg`. One that ignores or blocks SIGTTIN gets
+ * EIO instead, POSIX's rule, so it does not spin on the signal.
  */
-static int may_read(void)
+static int may_read(struct tty *t)
 {
-    struct task *t = current;
+    struct task *c = current;
 
-    if (!t || !t->as || t->pgid == fg_pgrp) {
+    if (!c || !c->as || c->pgid == t->fg_pgrp) {
         return 0;
     }
-    if ((t->sig_blocked & SIGMASK(SIGTTIN)) ||
-        t->sigact[SIGTTIN].sa_handler == SIG_IGN) {
+    if ((c->sig_blocked & SIGMASK(SIGTTIN)) ||
+        c->sigact[SIGTTIN].sa_handler == SIG_IGN) {
         return -EIO;
     }
-    signal_group(t->pgid, SIGTTIN);
+    signal_group(c->pgid, SIGTTIN);
     return -EINTR;
 }
-
-/*
- * Anything blocked waiting for a keystroke.
- *
- * This is what replaced the spin. The terminal's read used to go round a
- * loop asking the UART whether anything had arrived, which was fine when
- * there was nothing else for the processor to do -- and is not, now that
- * there is.
- */
-static struct waitq input_wait;
 
 /* ---------------------------------------------------------------- */
 /* Talking to the devices underneath                                 */
 /* ---------------------------------------------------------------- */
 
-/*
- * The devices are plain chardevs, so calling one means having a
- * `struct file` to call it with. Building a throwaway one is cheaper
- * than giving every driver a second entry point that does not need a
- * descriptor, and it keeps the layer below this identical to the layer
- * a program sees.
- */
 static void as_file(struct file *f, struct chardev *d)
 {
     memset(f, 0, sizeof(*f));
@@ -229,14 +190,13 @@ static void raw_write(struct chardev *d, const void *buf, u32 len)
 {
     struct file f;
 
-    if (!d->ops->write) {
+    if (!d || !d->ops->write) {
         return;
     }
     as_file(&f, d);
     d->ops->write(&f, buf, len);
 }
 
-/* Is a character waiting on this source? */
 static int source_ready(struct chardev *d)
 {
     struct file f;
@@ -252,7 +212,6 @@ static int source_ready(struct chardev *d)
     return n > 0;
 }
 
-/* Take one, having already established there is one. */
 static int source_get(struct chardev *d)
 {
     struct file f;
@@ -273,40 +232,29 @@ static int source_get(struct chardev *d)
 /* ---------------------------------------------------------------- */
 
 /*
- * To every enabled sink, with ONLCR applied once here rather than in
- * each of them. A sink writes bytes; deciding that a newline needs a
- * carriage return in front of it is the terminal's business.
+ * To this terminal's one output, ONLCR applied here rather than in the
+ * device: a device writes bytes; deciding a newline needs a carriage
+ * return in front of it is the terminal's business.
  */
-static void sink_write(const void *buf, u32 len)
+static void out_write(struct tty *t, const void *buf, u32 len)
 {
     const u8 *p = buf;
     u32 start = 0, i;
-    int s;
 
-    if (!(tio.c_oflag & OPOST) || !(tio.c_oflag & ONLCR)) {
-        for (s = 0; s < nsinks; s++) {
-            if (sinks[s].enabled) {
-                raw_write(sinks[s].dev, p, len);
-            }
-        }
+    if (!t->out) {
         return;
     }
-
+    if (!(t->tio.c_oflag & OPOST) || !(t->tio.c_oflag & ONLCR)) {
+        raw_write(t->out, p, len);
+        return;
+    }
     for (i = 0; i <= len; i++) {
         if (i == len || p[i] == '\n') {
             if (i > start) {
-                for (s = 0; s < nsinks; s++) {
-                    if (sinks[s].enabled) {
-                        raw_write(sinks[s].dev, p + start, i - start);
-                    }
-                }
+                raw_write(t->out, p + start, i - start);
             }
             if (i < len) {
-                for (s = 0; s < nsinks; s++) {
-                    if (sinks[s].enabled) {
-                        raw_write(sinks[s].dev, "\r\n", 2);
-                    }
-                }
+                raw_write(t->out, "\r\n", 2);
             }
             start = i + 1;
         }
@@ -315,17 +263,20 @@ static void sink_write(const void *buf, u32 len)
 
 static s32 tty_write(struct file *f, const void *buf, u32 len)
 {
-    (void)f;
-    sink_write(buf, len);
+    struct tty *t = tty_of(f);
+
+    if (t) {
+        out_write(t, buf, len);
+    }
     return (s32)len;
 }
 
-static void echo(int c)
+static void echo(struct tty *t, int c)
 {
     u8 ch = (u8)c;
 
-    if (tio.c_lflag & ECHO) {
-        sink_write(&ch, 1);
+    if (t->tio.c_lflag & ECHO) {
+        out_write(t, &ch, 1);
     }
 }
 
@@ -333,70 +284,56 @@ static void echo(int c)
 /* Input                                                             */
 /* ---------------------------------------------------------------- */
 
-/* Anything waiting anywhere, without taking it. */
-static int any_ready(void)
+static int any_ready(struct tty *t)
 {
     int i;
 
-    if (pushback >= 0 || !ring_empty()) {
+    if (t->pushback >= 0 || !ring_empty(t)) {
         return 1;
     }
-    for (i = 0; i < nsources; i++) {
-        if (!source_irq[i] && source_ready(sources[i])) {
+    for (i = 0; i < t->nsrc; i++) {
+        if (!t->src_irq[i] && source_ready(t->src[i])) {
             return 1;
         }
     }
     return 0;
 }
 
-/*
- * One character if there is one, or -1. Never waits.
- *
- * MASKED, and that is not caution -- it is a bug that was observed.
- * The timer interrupt runs tty_poll_signals(), which also takes a
- * character and may put it in the pushback slot. If it lands between a
- * reader checking that slot and the same reader taking one from the
- * device, the reader gets the LATER character and the earlier one waits
- * in pushback for the next call. The two come out in the wrong order --
- * a line typed as SHELL arrives as SHLEL, once in a few thousand
- * characters, which is exactly often enough to be baffling.
- */
-void tty_input_irq(void);
+static void drain_irq(struct tty *t);   /* forward */
 
-static int poll_char(void)
+/*
+ * One character if there is one, or -1. Never waits. MASKED against the
+ * timer: the tick's tty_poll_signals() may take a character and put it
+ * in the pushback slot; between a reader checking that slot and taking
+ * one from the device, the two could come out reversed -- SHELL as
+ * SHLEL, once in a few thousand -- so the whole of this is atomic.
+ */
+static int poll_char(struct tty *t)
 {
     u16 sr = irq_save();
-    int c = -1;
-    int i;
+    int c = -1, i;
 
-    if (pushback >= 0) {
-        c = pushback;
-        pushback = -1;
+    if (t->pushback >= 0) {
+        c = t->pushback;
+        t->pushback = -1;
         irq_restore(sr);
         return c;
     }
-    if (!ring_empty()) {
-        c = in_ring[in_tail % IN_RING];
-        in_tail++;
-        /* Room again: take what was left waiting in the chip, which
-         * will not interrupt again until it has been emptied. */
-        if (in_stalled && in_head - in_tail < IN_RING / 2) {
-            in_stalled = 0;
-            tty_input_irq();
+    if (!ring_empty(t)) {
+        c = t->ring[t->tail % IN_RING];
+        t->tail++;
+        /* Room again: take what the chip held back. It will not
+         * interrupt again until it has been emptied. */
+        if (t->stalled && t->head - t->tail < IN_RING / 2) {
+            t->stalled = 0;
+            drain_irq(t);
         }
         irq_restore(sr);
         return c;
     }
-    /*
-     * Round robin from the top each time rather than remembering where
-     * it got to: with two or three sources the fairness question does
-     * not arise, and a person typing on one of them is not racing
-     * anybody.
-     */
-    for (i = 0; i < nsources; i++) {
-        if (!source_irq[i] && source_ready(sources[i])) {
-            c = source_get(sources[i]);
-
+    for (i = 0; i < t->nsrc; i++) {
+        if (!t->src_irq[i] && source_ready(t->src[i])) {
+            c = source_get(t->src[i]);
             if (c >= 0) {
                 irq_restore(sr);
                 return c;
@@ -408,21 +345,14 @@ static int poll_char(void)
 }
 
 /*
- * One character, waiting for it.
- *
- * Sleeps rather than spins. The UART and the keyboard are still POLLED
- * -- neither interrupt is enabled -- so what wakes this is the timer,
- * through tty_poll_signals(); the saving is not in how the character is
- * noticed but in what the processor does while there is none, which is
- * now "run something else" rather than "ask again".
- *
- * Returns -EINTR if a signal arrived instead of a character, which is
- * what makes ctrl-C reach a program blocked on a read.
+ * One character, waiting for it. Sleeps rather than spins; the timer
+ * wakes it through tty_poll_signals(). -EINTR if a signal arrived
+ * instead, which is what makes ctrl-C reach a blocked read.
  */
-static int next_char(void)
+static int next_char(struct tty *t)
 {
     for (;;) {
-        int c = poll_char();
+        int c = poll_char(t);
 
         if (c >= 0) {
             return c;
@@ -430,93 +360,61 @@ static int next_char(void)
         if (signal_pending(current)) {
             return -EINTR;
         }
-        /* A tenth of a second, so that a lost wakeup costs a small
-         * delay rather than a hang. */
-        sleep_on_timeout(&input_wait, 100);
+        sleep_on_timeout(&t->wait, 100);
     }
 }
 
-/*
- * Is this one of the characters that means something rather than being
- * one? Returns the signal it raised, or 0.
- *
- * The check is here and not in the two read paths because it has to
- * happen identically in both: a program that put the terminal in raw
- * mode to do its own line editing still expects ctrl-C to work, which
- * is exactly how a real terminal behaves -- readline clears ICANON and
- * ECHO and deliberately leaves ISIG alone.
- */
-/* The signal this character means, if it means one; 0 if not. */
-static int signal_of(int c)
+/* The signal this character means, if it means one; 0 if not. Checked
+ * in both read paths, because a program in raw mode (readline clears
+ * ICANON and ECHO but leaves ISIG) still expects ctrl-C. */
+static int signal_of(struct tty *t, int c)
 {
-    if (!(tio.c_lflag & ISIG)) {
+    if (!(t->tio.c_lflag & ISIG)) {
         return 0;
     }
-    if (tio.c_cc[VINTR] && c == tio.c_cc[VINTR]) {
+    if (t->tio.c_cc[VINTR] && c == t->tio.c_cc[VINTR]) {
         return SIGINT;
     }
-    if (tio.c_cc[VSUSP] && c == tio.c_cc[VSUSP]) {
+    if (t->tio.c_cc[VSUSP] && c == t->tio.c_cc[VSUSP]) {
         return SIGTSTP;
     }
     return 0;
 }
 
-static int signal_char(int c)
+/* To this terminal's foreground group. Called from a reader, which has
+ * dealt with the key, so nothing is left pending. */
+static int signal_char(struct tty *t, int c)
 {
-    int sig = signal_of(c);
+    int sig = signal_of(t, c);
 
     if (!sig) {
         return 0;
     }
-
-    /*
-     * To the foreground task, whoever that is. A background task is
-     * unaffected -- it is not connected to this keyboard in the sense
-     * that matters -- and that is the entire semantic difference between
-     * a job started with & and one without.
-     *
-     * Called from a READER, which is what has now dealt with the key:
-     * nothing is left pending for anybody else (see pending_sig).
-     */
-    signal_group(fg_pgrp, sig);
-    pending_sig = 0;
+    signal_group(t->fg_pgrp, sig);
+    t->pending_sig = 0;
     return sig;
 }
 
-/*
- * Raw mode: whatever has arrived, as soon as anything has.
- *
- * VMIN 1 and VTIME 0, which is the setting a line editor uses and the
- * only one worth implementing without a scheduler to time out against.
- * More than one character comes back at a time when more than one is
- * waiting, so a paste does not cost a system call per byte.
- */
-static s32 tty_read_raw(u8 *out, u32 len)
+static s32 tty_read_raw(struct tty *t, u8 *out, u32 len)
 {
     u32 n = 0;
 
     for (;;) {
-        int c = (n == 0) ? next_char() : poll_char();
+        int c = (n == 0) ? next_char(t) : poll_char(t);
 
         if (c < 0) {
-            break;              /* nothing more waiting */
+            break;
         }
         if (c == -EINTR) {
             return n > 0 ? (s32)n : -EINTR;
         }
-        if (signal_char(c)) {
-            /*
-             * EINTR, exactly as a real read returns when a signal
-             * arrives, and for the same reason: the caller has to find
-             * out that something happened rather than sit waiting for a
-             * character that was never meant as one.
-             */
+        if (signal_char(t, c)) {
             return n > 0 ? (s32)n : -EINTR;
         }
-        if (c == '\r' && (tio.c_iflag & ICRNL)) {
+        if (c == '\r' && (t->tio.c_iflag & ICRNL)) {
             c = '\n';
         }
-        echo(c);
+        echo(t, c);
         out[n++] = (u8)c;
         if (n == len) {
             break;
@@ -525,217 +423,194 @@ static s32 tty_read_raw(u8 *out, u32 len)
     return (s32)n;
 }
 
-/*
- * Canonical mode: one line, echoed as it is typed, 0 at end of input.
- *
- * Echo goes to the sinks, not back to the source. That is the whole
- * reason this code moved out of the UART driver: what you type has to
- * appear on the screen you are looking at, which is not necessarily the
- * wire the character arrived on.
- */
-static s32 tty_read_canon(u8 *out, u32 len)
+static s32 tty_read_canon(struct tty *t, u8 *out, u32 len)
 {
     u32 n = 0;
 
     for (;;) {
-        int c = next_char();
+        int c = next_char(t);
 
-        if (c == -EINTR || signal_char(c)) {
+        if (c == -EINTR || signal_char(t, c)) {
             return -EINTR;
         }
-
-        if (c == '\r' && (tio.c_iflag & ICRNL)) {
+        if (c == '\r' && (t->tio.c_iflag & ICRNL)) {
             c = '\n';
         }
-
-        if (tio.c_cc[VEOF] && c == tio.c_cc[VEOF]) {
-            /* End of input only on an empty line, as a real terminal
-             * does it; mid-line it submits what has been typed. */
-            return (s32)n;
+        if (t->tio.c_cc[VEOF] && c == t->tio.c_cc[VEOF]) {
+            return (s32)n;              /* end of input on an empty line */
         }
-
-        if ((tio.c_cc[VERASE] && c == tio.c_cc[VERASE]) || c == '\b') {
+        if ((t->tio.c_cc[VERASE] && c == t->tio.c_cc[VERASE]) || c == '\b') {
             if (n > 0) {
                 n--;
-                if (tio.c_lflag & ECHO) {
-                    sink_write("\b \b", 3);
+                if (t->tio.c_lflag & ECHO) {
+                    out_write(t, "\b \b", 3);
                 }
             }
             continue;
         }
-
-        if (tio.c_cc[VKILL] && c == tio.c_cc[VKILL]) {
+        if (t->tio.c_cc[VKILL] && c == t->tio.c_cc[VKILL]) {
             while (n > 0) {
                 n--;
-                if (tio.c_lflag & ECHO) {
-                    sink_write("\b \b", 3);
+                if (t->tio.c_lflag & ECHO) {
+                    out_write(t, "\b \b", 3);
                 }
             }
             continue;
         }
-
         if (c == '\n') {
             out[n++] = '\n';
-            echo('\n');
+            echo(t, '\n');
             return (s32)n;
         }
-
         if (c < 32 || c == 127) {
-            continue;                   /* other controls are not input;
-                                         * bytes above 127 are UTF-8 */
+            continue;                   /* controls are not input; >127
+                                         * is UTF-8 */
         }
-
         if (n < len) {
             out[n++] = (u8)c;
-            echo(c);
+            echo(t, c);
             if (n == len) {
-                return (s32)n;          /* the caller's buffer is full */
+                return (s32)n;
             }
         }
-        /* Otherwise refuse the character rather than overrun. */
     }
 }
 
 static s32 tty_read(struct file *f, void *buf, u32 len)
 {
+    struct tty *t = tty_of(f);
     int err;
 
-    (void)f;
-    if (len == 0) {
+    if (!t || len == 0) {
         return 0;
     }
-    err = may_read();
+    err = may_read(t);
     if (err < 0) {
         return err;
     }
-    if (tio.c_lflag & ICANON) {
-        return tty_read_canon(buf, len);
+    if (t->tio.c_lflag & ICANON) {
+        return tty_read_canon(t, buf, len);
     }
-    return tty_read_raw(buf, len);
+    return tty_read_raw(t, buf, len);
 }
 
 /* ---------------------------------------------------------------- */
-/* The tick's look for a ctrl-C                                      */
+/* Interrupt-driven input and the tick                               */
 /* ---------------------------------------------------------------- */
 
-/*
- * Called from the timer interrupt while a program is running.
- *
- * A program that is reading will see its own ctrl-C and this never
- * runs. A program that is drawing a cube forever and reading nothing
- * would otherwise be uninterruptible, and on a machine with one console
- * that means the only way out is killing the emulator -- which is
- * precisely what ctrl-C is supposed to prevent.
- *
- * It takes at most one character per tick and pushes back anything that
- * is not a signal, so ordinary typed-ahead input survives untouched.
- */
-/*
- * Called from the timer interrupt.
- *
- * Two jobs. It looks for an interrupt or stop character, so that a
- * program making no system calls can still be stopped -- and it wakes
- * anything sleeping for input, because the UART and the keyboard are
- * polled and nothing else would.
- */
-/*
- * Called from a source's receive interrupt. Takes EVERYTHING waiting
- * from every interrupt-driven source: the chip's interrupt input is an
- * edge on the MFP, and a character left behind would keep the line high
- * and never make another. ctrl-C and ctrl-Z are acted on here, at once,
- * rather than at the next tick; everything else goes in the ring.
- */
-void tty_input_irq(void)
+/* Drain every interrupt-driven source of ONE terminal into its ring,
+ * acting on ctrl-C/ctrl-Z as it goes. The chip's interrupt is an edge:
+ * a character left behind holds the line high and never makes another,
+ * so this takes everything. */
+static void drain_irq(struct tty *t)
 {
-    int i;
-    int got = 0;
+    int i, got = 0;
 
-    for (i = 0; i < nsources; i++) {
-        struct chardev *d = sources[i];
+    for (i = 0; i < t->nsrc; i++) {
+        struct chardev *d = t->src[i];
         int n;
 
-        if (!source_irq[i]) {
+        if (!t->src_irq[i]) {
             continue;
         }
         for (n = 0; n < 4096 && source_ready(d); n++) {
-            int c;
+            int c, sig;
 
-            /*
-             * FULL: stop, and leave the rest in the chip. The chip's
-             * FIFO filling is what makes the sender wait -- QEMU's
-             * serial model will not deliver into a full FIFO, and a
-             * real line has flow control for exactly this -- whereas a
-             * character taken and then dropped is gone. The line stays
-             * high, so no edge will come: poll_char() resumes the drain
-             * when a reader makes room.
-             */
-            if (in_head - in_tail >= IN_RING) {
-                in_stalled = 1;
+            if (t->head - t->tail >= IN_RING) {
+                t->stalled = 1;         /* full: leave the rest in the chip */
                 break;
             }
             c = source_get(d);
             if (c < 0) {
                 break;
             }
-            /*
-             * ctrl-C and ctrl-Z act NOW when there is a program to act
-             * on. When there is not -- the foreground group is the
-             * shell's -- the character goes in the ring for whoever
-             * reads next, as it would have been read before input was
-             * interrupt-driven: the shell's line editor sees it and
-             * abandons its line. It is also kept as pending_sig, in
-             * case what reads next is not the shell but the terminal
-             * being handed to a job the shell was starting.
-             */
-            {
-                int sig = signal_of(c);
-
-                if (sig) {
-                    if (signal_group(fg_pgrp, sig) == 0) {
-                        continue;
-                    }
-                    pending_sig = sig;
+            /* ctrl-C/ctrl-Z act NOW if a program is in the foreground;
+             * otherwise the character goes in the ring for the reader
+             * (the shell's editor abandons its line) and is kept as
+             * pending_sig for a job the shell is about to start. */
+            sig = signal_of(t, c);
+            if (sig) {
+                if (signal_group(t->fg_pgrp, sig) == 0) {
+                    continue;
                 }
+                t->pending_sig = sig;
             }
-            in_ring[in_head % IN_RING] = (u8)c;
-            in_head++;
+            t->ring[t->head % IN_RING] = (u8)c;
+            t->head++;
             got = 1;
         }
     }
     if (got) {
-        wake_all(&input_wait);
+        wake_all(&t->wait);
         poll_wake();
     }
 }
 
+/* Called from a source's receive interrupt: the driver passes its own
+ * device, and this drains that device's terminal. */
+void tty_input_irq(struct chardev *d)
+{
+    struct tty *t = tty_for_dev(d);
+
+    if (t) {
+        drain_irq(t);
+    }
+}
+
+/* Called from the timer. For each terminal, look for a ctrl-C on its
+ * non-interrupt sources, and wake anything waiting for input. */
 void tty_poll_signals(void)
 {
-    int c;
+    int k;
 
-    /*
-     * Only the sources with no interrupt: the ring is already a reader's
-     * business, and taking a ctrl-C out of it here would swallow one
-     * the shell's editor was meant to see.
-     */
-    if (pushback < 0) {
-        u16 sr = irq_save();
-        int i;
+    for (k = 0; k < NTTY; k++) {
+        struct tty *t = ttys[k];
+        int c, i;
 
-        c = -1;
-        for (i = 0; i < nsources && c < 0; i++) {
-            if (!source_irq[i] && source_ready(sources[i])) {
-                c = source_get(sources[i]);
+        if (t->pushback < 0) {
+            u16 sr = irq_save();
+
+            c = -1;
+            for (i = 0; i < t->nsrc && c < 0; i++) {
+                if (!t->src_irq[i] && source_ready(t->src[i])) {
+                    c = source_get(t->src[i]);
+                }
+            }
+            irq_restore(sr);
+            if (c >= 0 && !signal_char(t, c)) {
+                t->pushback = c;
             }
         }
-        irq_restore(sr);
-        if (c >= 0 && !signal_char(c)) {
-            pushback = c;
+        if (t->pushback >= 0 || any_ready(t)) {
+            wake_all(&t->wait);
+            poll_wake();
         }
     }
+}
 
-    if (pushback >= 0 || any_ready()) {
-        wake_all(&input_wait);
-        poll_wake();            /* a program in poll() or select() too */
+/* ---------------------------------------------------------------- */
+/* Size                                                              */
+/* ---------------------------------------------------------------- */
+
+/*
+ * This terminal's size. A self-sizing output (the framebuffer) is asked
+ * every time, so it is always the screen's real geometry; otherwise the
+ * assumed size, which TIOCSWINSZ (stty/resize) sets. No min of two
+ * outputs any more -- each terminal has exactly one.
+ */
+static void get_ws(struct tty *t, struct winsize *out)
+{
+    *out = t->ws;
+    if (t->selfsize && t->out && t->out->ops->ioctl) {
+        struct file f;
+        struct winsize w;
+
+        as_file(&f, t->out);
+        memset(&w, 0, sizeof(w));
+        if (t->out->ops->ioctl(&f, TIOCGWINSZ, (u32)&w) == 0 &&
+            w.ws_row && w.ws_col) {
+            *out = w;
+        }
     }
 }
 
@@ -743,198 +618,62 @@ void tty_poll_signals(void)
 /* ioctl                                                             */
 /* ---------------------------------------------------------------- */
 
-/* ---------------------------------------------------------------- */
-/* Size                                                              */
-/* ---------------------------------------------------------------- */
-
-/*
- * The serial line's size. A terminal on a wire cannot say how big it
- * is, so it is a VT100's 24x80 until TIOCSWINSZ -- `stty rows`, or
- * `resize`, which asks the terminal -- says otherwise.
- */
-static struct winsize line_ws = { 24, 80, 0, 0 };
-
-/*
- * What a program is told: the smallest of the enabled outputs, because
- * a full-screen program has to fit on every one of them at once. A sink
- * that knows its own size answers TIOCGWINSZ (the screen does); one
- * that does not counts as the line.
- */
-static void effective_ws(struct winsize *out)
-{
-    struct winsize w[TTY_MAX_SINKS], best;
-    int i, n = 0;
-
-    for (i = 0; i < nsinks; i++) {
-        struct file f;
-
-        if (!sinks[i].enabled) {
-            continue;
-        }
-        as_file(&f, sinks[i].dev);
-        memset(&w[n], 0, sizeof(w[n]));
-        if (!sinks[i].dev->ops->ioctl ||
-            sinks[i].dev->ops->ioctl(&f, TIOCGWINSZ, (u32)&w[n]) < 0 ||
-            w[n].ws_row == 0 || w[n].ws_col == 0) {
-            w[n] = line_ws;
-        }
-        n++;
-    }
-    if (n == 0) {
-        *out = line_ws;
-        return;
-    }
-
-    best = w[0];
-    for (i = 1; i < n; i++) {
-        if (w[i].ws_row < best.ws_row) {
-            best.ws_row = w[i].ws_row;
-        }
-        if (w[i].ws_col < best.ws_col) {
-            best.ws_col = w[i].ws_col;
-        }
-    }
-    /* Pixels only when one output is exactly the size chosen; a
-     * mixture of two outputs' dimensions is not the size of anything. */
-    best.ws_xpixel = best.ws_ypixel = 0;
-    for (i = 0; i < n; i++) {
-        if (w[i].ws_row == best.ws_row && w[i].ws_col == best.ws_col) {
-            best.ws_xpixel = w[i].ws_xpixel;
-            best.ws_ypixel = w[i].ws_ypixel;
-            break;
-        }
-    }
-    *out = best;
-}
-
-/* Tell the foreground if something just changed what it would be told. */
-static void winch_if_changed(const struct winsize *before)
-{
-    struct winsize after;
-
-    effective_ws(&after);
-    if (after.ws_row != before->ws_row || after.ws_col != before->ws_col) {
-        signal_group(fg_pgrp, SIGWINCH);
-    }
-}
-
 static int tty_ioctl(struct file *f, u32 request, u32 arg)
 {
-    (void)f;
+    struct tty *t = tty_of(f);
 
+    if (!t) {
+        return -ENOTTY;
+    }
     switch (request) {
     case FIONREAD:
         if (arg) {
-            *(u32 *)arg = any_ready() ? 1 : 0;
+            *(u32 *)arg = any_ready(t) ? 1 : 0;
         }
         return 0;
 
-    /*
-     * Which devices the console is made of, and turning one off.
-     *
-     * Here rather than in the shell because this is the only thing that
-     * knows: the lists are private to this file, and a program asking
-     * where its output goes should be asking the terminal, not reaching
-     * into the kernel for a list it happens to be able to see.
-     */
-    /*
-     * The foreground group, as tcgetpgrp() and tcsetpgrp() see it. A
-     * group must have a member to be given the terminal; handing it to
-     * nobody would leave ctrl-C going nowhere.
-     */
     case TIOCGPGRP:
-        *(int *)arg = fg_pgrp;
+        *(int *)arg = t->fg_pgrp;
         return 0;
 
     case TIOCSPGRP: {
         int pg = *(int *)arg;
-        struct task *t;
+        struct task *task;
         int i;
 
-        for (i = 0; (t = task_nth(i)) != 0; i++) {
-            if (t->pgid == pg && t->state != TASK_ZOMBIE) {
-                /*
-                 * tty_set_foreground, not a bare fg_pgrp = pg, because
-                 * taking the terminal must also HAND OVER a ctrl-C that
-                 * landed in pending_sig while nobody had it. The shell
-                 * is a kernel task and takes no signals, so a ctrl-C
-                 * typed while it is between jobs -- setting up a
-                 * pipeline, say -- is not delivered to it; it waits in
-                 * pending_sig for whoever gets the terminal next. When
-                 * the shell then made a job the foreground group by
-                 * routing through this ioctl, a bare assignment left
-                 * that ctrl-C stuck, and a foreground pipeline that
-                 * should have died on it hung instead. tcsetpgrp(3)
-                 * from a program gets the same, correct, behaviour.
-                 */
-                tty_set_foreground(pg);
+        for (i = 0; (task = task_nth(i)) != 0; i++) {
+            if (task->pgid == pg && task->state != TASK_ZOMBIE) {
+                /* set_foreground, not a bare assignment: taking the
+                 * terminal hands over a ctrl-C that landed in
+                 * pending_sig while no group had it (the shell is a
+                 * kernel task and takes no signals). Without this a
+                 * foreground pipeline that should die on ctrl-C hangs. */
+                set_foreground(t, pg);
                 return 0;
             }
         }
         return -EPERM;
     }
 
-    case TIOCGCONS: {
-        struct console_info *ci = (struct console_info *)arg;
-        struct chardev *d;
-
-        if (!ci) {
-            return -EINVAL;
-        }
-        if (ci->which == CONS_SINK) {
-            if (ci->index < 0 || ci->index >= nsinks) {
-                return -ENOENT;
-            }
-            d = sinks[ci->index].dev;
-            ci->enabled = sinks[ci->index].enabled;
-        } else if (ci->which == CONS_SOURCE) {
-            if (ci->index < 0 || ci->index >= nsources) {
-                return -ENOENT;
-            }
-            d = sources[ci->index];
-            /* A source is never off. Silently ignoring a keystroke
-             * somebody typed is not a state worth being able to reach. */
-            ci->enabled = 1;
-        } else {
-            return -EINVAL;
-        }
-        strncpy(ci->name, d->name, sizeof(ci->name) - 1);
-        ci->name[sizeof(ci->name) - 1] = '\0';
-        return 0;
-    }
-
-    case TIOCSCONS: {
-        const struct console_set *cs = (const struct console_set *)arg;
-        struct winsize before;
-        int err;
-
-        if (!cs) {
-            return -EINVAL;
-        }
-        effective_ws(&before);
-        err = tty_sink_enable(cs->name, cs->on);
-        if (err == 0) {
-            winch_if_changed(&before);
-        }
-        return err;
-    }
-
     case TIOCGWINSZ:
         if (!arg) {
             return -EINVAL;
         }
-        effective_ws((struct winsize *)arg);
+        get_ws(t, (struct winsize *)arg);
         return 0;
 
     case TIOCSWINSZ: {
-        struct winsize before;
+        struct winsize before, after;
 
         if (!arg) {
             return -EINVAL;
         }
-        effective_ws(&before);
-        line_ws = *(const struct winsize *)arg;
-        winch_if_changed(&before);
+        get_ws(t, &before);
+        t->ws = *(const struct winsize *)arg;
+        get_ws(t, &after);
+        if (after.ws_row != before.ws_row || after.ws_col != before.ws_col) {
+            signal_group(t->fg_pgrp, SIGWINCH);
+        }
         return 0;
     }
 
@@ -942,18 +681,16 @@ static int tty_ioctl(struct file *f, u32 request, u32 arg)
         if (!arg) {
             return -EINVAL;
         }
-        *(struct termios *)arg = tio;
+        *(struct termios *)arg = t->tio;
         return 0;
 
-    /* The termios2 forms: the same settings, plus two speeds that are
-     * reported as 38400 and not changed by setting them. */
     case TCGETS2: {
         struct termios2 *t2 = (struct termios2 *)arg;
 
         if (!t2) {
             return -EINVAL;
         }
-        memcpy(t2, &tio, sizeof(tio));
+        memcpy(t2, &t->tio, sizeof(t->tio));
         t2->c_ispeed = t2->c_ospeed = 38400;
         return 0;
     }
@@ -961,22 +698,19 @@ static int tty_ioctl(struct file *f, u32 request, u32 arg)
     case TCSETS2:
     case TCSETSW2:
     case TCSETSF2: {
-        struct termios t;
+        struct termios tt;
 
         if (!arg) {
             return -EINVAL;
         }
-        memcpy(&t, (const void *)arg, sizeof(t));
-        return tty_ioctl(f, request == TCSETSF2 ? TCSETSF : TCSETS, (u32)&t);
+        memcpy(&tt, (const void *)arg, sizeof(tt));
+        return tty_ioctl(f, request == TCSETSF2 ? TCSETSF : TCSETS, (u32)&tt);
     }
 
     case TCSETSF:
-        /* Throw away anything typed ahead, which is what the F is for:
-         * a program switching modes does not want the previous mode's
-         * leftovers interpreted under the new rules. */
-        pushback = -1;
-        while (any_ready()) {
-            (void)poll_char();
+        t->pushback = -1;
+        while (any_ready(t)) {
+            (void)poll_char(t);
         }
         /* fall through */
     case TCSETS:
@@ -984,7 +718,7 @@ static int tty_ioctl(struct file *f, u32 request, u32 arg)
         if (!arg) {
             return -EINVAL;
         }
-        tio = *(const struct termios *)arg;
+        t->tio = *(const struct termios *)arg;
         return 0;
 
     default:
@@ -998,11 +732,6 @@ static int tty_close(struct file *f)
     return 0;                   /* the terminal outlives every descriptor */
 }
 
-
-/*
- * A character device has no size and no meaningful time; what a caller
- * actually wants from this is S_ISCHR, which is how isatty() is built.
- */
 static int tty_fstat(struct file *f, struct stat *st)
 {
     (void)f;
@@ -1014,47 +743,53 @@ static int tty_fstat(struct file *f, struct stat *st)
 }
 
 static const struct file_ops tty_ops = {
-    tty_read,
-    tty_write,
-    0,                          /* a terminal is not seekable */
-    tty_ioctl,
-    tty_close,
-    tty_fstat,
-    0,                          /* poll: the default; see dev.h */
-    0,                          /* truncate: nothing to truncate */
-    0,                          /* mmap: not memory to map */
+    tty_read, tty_write, 0, tty_ioctl, tty_close, tty_fstat, 0, 0, 0,
 };
 
 /* ---------------------------------------------------------------- */
-/* Registration                                                      */
+/* Registration and wiring                                           */
 /* ---------------------------------------------------------------- */
 
 int tty_add_source(struct chardev *d)
 {
+    struct tty *t = tty_for_dev(d);
+
     if (!d || !d->ops || !d->ops->read) {
         return -EINVAL;
     }
-    if (nsources == TTY_MAX_SOURCES) {
+    if (t->nsrc == TTY_SRC_MAX) {
         return -ENOSPC;
     }
-    source_irq[nsources] = 0;
-    sources[nsources++] = d;
+    t->src_irq[t->nsrc] = 0;
+    t->src[t->nsrc++] = d;
+    return 0;
+}
+
+int tty_add_sink(struct chardev *d)
+{
+    struct tty *t = tty_for_dev(d);
+
+    if (!d || !d->ops || !d->ops->write) {
+        return -EINVAL;
+    }
+    t->out = d;                 /* one output; no fan-out, no mirroring */
     return 0;
 }
 
 int tty_source_irq(struct chardev *d)
 {
+    struct tty *t = tty_for_dev(d);
     int i;
 
-    for (i = 0; i < nsources; i++) {
-        if (sources[i] == d) {
-            source_irq[i] = 1;
-            /* Anything that arrived before the interrupt was on would
-             * hold the line high and never make an edge: take it now. */
+    for (i = 0; i < t->nsrc; i++) {
+        if (t->src[i] == d) {
+            t->src_irq[i] = 1;
+            /* Anything that arrived before the interrupt was on holds
+             * the line high and makes no edge: take it now. */
             {
                 u16 sr = irq_save();
 
-                tty_input_irq();
+                drain_irq(t);
                 irq_restore(sr);
             }
             return 0;
@@ -1065,118 +800,103 @@ int tty_source_irq(struct chardev *d)
 
 u32 tty_overruns(void)
 {
-    return in_overruns;
+    return tty_screen.overruns + tty_serial.overruns;
 }
 
-int tty_add_sink(struct chardev *d)
+/* Reporting, for the boot banner: each terminal, its output and its
+ * sources. index runs over (terminal, kind) pairs. */
+struct chardev *tty_nth(int index, const char **ttyname, int *is_source)
 {
-    if (!d || !d->ops || !d->ops->write) {
-        return -EINVAL;
-    }
-    if (nsinks == TTY_MAX_SINKS) {
-        return -ENOSPC;
-    }
-    sinks[nsinks].dev = d;
-    sinks[nsinks].enabled = 1;
-    nsinks++;
-    return 0;
-}
+    int k, i, seen = 0;
 
-int tty_sink_enable(const char *name, int on)
-{
-    int i, others = 0;
+    for (k = 0; k < NTTY; k++) {
+        struct tty *t = ttys[k];
 
-    for (i = 0; i < nsinks; i++) {
-        if (strcmp(sinks[i].dev->name, name) != 0 && sinks[i].enabled) {
-            others++;
-        }
-    }
-    for (i = 0; i < nsinks; i++) {
-        if (strcmp(sinks[i].dev->name, name) == 0) {
-            /*
-             * Refuse to turn off the last one. A machine with no console
-             * output is one that cannot tell you why, and getting there
-             * by typing one command would be an easy mistake to make.
-             */
-            if (!on && others == 0) {
-                return -EBUSY;
+        if (t->out) {
+            if (seen++ == index) {
+                *ttyname = t->name; *is_source = 0; return t->out;
             }
-            sinks[i].enabled = on ? 1 : 0;
-            return 0;
+        }
+        for (i = 0; i < t->nsrc; i++) {
+            if (seen++ == index) {
+                *ttyname = t->name; *is_source = 1; return t->src[i];
+            }
         }
     }
-    return -ENODEV;
-}
-
-struct chardev *tty_sink(int index, int *enabled)
-{
-    if (index < 0 || index >= nsinks) {
-        return 0;
-    }
-    if (enabled) {
-        *enabled = sinks[index].enabled;
-    }
-    return sinks[index].dev;
-}
-
-struct chardev *tty_source(int index)
-{
-    if (index < 0 || index >= nsources) {
-        return 0;
-    }
-    return sources[index];
+    return 0;
 }
 
 struct chardev *tty_device(void)
 {
-    return &tty_dev;
+    return &tty_serial.dev;     /* /dev/console: the serial line */
 }
 
 /*
- * Put the terminal back the way a shell hands it to a program.
- *
- * Used after a program exits, because a program that set raw mode and
- * was then killed by ctrl-C never got the chance to put it back -- and a
- * console left in raw mode with echo off looks exactly like a machine
- * that has crashed.
+ * Put a terminal back the way a shell hands it to a program, after one
+ * that set raw mode was killed before restoring it. Resets the terminal
+ * of the given descriptor.
  */
-void tty_reset(void)
+void tty_reset_fd(int fd)
 {
-    tio.c_iflag = ICRNL;
-    tio.c_oflag = OPOST | ONLCR;
-    tio.c_lflag = ISIG | ICANON | ECHO;
+    struct file *f = fd_get(fd);
+    struct tty *t = f ? tty_of(f) : 0;
+
+    if (t && f->ops == &tty_ops) {
+        t->tio.c_iflag = ICRNL;
+        t->tio.c_oflag = OPOST | ONLCR;
+        t->tio.c_lflag = ISIG | ICANON | ECHO;
+    }
+}
+
+static void register_tty(struct tty *t)
+{
+    t->dev.name = t->name;
+    t->dev.ops = &tty_ops;
+    t->dev.priv = t;
+    t->dev.next = 0;
+    dev_register_char(&t->dev);
 }
 
 int tty_init(void)
 {
-    int err;
+    tty_screen.pushback = -1;
+    tty_serial.pushback = -1;
 
-    tty_dev.name = "console";
-    tty_dev.ops = &tty_ops;
-    tty_dev.priv = 0;
-    tty_dev.next = 0;
+    register_tty(&tty_screen);          /* /dev/tty1  */
+    register_tty(&tty_serial);          /* /dev/console */
 
-    err = dev_register_char(&tty_dev);
-    if (err < 0) {
-        return err;
-    }
-
-    /* A second name for the same terminal. They differ on a real system;
-     * here there is one, and pretending otherwise would be a lie with no
-     * payoff. */
-    tty_alias.name = "tty";
-    tty_alias.ops = &tty_ops;
-    tty_alias.priv = 0;
-    tty_alias.next = 0;
-    dev_register_char(&tty_alias);
-
-    console_set(&tty_dev);
-
-    /* Descriptors 0, 1 and 2 are the terminal, bound before anything can
-     * try to use them, exactly as a shell would inherit them. They never
-     * move again: what changes is which sinks the terminal writes to. */
-    fd_bind(0, &tty_ops, 0, O_RDONLY);
-    fd_bind(1, &tty_ops, 0, O_WRONLY);
-    fd_bind(2, &tty_ops, 0, O_WRONLY);
+    /*
+     * Kernel messages and the boot task's descriptors go to the SERIAL
+     * line -- that is where a headless machine and every test watches,
+     * and it is up before the screen. The screen's getty rebinds its
+     * own descriptors when it starts.
+     */
+    console_set(&tty_serial.dev);
+    fd_bind(0, &tty_ops, &tty_serial, O_RDONLY);
+    fd_bind(1, &tty_ops, &tty_serial, O_WRONLY);
+    fd_bind(2, &tty_ops, &tty_serial, O_WRONLY);
     return 0;
+}
+
+/* Bind the current task's standard descriptors to a named terminal --
+ * how a getty attaches to the line it serves. Returns -ENODEV if there
+ * is no such terminal. */
+int tty_attach(const char *name)
+{
+    int k;
+
+    for (k = 0; k < NTTY; k++) {
+        if (strcmp(ttys[k]->name, name) == 0) {
+            fd_bind(0, &tty_ops, ttys[k], O_RDONLY);
+            fd_bind(1, &tty_ops, ttys[k], O_WRONLY);
+            fd_bind(2, &tty_ops, ttys[k], O_WRONLY);
+            /* Become this terminal's foreground group, so the getty and
+             * the login it spawns may read it without SIGTTIN. */
+            if (current) {
+                set_foreground(ttys[k], current->pgid);
+            }
+            return 0;
+        }
+    }
+    return -ENODEV;
 }

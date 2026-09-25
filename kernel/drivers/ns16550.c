@@ -174,7 +174,7 @@ int ns16550_present(void)
 static void serial_isr(void *arg)
 {
     (void)arg;
-    tty_input_irq();
+    tty_input_irq(&serial_dev);
     /* Reading RBR until LSR says empty is what drops INT; the IIR read
      * is for form -- it is how a real driver learns why, and the chip
      * expects it. */
