@@ -44,7 +44,18 @@ install: all $(DISK)
 	    while read d; do $(ABS_FSIMG) mkdir /usr/$$d; done
 	@cd $(OUT) && find . -type f -not -path './share/*' | sed 's|^\./||' | \
 	    while read f; do $(ABS_FSIMG) put -m 755 $$f /usr/$$f || exit 1; done
-	@echo "gcc is on $(DISK) at /usr"
+	@# Make `gcc hello.c -o hello` work with no -specs= flag. gcc reads a
+	@# file named `specs` in its own version directory at startup and lets
+	@# it override the built-in specs; without it the driver reaches for a
+	@# hosted GCC's crtbegin.o/crtend.o, which this system does not have,
+	@# and even a link that found them would want Linux program startup the
+	@# bare machine cannot run. Same content as /usr/lib/sage040.specs.
+	@vdir=$$(cd $(OUT) && find lib/gcc -mindepth 2 -maxdepth 2 -type d | head -1); \
+	    if [ -z "$$vdir" ]; then \
+	        echo "gcc install: no lib/gcc/<target>/<version> directory" >&2; exit 1; \
+	    fi; \
+	    $(ABS_FSIMG) put $(abspath $(TOPDIR)/libc/sage040.specs) /usr/$$vdir/specs
+	@echo "gcc is on $(DISK) at /usr; plain 'gcc hello.c -o hello' works, no -specs= flag"
 
 clean:
 	rm -rf $(OUT)

@@ -166,6 +166,14 @@ fsimg put "$("$CROSS_CC" -mcpu=68040 -print-libgcc-file-name)" /usr/lib/
 fsimg put ../libc/crt0.o ../libc/crt0-dyn.o /usr/lib/
 fsimg put ../libc/sage040.ld /usr/lib/
 fsimg put ../libc/sage040.specs /usr/lib/
+# And as the specs file gcc reads at startup, in its own version dir, so
+# a plain `gcc hello.c -o hello` with no -specs= flag works too -- which
+# is what somebody at the prompt actually types. (This is exactly what
+# `make -C ports/gcc install` does for the real disk.)
+gcc_vdir=$(cd "$GCCOUT" && find lib/gcc -mindepth 2 -maxdepth 2 -type d | head -1)
+if [ -n "$gcc_vdir" ]; then
+    fsimg put ../libc/sage040.specs "/usr/$gcc_vdir/specs"
+fi
 for f in hello maths part1 part2; do
     fsimg put "$WORK/$f.c" /ST/$f.c
 done
@@ -199,6 +207,9 @@ sleep "$BOOT_WAIT"
 run 'cd /ST' cd
 run 'gcc --version > /ST/ver.out 2>&1'                       ver
 run 'as --version > /ST/asver.out 2>&1'                      asver
+echo "    compiling hello.c with a plain 'gcc' -- no -specs= flag ..."
+run 'gcc hello.c -o hello0 > /ST/c0.out 2>&1' c0
+run './hello0 > /ST/run0.out 2>&1'                           r0
 echo "    compiling hello.c on the machine..."
 run 'gcc -specs=/usr/lib/sage040.specs hello.c -o hello > /ST/c1.out 2>&1' c1
 run './hello > /ST/run1.out 2>&1'                            r1
@@ -223,9 +234,9 @@ rm -f "$SCRATCH/native.fifo"
 tr -d '\r' < "$LOG" > "$WORK/session.txt"
 
 get() { fsimg get /ST/$1 $WORK/$1 2>/dev/null; }
-for f in ver.out asver.out c1.out c2.out c3.out c4.out c5.out \
-         run1.out run2.out run3.out ls.out \
-         hello maths parts hello.native.o maths.native.o; do
+for f in ver.out asver.out c0.out c1.out c2.out c3.out c4.out c5.out \
+         run0.out run1.out run2.out run3.out ls.out \
+         hello0 hello maths parts hello.native.o maths.native.o; do
     get "$f"
 done
 
@@ -248,6 +259,16 @@ check "the machine compiled and linked hello.c" $?
 
 grep -q "hello from" "$WORK/run1.out" 2>/dev/null
 check "  and the program it produced RUNS" $?
+
+# The plain `gcc hello.c -o hello0` -- no -specs= flag -- has to work
+# too, because that is what a person and every configure script type.
+# It reads the specs file in gcc's own version directory. Without it the
+# driver reaches for a hosted GCC's crtbegin.o and the link fails with
+# "cannot find crtbegin.o".
+! grep -q "crtbegin" "$WORK/c0.out" 2>/dev/null
+check "plain 'gcc hello.c -o hello' finds its start files -- no -specs= flag" $?
+test -s "$WORK/hello0" && grep -q "hello from" "$WORK/run0.out" 2>/dev/null
+check "  and the program it built with no flags RUNS" $?
 
 grep -q "fib(90)=2880067194370816120" "$WORK/run2.out" 2>/dev/null
 check "64-bit arithmetic in a natively compiled program is right" $?
