@@ -65,6 +65,20 @@ int main(int argc, char **argv)
             putdec((u32)i + 1);
             puts(")\n");
         }
+
+        /*
+         * One packet a second, like every other ping. Without this the
+         * whole count went out in a single burst -- four "replies" in a
+         * tenth of a second, which is not what ping means by four pings.
+         * No wait after the last one: nothing follows it.
+         */
+        if (i + 1 < count) {
+            struct timespec ts;
+
+            ts.tv_sec = 1;
+            ts.tv_nsec = 0;
+            nanosleep(&ts, 0);
+        }
     }
 
     puts("\n");
