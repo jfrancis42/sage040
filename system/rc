@@ -41,8 +41,12 @@ export TZ=MST7MDT,M3.2.0,M11.1.0
 # policy here; put a person's settings in their own ~/.profile, which
 # their login shell reads.
 
-# The network, from what /bin/nvram has stored -- `nvram net=dhcp`, or
-# net.ip/net.mask/net.gw for a fixed address. Uncomment when the machine
-# has been told which.
-#
-# ifconfig nvram
+# The network. DHCP by default -- the machine comes up with an address
+# on any LAN that hands one out, which is what a machine on a network is
+# expected to do. For a fixed address instead, replace this with
+# `ifconfig <ip> <mask> [gateway]`. (`ifconfig nvram` would read net=dhcp
+# or net.ip/net.mask/net.gw from /bin/nvram, but this board's NVRAM does
+# not survive a power cycle, so the line written here is the one that
+# sticks.) A boot with no network at all falls through in a few seconds:
+# DHCP gives up after three tries and the prompt appears anyway.
+ifconfig dhcp
