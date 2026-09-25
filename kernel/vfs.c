@@ -1948,14 +1948,26 @@ int vfs_may_parent(const char *path, int want)
     char dir[PATH_MAX];
     struct stat st;
     u32 i, cut = 0;
+    int has_slash = 0;
     int err;
 
     for (i = 0; path[i]; i++) {
         if (path[i] == '/') {
             cut = i;
+            has_slash = 1;
         }
     }
-    if (cut == 0) {
+    if (!has_slash) {
+        /*
+         * A bare name like "abc.txt" -- its parent is the CURRENT
+         * directory, not the root. Getting this wrong checked write
+         * permission on "/" for every relative creation, so a user
+         * could make files in its own home only by absolute path.
+         */
+        dir[0] = '.';
+        dir[1] = '\0';
+    } else if (cut == 0) {
+        /* "/abc" at the top -- the parent is the root. */
         dir[0] = '/';
         dir[1] = '\0';
     } else {

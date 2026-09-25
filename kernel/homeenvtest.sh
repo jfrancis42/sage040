@@ -92,6 +92,15 @@ send 'echo ==ALIAS; alias' 2
 # The write that used to need sudo.
 send 'echo ==WRITE; touch /home/jfrancis/hello && echo WROTE-OK || echo WRITE-FAILED' 3
 send 'echo ==LSHOME; ls -la /home/jfrancis/hello' 2
+# THE SAME WRITE BY A BARE RELATIVE NAME, which is how a person actually
+# types it: `touch hello2`, not the absolute path. This is a SEPARATE
+# code path -- the permission check computes the parent directory from
+# the name, and a bare name's parent is the current directory, not the
+# root. It once checked "/" for every relative creation, so a user could
+# make files in its own home ONLY by absolute path; the absolute WRITE
+# above passed while this failed with "Permission denied".
+send 'echo ==RELWRITE; cd /home/jfrancis; touch hello2 && echo REL-WROTE-OK || echo REL-WRITE-FAILED' 3
+send 'echo ==LSREL; ls -la hello2' 2
 send 'echo ==DONE' 2
 for i in $(seq 1 60); do grep -q '==DONE' "$LOG" && break; sleep 1; done
 sleep 1
@@ -121,8 +130,13 @@ check "  and its alias took effect too" $?
 
 has 'WROTE-OK'
 check "jfrancis can create a file in its own home -- no sudo" $?
-sed -n '/==LSHOME/,/==DONE/p' "$CLEAN" | grep -q 'hello'
+sed -n '/==LSHOME/,/==RELWRITE/p' "$CLEAN" | grep -q 'hello'
 check "  and the file is really there" $?
+
+has 'REL-WROTE-OK'
+check "  and by a bare relative name too -- parent is the cwd, not /" $?
+sed -n '/==LSREL/,/==DONE/p' "$CLEAN" | grep -q 'hello2'
+check "  and that file is really there as well" $?
 
 echo
 echo "  passed: $pass"
