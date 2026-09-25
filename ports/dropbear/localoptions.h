@@ -83,8 +83,13 @@
 #define DROPBEAR_SVR_LOCALTCPFWD 1
 #define DROPBEAR_SVR_REMOTETCPFWD 1
 
-/* Where things live on this machine. */
-#define DROPBEAR_DEFAULT_CLI_AUTHKEY ".ssh/authorized_keys"
+/* The client's default identity -- the private key `ssh host` uses when
+ * no -i is given. It must be a ~/-anchored path (expand_homedir_path
+ * only expands a leading "~/"; a bare ".ssh/..." is taken relative to the
+ * current directory, so it only worked when you happened to be in your
+ * home), and it must NOT be authorized_keys, which is the server's list
+ * of PUBLIC keys, not a private identity. */
+#define DROPBEAR_DEFAULT_CLI_AUTHKEY "~/.ssh/id_dropbear"
 
 /*
  * One connection at a time is plenty, and each one costs a process
