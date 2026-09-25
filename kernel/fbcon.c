@@ -788,6 +788,8 @@ enum {
     ST_ESC_INTER,               /* ESC then an intermediate: ( ) #   */
     ST_CSI,                     /* ESC [                             */
     ST_CSI_IGNORE,              /* a CSI too malformed to act on     */
+    ST_STRING,                  /* inside OSC/APC/DCS/PM/SOS -- swallow  */
+    ST_STRING_ESC,              /* saw ESC in a string: ST is ESC \      */
 };
 
 #define MAX_PARAMS 16
@@ -1052,6 +1054,32 @@ static void control(u8 ch)
 
 static void fbcon_putc(u8 ch)
 {
+    /*
+     * A string escape -- OSC (ESC ]), APC (ESC _), DCS (ESC P), PM
+     * (ESC ^) or SOS (ESC X) -- carries a run of text a terminal is
+     * meant to SWALLOW, not print. The common one is the window title
+     * a shell sets before every prompt (ESC ] 0 ; user@host:cwd BEL);
+     * a terminal that renders it instead spews "0;user@host:~" onto the
+     * screen at every prompt. Consume everything until the terminator:
+     * BEL, or ST (ESC \). CAN/SUB abort it, as they abort any sequence.
+     */
+    if (state == ST_STRING) {
+        if (ch == 0x07) {                       /* BEL ends an OSC */
+            state = ST_GROUND;
+        } else if (ch == 0x1b) {                /* ESC: maybe ST (ESC \) */
+            state = ST_STRING_ESC;
+        } else if (ch == 0x18 || ch == 0x1a) {  /* CAN, SUB */
+            state = ST_GROUND;
+        }
+        return;                                 /* everything else eaten */
+    }
+    if (state == ST_STRING_ESC) {
+        /* The ESC that ends a string. ESC \ is ST; anything else is
+         * malformed, and dropping it is the safe reading either way. */
+        state = ST_GROUND;
+        return;
+    }
+
     if (ch == 0x1b) {
         state = ST_ESC;
         return;
@@ -1080,6 +1108,9 @@ static void fbcon_putc(u8 ch)
             param_started = 0;
             csi_private = 0;
             memset(params, 0, sizeof(params));
+        } else if (ch == ']' || ch == '_' || ch == 'P' ||
+                   ch == '^' || ch == 'X') {
+            state = ST_STRING;      /* OSC, APC, DCS, PM, SOS */
         } else if (ch >= 0x20 && ch <= 0x2f) {
             inter = (char)ch;
             state = ST_ESC_INTER;
