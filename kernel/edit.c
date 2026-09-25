@@ -296,6 +296,22 @@ static int word_start(struct line *l)
     return i;
 }
 
+/* Where the word after the cursor ends: skip the spaces, then the run of
+ * non-spaces -- the forward mirror of word_start, used by Meta-f and the
+ * forward word-delete of Meta-d. */
+static int word_end(struct line *l)
+{
+    int i = l->pos;
+
+    while (i < l->len && l->buf[i] == ' ') {
+        i++;
+    }
+    while (i < l->len && l->buf[i] != ' ') {
+        i++;
+    }
+    return i;
+}
+
 /* Replace the whole line, used by history and search. */
 static void set_line(struct line *l, const char *s)
 {
@@ -361,6 +377,9 @@ static int get_char(void)
 #define KEY_END     0x105
 #define KEY_DELETE  0x106
 #define KEY_NONE    0x107
+#define KEY_WFWD    0x108       /* Meta-f: forward one word   */
+#define KEY_WBACK   0x109       /* Meta-b: back one word      */
+#define KEY_WDEL    0x10a       /* Meta-d: delete a word ahead */
 
 static int read_escape(void)
 {
@@ -370,7 +389,19 @@ static int read_escape(void)
         return c;
     }
     if (c != '[' && c != 'O') {
-        return KEY_NONE;        /* alt-something, or a bare escape */
+        /*
+         * ESC then a letter is Meta-<letter> -- what Alt-f, Alt-b and
+         * Alt-d send, on the serial line from the terminal and on the
+         * screen from the keyboard driver, which prefixes ESC for Alt.
+         * The word motions readline gives these keys; anything else is
+         * swallowed rather than typed into the line.
+         */
+        switch (c) {
+        case 'f': return KEY_WFWD;
+        case 'b': return KEY_WBACK;
+        case 'd': return KEY_WDEL;
+        default:  return KEY_NONE;
+        }
     }
     c = get_char();
     if (c < 0) {
@@ -702,6 +733,18 @@ int edit_readline(const char *prompt, char *buf, int max)
 
         case CTRL('W'):
             delete_back(&l, l.pos - word_start(&l));
+            break;
+
+        case KEY_WBACK:                 /* Meta-b: back a word */
+            move_to(&l, word_start(&l));
+            break;
+
+        case KEY_WFWD:                  /* Meta-f: forward a word */
+            move_to(&l, word_end(&l));
+            break;
+
+        case KEY_WDEL:                  /* Meta-d: delete the word ahead */
+            delete_fwd(&l, word_end(&l) - l.pos);
             break;
 
         case CTRL('L'):

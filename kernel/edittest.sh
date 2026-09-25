@@ -157,6 +157,17 @@ feed() {
     # --- ctrl-W: delete the word before the cursor ---
     printf 'echo ok-ctrl-w JUNKWORD\027\r'
 
+    # --- Meta-b / Meta-f / Meta-d: the word motions Alt-b, Alt-f and
+    #     Alt-d give. The keyboard driver prefixes ESC for Alt and a
+    #     terminal on the serial line does the same, so ESC b / ESC f /
+    #     ESC d is what arrives either way -- \033 is that ESC.
+    # Meta-b: back one word, then insert in front of it.
+    printf 'echo ok-mb AAAA BBBB\033b-X-\r'
+    # Meta-f from the start: forward over two words, then insert after.
+    printf 'echo mf CCCC DDDD\001\033f\033f-Y-\r'
+    # Meta-d: back a word, then delete it forward -- BADW is removed.
+    printf 'echo ok-md GOOD BADW\033b\033d\r'
+
     # --- ctrl-K: delete from the cursor to the end ---
     printf 'echo ok-ctrl-k TAIL\002\002\002\002\013\r'
 
@@ -372,6 +383,15 @@ ran() {             # ran <exact output line>
 
 ran "ok-ctrl-w"
 check "ctrl-W deleted the word before the cursor" $?
+
+ran "ok-mb AAAA -X-BBBB"
+check "Meta-b (Alt-b) moved back a word, inserting before it" $?
+
+ran "mf-Y- CCCC DDDD"
+check "Meta-f (Alt-f) moved forward over two words" $?
+
+ran "ok-md GOOD"
+check "Meta-d (Alt-d) deleted the word ahead of the cursor" $?
 
 ran "ok-ctrl-k"
 check "ctrl-K deleted from the cursor to the end" $?

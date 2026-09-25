@@ -45,6 +45,7 @@
 #define SC_LSHIFT      0x2a
 #define SC_RSHIFT      0x36
 #define SC_LCTRL       0x1d
+#define SC_LALT        0x38
 #define SC_CAPS        0x3a
 #define SC_EXTENDED    0xe0
 #define SC_BREAK       0x80
@@ -52,7 +53,7 @@
 static u8 ring[RING_SIZE];
 static u32 ring_head, ring_tail;
 
-static int shift, ctrl, caps, extended;
+static int shift, ctrl, alt, caps, extended;
 
 /*
  * Scancode set 1 to ASCII, US layout.
@@ -233,6 +234,10 @@ static void decode(u8 code)
             ctrl = !release;        /* right control is E0 1D */
             return;
         }
+        if (code == SC_LALT) {
+            alt = !release;         /* right alt (AltGr) is E0 38 */
+            return;
+        }
         if (release) {
             return;
         }
@@ -252,6 +257,9 @@ static void decode(u8 code)
         return;
     case SC_LCTRL:
         ctrl = !release;
+        return;
+    case SC_LALT:
+        alt = !release;
         return;
     case SC_CAPS:
         if (!release) {
@@ -293,6 +301,17 @@ static void decode(u8 code)
         } else {
             return;
         }
+    }
+
+    /*
+     * Alt is Meta: it prefixes the key with ESC, exactly as a VT100
+     * terminal does for Alt down a serial line. That is what makes
+     * Alt-f, Alt-b and Alt-d reach the line editor as ESC f / ESC b /
+     * ESC d -- there is one escape-sequence parser above this driver
+     * and the keyboard feeds it the same bytes the wire would.
+     */
+    if (alt) {
+        ring_put(0x1b);
     }
 
     ring_put((u8)c);
