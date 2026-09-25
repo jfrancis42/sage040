@@ -8,9 +8,12 @@
 # part of the system and the machine works perfectly with the lot
 # deleted, which is the distinction this directory draws.
 #
-# They install in the root rather than /bin, and PATH finds them there
-# because it ends with "." -- last, so that something dropped here
-# cannot quietly replace a system program of the same name.
+# All of them are BUILT, because the test suites stage the fixtures they
+# need straight from the binaries here. But only the three a person would
+# actually run -- the spinning cube, the web fetcher and the web server --
+# are INSTALLED, and to /bin like any other command. The rest exist to be
+# tested against, and putting them in the machine's root just filled it
+# with clutter that shadowed nothing and served no one.
 
 TOPDIR := ..
 include $(TOPDIR)/disk.mk
@@ -18,6 +21,7 @@ include $(TOPDIR)/disk.mk
 .DEFAULT_GOAL := all
 
 PROGS := cube fbtest hello fetch httpd spin faulter napper cdtest statfs memtest malloctest sigtest fptest polltest timetest pipetest proctest socktest vtcheck winsize vcsnap tcptest pagetest limits fsstress fbmap udpwait
-INSTALL_DIR :=
+INSTALL_PROGS := cube fetch httpd
+INSTALL_DIR := /bin
 
 include $(TOPDIR)/lib/program.mk

@@ -71,11 +71,18 @@ all: $(PROGS)
 # because FAT16 has no lower case in a short name and `winchtest` became
 # WINCHTES; on ext2 a name is just bytes, so `cat` is installed as `cat`
 # and typed as `cat`.
+# Everything in $(PROGS) is BUILT -- the test suites stage the fixtures
+# they need from the built binaries here. Only $(INSTALL_PROGS) is put on
+# the disk, and it defaults to all of them; apps/ narrows it to the few
+# programs a person actually runs, so the machine's own root does not
+# fill up with test fixtures.
+INSTALL_PROGS ?= $(PROGS)
+
 install: $(PROGS) $(DISK)
 	@if [ -n "$(INSTALL_DIR)" ]; then \
 	    $(FSIMG) mkdir $(INSTALL_DIR); \
 	 fi
-	@for p in $(PROGS); do \
+	@for p in $(INSTALL_PROGS); do \
 	   $(FSIMG) put -m 755 $$p $(INSTALL_DIR)/$$p; \
 	   echo "$$p -> $(DISK) as $(INSTALL_DIR)/$$p"; \
 	 done
