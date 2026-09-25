@@ -1,0 +1,14 @@
+# ~/.bash_profile - read by a bash LOGIN shell, before ~/.bashrc.
+#
+# THIS FILE EXISTS FOR ITS ONE LINE. A bash login shell -- which is what
+# login(1) starts -- reads /etc/profile and then the first of
+# ~/.bash_profile, ~/.bash_login, ~/.profile it finds. It does NOT read
+# ~/.bashrc: that file is for interactive shells started AFTER login
+# (opening a new one, or running `bash` by hand). So without the line
+# below, your ~/.bashrc never runs when you log in -- you get it only
+# when you start another shell, which is the confusing split this line
+# removes by sourcing it here too.
+#
+# (For the kernel's /bin/sh, the equivalent file is ~/.profile; sh does
+# not read this one and does not understand bash's ~/.bashrc.)
+[ -f ~/.bashrc ] && . ~/.bashrc

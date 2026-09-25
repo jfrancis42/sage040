@@ -6,6 +6,7 @@
 # NO COMMAND SUBSTITUTION. /bin/sh on this machine has variables,
 # pipelines, redirection and a command list; it does not have $(...).
 # `echo "$(whoami)"` prints those characters rather than your name.
-# bash has it, and bash reads ~/.bashrc rather than this file.
+# bash has $(...); a bash login shell reads ~/.bash_profile rather than
+# this file, and the shipped ~/.bash_profile sources ~/.bashrc.
 
 echo "profile: welcome to $HOSTNAME"

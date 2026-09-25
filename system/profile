@@ -5,8 +5,11 @@
 #
 # This is not bash's file. /bin/sh on this machine is kernel/shell.c
 # built as a program, and it understands a command list (; && ||),
-# pipelines, redirection and variables. bash, when it is the login
-# shell, reads its own ~/.bashrc and never comes here.
+# pipelines, redirection and variables. bash reads THIS file too when it
+# is the login shell -- every login shell reads /etc/profile -- and then
+# ~/.bash_profile (which the shipped one sources ~/.bashrc from). What
+# bash does NOT read at login is ~/.bashrc directly; that is for the
+# interactive shells you start afterwards.
 
 export PATH=/bin:/usr/bin:.
 export PAGER=less

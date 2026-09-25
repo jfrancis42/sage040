@@ -1,0 +1,7 @@
+alias l="ls -alF"
+
+export ED=em
+export EDITOR=em
+export SUDO_EDITOR=em
+
+export PS1="[\u@\h \W]\$ "
