@@ -186,11 +186,6 @@ printf '%s\n' \
   'BIG.TXT' \
   'XBITS.TXT' \
   '/uptime' \
-  'console' \
-  'console fbcon off' \
-  'console ttyS0 off' \
-  'echo only on the serial line now' \
-  'console fbcon on' \
   'fbtest 1' \
   'date -s 2001-02-03 04:05:06' \
   'date' \
@@ -350,19 +345,13 @@ check "the framebuffer registered as a device" $?
 contains "$LOG" "/dev/fbcon, 80x30 of IBM PC 8x16"
 check "the text console came up at 80x30" $?
 
-contains "$LOG" "output to ttyS0 fbcon, input from ttyS0 fbcon kbd0"
-check "the terminal has both sinks and both input sources" $?
+contains "$LOG" "tty1: fbcon(out)"
+check "the screen is its own terminal (tty1), keyboard and framebuffer" $?
+contains "$LOG" "console: ttyS0(out) ttyS0(in)"
+check "the serial line is its own terminal (console)" $?
 
 contains "$LOG" "8042 as /dev/kbd0, scancode set 1"
 check "the keyboard registered as a terminal input source" $?
-
-contains "$LOG" "only on the serial line now"
-check "the serial line keeps working with the screen switched off" $?
-
-# The last sink cannot be turned off: a machine with no console output
-# is one that cannot tell you why.
-contains "$LOG" "that is the only one left"
-check "turning off the last remaining sink is refused" $?
 
 contains "$LOG" "fbtest: drawn, holding"
 check "a program drew through /dev/fb0 without error" $?

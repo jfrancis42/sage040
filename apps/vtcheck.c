@@ -109,16 +109,6 @@ static int label_at(int r, char tag, int n)
            ch(r, 2) == '0' + n % 10;
 }
 
-static void console_sink(int on)
-{
-    struct console_set cs;
-
-    memset(&cs, 0, sizeof(cs));
-    memcpy(cs.name, "fbcon", sizeof("fbcon"));
-    cs.on = on;
-    ioctl(0, TIOCSCONS, (u32)&cs);
-}
-
 static void test_cursor(void)
 {
     out("\033c");
@@ -401,71 +391,14 @@ static void test_attrs(void)
            cursor_is(0, 0));
 }
 
-/* Only when the screen is the sole output does the console answer. */
-static void test_replies(void)
-{
-    struct termios old, raw;
-    struct pollfd p;
-    char b[16];
-    int n;
-
-    tcgetattr(0, &old);
-    raw = old;
-    raw.c_lflag &= ~(ICANON | ECHO);
-    tcsetattr(0, TCSANOW, &raw);
-
-    out("\033c\033[5;10H\033[6n");
-    p.fd = 0;
-    p.events = POLLIN;
-    report("with the serial line enabled there is no reply",
-           poll(&p, 1, 300) == 0);
-
-    {
-        struct console_set cs;
-
-        memset(&cs, 0, sizeof(cs));
-        memcpy(cs.name, "fbcon", sizeof("fbcon"));
-        cs.on = 1;
-        ioctl(0, TIOCSCONS, (u32)&cs);
-        memcpy(cs.name, "ttyS0", sizeof("ttyS0"));
-        cs.on = 0;
-        ioctl(0, TIOCSCONS, (u32)&cs);
-
-        write(1, "\033[6n", 4);
-        n = 0;
-        while (n < (int)sizeof(b) - 1 && poll(&p, 1, 500) > 0 &&
-               read(0, b + n, 1) == 1) {
-            if (b[n++] == 'R') {
-                break;
-            }
-        }
-        b[n] = '\0';
-        write(1, "\033[c", 3);
-        n = 0;
-        {
-            char d[16];
-
-            while (n < (int)sizeof(d) - 1 && poll(&p, 1, 500) > 0 &&
-                   read(0, d + n, 1) == 1) {
-                if (d[n++] == 'c') {
-                    break;
-                }
-            }
-            d[n] = '\0';
-
-            cs.on = 1;
-            ioctl(0, TIOCSCONS, (u32)&cs);      /* serial back */
-            memcpy(cs.name, "fbcon", sizeof("fbcon"));
-            cs.on = 0;
-            ioctl(0, TIOCSCONS, (u32)&cs);
-
-            report("alone, it answers DSR 6 with the cursor position",
-                   strcmp(b, "\033[5;10R") == 0);
-            report("  and DA with VT102", strcmp(d, "\033[?6c") == 0);
-        }
-    }
-    tcsetattr(0, TCSANOW, &old);
-}
+/*
+ * The DSR/DA reply test lived here. It relied on the merged console's
+ * "screen is the sole output" gating (TIOCSCONS), which is gone: the
+ * screen is its own terminal now and always answers its own queries.
+ * Exercising that reply needs the screen terminal's input, which its
+ * getty owns, so it is not driven from this serial-side program; the
+ * reply path itself is unchanged (fbcon.c, screen_is_only_sink).
+ */
 
 static void wait_key(void)
 {
@@ -513,8 +446,6 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    console_sink(0);
-
     if (argc > 1 && strcmp(argv[1], "blit") == 0) {
         struct termios old, raw;
 
@@ -529,7 +460,6 @@ int main(int argc, char **argv)
         puts("vtcheck: redrawn, ready for the second\n");
         wait_key();
         tcsetattr(0, TCSANOW, &old);
-        console_sink(1);
         puts("vtcheck: blit done\n");
         return 0;
     }
@@ -540,10 +470,8 @@ int main(int argc, char **argv)
     test_insert_delete();
     test_region();
     test_attrs();
-    test_replies();
 
     out("\033c");
-    console_sink(1);
     puts("vtcheck: done\n");
     return 0;
 }

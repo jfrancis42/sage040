@@ -661,22 +661,33 @@ big-endian where the host is not.
 
 ---
 
-## The terminal
+## The terminals
 
-`tty.c` is a terminal, not a driver. `/dev/console` has a list of input
-sources and a list of output sinks. `ns16550.c` is a raw serial port
-(`/dev/ttyS0`) registered as both; `fbcon.c` is a sink; the keyboard is a
-source. `console` lists the sinks and `console NAME on|off` switches one --
-`console fbcon off` takes output off the screen, `console ttyS0 off` off
-the serial line. Turning off the last one is refused.
+`tty.c` is a line discipline, not a driver, and there are TWO independent
+terminals built from it, each `struct tty` with its own input ring,
+termios, foreground group and size:
 
-Echo goes to the *sinks*, never back to the source. Otherwise output on the
-screen means typing blind.
+  - **`/dev/tty1`** -- the screen: keyboard in (`kbd0`), framebuffer out
+    (`fbcon`). 80x30, which is what the framebuffer measures.
+  - **`/dev/console`** -- the serial line: `ns16550.c`'s UART in and out.
+    80x24 until `stty`/`resize` says otherwise. Kernel messages go here.
 
-**Console output is not exclusive and must not become one.** The test
-harnesses drive the machine over serial with `-display none`, and QEMU
-delivers no keyboard input without a display. An exclusive console breaks
-every test in the tree.
+They are NOT mirrored: what is written to one does not appear on the
+other, and each reports its own size, so a full-screen program on the
+screen gets 30 rows and one on the serial line gets 24 -- neither clamps
+the other. A getty runs on each, so you log in wherever you are sitting.
+This replaced a single console that fanned output to both and merged
+their input, which forced a program to fit the smaller of the two and so
+made the 80x30 screen behave as 80x24.
+
+Echo goes to a terminal's own output, never back to its input. Otherwise
+what you type on the screen would appear only on the wire the character
+came in on.
+
+**A terminal's output is not exclusive and must not become one.** The
+test harnesses drive the SERIAL terminal with `-display none`, and QEMU
+delivers no keyboard input without a display; the screen terminal sits at
+its getty meanwhile. Nothing depends on the two being the same terminal.
 
 The line discipline knows how to assemble a line with erase and kill, and
 nothing more. Everything else — history, ctrl-R, word motion — is in the

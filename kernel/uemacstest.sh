@@ -7,12 +7,15 @@
 # uEmacs/PK (ports/uemacs), built against picolibc and the compiled-in
 # termcap, edits a file the host put on the disk: it is opened, moved
 # around, typed into and saved, all as keystrokes down the serial line.
-# The host then reads the file back from the image.
+# The host then reads the file back from the image, and that the edits
+# landed where the cursor was is the whole test.
 #
-# What the editor DREW is checked too. vcsnap, running in the
-# background, copies /dev/vcsa to a file while the editor is up -- the
-# screen's characters, attributes and cursor -- and the host looks for
-# the text, and for the mode line uEmacs draws in reverse video.
+# The editor runs on the serial line -- the terminal this session drives
+# -- so what it DREW is not read back here: the screen is a separate
+# terminal now, with its own getty, and nothing uEmacs does reaches it.
+# That a full-screen program renders correctly on the framebuffer is
+# proven directly by vttest, which writes escapes to /dev/fbcon and
+# reads the result from /dev/vcsa.
 #
 # Runs on a scratch image.
 
@@ -77,7 +80,6 @@ fsimg mkdir /bin; fsimg mkdir /lib
 fsimg put ../ldso/ld.so /lib/ld.so
 fsimg put "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" /lib/libc.so
 fsimg put -m 755 ../ports/uemacs/em /bin/em
-fsimg put -m 755 ../apps/vcsnap /bin/vcsnap
 fsimg put -m 755 ../system/stty /bin/stty
 printf 'the first line\nthe second line\n' > "$SCRATCH/edit.tmp"
 LC_ALL=C.UTF-8 fsimg put "$SCRATCH/edit.tmp" "/Notes To Edit.txt"
@@ -88,7 +90,6 @@ mkfifo "$SCRATCH/in.fifo"
     -kernel ../bootrom/bootrom.elf \
     -drive file="$DISK",format=raw,if=ide \
     -display none -no-reboot \
-    -monitor "unix:$SCRATCH/em-mon.sock,server,nowait" \
     -chardev stdio,id=con,signal=off -serial chardev:con \
     < "$SCRATCH/in.fifo" > "$LOG" 2>&1 &
 qemu_pid=$!
@@ -104,10 +105,6 @@ wait_for() {
     return 1
 }
 
-# The snapshot is taken 9 s from now: after the typing below, before
-# the save and the exit.
-printf 'vcsnap 9000 /SNAP.BIN &\r' >&3
-sleep 1
 printf 'em "Notes To Edit.txt"\r' >&3
 sleep 4
 printf '\033>' >&3; sleep 0.5              # M-> : end of the buffer
@@ -115,9 +112,6 @@ printf 'typed in uemacs' >&3; sleep 1
 printf '\033<' >&3; sleep 0.5              # M-< : back to the top
 printf '\006\006\006\006' >&3; sleep 0.5   # C-f x4: past "the "
 printf 'very ' >&3; sleep 5                # "the very first line"
-# A picture of it, for the documentation: scratch/uemacs.png.
-printf 'screendump %s\n' "$SCRATCH/uemacs.ppm" |
-    socat - "unix:$SCRATCH/em-mon.sock" >/dev/null 2>&1
 printf '\030\023' >&3; sleep 2             # C-x C-s: save
 printf '\030\003' >&3; sleep 2             # C-x C-c: quit
 printf '\r' >&3; sleep 0.5
@@ -136,7 +130,6 @@ rm -f "$SCRATCH/in.fifo"
 
 tr -d '\r' < "$LOG" > "$SCRATCH/clean.tmp"
 LC_ALL=C.UTF-8 fsimg cat "/Notes To Edit.txt" 2>/dev/null > "$SCRATCH/edited.tmp"
-fsimg cat /SNAP.BIN > "$SCRATCH/snap.tmp" 2>/dev/null
 
 echo "=== guest session (escape sequences shown as ^[) ==="
 sed 's/\x1b/^[/g; s/^/  | /' "$SCRATCH/clean.tmp" | cut -c1-160 | tail -40
@@ -153,27 +146,8 @@ check "a new line typed at the end of the buffer" $?
 test "$(wc -l < "$SCRATCH/edited.tmp")" -eq 3
 check "  and nothing else" $?
 
-echo "=== checks: the screen, while it was up ==="
-python3 - "$SCRATCH/snap.tmp" > "$SCRATCH/screen.tmp" <<'PY'
-import sys
-d = open(sys.argv[1], "rb").read()
-if len(d) < 4:
-    sys.exit(0)
-rows, cols = d[0], d[1]
-for r in range(rows):
-    line = "".join(chr(d[4 + (r * cols + c) * 2]) for c in range(cols))
-    attr = d[5 + (r * cols) * 2]
-    rev = "R" if (attr & 0x07) < ((attr >> 4) & 0x07) else "-"
-    print(rev, line.rstrip())
-PY
-sed 's/^/  | /' "$SCRATCH/screen.tmp"
-
-grep -q "^. the very first line$" "$SCRATCH/screen.tmp"
-check "the edited first line was on the screen" $?
-grep -q "^. typed in uemacs$" "$SCRATCH/screen.tmp"
-check "and the typed line" $?
-grep -q "^R.*uEmacs.*Notes To Edit.txt" "$SCRATCH/screen.tmp"
-check "the mode line named the file, in reverse video" $?
+# (What the editor drew on the screen is no longer read back here -- see
+# the note at the top of this file.)
 
 echo "=== checks: afterwards ==="
 grep -qx "EM-DONE" "$SCRATCH/clean.tmp"
@@ -181,10 +155,7 @@ check "the editor exited and the shell came back" $?
 grep -q "^icrnl opost onlcr isig icanon echo$" "$SCRATCH/clean.tmp"
 check "  with the terminal's modes put back as they were" $?
 
-sleep 0.2
-magick "$SCRATCH/uemacs.ppm" "$SCRATCH/uemacs.png" 2>/dev/null
-rm -f "$SCRATCH/edit.tmp" "$SCRATCH/edited.tmp" "$SCRATCH/snap.tmp" "$SCRATCH/screen.tmp" \
-      "$SCRATCH/uemacs.ppm" "$SCRATCH/em-mon.sock"
+rm -f "$SCRATCH/edit.tmp" "$SCRATCH/edited.tmp"
 
 echo
 echo "  passed: $pass"

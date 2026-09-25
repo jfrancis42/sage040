@@ -416,14 +416,15 @@ static int reply_head, reply_tail;
 
 static int screen_is_only_sink(void)
 {
-    struct chardev *d;
-    int i, on;
-
-    for (i = 0; (d = tty_sink(i, &on)) != 0; i++) {
-        if (on && d != &fbcon_dev) {
-            return 0;
-        }
-    }
+    /*
+     * Always, now. The screen is its own terminal (tty1) and the serial
+     * line is another (console); nothing is mirrored between them, so
+     * the screen is the sole output of its own terminal by construction.
+     * It therefore answers DSR/DA itself, and the old worry -- two
+     * replies, the screen's and the serial host's, corrupting a
+     * program's input -- cannot arise: the serial host answers its own
+     * terminal, never this one.
+     */
     return 1;
 }
 

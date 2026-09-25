@@ -124,21 +124,21 @@ type_keys() {
 }
 
 run 'irqs' irq0
-# "echo kbd-ok" on the keyboard, then its own marker the same way.
+# "echo kbd-ok" typed on the keyboard: it drives the screen terminal now,
 type_keys e c h o spc k b d minus o k ret
 sleep 1
 run 'irqs' irq1
 run '/fsstress 15' stress
 run 'irqs' irq2
 run '/limits' limits
-# The console off the screen first: its own output scrolls the whole
-# screen up, and ten lines of fbmap's results carry the boxes off the top.
-run 'console fbcon off' conser
+# fbmap draws its boxes through /dev/fb0. The screen shows only that:
+# the test session runs on the SERIAL terminal, whose text never touches
+# the screen now that the two are independent, so nothing scrolls the
+# boxes away and there is no console to switch off first.
 run '/fbmap' fbmap
 # What reached the screen, not what the program believes it wrote.
 printf 'screendump %s\n' "$SCRATCH/fbmap.ppm" | socat - "unix:$MON" >/dev/null
 sleep 1
-run 'console fbcon on' conboth
 run 'irqs' irq3
 run 'nvram net.ip=10.9.8.7' nv1
 run 'nvram net.mask=255.255.255.0' nv2
@@ -194,11 +194,15 @@ echo "=== checks: interrupts ==="
 s0=$(count_of serial irq0); s1=$(count_of serial irq1)
 [ "${s0:-0}" -gt 0 ] && [ "${s1:-0}" -gt "${s0:-0}" ]
 check "the serial port takes interrupts ($s0, then $s1)" $?
-grep -qx "kbd-ok" "$SCRATCH/clean.tmp"
-check "a command typed on the keyboard ran" $?
-k1=$(count_of keyboard irq1)
-[ "${k1:-0}" -gt 0 ]
-check "  and the keyboard took interrupts to do it ($k1)" $?
+# The keyboard drives the SCREEN terminal (tty1), a separate terminal
+# from this serial session -- so what was typed on it must NOT appear
+# here. Its running the command is proven on the screen (vttest), and
+# its delivery is proven by the interrupt count below.
+! grep -q "kbd-ok" "$SCRATCH/clean.tmp"
+check "keyboard input goes to the screen, not the serial session" $?
+k0=$(count_of keyboard irq0); k1=$(count_of keyboard irq1)
+[ "${k1:-0}" -gt "${k0:-0}" ]
+check "  and the keyboard took interrupts for it ($k0, then $k1)" $?
 d1=$(count_of disk irq1); d2=$(count_of disk irq2)
 [ "${d2:-0}" -gt "${d1:-0}" ]
 check "the disk takes interrupts ($d1, then $d2)" $?

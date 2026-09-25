@@ -146,10 +146,11 @@ wait_for "resize: "
 sleep 0.3
 printf 'echo SIZE-AFTER-RESIZE\r' >&3;     sleep 0.3
 printf 'stty size\r' >&3;                  sleep 1
-printf 'console fbcon off\r' >&3;          sleep 0.5
-printf 'echo SIZE-LINE-ONLY\r' >&3;        sleep 0.3
-printf 'stty size\r' >&3;                  sleep 1
-printf 'console fbcon on\r' >&3;           sleep 0.5
+# The SCREEN is its own terminal now, not this one's other face: ask it
+# directly through its device node. It measures itself at 80x30 and is
+# unaffected by anything done to the serial line here.
+printf 'echo SIZE-SCREEN\r' >&3;           sleep 0.3
+printf 'stty size < /dev/tty1\r' >&3;      sleep 1
 printf 'stty rows 20 cols 60\r' >&3;       sleep 1
 printf 'echo SIZE-AFTER-STTY\r' >&3;       sleep 0.3
 printf 'stty size\r' >&3;                  sleep 1
@@ -220,7 +221,7 @@ grep -qx "TERM-IS-vt102" "$SCRATCH/clean.tmp"
 check "TERM is vt102" $?
 
 test "$(size_after SIZE-AT-BOOT)" = "24 80"
-check "the size at boot is 24x80: the line's, smaller than the screen" $?
+check "the serial terminal is 80x24 at boot -- its own size, nothing else's" $?
 
 grep -qF "winsize: done" "$SCRATCH/clean.tmp"
 check "winsize finished" $?
@@ -228,11 +229,11 @@ check "winsize finished" $?
 grep -qF "resize: 40 rows, 100 columns" "$SCRATCH/clean.tmp"
 check "resize read the terminal's answer" $?
 
-test "$(size_after SIZE-AFTER-RESIZE)" = "30 80"
-check "  and with the screen on too, the screen's 30 rows still win" $?
+test "$(size_after SIZE-AFTER-RESIZE)" = "40 100"
+check "  resize set THIS terminal (the serial line) to 40x100" $?
 
-test "$(size_after SIZE-LINE-ONLY)" = "40 100"
-check "  and with the screen off, the terminal's 40x100" $?
+test "$(size_after SIZE-SCREEN)" = "30 80"
+check "  and the screen, its own terminal, is 80x30 -- independent" $?
 
 test "$(size_after SIZE-AFTER-STTY)" = "20 60"
 check "stty rows and cols set the line" $?

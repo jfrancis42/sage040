@@ -48,7 +48,8 @@ for f in shell.c edit.c; do
                 echo "    $ALLOWED" >&2
                 echo "  If this file genuinely needs something else, the thing" >&2
                 echo "  it needs wants a system call or an ioctl -- not an" >&2
-                echo "  include. That is how cmd_console got its TIOCGCONS." >&2
+                echo "  include. That is how edit.c turns off canonical mode:" >&2
+                echo "  a TCSETS ioctl, not tty.h." >&2
                 status=1
                 ;;
         esac

@@ -389,24 +389,36 @@ static void start_network(void)
     kputs(" up, ethernet + ARP, no address yet (try `ifconfig`)\n");
 }
 
+
+/* The screen terminal's task: attach to tty1, then run a login getty. */
+static void getty_screen(void)
+{
+    tty_attach("tty1");
+    shell_getty();
+}
+
 static void report_console(void)
 {
     struct chardev *d;
-    int i, on;
+    const char *name, *last = 0;
+    int i, is_source;
 
     status("console");
-    kputs("output to");
-    for (i = 0; (d = tty_sink(i, &on)) != 0; i++) {
-        kputc(' ');
-        kputs(d->name);
-        if (!on) {
-            kputs("(off)");
+    /* Each terminal and the devices it is made of. tty_nth walks
+     * (output, then sources) per terminal; group them under the name. */
+    for (i = 0; (d = tty_nth(i, &name, &is_source)) != 0; i++) {
+        if (last != name) {
+            if (last) {
+                kputs(";");
+            }
+            kputc(' ');
+            kputs(name);
+            kputs(":");
+            last = name;
         }
-    }
-    kputs(", input from");
-    for (i = 0; (d = tty_source(i)) != 0; i++) {
         kputc(' ');
         kputs(d->name);
+        kputs(is_source ? "(in)" : "(out)");
     }
     kputc('\n');
 }
@@ -594,12 +606,25 @@ void kmain(void)
         struct task *sh = task_create("sh", shell);
 
         if (sh) {
-            tty_set_foreground(sh->pid);
+            tty_set_foreground(sh->pid);   /* the serial line's getty */
         }
         if (!sh) {
             kputln("could not start the shell");
             halt();
         }
+    }
+
+    /*
+     * A GETTY ON THE SCREEN TOO. The framebuffer is its own terminal
+     * (tty1) now, not a mirror of the serial line, so it gets its own
+     * login: sit at the keyboard and log in there, or at the serial
+     * line, as you please. getty_screen attaches its task's descriptors
+     * to tty1 and becomes its foreground group before running the same
+     * getty the serial line does. If there is no framebuffer the task
+     * still runs harmlessly -- its terminal simply has no output.
+     */
+    if (!task_create("getty", getty_screen)) {
+        kputln("could not start the screen getty");
     }
 
     kputs("\nkernel ready.  'help' lists commands.\n\n");

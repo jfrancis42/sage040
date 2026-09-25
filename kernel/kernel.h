@@ -41,6 +41,7 @@ u32  probe_memory(void);
 
 /* The shell (shell.c). It reaches the kernel only through system calls. */
 void shell(void) __attribute__((noreturn));
+void shell_getty(void) __attribute__((noreturn));
 
 /* Linker-provided symbols describing the kernel image. */
 extern char _vectors[], _end[], _stack_top[];

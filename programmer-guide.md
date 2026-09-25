@@ -1346,23 +1346,24 @@ struct winsize w;
 ioctl(STDIN_FILENO, TIOCGWINSZ, (u32)&w);    /* w.ws_row, w.ws_col */
 ```
 
-Linux's call and structure. What it reports is **the smallest of the
-console's enabled outputs**, because a full-screen program has to fit on
-all of them at once: the screen is 30x80 and says so, and the serial
-line -- which cannot be measured -- is 24x80 until somebody sets it. So
-with both on, a program is told 24x80; with `console fbcon off`, the
-line's size; with `console ttyS0 off`, 30x80. Pixel sizes are filled in
-only when one output decided both dimensions.
+Linux's call and structure. What it reports is **this terminal's own
+size** -- there are two, `/dev/tty1` (the screen) and `/dev/console`
+(the serial line), and each has one output, so there is no minimum to
+take. The screen measures itself at 80x30 and reports 640x480 pixels;
+the serial line is 80x24 (no pixels) until somebody sets it. A program
+on one is unaffected by the other: `stty size` on the serial line is
+`24 80`, and `stty size < /dev/tty1` is `30 80`, whatever either is set
+to.
 
-`TIOCSWINSZ` sets the **serial line's** size, not the answer directly.
-`stty rows 40 cols 100` does it by hand, and `resize` asks the terminal
-on the far end -- cursor to 999;999, then `ESC[6n` -- the way xterm's
-resize(1) does. Setting the line to 40 rows with the screen enabled
-still reports 30: the screen has 30.
+`TIOCSWINSZ` sets the size of the terminal the descriptor is open on.
+`stty rows 40 cols 100` does it by hand on the serial line, and `resize`
+asks the terminal on the far end -- cursor to 999;999, then `ESC[6n` --
+the way xterm's resize(1) does. It does not touch the screen's size; the
+screen measures itself.
 
 **Handle `SIGWINCH`.** Any change to what `TIOCGWINSZ` would report --
-from `TIOCSWINSZ`, or from an output being switched on or off -- sends
-it to the terminal's foreground group, and only that group. Its default
+`TIOCSWINSZ` on that terminal -- sends it to the terminal's foreground
+group, and only that group. Its default
 is to be ignored. `TERM` is `vt102` in the shell's environment.
 
 #### Arrow keys and other escape sequences
