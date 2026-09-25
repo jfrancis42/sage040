@@ -113,10 +113,19 @@ kernel.rom: kernel.elf
 #
 NET := ../tools/qemu-net.sh
 
+# The serial console is a plain stdio chardev with signal=off, NOT
+# `-serial mon:stdio`. `mon:` multiplexes the QEMU monitor onto the same
+# stream and reserves Ctrl-A as its escape prefix -- so Ctrl-A never
+# reached the guest, and bash's "go to the start of the line" did
+# nothing. signal=off hands Ctrl-C to the guest too, so it interrupts a
+# program instead of killing the emulator. The monitor, when wanted, goes
+# on its own socket (`-monitor unix:...`), which is how the screenshot
+# tooling already reaches it. To stop a wedged run, kill QEMU from
+# another terminal: pkill -f 'qemu-system-m6[8]k'.
 run: kernel.elf $(DISK)
 	$(NET) $(QEMU) $(MACHINE) $(ICOUNT) -no-reboot -kernel kernel.elf \
 	 -drive file=$(DISK),format=raw,if=ide \
-	 -serial mon:stdio
+	 -chardev stdio,id=con,signal=off -serial chardev:con
 
 # Put the kernel on the disk where the boot ROM will find it.
 install: kernel.rom $(DISK)
