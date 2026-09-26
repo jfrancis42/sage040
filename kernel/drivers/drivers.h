@@ -61,6 +61,7 @@ int i8042_init(void);       /* keyboard          -> /dev/kbd0, a tty source */
 int i8042_present(void);
 struct chardev *i8042_device(void);
 void smc91c111_init(void);  /* ethernet          -> net device "eth0"      */
+int  smc91c111_irq_on(void); /* service the RX interrupt (after smc_up)    */
 
 int fat16_init(void);       /* not a driver: registers the filesystem type */
 int ext2_init(void);        /* likewise                                    */

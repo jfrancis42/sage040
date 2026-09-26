@@ -54,6 +54,10 @@
 #include "errno.h"
 #include "sage040.h"
 
+/* net_drain() moves frames off the card into the software ring. It is
+ * declared in net/net.h, which a driver does not otherwise include. */
+void net_drain(void);
+
 /*
  * Bits sage040.h does not name, all from the datasheet's register
  * summary.  They live here rather than in the shared header because
@@ -479,4 +483,44 @@ void smc91c111_init(void)
     }
 
     dev_register_net(&eth0);
+}
+
+/*
+ * The receive interrupt. The chip's IRQ is on MFP GPIP3, and a frame
+ * arriving raises it. Draining the card HERE -- as each frame lands, not
+ * only every 10 ms when the timer calls net_drain() -- is what an
+ * interrupt-driven receive is for. net_drain() empties the receive FIFO,
+ * which lowers the chip's IRQ line so the next frame makes a fresh
+ * rising edge; the GPIP is edge-triggered, so a handler that left a
+ * frame behind would never be called again. It runs at the same
+ * interrupt level as the timer's own net_drain(), so the two cannot nest
+ * and they share the chip safely.
+ */
+static void smc_rx_isr(void *arg)
+{
+    (void)arg;
+    net_drain();
+}
+
+/*
+ * Turn the receive interrupt on. This must run AFTER smc_up() -- which
+ * masks every source at the chip -- or the unmask below is undone; main.c
+ * calls it at the end of start_network(), once net_init() has brought the
+ * card up. It also needs the MFP up, which it is by then.
+ */
+int smc91c111_irq_on(void)
+{
+    int err = mfp_request_gpip(MFP_PIN_NET, smc_rx_isr, 0);
+
+    if (err < 0) {
+        return err;             /* the timer keeps draining it, just slower */
+    }
+    /*
+     * Unmask ONLY receive at the chip. Transmit and allocation stay
+     * polled, as the send path reads them directly; letting them assert
+     * the shared IRQ line would raise interrupts nothing waits for.
+     */
+    smc_bank(2);
+    MMIO8(SMC_B2_INTMASK) = SMC_INT_RCV;
+    return 0;
 }

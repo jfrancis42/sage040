@@ -387,6 +387,15 @@ static void start_network(void)
     n = net_if();
     kputs(n->dev->name);
     kputs(" up, ethernet + ARP, no address yet (try `ifconfig`)\n");
+
+    /*
+     * The card's receive interrupt, now that it is up. This has to come
+     * AFTER net_init() -- smc_up() masks every interrupt source at the
+     * chip, so unmasking receive any earlier would simply be undone. The
+     * card is drained on each frame's arrival from here on, not only from
+     * the 10 ms timer.
+     */
+    smc91c111_irq_on();
 }
 
 
