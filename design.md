@@ -55,8 +55,13 @@ and neither is optional:
 
 - **Received frames must be taken off the chip promptly.** A frame
   left there holds its page, and four held pages mean the chip can no
-  longer send. `net_drain()` runs from the timer interrupt for this
-  reason rather than waiting for a task to get round to it.
+  longer send. The chip's receive interrupt, on MFP GPIP3, drains it as
+  each frame lands; the timer's `net_drain()` is a backstop for the rare
+  case where the software ring is full when a frame arrives and the edge
+  is missed. Draining only from the timer, every 10 ms, throttled a bulk
+  transfer to whatever the four pages could hold per tick -- the chip
+  refuses more when full rather than dropping -- so a receive that could
+  run at line rate crawled.
 - **A transmit allocation is a standing REQUEST, not a question.**
   When no page is free the chip remembers the request and grants one
   as soon as a page is released, raising ALLOC then. A driver that
