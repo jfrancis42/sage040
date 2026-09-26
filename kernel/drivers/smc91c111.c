@@ -12,11 +12,13 @@
  * What this driver does: brings the interface up and down, transmits
  * one frame at a time, and hands back one received frame at a time.
  *
- * What it does not do: interrupts.  The chip's IRQ reaches MFP channel
- * 3, but nothing is plumbed to service it, so the chip's interrupt mask
- * is deliberately left at zero and both paths poll the status register
- * instead.  Nor does it do multicast filtering, promiscuous mode, or
- * any of the statistics counters.
+ * Receive is interrupt-driven.  The chip's IRQ reaches MFP channel 3;
+ * smc91c111_irq_on() services it, draining the card as each frame lands
+ * rather than only when the timer's net_drain() gets round to it.
+ * Transmit stays polled -- the send path reads the status register
+ * directly -- so only SMC_INT_RCV is unmasked at the chip.  What it does
+ * not do: multicast filtering, promiscuous mode, or any of the
+ * statistics counters.
  *
  * ---------------------------------------------------------------------
  * The two traps.
@@ -205,9 +207,11 @@ static int smc_up(struct netdev *n)
     }
 
     /*
-     * Mask every interrupt source at the chip.  The IRQ line reaches
-     * MFP channel 3 and there is no handler for it; an unmasked source
-     * would assert the line and leave it asserted.
+     * Mask every interrupt source at the chip to start. Receive is
+     * unmasked later, by smc91c111_irq_on(), once the MFP is up and a
+     * handler is installed -- unmasking a source before that would
+     * assert the GPIP3 line with nothing to answer it. This runs on
+     * every bring-up, so the unmask has to come after it, not before.
      */
     MMIO8(SMC_B2_INTMASK) = 0x00;
 
