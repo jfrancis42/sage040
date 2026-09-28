@@ -46,6 +46,8 @@ kernel/kernel.map
 # be named here one by one rather than matched by a suffix.
 apps/cube
 apps/boids
+apps/wator
+apps/life
 apps/hello
 apps/fbtest
 apps/faulter
