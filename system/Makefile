@@ -36,9 +36,14 @@ include $(TOPDIR)/lib/program.mk
 # grown a log daemon and a time zone. `make etc` replaces it either way.
 install: install-etc
 install-etc: $(DISK)
-	@for d in /etc /root /home /home/jfrancis /var /var/log /var/run; do \
+	@for d in /etc /root /home /home/jfrancis /var /var/log /var/run /tmp /var/tmp; do \
 	    $(FSIMG) mkdir $$d; \
 	 done
+	@# /tmp and /var/tmp are 1777: everyone may create, only the owner
+	@# may delete -- the sticky bit. Lynx, bash here-documents, sort and
+	@# anything calling mkstemp/tmpfile write there, and the disk had no
+	@# /tmp at all.
+	@printf 'sif /tmp mode 041777\nsif /var/tmp mode 041777\n' | $(FSIMG) batch >/dev/null
 	@# /etc/passwd and /etc/group: installed if missing, left alone if
 	@# they are there. Unlike /etc/rc there is no "unedited default" to
 	@# recognise -- a passwd file is a list of people, and replacing one

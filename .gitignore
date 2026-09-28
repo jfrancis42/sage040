@@ -145,3 +145,9 @@ core.*
 # whole push with "exceeds GitHub's file size limit of 100.00 MB" --
 # which is how this rule came to exist.
 *conflicted copy*
+
+# `make image` builds a new disk here, beside hd.img, and never over it.
+/hd-new.img
+
+# Python bytecode from running the tools/ scripts.
+__pycache__/

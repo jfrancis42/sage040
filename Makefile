@@ -28,7 +28,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: logintest fsimgtest fattest all boot run install src qemu world libc-if-missing toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest linktest sshtest whotest uptimetest routetest homeenvtest ttytest nativetest qemutest libc cube programs clean distclean
+.PHONY: logintest fsimgtest fattest all boot run install src qemu world libc-if-missing toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest qemutest libc cube programs clean distclean
 
 all:
 	$(MAKE) -C bootrom
@@ -48,6 +48,56 @@ all:
 # short loop on one program is `make programs`, which is still there.
 boot: install
 	$(MAKE) -C kernel boot
+
+# A COMPLETE DISK, FROM NOTHING.
+#
+# Everything `boot` puts on a disk -- the kernel, the system, every
+# port, Python, the native toolchain, the kernel's source, /etc and the
+# home directories' startup files -- built into a NEW image, plus what
+# no build can make: the accounts (/etc/passwd, /etc/group and
+# /etc/shadow, which holds every password set on the machine) and /home
+# and /root are carried over from the current disk (KEEP_FROM), bytes,
+# modes and owners. Then it prints what the new disk lacks
+# compared with the old one, so a gap shows instead of hiding.
+#
+#     make image                   -> hd-new.img, homes from hd.img
+#     make image IMAGE=x.img KEEP_FROM=
+#                                  -> x.img, with no homes carried over
+#
+# It never writes to an existing file: the disk the machine is running
+# is left alone. And it does not BOOT anything: `boot` ends by starting
+# the machine, so this runs `install` and the kernel's own install (the
+# KERNEL.ROM step) instead -- an image build that sat at a login prompt
+# waiting for somebody is how that was found. To switch over, stop the machine and
+#     mv hd-new.img hd.img
+#
+# From a clean tree this takes about an hour, most of it CPython; with
+# everything built already it is a few minutes of copying.
+IMAGE     ?= hd-new.img
+KEEP_FROM ?= $(DISK)
+# What no build can make: the accounts (passwords set on the machine
+# live in /etc/shadow) and what people keep in their homes.
+KEEP_PATHS ?= /home /root /etc/passwd /etc/group /etc/shadow
+.PHONY: image
+image:
+	@if [ -e "$(IMAGE)" ]; then \
+	    echo "image: $(IMAGE) already exists -- remove it, or choose another IMAGE="; \
+	    exit 1; \
+	fi
+	$(MAKE) install DISK=$(abspath $(IMAGE))
+	$(MAKE) -C kernel install DISK=$(abspath $(IMAGE))
+	@if [ -n "$(KEEP_FROM)" ] && [ -f "$(KEEP_FROM)" ]; then \
+	    python3 tools/fscarry.py "$(KEEP_FROM)" "$(IMAGE)" $(KEEP_PATHS) || exit 1; \
+	fi
+	@PART_OFFSET=$(PART_OFFSET) tools/fsimg.sh "$(IMAGE)" fsck > /dev/null || \
+	    { echo "image: $(IMAGE) FAILS fsck"; exit 1; }
+	@echo
+	@echo "$(IMAGE) is complete, and clean by e2fsck."
+	@if [ -n "$(KEEP_FROM)" ] && [ -f "$(KEEP_FROM)" ]; then \
+	    echo "compared with $(KEEP_FROM) (tools/fsinv.py; logs and history excluded):"; \
+	    python3 tools/fsinv.py "$(KEEP_FROM)" "$(IMAGE)" | grep '^==' ; \
+	    echo "details: python3 tools/fsinv.py $(KEEP_FROM) $(IMAGE)"; \
+	fi
 
 #
 # The programs that live on the disk alongside the kernel.
@@ -90,10 +140,20 @@ ports:
 	$(MAKE) -C ports/uemacs install
 	$(MAKE) -C ports/vi install
 	$(MAKE) -C ports/bzip2 install
+	$(MAKE) -C ports/gzip install
 	$(MAKE) -C ports/xz install
 	$(MAKE) -C ports/zstd install
 	$(MAKE) -C ports/sqlite install
 	$(MAKE) -C ports/openssl install
+	$(MAKE) -C ports/ca-certs install
+	$(MAKE) -C ports/brotli install
+	$(MAKE) -C ports/nghttp2 install
+	$(MAKE) -C ports/libunistring install
+	$(MAKE) -C ports/libidn2 install
+	$(MAKE) -C ports/libpsl install
+	$(MAKE) -C ports/curl install
+	$(MAKE) -C ports/wget install
+	$(MAKE) -C ports/lynx install
 	$(MAKE) -C ports/readline install
 	$(MAKE) -C ports/libffi install
 	$(MAKE) -C ports/dropbear install
@@ -219,7 +279,7 @@ qemu:
 run:
 	$(MAKE) -C kernel run
 
-test: fsimgtest tests cryptotest fstest fattest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest logintest linktest sshtest whotest uptimetest routetest homeenvtest ttytest qemutest
+test: fsimgtest tests cryptotest fstest fattest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest logintest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest qemutest
 
 # The host's end of the disk, before anything that uses it: every suite
 # below stages its files through tools/fsimg.sh, so a fault in it does
@@ -391,6 +451,35 @@ routetest:
 # account.
 homeenvtest:
 	cd kernel && ./homeenvtest.sh
+
+# The trusted CAs: Mozilla's bundle at /etc/ssl/cert.pem, where the
+# machine's OpenSSL looks by default. A real chain verifies with no
+# -CAfile; with the default stores off it fails, and so does a
+# self-signed certificate.
+catest:
+	cd kernel && ./catest.sh
+
+# curl against servers on the host: http by address and by name, a
+# redirect, gzip, POST, resume, https with a test CA -- and the
+# controls that make https mean something: the default store refuses
+# the test CA, -k gets through, a certificate for the wrong name is
+# refused. Also a DNS lookup with no resolv.conf, which used to crash
+# libc, and https://curl.se when the host is online.
+curltest:
+	cd kernel && ./curltest.sh
+
+# wget against the same host servers (kernel/websrv.py): the same
+# transfers and https controls as curltest, plus a recursive fetch that
+# must stop at the depth it was given.
+wgettest:
+	cd kernel && ./wgettest.sh
+
+# Lynx: pages rendered as text with their links, UTF-8 kept, gzip and
+# brotli decoded when a server sends them unasked, https verified (and
+# refused, including under FORCE_SSL_PROMPT:NO), and a real session
+# driven with keystrokes -- follow a link, quit.
+lynxtest:
+	cd kernel && ./lynxtest.sh
 
 # Two independent terminals (screen tty1, serial console), each its own
 # size, isolated, with a getty on each -- the un-mirrored console.
