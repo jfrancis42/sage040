@@ -205,12 +205,41 @@ static u32 parse_u32(const char *s, u32 fallback)
     return (any && *s == '\0') ? v : fallback;
 }
 
+/*
+ * Sleep until frame `n` is due, counting from the tick `*start`.
+ *
+ * Sleeping a fixed period each frame undershoots by construction: the
+ * period is rounded to whole ticks, and the frame's own drawing time
+ * comes on top. 30 fps asked for came out as 24. Aiming at a deadline
+ * measured from the start instead lets one frame's rounding be made up
+ * by the next, so the average is what was asked for. A program that
+ * falls more than a frame behind -- the machine was busy -- starts the
+ * schedule again from now rather than racing to catch up, which would
+ * show as a burst of speed.
+ */
+static void frame_wait(u32 *start, u32 *n, u32 fps)
+{
+    u32 due, now;
+    s32 ahead;
+
+    (*n)++;
+    due = *start + (*n * HZ) / fps;
+    now = times(0);
+    ahead = (s32)(due - now);
+    if (ahead > 0) {
+        msleep((u32)ahead * 1000 / HZ);
+    } else if (-ahead > (s32)(HZ / fps) + 1) {
+        *start = now;
+        *n = 0;
+    }
+}
+
 int main(int argc, char **argv)
 {
     int ax = 0, ay = 0, az = 0;
     u32 frames = 0;
     u32 fps = 50;
-    u32 period;
+    u32 sched = 0, sched_start;
     u32 started;
 
     if (argc > 1) {
@@ -260,13 +289,13 @@ int main(int argc, char **argv)
     puts("press any key to stop\n");
 
     /*
-     * Sleep the frame period rather than spinning it out. The kernel has
-     * a tick now, so a program can wait without burning the machine --
-     * and the rate is the same wherever this runs, which a counted delay
+     * Sleep out each frame rather than spinning it out. The kernel has a
+     * tick now, so a program can wait without burning the machine -- and
+     * the rate is the same wherever this runs, which a counted delay
      * loop never was.
      */
-    period = 1000 / fps;
     started = times(0);
+    sched_start = started;
 
     while (!key_waiting()) {
         render(ax, ay, az);
@@ -276,7 +305,7 @@ int main(int argc, char **argv)
         az = (az + 1) & 255;
         frames++;
 
-        msleep(period);
+        frame_wait(&sched_start, &sched, fps);
     }
 
     /* Take the keystroke that stopped it, so it does not turn up at the

@@ -45,6 +45,7 @@ kernel/kernel.map
 # what is executable by reading the file, not its name -- so they have to
 # be named here one by one rather than matched by a suffix.
 apps/cube
+apps/boids
 apps/hello
 apps/fbtest
 apps/faulter
