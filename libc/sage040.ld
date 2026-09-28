@@ -21,6 +21,10 @@ SECTIONS {
         *(.text .text.*)
     } > USER
     .rodata : { *(.rodata .rodata.*) } > USER
+    /* Writable sections start on a page of their own: under QEMU a
+     * store to a page it has translated code from throws the
+     * translation away. See lib/user.ld -- and see there too for why
+     * every writable section after the first says `. :`. */
 
     /*
      * One section for both, the way picolibc's own scripts lay it out:
@@ -29,7 +33,8 @@ SECTIONS {
      * two in separate sections and only the separate symbols defined,
      * it found neither and ran no constructors at all.
      */
-    .init_array : {
+    .init_array ALIGN(4096) : {
+        . = ALIGN(4);
         PROVIDE_HIDDEN(__preinit_array_start = .);
         PROVIDE_HIDDEN(__bothinit_array_start = .);
         KEEP(*(.preinit_array))
@@ -41,7 +46,7 @@ SECTIONS {
         PROVIDE_HIDDEN(__init_array_end = .);
         PROVIDE_HIDDEN(__bothinit_array_end = .);
     } > USER
-    .fini_array : {
+    .fini_array . : {
         PROVIDE_HIDDEN(__fini_array_start = .);
         /* .dtors.*: this gcc puts a destructor WITH A PRIORITY there,
          * not in .fini_array.* -- picolibc's stdout flush at exit is
@@ -74,13 +79,13 @@ SECTIONS {
      * CPython compiles its modules that way, and died dereferencing a
      * null module definition. The order below is ld's own default.
      */
-    .got : {
+    .got . : {
         *(.got.plt) *(.igot.plt) *(.got) *(.igot)
     } > USER
-    .data.rel.ro : { *(.data.rel.ro .data.rel.ro.*) } > USER
+    .data.rel.ro . : { *(.data.rel.ro .data.rel.ro.*) } > USER
 
-    .data : { *(.data .data.*) } > USER
-    .bss  : {
+    .data . : { *(.data .data.*) } > USER
+    .bss . : {
         . = ALIGN(4);
         __bss_start = .;
         *(.bss .bss.*) *(COMMON)

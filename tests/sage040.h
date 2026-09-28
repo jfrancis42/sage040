@@ -449,6 +449,23 @@ void test_fail(const char *what);
 void test_end(void);
 int  test_failures(void);
 
+/*
+ * Real time, for a test that waits on something outside the CPU -- the
+ * harness typing, a timer counting, a byte arriving on a chardev. A
+ * spin count is no bound at all for that: how long it lasts depends on
+ * the host, and on things as incidental as whether the loop's counter
+ * shares a page with the loop's code (see lib/user.ld). This watches
+ * the M48T59's seconds register, which QEMU reads from the host clock
+ * live, so a deadline of N seconds passes after between N and N+1.
+ */
+struct deadline {
+    u8  last;
+    int changes;
+    int seconds;
+};
+void deadline_start(struct deadline *d, int seconds);
+int  deadline_passed(struct deadline *d);
+
 /* Halt the machine (STOP with interrupts masked). */
 void halt(void) __attribute__((noreturn));
 #endif /* SAGE040_NO_TESTLIB */

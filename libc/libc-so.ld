@@ -3,7 +3,7 @@
  * libc-so.ld - the linker script for libc.so.
  *
  * GNU ld's own script for -shared on this target (`m68k-elf-ld -shared
- * --verbose`, binutils 2.45), with three changes, each marked SAGE040:
+ * --verbose`, binutils 2.45), with four changes, each marked SAGE040:
  *
  *   __fini_array_start/end around .fini_array. picolibc's exit() runs
  *   __libc_fini_array, which walks that range -- and the range must
@@ -14,6 +14,8 @@
  *   __bothinit_array_start/end, as an empty range. See the comment.
  *
  *   .libgcc, libgcc's code, placed in the data segment. See there.
+ *
+ *   .data on a page of its own, away from .libgcc. See there.
  *
  * The notice below is the FSF's, and is kept as it asks.
  */
@@ -188,6 +190,12 @@ SECTIONS
      is shared. The 68040's MMU has no execute permission, so code runs
      from any page it can read; the segment is marked RWX regardless. */
   .libgcc         : { *(.libgcc) }
+  /* SAGE040: .data on a page of its own. .libgcc above is CODE, and
+     under QEMU a store to a page it has translated code from throws the
+     translation away -- so libc's globals sharing a page with libgcc's
+     division routines had them retranslated on every write. The GOT
+     before .libgcc is written only by ld.so, at load. See lib/user.ld. */
+  . = ALIGN(4096);
   .data           :
   {
     *(.data .data.* .gnu.linkonce.d.*)

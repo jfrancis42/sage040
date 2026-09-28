@@ -24,7 +24,10 @@ SECTIONS {
         *(.text .text.*)
     }
     .rodata : { *(.rodata .rodata.*) }
-    .data ALIGN(4096) : { *(.data .data.*) }
+    /* Writable sections start on a page of their own: under QEMU a
+     * store to a page it has translated code from throws the
+     * translation away. See lib/user.ld. */
+    .data ALIGN(4096) : { . = ALIGN(4); *(.data .data.*) }
     .bss : { *(.bss .bss.*) *(COMMON) }
     _end = .;
     /DISCARD/ : { *(.eh_frame) *(.comment) *(.note*) }

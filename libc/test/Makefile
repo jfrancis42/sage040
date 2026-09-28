@@ -44,7 +44,7 @@ sotest: sotest.c libsot.so $(DYN_DEPS)
 # little-endian and so cannot catch a byte-order mistake.
 cryptest.c: ../../kernel/cryptotest.c
 	cp $< $@
-cryptest: cryptest.c ../../kernel/crypto.c ../../kernel/crypto.h
+cryptest: cryptest.c ../../kernel/crypto.c ../../kernel/crypto.h $(STATIC_DEPS)
 	$(CC) $(CFLAGS) -iquote ../../kernel $(STATIC_LDFLAGS) $(LIBC_DIR)/crt0.s \
 	    cryptest.c ../../kernel/crypto.c $(STATIC_LDLIBS) -o $@
 

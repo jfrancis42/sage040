@@ -101,7 +101,7 @@ static int saw(u8 code)
 int main(void)
 {
     u8 v = 0, mode = 0;
-    long spin;
+    struct deadline keys_due;
 
     test_begin("t12 Intel 8042 keyboard controller");
 
@@ -163,7 +163,10 @@ int main(void)
     /* --- collect what the harness types ---------------------------- */
     uart_puts("KEYS-PLEASE\n");
 
-    for (spin = 0; spin < 40000000L && ncodes < MAX_CODES; spin++) {
+    /* Real time, not a spin count: the harness polls for KEYS-PLEASE
+     * and then types a key every tenth of a second. */
+    deadline_start(&keys_due, 10);
+    while (!deadline_passed(&keys_due) && ncodes < MAX_CODES) {
         if (MMIO8(KBD_STATUS) & KBD_STAT_OBF) {
             u8 c = MMIO8(KBD_DATA);
 

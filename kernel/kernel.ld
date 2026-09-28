@@ -42,8 +42,11 @@ SECTIONS {
         *(.text .text.*)
     } > RAM
     .rodata : { *(.rodata .rodata.*) } > RAM
-    .data   : { *(.data .data.*) } > RAM
-    .bss    : {
+    /* Writable sections start on a page of their own: under QEMU a
+     * store to a page it has translated code from throws the
+     * translation away. See lib/user.ld. */
+    .data ALIGN(4096) : { . = ALIGN(4); *(.data .data.*) } > RAM
+    .bss . : {
         . = ALIGN(4);
         __bss_start = .;
         *(.bss .bss.*) *(COMMON)

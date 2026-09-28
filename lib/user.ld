@@ -41,8 +41,32 @@ SECTIONS {
         *(.text .text.*)
     } > USER
     .rodata : { *(.rodata .rodata.*) } > USER
-    .data   : { *(.data .data.*) }     > USER
-    .bss    : {
+    /*
+     * Everything writable starts on a page of its own. Under QEMU, a
+     * store to a page holding code it has translated throws that
+     * translation away, so a global written in a loop that shares a
+     * page with the loop's own code has it retranslated on every pass.
+     * wator's frame took 26 ms instead of 1.5 for exactly that: its row
+     * buffer sat in .bss on the last page of .text. Which programs it
+     * hit depended on where the code happened to end. Real hardware has
+     * no such cost; it costs a page per program either way.
+     *
+     * The alignment is the section's address, not a `. = ALIGN(4096)`
+     * before it: with `> USER`, ld places a section at the region's
+     * next free byte and ignores the assignment -- silently. And the
+     * `. = ALIGN(4)` inside is what keeps the section when a program
+     * has no .data (ld keeps a section that assigns to `.`, but not one
+     * that only defines a symbol), so that .bss still lands on the new
+     * page rather than straight after .rodata.
+     *
+     * .bss says `. :` for the same reason. Without an address it too is
+     * put at the region's next free byte, and an EMPTY section placed
+     * at an explicit address does not move that on: `hello`, which has
+     * no .data, had its .bss back on the page of its code. `.` does
+     * follow the section before, empty or not.
+     */
+    .data ALIGN(4096) : { . = ALIGN(4); *(.data .data.*) } > USER
+    .bss . : {
         . = ALIGN(4);
         __bss_start = .;
         *(.bss .bss.*) *(COMMON)

@@ -21,15 +21,27 @@
  */
 #include "sage040.h"
 
-static volatile int delay_sink;
-
-static void delay(int n)
+/*
+ * Wait for the receiver to hold a byte, for up to `seconds` of real
+ * time. This was a spin count, and it held only while the loop's
+ * counter (a volatile in .bss) sat on the same page as the loop's code,
+ * which made every pass retranslate the loop and so made 2,000,000
+ * passes take long enough. Once the linker scripts put data on a page
+ * of its own the loop ran many times faster, finished before QEMU
+ * delivered the first byte, and the test failed with the receiver
+ * working perfectly.
+ */
+static int wait_rx(int seconds)
 {
-    int i;
+    struct deadline d;
 
-    for (i = 0; i < n; i++) {
-        delay_sink++;
+    deadline_start(&d, seconds);
+    while (!(MMIO8(MFP_RSR) & MFP_RSR_BF)) {
+        if (deadline_passed(&d)) {
+            return 0;
+        }
     }
+    return 1;
 }
 
 static void usart_putc(char c)
@@ -137,12 +149,7 @@ int main(void)
     mfp_clear_pending(MFPCH_RCV_FULL);
     MMIO8(MFP_RSR) = MFP_RSR_RE;        /* enable: input may now arrive */
 
-    for (spin = 0; spin < 2000000; spin++) {
-        if (MMIO8(MFP_RSR) & MFP_RSR_BF) {
-            break;
-        }
-        delay(4);
-    }
+    wait_rx(5);
 
     v = MMIO8(MFP_RSR);
     uart_puts("  RSR after enable = 0x"); uart_puthex8(v); uart_putc('\n');
@@ -166,13 +173,7 @@ int main(void)
         int n = 0;
 
         for (n = 0; n < 3; n++) {
-            for (spin = 0; spin < 2000000; spin++) {
-                if (MMIO8(MFP_RSR) & MFP_RSR_BF) {
-                    break;
-                }
-                delay(4);
-            }
-            if (!(MMIO8(MFP_RSR) & MFP_RSR_BF)) {
+            if (!wait_rx(5)) {
                 break;
             }
             got[n] = (char)MMIO8(MFP_UDR);

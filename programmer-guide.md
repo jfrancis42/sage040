@@ -807,6 +807,21 @@ It is a **reproducible order-of-magnitude model, not cycle accuracy**:
   instruction-bound when on real hardware it would be bandwidth-bound.
 - **Device registers are nearly free**, which flatters anything that offloads
   work to a peripheral.
+- **A store to a page that holds code is expensive.** QEMU throws away
+  what it has translated from a page the moment that page is written, so
+  a variable written in a loop that shares a page with the loop's own
+  code has the loop retranslated on every pass. Real hardware has no such
+  cost. Every linker script here -- programs, picolibc programs, `libc.so`,
+  `ld.so`, the kernel, the boot ROM, the bare-metal tests -- starts its
+  writable sections on a page of their own for this reason: before they
+  did, wator's frame took 26 ms instead of 1.5, because its row buffer sat
+  in `.bss` on the last page of `.text`. Which programs it hit depended on
+  nothing but where their code happened to end. `tools/pagecheck.py` (run
+  first by `make test`) checks every binary, since nothing else would
+  ever notice. It also means **a delay loop's length is not a property of
+  the loop**: `t9`'s 2,000,000-pass timeout got many times shorter when
+  its counter moved off the code page, and failed. Wait for real time
+  (`struct deadline` in `tests/uart.c`) for anything outside the CPU.
 
 The errors run in both directions, so do not quote it as a hardware
 measurement. What it is genuinely good for: making timing **deterministic and
@@ -825,7 +840,8 @@ owning it: the kernel is running, it owns the hardware, and a program
 reaches it through `trap #0`.
 
 See [`apps/`](apps/) and [`system/`](system/) for working examples — `hello.c` is thirty lines,
-`fbtest.c` draws one of everything, `cube.c` is a real one.
+`fbtest.c` draws one of everything, `cube.c` is a real one, and
+`boids.c`, `wator.c` and `life.c` are three more.
 
 ### The system call interface
 
@@ -1527,7 +1543,9 @@ blitter's work is visible through it once `FBIO_SYNC` returns.
 `FBIO_GETINFO` says how large video memory is (`mem_size`) and where
 the buffer being drawn (`draw_offset`) and the one on screen
 (`show_offset`) begin in it -- they change at every `FBIO_FLIP`, so
-read them again after one. `apps/fbmap.c` is the example.
+read them again after one. `apps/fbmap.c` is the example, and
+`apps/wator.c` and `apps/life.c` draw every frame this way -- a grid of
+sixteen thousand cells would be sixteen thousand ioctls drawn any other.
 
 **It is double buffered.** Drawing goes to the buffer that is not on
 screen; `FBIO_FLIP` swaps them with one register write, so the change

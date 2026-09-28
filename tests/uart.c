@@ -121,6 +121,24 @@ void test_fail(const char *what)
     uart_putc('\n');
 }
 
+void deadline_start(struct deadline *d, int seconds)
+{
+    d->last = MMIO8(RTC_SECONDS);
+    d->changes = 0;
+    d->seconds = seconds;
+}
+
+int deadline_passed(struct deadline *d)
+{
+    u8 now = MMIO8(RTC_SECONDS);
+
+    if (now != d->last) {
+        d->last = now;
+        d->changes++;
+    }
+    return d->changes > d->seconds;
+}
+
 int test_failures(void)
 {
     return failures;

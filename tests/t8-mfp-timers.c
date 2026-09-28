@@ -105,8 +105,21 @@ int main(void)
     MMIO8(MFP_TCDR) = 255;
     tcdcr_set_c(MFP_TC_DIV200);         /* slow enough to observe */
     a = MMIO8(MFP_TCDR);
-    delay(200000);
-    b = MMIO8(MFP_TCDR);
+    /*
+     * Watch for up to two seconds of real time, not a counted delay.
+     * The counter moves every 81 us of REAL time, and how long a
+     * counted delay lasts depends on the host -- this one got many
+     * times shorter when the linker scripts stopped putting its
+     * volatile counter on the same page as its code.
+     */
+    {
+        struct deadline d;
+
+        deadline_start(&d, 2);
+        do {
+            b = MMIO8(MFP_TCDR);
+        } while (b == a && !deadline_passed(&d));
+    }
     uart_puts("  timer C: "); uart_puthex8(a);
     uart_puts(" -> "); uart_puthex8(b); uart_putc('\n');
     if (b != a) {
@@ -116,10 +129,19 @@ int main(void)
     }
     tcdcr_set_c(MFP_TC_STOP);
 
-    /* A stopped timer must stay put. */
+    /* A stopped timer must stay put -- watched for a whole second of
+     * real time, some thousands of the ticks it would have counted,
+     * rather than a delay that might be shorter than one of them. */
     a = MMIO8(MFP_TCDR);
-    delay(200000);
-    b = MMIO8(MFP_TCDR);
+    b = a;
+    {
+        struct deadline d;
+
+        deadline_start(&d, 1);
+        while (b == a && !deadline_passed(&d)) {
+            b = MMIO8(MFP_TCDR);
+        }
+    }
     if (a == b) {
         test_ok("a stopped timer's counter holds still");
     } else {
