@@ -1,0 +1,30 @@
+picolibc's <sys/ioctl.h> has no FIONBIO, the ioctl that turns a
+descriptor's non-blocking mode on or off. ioctl() already passes an
+unknown request straight to the kernel (patch 30), and the kernel has
+FIONBIO at Linux's number, so all that was missing is the name.
+
+It mattered to OpenSSL: BIO_socket_nbio() uses FIONBIO when it is
+defined and fcntl(O_NONBLOCK) otherwise -- but bio_sock.c does not
+include <fcntl.h>, so on this system neither branch compiled, and the
+function became an unconditional "passed invalid argument". Every
+`openssl s_client -connect` failed before sending a byte. curl was not
+affected: it sets non-blocking mode itself, with fcntl.
+
+--- a/libc/include/sys/ioctl.h	2026-09-26 17:00:34.027003868 -0600
++++ b/libc/include/sys/ioctl.h	2026-09-26 17:00:34.053580024 -0600
+@@ -71,6 +71,15 @@
+ #define TIOCSPTLCK  0x40045431 /* unlockpt: int *                    */
+ 
+ /*
++ * Non-blocking mode for a descriptor, from an int: 1 on, 0 off. The
++ * same as fcntl(O_NONBLOCK), and what socket code reaches for first --
++ * OpenSSL's BIO_socket_nbio() tests for FIONBIO and, finding neither
++ * it nor <fcntl.h> in scope, compiled to "passed invalid argument", so
++ * `openssl s_client` could not connect to anything.
++ */
++#define FIONBIO     0x5421
++
++/*
+  * WHAT TERMINAL IS THIS DESCRIPTOR OPEN ON -- the name as /dev has it,
+  * without the "/dev/": "console", "ttyS0", "pts/0". Fills a
+  * char[TTYNAME_MAX]. This one is NOT Linux's, because Linux has no

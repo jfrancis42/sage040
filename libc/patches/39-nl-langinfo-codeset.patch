@@ -1,0 +1,36 @@
+picolibc 1.8.12: nl_langinfo(CODESET) returns the locale's NAME --
+"C.UTF-8" -- where POSIX means its character set, and glibc answers
+"UTF-8". Anything that hands the answer to iconv then asks for a
+charset called "C.UTF-8", which does not exist: libunistring's
+u8_strconv_from_locale() failed for every non-ASCII string, so libidn2
+could not convert a single international domain name, and curl and
+idn2 refused "bücher.example" with LANG=C.UTF-8 set. Not specific to
+m68k.
+
+Plain "C" answers "ANSI_X3.4-1968", glibc's name for ASCII, which
+libunistring and gnulib's localcharset both recognise.
+
+--- a/libc/locale/nl_langinfo.c	2026-09-26 21:25:10.830778735 -0600
++++ b/libc/locale/nl_langinfo.c	2026-09-26 21:25:10.852672847 -0600
+@@ -41,8 +41,19 @@
+ nl_langinfo_l(nl_item item, locale_t locale)
+ {
+     switch (item) {
+-    case CODESET:
+-        return (char *)__locale_name(locale);
++    case CODESET: {
++        /*
++         * The CHARACTER SET, not the locale's name: "UTF-8" for
++         * "C.UTF-8", as POSIX means and glibc answers. Every name in
++         * __locale_names is "C" or "C.<charset>". Plain "C" is ASCII,
++         * under the name glibc gives it.
++         */
++        const char *name = __locale_name(locale);
++
++        if (name[0] == 'C' && name[1] == '.')
++            return (char *)name + 2;
++        return (char *)"ANSI_X3.4-1968";
++    }
+     case D_T_FMT:
+         return TIME_C_FMT;
+     case D_FMT:

@@ -10,9 +10,11 @@ include $(TOPDIR)/disk.mk
 .DEFAULT_GOAL := all
 
 SAGE_LIBC ?= $(HOME)/m68k/sage040-libc
-M68K_PREFIX ?= $(if $(wildcard $(HOME)/m68k/install/bin/m68k-elf-gcc),$(HOME)/m68k/install/bin/,)
-CC   := $(M68K_PREFIX)m68k-elf-gcc
-SIZE := $(M68K_PREFIX)m68k-elf-size
+# The toolchain's INSTALL ROOT, as everywhere else (see libc/libc.mk).
+M68K_PREFIX ?= $(HOME)/m68k/install
+TOOLCHAIN := $(if $(wildcard $(M68K_PREFIX)/bin/m68k-elf-gcc),$(M68K_PREFIX)/bin/m68k-elf,m68k-elf)
+CC   := $(TOOLCHAIN)-gcc
+SIZE := $(TOOLCHAIN)-size
 
 CFLAGS  := -mcpu=68040 -O2 -Wall -Wextra -ffreestanding -fno-builtin \
            -nostdlib -fno-pic

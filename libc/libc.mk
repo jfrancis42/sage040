@@ -11,14 +11,19 @@
 # The headers are picolibc's, not uapi.h: a program written for a POSIX
 # system is written against <stdio.h> and <unistd.h>, and gets them.
 
-M68K_PREFIX ?= $(if $(wildcard $(HOME)/m68k/install/bin/m68k-elf-gcc),$(HOME)/m68k/install/bin/,)
+# M68K_PREFIX is the toolchain's INSTALL ROOT, as everywhere else in the
+# tree (lib/program.mk, the kernel, cross.sh). This file used to take it
+# as the bin directory with a trailing slash, so a shell that exported
+# the root built with "installm68k-elf-gcc".
+M68K_PREFIX ?= $(HOME)/m68k/install
 SAGE_LIBC   ?= $(HOME)/m68k/sage040-libc
 
 LIBC_DIR := $(TOPDIR)/libc
 
-CC   := $(M68K_PREFIX)m68k-elf-gcc
-SIZE := $(M68K_PREFIX)m68k-elf-size
-READELF := $(M68K_PREFIX)m68k-elf-readelf
+TOOLCHAIN := $(if $(wildcard $(M68K_PREFIX)/bin/m68k-elf-gcc),$(M68K_PREFIX)/bin/m68k-elf,m68k-elf)
+CC   := $(TOOLCHAIN)-gcc
+SIZE := $(TOOLCHAIN)-size
+READELF := $(TOOLCHAIN)-readelf
 
 CFLAGS  := -mcpu=68040 -O2 -Wall -Wextra -nostdinc -nostdlib \
            -isystem $(SAGE_LIBC)/include \

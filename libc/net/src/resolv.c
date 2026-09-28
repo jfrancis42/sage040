@@ -85,7 +85,20 @@ int h_errno;
 #define NR_netctl     1002
 #define NETCTL_INFO   0
 
-/* The kernel's struct netinfo (kernel/uapi.h), for the DHCP server. */
+/*
+ * The kernel's struct netinfo (kernel/uapi.h), for the DHCP server.
+ *
+ * A COPY, because libc does not include the kernel's headers -- and a
+ * copy goes stale. The kernel grew `loopback` when lo arrived and this
+ * did not, so NETCTL_INFO wrote four bytes past the variable, over the
+ * caller's saved frame pointer: every DNS lookup made without an
+ * /etc/resolv.conf died with a bus error at 0xfffffff8. Nothing here
+ * noticed because every test wrote a resolv.conf first.
+ *
+ * So the kernel's answer lands in NETINFO_ROOM bytes, not in exactly
+ * this struct: the kernel only ever appends fields, `dns` stays where
+ * it is, and the next field it adds cannot reach the stack again.
+ */
 struct netinfo {
     char     name[8];
     uint8_t  mac[6];
@@ -93,7 +106,9 @@ struct netinfo {
     uint32_t ip, netmask, gateway, up;
     uint32_t rx_packets, tx_packets, rx_dropped, tx_errors;
     uint32_t dns;
+    uint32_t loopback;
 };
+#define NETINFO_ROOM  256
 
 static int name_eq(const char *a, const char *b, size_t n)
 {
@@ -309,11 +324,14 @@ static int servers(struct server *out)
         }
     }
     if (n == 0) {
-        struct netinfo ni;
+        union {
+            struct netinfo ni;
+            unsigned char room[NETINFO_ROOM];
+        } u;
 
-        memset(&ni, 0, sizeof(ni));
-        if (syscall(NR_netctl, NETCTL_INFO, 0, &ni) == 0 && ni.dns) {
-            out[0].addr = htonl(ni.dns);
+        memset(&u, 0, sizeof(u));
+        if (syscall(NR_netctl, NETCTL_INFO, 0, &u) == 0 && u.ni.dns) {
+            out[0].addr = htonl(u.ni.dns);
             out[0].port = DNS_PORT;
             n = 1;
         }

@@ -1,0 +1,22 @@
+pthread_sigmask() is declared only in <pthread.h> (this system's thread
+layer, patch 21), but POSIX puts it in <signal.h>, and portable code
+includes only that. gnulib does: its pthread_sigmask replacement --
+compiled whenever configure is unsure of the function, which a cross
+build always is -- calls the real one with only <signal.h> in scope,
+and with -Werror=implicit-function-declaration wget's lib/ did not
+build. The same file stopped libunistring's gnulib tests.
+
+The two declarations are the same prototype, so a program that
+includes both headers sees no conflict.
+
+--- a/libc/include/signal.h	2026-09-26 22:05:31.633317377 -0600
++++ b/libc/include/signal.h	2026-09-26 22:05:31.649973477 -0600
+@@ -360,6 +360,8 @@
+ int sigpending(sigset_t *) __picolibc_export;
+ int sigprocmask(int, const sigset_t *, sigset_t *) __picolibc_export;
+ int __fallback_sigprocmask(int, const sigset_t *, sigset_t *) __picolibc_export;
++/* POSIX declares it HERE, not only in <pthread.h>. */
++int pthread_sigmask(int, const sigset_t *, sigset_t *);
+ #endif
+ #if __POSIX_VISIBLE >= 199309L
+ int sigqueue(__pid_t, int, const union sigval) __picolibc_export;

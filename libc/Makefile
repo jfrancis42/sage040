@@ -37,8 +37,10 @@ TOPDIR := ..
 include $(TOPDIR)/disk.mk
 
 SAGE_LIBC ?= $(HOME)/m68k/sage040-libc
-M68K_PREFIX ?= $(if $(wildcard $(HOME)/m68k/install/bin/m68k-elf-gcc),$(HOME)/m68k/install/bin/,)
-CC := $(M68K_PREFIX)m68k-elf-gcc
+# The toolchain's INSTALL ROOT, as everywhere else (see libc/libc.mk).
+M68K_PREFIX ?= $(HOME)/m68k/install
+TOOLCHAIN := $(if $(wildcard $(M68K_PREFIX)/bin/m68k-elf-gcc),$(M68K_PREFIX)/bin/m68k-elf,m68k-elf)
+CC := $(TOOLCHAIN)-gcc
 
 .DEFAULT_GOAL := all
 .PHONY: all install install-usr clean
