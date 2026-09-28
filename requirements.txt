@@ -1,0 +1,7 @@
+# Python modules the HOST needs to run the test suites. Nothing here
+# runs on the machine. Install with:
+#
+#     pip install -r requirements.txt --break-system-packages
+#
+# kernel/curltest.sh
+h2              # an HTTP/2 server, to prove curl negotiates h2

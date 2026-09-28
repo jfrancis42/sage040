@@ -1,0 +1,22 @@
+LYUtils.c includes <pwd.h> only inside #ifdef HAVE_UTMP, but calls
+getpwnam() -- to expand ~user in a path -- under #ifndef NOUSERS, which
+is on everywhere. So the file compiles only on systems that happen to
+have utmp. This one does not, and the build stopped with getpwnam()
+undeclared and struct passwd incomplete.
+
+Include <pwd.h> whenever configure found it (HAVE_PWD_H).
+
+--- a/src/LYUtils.c	2026-09-27 08:13:20.878028821 -0600
++++ b/src/LYUtils.c	2026-09-27 08:13:20.936699487 -0600
+@@ -101,8 +101,10 @@
+ #include <lib$routines.h>
+ #endif /* VMS */
+ 
++#ifdef HAVE_PWD_H
++#include <pwd.h>		/* getpwnam(), for ~user, whether or not utmp exists */
++#endif
+ #ifdef HAVE_UTMP
+-#include <pwd.h>
+ #ifdef UTMPX_FOR_UTMP
+ #include <utmpx.h>
+ #define utmp utmpx

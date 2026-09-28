@@ -1,0 +1,37 @@
+FORCE_SSL_PROMPT:NO accepts certificates that fail verification.
+
+lynx.cfg documents NO as: questionable conditions "will be reported,
+but not attempted". In an OpenSSL build the only place a verification
+failure is judged is HTSSLCallback(), and it tests
+
+    if (!(preverify_ok || ssl_okay || ssl_noprompt))
+
+-- ssl_noprompt for truth. FORCE_PROMPT_YES and FORCE_PROMPT_NO are both
+non-zero, so NO skips the block exactly as YES does, the callback
+returns 1, and the connection proceeds. HTForcedPrompt(), which the
+block would have called, answers NO for FORCE_PROMPT_NO and so would
+have refused. (The GnuTLS path, HTCheckCertificate's tail, compares
+against FORCE_PROMPT_NO explicitly and is correct.)
+
+Measured with Lynx 2.9.3 as a distribution builds it, against a
+self-signed certificate for the right name: default settings refuse
+("self-signed certificate ... Unable to make secure connection");
+FORCE_SSL_PROMPT:NO fetches the page.
+
+Skip the block only for FORCE_PROMPT_YES.
+
+--- a/WWW/Library/Implementation/HTTLS.c	2026-09-27 12:35:33.221756856 -0600
++++ b/WWW/Library/Implementation/HTTLS.c	2026-09-27 12:35:33.236084556 -0600
+@@ -178,7 +178,11 @@
+     FREE(msg);
+ #endif
+ 
+-    if (!(preverify_ok || ssl_okay || ssl_noprompt)) {
++    /* Skip the check only when told to say YES. FORCE_PROMPT_NO is
++     * non-zero too, and testing ssl_noprompt for truth let it skip the
++     * check as well -- accepting the very certificates it exists to
++     * refuse. HTForcedPrompt() answers NO for it below.  */
++    if (!(preverify_ok || ssl_okay || ssl_noprompt == FORCE_PROMPT_YES)) {
+ #ifdef USE_X509_SUPPORT
+ 	SSL_single_prompt(&msg,
+ 			  X509_verify_cert_error_string((long)

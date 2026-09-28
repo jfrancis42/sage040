@@ -1,0 +1,39 @@
+wget calls setlocale() only when it is built with NLS. Built without it,
+the program stays in the C locale whatever LANG says, so IRI support --
+which asks nl_langinfo(CODESET) what the command line is written in --
+is told ASCII, cannot convert "bücher.example" to UTF-8 ("Conversion
+from 'ANSI_X3.4-1968' to 'UTF-8' isn't supported"), and looks up the raw
+bytes instead, which fails as an unknown host. Normal Linux builds never
+see this because they always have NLS.
+
+Set LC_CTYPE from the environment in the non-NLS case. Only LC_CTYPE:
+nothing else wget prints changes.
+
+--- a/src/main.c	2026-09-27 07:17:04.131972279 -0600
++++ b/src/main.c	2026-09-27 07:21:50.149171529 -0600
+@@ -35,9 +35,8 @@
+ #include <string.h>
+ #include <signal.h>
+ #include <spawn.h>
+-#if defined(ENABLE_NLS) || defined(WINDOWS)
+-# include <locale.h>
+-#endif
++/* Always: setlocale (LC_CTYPE) is called even without NLS.  */
++#include <locale.h>
+ #include <assert.h>
+ #include <errno.h>
+ #include <time.h>
+@@ -163,6 +162,13 @@
+   if (CP > 0)
+     snprintf(MBCP, sizeof(MBCP), ".%d", CP);
+   setlocale(LC_ALL, MBCP);
++#else
++  /* Without NLS there are no messages to translate, but IRI support
++     still has to know the locale's character set to turn a typed
++     "bücher.example" into UTF-8, and nl_langinfo(CODESET) reports the
++     C locale until something calls setlocale. LC_CTYPE only: numbers
++     and dates keep their C formatting, as they did.  */
++  setlocale (LC_CTYPE, "");
+ #endif /* ENABLE_NLS */
+ }
+ 
