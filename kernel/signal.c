@@ -17,6 +17,8 @@
  * the sigreturn call, which puts the saved context back.
  */
 #include "signal.h"
+#include "sysint.h"
+#include "poll.h"
 #include "task.h"
 #include "wait.h"
 #include "ptregs.h"
@@ -147,6 +149,10 @@ int signal_send(struct task *t, int sig)
     }
 
     t->sig_pending |= bit;
+
+    /* A signalfd reads blocked signals, so whoever waits on one has to
+     * look again -- and a blocked signal wakes nothing else. */
+    poll_wake();
 
     /*
      * A task asleep has to be woken to find out. Its system call
@@ -365,6 +371,47 @@ int signal_pause(void)
 {
     wait_for_signal();
     return -ERESTARTNOHAND;
+}
+
+/*
+ * The temporary mask of ppoll, pselect and epoll_pwait: in force for the
+ * wait only. If the wait was cut short by a signal, that signal is
+ * delivered UNDER the temporary mask and the old one comes back when
+ * its handler returns, exactly as for sigsuspend; otherwise the old one
+ * comes straight back.
+ */
+int signal_temp_mask(u32 umask, u32 size, u32 *old)
+{
+    u32 set[2];
+    int err;
+
+    if (!umask) {
+        return 0;
+    }
+    if (size != SIGSET_BYTES) {
+        return -EINVAL;
+    }
+    if ((err = fetch(set, umask, sizeof(set))) < 0) {
+        return err;
+    }
+    *old = current->sig_blocked;
+    current->sig_blocked = set[0] & ~SIG_UNBLOCKABLE;
+    return 1;
+}
+
+void signal_temp_done(int pushed, u32 old, int interrupted)
+{
+    struct task *t = current;
+
+    if (!pushed) {
+        return;
+    }
+    if (interrupted && signal_pending(t)) {
+        t->sig_saved_mask = old;
+        t->sig_restore_mask = 1;
+    } else {
+        t->sig_blocked = old;
+    }
 }
 
 int signal_suspend(u32 mask)

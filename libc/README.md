@@ -182,6 +182,18 @@ Two things are deliberately absent.
   program fails with a message saying so.
 - **`shm_open` and `shm_unlink` exist** (`posix-files.c`, declared in
   `<sys/mman.h>` by `patches/41`): a file in `/dev/shm`, which is tmpfs.
+- **The event descriptors exist**: `<sys/epoll.h>`, `<sys/eventfd.h>`,
+  `<sys/timerfd.h>`, `<sys/signalfd.h>` and `<sys/inotify.h>`, and
+  `ppoll` (declared in `<poll.h>` by `patches/42`) and `pselect`
+  (`events.c`). picolibc numbers its clocks and signals its own way, so
+  the wrappers translate them: every signal mask on the way in, and --
+  because `read()` is the only way to them -- the signal numbers in
+  what `read()` returns from a descriptor `signalfd()` made
+  (`patches/43`). A dup of one, or one inherited across `exec`, reads
+  Linux's numbers. `ppoll` maps the two poll bits m68k moves
+  (`POLLWRNORM` is `POLLOUT`) for every entry; picolibc's own `poll`
+  maps `revents` only for the first N entries, N being how many were
+  ready -- harmless for every bit but those two.
 - **`pread` and `pwrite` exist** now (Linux/m68k's `pread64` and
   `pwrite64`). picolibc declared them and never provided them, so a
   program using them failed to link, and one whose configure tested

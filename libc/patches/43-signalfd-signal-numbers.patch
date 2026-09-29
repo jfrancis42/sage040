@@ -1,0 +1,40 @@
+A signalfd reports signals by the KERNEL's numbers, and picolibc numbers
+its own differently (SIGUSR1 is 30, Linux's 10), so a program comparing
+ssi_signo with SIGUSR1 never matched. read() now hands what it read on a
+descriptor signalfd() made to the m68k backend, which renumbers it in
+place (libos/linux/machine/m68k/events.c); close() forgets the mark.
+
+--- a/libos/linux/read.c	2026-09-29 17:36:25.129585127 -0600
++++ b/libos/linux/read.c	2026-09-29 17:36:25.148559692 -0600
+@@ -35,8 +35,16 @@
+ 
+ #include "local-linux.h"
+ 
++int  __sage040_sigfd_is(int fd);
++void __sage040_sigfd_fix(void *buf, ssize_t n);
++
+ ssize_t
+ read(int fd, void *buf, size_t count)
+ {
+-    return syscall(LINUX_SYS_read, fd, buf, count);
++    ssize_t r = syscall(LINUX_SYS_read, fd, buf, count);
++
++    /* A signalfd's records name signals by the kernel's numbers. */
++    if (r > 0 && __sage040_sigfd_is(fd))
++        __sage040_sigfd_fix(buf, r);
++    return r;
+ }
+--- a/libos/linux/close.c	2026-09-29 17:36:25.131721077 -0600
++++ b/libos/linux/close.c	2026-09-29 17:36:25.148631842 -0600
+@@ -35,8 +35,11 @@
+ 
+ #include "local-linux.h"
+ 
++void __sage040_sigfd_forget(int fd);
++
+ int
+ close(int fd)
+ {
++    __sage040_sigfd_forget(fd);
+     return syscall(LINUX_SYS_close, fd);
+ }

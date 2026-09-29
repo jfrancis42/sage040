@@ -37,6 +37,7 @@
 #include "textcache.h"
 #include "swap.h"
 #include "poll.h"
+#include "events.h"
 #include "pipe.h"
 #include "ptregs.h"
 #include "net.h"
@@ -133,6 +134,34 @@ static s32 rw_user(int fd, u32 ubuf, u32 len, int writing)
     if (!from_program()) {
         return writing ? fd_write(fd, (const void *)ubuf, len)
                        : fd_read(fd, (void *)ubuf, len);
+    }
+
+    /*
+     * The event descriptors (events.c) move whole records, and one split
+     * at a page of the caller's buffer would be refused as too short. So
+     * they go through a kernel buffer: they are small, and there is no
+     * bulk to copy twice. On the stack, not static: sys_store can fault
+     * a page in and sleep, and another task's read would then overwrite
+     * a shared buffer before this one's was copied out. 512 bytes holds
+     * the largest inotify record there is (16 + a 255-byte name, padded).
+     */
+    if (events_owns(fd_get(fd))) {
+        u8 bounce[512];
+        u32 n = len < sizeof(bounce) ? len : sizeof(bounce);
+        s32 got;
+        int err;
+
+        if (writing) {
+            if ((err = fetch(bounce, ubuf, n)) < 0) {
+                return err;
+            }
+            return fd_write(fd, bounce, n);
+        }
+        got = fd_read(fd, bounce, n);
+        if (got > 0 && (err = sys_store(ubuf, bounce, (u32)got)) < 0) {
+            return err;
+        }
+        return got;
     }
 
     while (len > 0) {
@@ -715,13 +744,13 @@ int do_poll(u32 ufds, u32 n, s32 timeout_ms)
     return r;
 }
 
+/* The three sets in, waited on, and out again. */
 static __attribute__((noinline))
-int do_select(u32 nfds, u32 uin, u32 uout, u32 uex, u32 utv)
+int select_sets(u32 nfds, u32 uin, u32 uout, u32 uex, s32 timeout_ms,
+                s32 *left)
 {
     u32 in[FD_SETSIZE / 32], out[FD_SETSIZE / 32], ex[FD_SETSIZE / 32];
     u32 bytes = ((nfds + 31) / 32) * 4;
-    s32 timeout_ms = -1, left = 0;
-    struct timeval tv;
     int r, err;
 
     if (nfds > FD_SETSIZE) {
@@ -732,6 +761,26 @@ int do_select(u32 nfds, u32 uin, u32 uout, u32 uex, u32 utv)
         (uex && (err = fetch(ex, uex, bytes)) < 0)) {
         return err;
     }
+    r = poll_select(nfds, uin ? in : 0, uout ? out : 0, uex ? ex : 0,
+                    timeout_ms, left);
+    if (r < 0) {
+        return r;
+    }
+    if ((uin && (err = sys_store(uin, in, bytes)) < 0) ||
+        (uout && (err = sys_store(uout, out, bytes)) < 0) ||
+        (uex && (err = sys_store(uex, ex, bytes)) < 0)) {
+        return err;
+    }
+    return r;
+}
+
+static __attribute__((noinline))
+int do_select(u32 nfds, u32 uin, u32 uout, u32 uex, u32 utv)
+{
+    s32 timeout_ms = -1, left = 0;
+    struct timeval tv;
+    int r, err;
+
     if (utv) {
         err = fetch(&tv, utv, sizeof(tv));
         if (err < 0) {
@@ -744,15 +793,9 @@ int do_select(u32 nfds, u32 uin, u32 uout, u32 uex, u32 utv)
         timeout_ms = tv.tv_sec * 1000 + (tv.tv_usec + 999) / 1000;
     }
 
-    r = poll_select(nfds, uin ? in : 0, uout ? out : 0, uex ? ex : 0,
-                    timeout_ms, &left);
+    r = select_sets(nfds, uin, uout, uex, timeout_ms, &left);
     if (r < 0) {
         return r;
-    }
-    if ((uin && (err = sys_store(uin, in, bytes)) < 0) ||
-        (uout && (err = sys_store(uout, out, bytes)) < 0) ||
-        (uex && (err = sys_store(uex, ex, bytes)) < 0)) {
-        return err;
     }
     if (utv) {
         /* What was not used, as Linux writes it back. */
@@ -763,6 +806,85 @@ int do_select(u32 nfds, u32 uin, u32 uout, u32 uex, u32 utv)
             return err;
         }
     }
+    return r;
+}
+
+/*
+ * A timespec of either width as poll's milliseconds, rounded up so that
+ * a short wait is not none; -EINVAL for a negative or malformed one.
+ */
+static int ts_to_ms(u32 uts, int wide, s32 *ms)
+{
+    u32 sec, nsec;
+    int err;
+
+    if (wide) {
+        struct timespec64 t;
+
+        if ((err = fetch(&t, uts, sizeof(t))) < 0) {
+            return err;
+        }
+        if (t.tv_sec < 0 || t.tv_nsec < 0 || t.tv_nsec >= 1000000000LL) {
+            return -EINVAL;
+        }
+        sec = (t.tv_sec >> 31) ? 0x7fffffffUL : (u32)t.tv_sec;
+        nsec = (u32)t.tv_nsec;
+    } else {
+        struct timespec t;
+
+        if ((err = fetch(&t, uts, sizeof(t))) < 0) {
+            return err;
+        }
+        if ((s32)t.tv_sec < 0 || t.tv_nsec >= 1000000000UL) {
+            return -EINVAL;
+        }
+        sec = t.tv_sec;
+        nsec = t.tv_nsec;
+    }
+    *ms = sec >= 0x7fffffffUL / 1000 - 1 ? 0x7fffffff
+                                          : (s32)(sec * 1000 + (nsec + 999999) / 1000000);
+    return 0;
+}
+
+/* ppoll and pselect6: poll and select with a timespec and a mask for
+ * the length of the wait (signal_temp_mask). */
+static __attribute__((noinline))
+int do_ppoll(u32 ufds, u32 n, u32 uts, u32 umask, u32 size, int wide)
+{
+    s32 ms = -1;
+    u32 old = 0;
+    int pushed, r;
+
+    if (uts && (r = ts_to_ms(uts, wide, &ms)) < 0) {
+        return r;
+    }
+    if ((pushed = signal_temp_mask(umask, size, &old)) < 0) {
+        return pushed;
+    }
+    r = do_poll(ufds, n, ms);
+    signal_temp_done(pushed, old, r == -ERESTARTNOHAND || r == -EINTR);
+    return r;
+}
+
+static __attribute__((noinline))
+int do_pselect6(u32 nfds, u32 uin, u32 uout, u32 uex, u32 uts, u32 usig,
+                int wide)
+{
+    u32 sig[2] = { 0, 0 }, old = 0;     /* { const sigset_t *, size } */
+    s32 ms = -1, left = 0;
+    int pushed, r;
+
+    if (uts && (r = ts_to_ms(uts, wide, &ms)) < 0) {
+        return r;
+    }
+    if (usig && (r = fetch(sig, usig, sizeof(sig))) < 0) {
+        return r;
+    }
+    if ((pushed = signal_temp_mask(sig[0], sig[1], &old)) < 0) {
+        return pushed;
+    }
+    r = select_sets(nfds, uin, uout, uex, ms, &left);
+    signal_temp_done(pushed, old, r == -ERESTARTNOHAND || r == -EINTR);
     return r;
 }
 
@@ -2308,6 +2430,14 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
 
     case __NR__newselect:
         return do_select(a1, a2, a3, a4, a5);
+
+    case __NR_ppoll:
+    case __NR_ppoll_time64:
+        return do_ppoll(a1, a2, a3, a4, a5, nr == __NR_ppoll_time64);
+
+    case __NR_pselect6:
+    case __NR_pselect6_time64:
+        return do_pselect6(a1, a2, a3, a4, a5, a6, nr == __NR_pselect6_time64);
 
     case __NR_select: {
         struct sel_arg_struct sa;

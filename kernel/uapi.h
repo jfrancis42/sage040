@@ -1843,6 +1843,133 @@ struct ucontext {
     u32                  uc_sigmask[2];
 };
 
+/*
+ * EVENT DESCRIPTORS (events.c): eventfd, timerfd, signalfd, epoll and
+ * inotify, with Linux's numbers, flags and record layouts, so that
+ * libuv, GLib and the rest find what they look for. The *_NONBLOCK and
+ * *_CLOEXEC flags of every one of them are O_NONBLOCK and O_CLOEXEC.
+ */
+#define __NR_epoll_create      249
+#define __NR_epoll_ctl         250
+#define __NR_epoll_wait        251
+#define __NR_inotify_init      284
+#define __NR_inotify_add_watch 285
+#define __NR_inotify_rm_watch  286
+#define __NR_pselect6          301
+#define __NR_ppoll             302
+#define __NR_epoll_pwait       315
+#define __NR_signalfd          317
+#define __NR_timerfd_create    318
+#define __NR_eventfd           319
+#define __NR_timerfd_settime   321
+#define __NR_timerfd_gettime   322
+#define __NR_signalfd4         323
+#define __NR_eventfd2          324
+#define __NR_epoll_create1     325
+#define __NR_inotify_init1     328
+#define __NR_timerfd_gettime64 410
+#define __NR_timerfd_settime64 411
+#define __NR_pselect6_time64   413
+#define __NR_ppoll_time64      414
+#define __NR_epoll_pwait2      441
+
+#define EFD_SEMAPHORE       1
+
+#define CLOCK_BOOTTIME      7
+#define TFD_TIMER_ABSTIME   1
+#define TFD_TIMER_CANCEL_ON_SET 2
+
+struct itimerspec {                 /* interval FIRST, as Linux has it */
+    struct timespec it_interval;
+    struct timespec it_value;
+};
+
+struct timespec64 {                 /* __kernel_timespec: both 64 bits */
+    s64 tv_sec;
+    s64 tv_nsec;
+};
+
+struct itimerspec64 {
+    struct timespec64 it_interval;
+    struct timespec64 it_value;
+};
+
+/* What a read of a signalfd returns, one per signal: 128 bytes. */
+struct signalfd_siginfo {
+    u32 ssi_signo;
+    s32 ssi_errno;
+    s32 ssi_code;
+    u32 ssi_pid;
+    u32 ssi_uid;
+    s32 ssi_fd;
+    u32 ssi_tid;
+    u32 ssi_band;
+    u32 ssi_overrun;
+    u32 ssi_trapno;
+    s32 ssi_status;
+    s32 ssi_int;
+    u32 ssi_rest[20];               /* ssi_ptr and on: all zero here */
+};
+
+#define EPOLL_CTL_ADD       1
+#define EPOLL_CTL_DEL       2
+#define EPOLL_CTL_MOD       3
+
+#define EPOLLIN             0x00000001
+#define EPOLLPRI            0x00000002
+#define EPOLLOUT            0x00000004
+#define EPOLLERR            0x00000008
+#define EPOLLHUP            0x00000010
+#define EPOLLRDNORM         0x00000040
+#define EPOLLRDBAND         0x00000080
+#define EPOLLWRNORM         0x00000100
+#define EPOLLWRBAND         0x00000200
+#define EPOLLRDHUP          0x00002000
+#define EPOLLEXCLUSIVE      0x10000000
+#define EPOLLWAKEUP         0x20000000
+#define EPOLLONESHOT        0x40000000
+#define EPOLLET             0x80000000
+
+/*
+ * 12 bytes on m68k: a u64 is 2-aligned here, so data follows events
+ * directly -- written as two words so that no compiler can pad it.
+ */
+struct epoll_event {
+    u32 events;
+    u32 data[2];
+};
+
+#define IN_ACCESS           0x00000001
+#define IN_MODIFY           0x00000002
+#define IN_ATTRIB           0x00000004
+#define IN_CLOSE_WRITE      0x00000008
+#define IN_CLOSE_NOWRITE    0x00000010
+#define IN_OPEN             0x00000020
+#define IN_MOVED_FROM       0x00000040
+#define IN_MOVED_TO         0x00000080
+#define IN_CREATE           0x00000100
+#define IN_DELETE           0x00000200
+#define IN_DELETE_SELF      0x00000400
+#define IN_MOVE_SELF        0x00000800
+#define IN_UNMOUNT          0x00002000
+#define IN_Q_OVERFLOW       0x00004000
+#define IN_IGNORED          0x00008000
+#define IN_ONLYDIR          0x01000000
+#define IN_DONT_FOLLOW      0x02000000
+#define IN_EXCL_UNLINK      0x04000000
+#define IN_MASK_CREATE      0x10000000
+#define IN_MASK_ADD         0x20000000
+#define IN_ISDIR            0x40000000
+#define IN_ONESHOT          0x80000000
+#define IN_ALL_EVENTS       0x00000fff
+
+struct inotify_event {              /* followed by len bytes of name */
+    s32 wd;
+    u32 mask;
+    u32 cookie;
+    u32 len;
+};
+
 /* flock operations, Linux's (and BSD's) values. */
 #define LOCK_SH         1
 #define LOCK_EX         2

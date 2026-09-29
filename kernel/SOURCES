@@ -42,6 +42,7 @@ mmap.c
 textcache.c
 swap.c
 poll.c
+events.c
 pipe.c
 uaccess.c
 task.c

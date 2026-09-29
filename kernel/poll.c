@@ -33,10 +33,45 @@ void poll_wake(void)
     wake_all(&poll_wait);
 }
 
-/* POLL* bits for one descriptor, now. POLLNVAL if it is not open. */
-static int file_ready(int fd, int *is_socketish)
+/*
+ * THE EARLIEST DEADLINE among the descriptors a scan just looked at: a
+ * timerfd (events.c) says when it next expires, and the sleep is cut to
+ * then, so a timer wakes its poller on time rather than at the end of
+ * the slice. Reset at the start of each scan; 0 means none.
+ */
+static u32 next_deadline;
+
+void poll_deadline(u32 at)
 {
-    struct file *f = fd_get(fd);
+    if (!next_deadline || (s32)(at - next_deadline) < 0) {
+        next_deadline = at ? at : 1;
+    }
+}
+
+void poll_scan_begin(void)
+{
+    next_deadline = 0;
+}
+
+/* Sleep until woken or `slice` ms, less if a deadline comes first. */
+void poll_sleep(u32 slice)
+{
+    if (next_deadline) {
+        s32 d = (s32)(next_deadline - timer_jiffies());
+
+        if (d <= 0) {
+            return;
+        }
+        if ((u32)d * (1000 / HZ) < slice) {
+            slice = (u32)d * (1000 / HZ);
+        }
+    }
+    sleep_on_timeout(&poll_wait, slice);
+}
+
+/* POLL* bits for one descriptor, now. POLLNVAL if it is not open. */
+int poll_file(struct file *f, int *is_socketish)
+{
     u32 n = 0;
 
     if (!f || !f->ops) {
@@ -57,6 +92,11 @@ static int file_ready(int fd, int *is_socketish)
         return (n ? POLLIN : 0) | (f->ops->write ? POLLOUT : 0);
     }
     return POLLIN | POLLOUT;
+}
+
+static int file_ready(int fd, int *is_socketish)
+{
+    return poll_file(fd_get(fd), is_socketish);
 }
 
 int poll_fd(int fd)
@@ -82,6 +122,7 @@ int poll_files(struct pollfd *fds, u32 n, s32 timeout_ms, s32 *left_ms)
         int count = 0, socketish = 0;
         s32 slice;
 
+        poll_scan_begin();
         for (i = 0; i < n; i++) {
             int r;
 
@@ -122,7 +163,7 @@ int poll_files(struct pollfd *fds, u32 n, s32 timeout_ms, s32 *left_ms)
                 slice = remaining * (1000 / HZ);
             }
         }
-        sleep_on_timeout(&poll_wait, (u32)slice);
+        poll_sleep((u32)slice);
     }
 }
 

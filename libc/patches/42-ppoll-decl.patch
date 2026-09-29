@@ -1,0 +1,21 @@
+ppoll() was not declared; the m68k backend has it now
+(libos/linux/machine/m68k/events.c), as glibc and musl do, under
+_GNU_SOURCE. POSIX.1-2024 adds it too.
+
+--- a/libc/include/poll.h	2026-09-29 17:20:28.406966340 -0600
++++ b/libc/include/poll.h	2026-09-29 17:20:28.424725084 -0600
+@@ -70,4 +70,14 @@
+ 
+ int poll(struct pollfd[], nfds_t, int);
+ 
++#if __GNU_VISIBLE || __POSIX_VISIBLE >= 202405
++#include <sys/_sigset.h>
++#include <sys/_timespec.h>
++#if !defined(_SIGSET_T_DECLARED)
++#define _SIGSET_T_DECLARED
++typedef __sigset_t sigset_t;
++#endif
++int ppoll(struct pollfd *, nfds_t, const struct timespec *, const sigset_t *);
++#endif
++
+ #endif /* _POLL_H_ */

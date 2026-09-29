@@ -235,7 +235,9 @@ cp "$HERE/picolibc/libc/include/stdio_ext.h" "$HERE/picolibc/libc/include/syslog
 rm -f "$PREFIX/lib/libdl.a"
 "$BIN/m68k-elf-ar" rcs "$PREFIX/lib/libdl.a"
 cp "$HERE/picolibc/libc/include/sys/random.h" "$HERE/picolibc/libc/include/sys/sysmacros.h" \
-    "$PREFIX/include/sys/"
+    "$HERE/picolibc/libc/include/sys/epoll.h" "$HERE/picolibc/libc/include/sys/eventfd.h" \
+    "$HERE/picolibc/libc/include/sys/timerfd.h" "$HERE/picolibc/libc/include/sys/signalfd.h" \
+    "$HERE/picolibc/libc/include/sys/inotify.h" "$PREFIX/include/sys/"
 
 # A fingerprint of every installed header, for ports/cross.sh's
 # libc_fresh: a change in a header can change the size of a structure

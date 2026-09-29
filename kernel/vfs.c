@@ -23,6 +23,7 @@
 #include "textcache.h"
 #include "swap.h"
 #include "vfs.h"
+#include "events.h"
 #include "errno.h"
 #include "task.h"
 #include "string.h"
@@ -692,6 +693,16 @@ static struct fs_type *fs_of(const struct file *f)
     return (i >= 0 && file_fs[i]) ? file_fs[i] : mounted_fs;
 }
 
+/* A name that is not a path -- "anon_inode:[eventfd]" -- as it is. */
+void vfs_file_set_name(struct file *f, const char *name)
+{
+    int i = file_index(f);
+
+    if (i >= 0 && strlen(name) < PATH_MAX) {
+        strcpy(file_paths[i], name);
+    }
+}
+
 void vfs_file_set_path(struct file *f, const char *path)
 {
     int i = file_index(f);
@@ -841,6 +852,11 @@ void file_put(struct file *f)
         return;             /* somebody else still has it */
     }
     flock_release(f);       /* a lock lives exactly as long as this */
+    events_file_gone(f);    /* no epoll goes on watching it */
+    if (inotify_watching) {
+        inotify_file(f, (f->flags & O_ACCMODE) == O_RDONLY ? IN_CLOSE_NOWRITE
+                                                           : IN_CLOSE_WRITE);
+    }
     if (f->ops && f->ops->close) {
         if (f->fs) {
             fs_lock();
@@ -1205,7 +1221,7 @@ int vfs_dir_path(struct file *f, char *out, u32 size)
     }
 }
 
-int vfs_utime(const char *path, u32 mtime, u32 atime)
+static int vfs_utime_raw(const char *path, u32 mtime, u32 atime)
 {
     struct fs_type *fs;
     char rbuf[PATH_MAX];
@@ -1227,7 +1243,7 @@ int vfs_utime(const char *path, u32 mtime, u32 atime)
     return r;
 }
 
-int vfs_futime(int fd, u32 mtime, u32 atime)
+static int vfs_futime_raw(int fd, u32 mtime, u32 atime)
 {
     struct file *f = fd_get(fd);
     int r;
@@ -1373,7 +1389,7 @@ int fd_open(const char *path, int flags)
  * filesystem's own fsetattr once the file exists, which is the one path
  * every filesystem already has.
  */
-int fd_open_mode(const char *path, int flags, u32 mode)
+static int fd_open_mode_raw(const char *path, int flags, u32 mode)
 {
     struct chardev *cd = 0;
     int created = 0;
@@ -1752,7 +1768,7 @@ void fd_close_all(struct task *t)
     }
 }
 
-s32 fd_read(int fd, void *buf, u32 len)
+static s32 fd_read_raw(int fd, void *buf, u32 len)
 {
     struct file *f = fd_get(fd);
 
@@ -1780,7 +1796,7 @@ s32 fd_read(int fd, void *buf, u32 len)
     }
 }
 
-s32 fd_write(int fd, const void *buf, u32 len)
+static s32 fd_write_raw(int fd, const void *buf, u32 len)
 {
     struct file *f = fd_get(fd);
 
@@ -1893,7 +1909,7 @@ s32 fd_pread(int fd, void *buf, u32 len, u32 off)
     return file_pio(f, off, buf, len, 0);
 }
 
-s32 fd_pwrite(int fd, const void *buf, u32 len, u32 off)
+static s32 fd_pwrite_raw(int fd, const void *buf, u32 len, u32 off)
 {
     struct file *f = fd_get(fd);
     s32 n;
@@ -2014,7 +2030,7 @@ int vfs_mkdir(const char *path)
 }
 
 /* mkdir(2)'s mode, less the umask, as open's is (fd_open_mode). */
-int vfs_mkdir_mode(const char *path, u32 mode)
+static int vfs_mkdir_mode_raw(const char *path, u32 mode)
 {
     struct fs_type *fs;
     char rbuf[PATH_MAX];
@@ -2043,7 +2059,7 @@ int vfs_mkdir_mode(const char *path, u32 mode)
     }
 }
 
-int vfs_rmdir(const char *path)
+static int vfs_rmdir_raw(const char *path)
 {
     struct fs_type *fs;
     char rbuf[PATH_MAX];
@@ -2148,7 +2164,7 @@ const char *vfs_getcwd(void)
     }
 }
 
-int vfs_unlink(const char *path)
+static int vfs_unlink_raw(const char *path)
 {
     struct fs_type *fs;
     char rbuf[PATH_MAX];
@@ -2201,7 +2217,7 @@ int vfs_unlink(const char *path)
  * not on the file: making a second name for a file does not change the
  * file, and you need no right over it beyond being able to reach it.
  */
-int vfs_link(const char *from, const char *to)
+static int vfs_link_raw(const char *from, const char *to)
 {
     struct fs_type *fs, *fs2;
     char rbuf[PATH_MAX], rbuf2[PATH_MAX];
@@ -2281,7 +2297,7 @@ int vfs_lstat(const char *path, struct stat *st)
     }
 }
 
-int vfs_symlink(const char *target, const char *linkpath)
+static int vfs_symlink_raw(const char *target, const char *linkpath)
 {
     struct fs_type *fs;
     char rbuf[PATH_MAX];
@@ -2349,7 +2365,7 @@ int vfs_readlink(const char *path, char *out, u32 size)
     }
 }
 
-int vfs_rename(const char *from, const char *to)
+static int vfs_rename_raw(const char *from, const char *to)
 {
     struct fs_type *fs, *fs2;
     char rbuf[PATH_MAX], rbuf2[PATH_MAX];
@@ -2450,7 +2466,7 @@ int vfs_stat(const char *path, struct stat *st)
     }
 }
 
-int vfs_ftruncate(int fd, u32 len)
+static int vfs_ftruncate_raw(int fd, u32 len)
 {
     struct file *f = fd_get(fd);
 
@@ -2944,7 +2960,7 @@ static int dev_setattr(struct chardev *cd, u32 mask, u32 mode,
     return 0;
 }
 
-int vfs_setattr(const char *path, u32 mask, u32 mode, u32 uid, u32 gid)
+static int vfs_setattr_raw(const char *path, u32 mask, u32 mode, u32 uid, u32 gid)
 {
     struct fs_type *fs;
     char rbuf[PATH_MAX];
@@ -3003,7 +3019,7 @@ int vfs_setattr(const char *path, u32 mask, u32 mode, u32 uid, u32 gid)
  * descriptor is already open, so search permission was settled when it
  * was opened, which is exactly what an fd-based call means.
  */
-int vfs_fsetattr(int fd, u32 mask, u32 mode, u32 uid, u32 gid)
+static int vfs_fsetattr_raw(int fd, u32 mask, u32 mode, u32 uid, u32 gid)
 {
     struct stat st;
     struct chardev *cd;
@@ -3228,4 +3244,185 @@ void vfs_cwd_set(u32 ino, const char *path)
 const char *vfs_cwd_path(void)
 {
     return current ? current->cwd_path : "/";
+}
+
+/* ---------------------------------------------------------------- */
+/* inotify                                                           */
+/* ---------------------------------------------------------------- */
+
+/*
+ * The calls that change something, each wrapped so that a change that
+ * SUCCEEDED is reported to inotify (events.c). Nothing in the bodies
+ * above knows about it, and every hook costs one test of
+ * inotify_watching while nothing is watched. Removal and renaming look
+ * at their victim first, because afterwards it is not there to look at.
+ */
+int fd_open_mode(const char *path, int flags, u32 mode)
+{
+    struct stat st;
+    int existed = 1, fd;
+
+    if (inotify_watching && (flags & O_CREAT)) {
+        existed = vfs_lstat(path, &st) == 0;
+    }
+    fd = fd_open_mode_raw(path, flags, mode);
+    if (fd >= 0 && inotify_watching) {
+        if (!existed) {
+            inotify_path(path, IN_CREATE, 0);
+        } else if ((flags & O_TRUNC) && (flags & O_ACCMODE) != O_RDONLY) {
+            inotify_file(fd_get(fd), IN_MODIFY);
+        }
+        inotify_file(fd_get(fd), IN_OPEN);
+    }
+    return fd;
+}
+
+s32 fd_read(int fd, void *buf, u32 len)
+{
+    s32 n = fd_read_raw(fd, buf, len);
+
+    if (n > 0 && inotify_watching) {
+        inotify_file(fd_get(fd), IN_ACCESS);
+    }
+    return n;
+}
+
+s32 fd_write(int fd, const void *buf, u32 len)
+{
+    s32 n = fd_write_raw(fd, buf, len);
+
+    if (n > 0 && inotify_watching) {
+        inotify_file(fd_get(fd), IN_MODIFY);
+    }
+    return n;
+}
+
+s32 fd_pwrite(int fd, const void *buf, u32 len, u32 off)
+{
+    s32 n = fd_pwrite_raw(fd, buf, len, off);
+
+    if (n > 0 && inotify_watching) {
+        inotify_file(fd_get(fd), IN_MODIFY);
+    }
+    return n;
+}
+
+int vfs_mkdir_mode(const char *path, u32 mode)
+{
+    int r = vfs_mkdir_mode_raw(path, mode);
+
+    if (r == 0) {
+        inotify_path(path, IN_CREATE, 0);
+    }
+    return r;
+}
+
+int vfs_rmdir(const char *path)
+{
+    struct inotify_victim v;
+    int r;
+
+    inotify_look(path, &v);
+    r = vfs_rmdir_raw(path);
+    if (r == 0) {
+        inotify_removed(path, &v);
+    }
+    return r;
+}
+
+int vfs_unlink(const char *path)
+{
+    struct inotify_victim v;
+    int r;
+
+    inotify_look(path, &v);
+    r = vfs_unlink_raw(path);
+    if (r == 0) {
+        inotify_removed(path, &v);
+    }
+    return r;
+}
+
+int vfs_link(const char *from, const char *to)
+{
+    int r = vfs_link_raw(from, to);
+
+    if (r == 0) {
+        inotify_path(to, IN_CREATE, IN_ATTRIB);
+    }
+    return r;
+}
+
+int vfs_symlink(const char *target, const char *linkpath)
+{
+    int r = vfs_symlink_raw(target, linkpath);
+
+    if (r == 0) {
+        inotify_path(linkpath, IN_CREATE, 0);
+    }
+    return r;
+}
+
+int vfs_rename(const char *from, const char *to)
+{
+    struct inotify_victim v, replaced;
+    int r;
+
+    inotify_look(from, &v);
+    inotify_look(to, &replaced);
+    r = vfs_rename_raw(from, to);
+    if (r == 0) {
+        inotify_moved(from, to, &v, &replaced);
+    }
+    return r;
+}
+
+int vfs_setattr(const char *path, u32 mask, u32 mode, u32 uid, u32 gid)
+{
+    int r = vfs_setattr_raw(path, mask, mode, uid, gid);
+
+    if (r == 0) {
+        inotify_path(path, IN_ATTRIB, IN_ATTRIB);
+    }
+    return r;
+}
+
+int vfs_fsetattr(int fd, u32 mask, u32 mode, u32 uid, u32 gid)
+{
+    int r = vfs_fsetattr_raw(fd, mask, mode, uid, gid);
+
+    if (r == 0 && inotify_watching) {
+        inotify_file(fd_get(fd), IN_ATTRIB);
+    }
+    return r;
+}
+
+int vfs_utime(const char *path, u32 mtime, u32 atime)
+{
+    int r = vfs_utime_raw(path, mtime, atime);
+
+    if (r == 0) {
+        inotify_path(path, IN_ATTRIB, IN_ATTRIB);
+    }
+    return r;
+}
+
+int vfs_futime(int fd, u32 mtime, u32 atime)
+{
+    int r = vfs_futime_raw(fd, mtime, atime);
+
+    if (r == 0 && inotify_watching) {
+        inotify_file(fd_get(fd), IN_ATTRIB);
+    }
+    return r;
+}
+
+int vfs_ftruncate(int fd, u32 len)
+{
+    int r = vfs_ftruncate_raw(fd, len);
+
+    if (r == 0 && inotify_watching) {
+        inotify_file(fd_get(fd), IN_MODIFY);
+    }
+    return r;
 }

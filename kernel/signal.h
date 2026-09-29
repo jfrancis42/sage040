@@ -58,6 +58,13 @@ u32  signal_pending_set(void);
 int  signal_pause(void);
 int  signal_suspend(u32 mask);
 
+/* ppoll, pselect and epoll_pwait's mask. temp_mask returns 1 if it set
+ * one (from the user's sigset at `umask`, 0 for none), 0 if not, or
+ * -errno; temp_done takes what it returned and whether the wait ended
+ * with -EINTR or -ERESTARTNOHAND. */
+int  signal_temp_mask(u32 umask, u32 size, u32 *old);
+void signal_temp_done(int pushed, u32 old, int interrupted);
+
 /* sigaltstack(): set and/or report the alternate signal stack. */
 int  signal_altstack(const stack_t *ss, stack_t *old);
 s32  signal_return(struct pt_regs *regs);

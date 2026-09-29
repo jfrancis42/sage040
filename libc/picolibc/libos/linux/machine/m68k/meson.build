@@ -47,6 +47,7 @@ srcs_os_linux_machine = [
   'posix-more.c',
   'stdio-ext.c',
   'posix-files.c',
+  'events.c',
   'posix-proc.c',
   'glob.c',
   'syslog.c',

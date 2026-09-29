@@ -181,6 +181,7 @@ int  fd_install_file(struct file *f, int flags);
  * program reads /proc/<pid>/fd.
  */
 void vfs_file_set_path(struct file *f, const char *path);
+void vfs_file_set_name(struct file *f, const char *name);
 int  vfs_file_name(struct file *f, char *out, u32 size);
 int  vfs_file_stat(struct file *f, struct stat *st);
 /* At an offset, without moving the position or honouring O_APPEND. */

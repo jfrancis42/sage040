@@ -692,6 +692,57 @@ reports the disk.
 filesystem. They used to be ignored -- every file was created 0644 --
 so a program making a private file with 0600 got one anybody could read.
 
+### Waiting on everything at once: epoll, eventfd, timerfd, signalfd, inotify
+
+Linux's event descriptors, with Linux's numbers, flags and record
+layouts (`events.c`), so an event loop -- libuv, libevent, GLib's main
+loop, nginx -- has what it looks for:
+
+| | |
+|---|---|
+| `eventfd` | a 64-bit counter: `write` adds, `read` takes all of it (or one, with `EFD_SEMAPHORE`) |
+| `timerfd` | a timer on `CLOCK_MONOTONIC` or `CLOCK_REALTIME` (`TFD_TIMER_ABSTIME` too); a read returns how many times it has fired |
+| `signalfd` | reads the reader's pending signals of those in its mask, 128 bytes each, and takes them |
+| `epoll` | a set of descriptors: level-triggered, `EPOLLET`, `EPOLLONESHOT`, nesting, `epoll_pwait` |
+| `inotify` | watches on files and directories: create, delete, modify, attrib, open, close, access, rename (with a cookie), delete-self, move-self, overflow |
+
+`ppoll` and `pselect` come with them, because `epoll_pwait` needed the
+same thing: a signal mask for the length of a wait, which lets a signal
+in only while waiting.
+
+**One wait is poll's wait.** Whatever makes one of these ready calls
+`poll_wake()`, and every blocking read, `poll`, `select` and
+`epoll_wait` sleeps on poll's queue -- so nothing has a queue of its
+own, and an epoll holding a pipe, a socket, an eventfd, a timerfd and a
+signalfd is one wait that any of them ends. A timer is the exception:
+nothing happens when it expires, so it says when it will
+(`poll_deadline`) and the sleep is cut to that. **Timers are lazy**:
+nothing counts expirations as they pass; whoever looks works out how
+many there have been. At the tick's resolution, 10 ms, like `setitimer`.
+
+epoll asks rather than being told: `epoll_wait` scans its set with the
+same poll routine `poll()` uses, starting each scan after the last
+descriptor it reported, so one that is always ready cannot hide the rest
+from a small `maxevents`. `EPOLLET` reports a descriptor when it GAINS a
+bit since it was last looked at. The set does not hold its files open --
+closing the last descriptor for a file takes it out of every epoll, as
+on Linux. A regular file or a directory is `EPERM`, a cycle of epolls
+`ELOOP`. `struct epoll_event` is 12 bytes, because a 64-bit member needs
+only 2-byte alignment on m68k.
+
+inotify watches INODES. `vfs.c` wraps every call that changes something
+and reports it once it has succeeded; nothing below that knows. With no
+watch anywhere each hook costs one test of a word. Each inotify has one
+page of queue; a full one ends in a single `IN_Q_OVERFLOW`, and an event
+identical to the last unread one is merged into it. It works the same on
+the disk and in tmpfs.
+
+**picolibc numbers signals its own way** -- `SIGUSR1` is 30, Linux's is
+10 -- so libc translates every mask it passes, and `read()` translates
+the signal numbers in what it reads from a descriptor `signalfd()`
+made (`libc/patches/43`). A signalfd reached by `dup` or inherited
+across `exec` reads Linux's numbers.
+
 ### /proc
 
 Linux's `/proc`, the part ported software reads (`procfs.c`), made out
@@ -1346,6 +1397,7 @@ drive it over its serial line.
 | `kernel/libctest.sh` | 255 | picolibc and the POSIX layer added to it |
 | `kernel/sotest.sh` | 126 | shared libraries, `ld.so`, and the sharing of their pages |
 | `kernel/tmpfstest.sh` | 36 | tmpfs at `/tmp` and `/dev/shm`: files, holes, truncate, links, rename and `EXDEV`, the working directory, `shm_open` shared between processes, the sticky bit, and from the host: the disk's `/tmp` hidden, nothing written to it |
+| `kernel/eventtest.sh` | 102 | eventfd, timerfd, signalfd, epoll and inotify, and ppoll/pselect: counts, blocking and waking by another process, timers timed by CLOCK_MONOTONIC, signals checked gone from `sigpending`, level/edge/oneshot, one epoll over all four kinds, masks that let a signal in only during the wait, inotify on the disk and in tmpfs, queue overflow |
 | `kernel/shmaptest.sh` | 21 | `MAP_SHARED` of a file against read() and write(), a forked child, another process, a second mapping and `/proc/self/maps`; msync, munmap and exit writing back; truncate; a mapping outliving its name; and a file written only through a mapping, checked byte for byte from the host |
 | `kernel/tlstest.sh` | 46 | `__thread`, static and dynamic: initial values, a fresh copy per thread, alignment, fork; a start-time library's TLS reached two ways that must agree; `dlopen` of a library with TLS, a dependency and a constructor, its TLS made per thread on first use; refusal and rollback of an initial-exec TLS library; `dlsym` scopes, `dladdr`, `dl_iterate_phdr`, `dlerror` |
 | `kernel/fscktest.sh` | 23 | `fsck`, against seven kinds of damage made on the host, each repaired and then agreed with by e2fsck |

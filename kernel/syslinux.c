@@ -35,6 +35,7 @@
 #include "pipe.h"
 #include "vm.h"
 #include "mmap.h"
+#include "events.h"
 #include "errno.h"
 #include "string.h"
 
@@ -431,8 +432,6 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
 {
     char path[PATH_MAX], path2[PATH_MAX];
     int err;
-
-    (void)a6;
 
     switch (nr) {
     /* --- files and directories --- */
@@ -1416,6 +1415,58 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
 
     case __NR_rt_sigreturn:
         return signal_rt_return(regs);
+
+    /* --- event descriptors (events.c) --- */
+    case __NR_eventfd:
+        return sys_eventfd2(a1, 0);
+
+    case __NR_eventfd2:
+        return sys_eventfd2(a1, (int)a2);
+
+    case __NR_timerfd_create:
+        return sys_timerfd_create((int)a1, (int)a2);
+
+    case __NR_timerfd_settime:
+    case __NR_timerfd_settime64:
+        return sys_timerfd_settime((int)a1, (int)a2, a3, a4,
+                                   nr == __NR_timerfd_settime64);
+
+    case __NR_timerfd_gettime:
+    case __NR_timerfd_gettime64:
+        return sys_timerfd_gettime((int)a1, a2, nr == __NR_timerfd_gettime64);
+
+    case __NR_signalfd:
+        return sys_signalfd4((int)a1, a2, a3, 0);
+
+    case __NR_signalfd4:
+        return sys_signalfd4((int)a1, a2, a3, (int)a4);
+
+    case __NR_epoll_create:
+        return (s32)a1 <= 0 ? -EINVAL : sys_epoll_create1(0);
+
+    case __NR_epoll_create1:
+        return sys_epoll_create1((int)a1);
+
+    case __NR_epoll_ctl:
+        return sys_epoll_ctl((int)a1, (int)a2, (int)a3, a4);
+
+    case __NR_epoll_wait:
+        return sys_epoll_pwait((int)a1, a2, (int)a3, (s32)a4, 0, 0);
+
+    case __NR_epoll_pwait:
+        return sys_epoll_pwait((int)a1, a2, (int)a3, (s32)a4, a5, a6);
+
+    case __NR_inotify_init:
+        return sys_inotify_init1(0);
+
+    case __NR_inotify_init1:
+        return sys_inotify_init1((int)a1);
+
+    case __NR_inotify_add_watch:
+        return sys_inotify_add_watch((int)a1, a2, a3);
+
+    case __NR_inotify_rm_watch:
+        return sys_inotify_rm_watch((int)a1, (int)a2);
 
     default:
         return -ENOSYS;

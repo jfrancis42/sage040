@@ -28,7 +28,19 @@ int  poll_select(u32 nfds, u32 *in, u32 *out, u32 *ex, s32 timeout_ms,
 /* POLL* bits for one descriptor of the current task, now. */
 int  poll_fd(int fd);
 
+/* The same for an open file, wherever it is held (epoll holds them).
+ * `*is_socketish` is set if the file has its own poll routine. */
+struct file;
+int  poll_file(struct file *f, int *is_socketish);
+
 /* Something may have become ready: anyone polling should look again. */
 void poll_wake(void);
+
+/* For a scan loop (poll_files, epoll): a descriptor's own deadline, in
+ * jiffies, noted during the scan; and the sleep that honours it. */
+void poll_scan_begin(void);
+void poll_deadline(u32 at);
+void poll_sleep(u32 slice);
+s32  poll_ms_to_ticks(s32 ms);
 
 #endif /* POLL_H */
