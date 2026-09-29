@@ -3,7 +3,7 @@
 /*
  * malloc.c - malloc, free, realloc and calloc.
  *
- * MEANT TO BE THROWN AWAY. The C library (progress.md task 13) brings an
+ * MEANT TO BE THROWN AWAY. The C library (picolibc, libc/) brings an
  * allocator of its own; this one exists so that everything between now
  * and then has something real to allocate from. It is written to be
  * correct and checkable first, and fast enough second.

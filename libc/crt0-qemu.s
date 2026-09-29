@@ -19,7 +19,7 @@
 | seconds rather than a minute and is what CLISP's build will need --
 | CLISP compiles a C program and then runs it to produce its Lisp
 | image, and a cross build has to execute a target binary partway
-| through (progress.md, task 48).
+| through.
 |
 | Only static programs: /lib/ld.so is the Sage040's loader at the
 | Sage040's paths.

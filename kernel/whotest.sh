@@ -268,7 +268,7 @@ check "  and the login shell's argv[0] still carries login's dash" $?
 # has no /proc, and nothing else can name the terminal a descriptor is
 # open on -- so `ssh host command` works (sshtest covers ten of them)
 # and `ssh host` does not. That is a defect in the machine and not in
-# who(1), it is written up in progress.md, and it is why the remote
+# who(1), it is known and recorded, and it is why the remote
 # half of this suite is a NOTE rather than a failure: a suite that goes
 # red for a thing already known and recorded stops being read.
 #
@@ -299,7 +299,7 @@ else
     echo "         one hid the next: ttyname() had no answer without"
     echo "         /proc, chown could not resolve a /dev path for a"
     echo "         non-root process, and a pty was not owned by whoever"
-    echo "         allocated it. See progress.md, and $WORK/ssh.out." 
+    echo "         allocated it. See $WORK/ssh.out." 
 fi
 
 echo

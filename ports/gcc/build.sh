@@ -79,7 +79,7 @@ done
 [ -x "$BINOUT/bin/as" ] || "$HERE/../binutils/build.sh"
 [ -f "$CXXLIB/lib/libstdc++.a" ] || "$HERE/../libstdcxx/build.sh"
 [ -x "$CXXPREFIX/bin/m68k-elf-g++" ] || {
-    echo "gcc: no cross g++ in $CXXPREFIX -- see progress.md, task 49." >&2
+    echo "gcc: no cross g++ in $CXXPREFIX -- toolchain.md says how to build one." >&2
     exit 1
 }
 

@@ -1689,8 +1689,6 @@ loop, which is only ever right on the machine it was tuned on.
   and `chmod` answer `EPERM` and every id is 0.
 - **Open a pseudo-terminal**, or `/dev/fd`.
 
-[`progress.md`](progress.md) is the list of what is still to be built.
-
 ---
 
 ## 16. Quick reference

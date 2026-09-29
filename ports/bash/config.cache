@@ -25,7 +25,7 @@ bash_cv_dup2_broken=no
 # opendir refuses a non-directory (ENOTDIR).
 bash_cv_opendir_not_robust=no
 # There is no /dev/fd and FAT cannot hold a FIFO, so no process
-# substitution for now (progress.md, task 30).
+# substitution for now.
 bash_cv_dev_fd=absent
 bash_cv_sys_named_pipes=missing
 # picolibc has strsignal, not sys_siglist.

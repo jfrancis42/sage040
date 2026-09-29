@@ -511,7 +511,7 @@ struct statfs {
  *
  * fork() copies the address space eagerly -- every page, now -- because
  * there is no copy-on-write yet (that wants the page-fault machinery of
- * progress.md task 21). execve() replaces the calling program; spawn()
+ * demand paging). execve() replaces the calling program; spawn()
  * (400) is still here and is still fork and exec in one.
  *
  * waitpid's status is Linux's encoding, read with the W* macros below.

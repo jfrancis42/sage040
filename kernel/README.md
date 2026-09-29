@@ -8,8 +8,7 @@ discipline, a clock, a 100 Hz tick, a framebuffer, a text console on it,
 and a shell that reaches all of it only through `trap #0`.
 
 This file is about the kernel's internals. [`../os.md`](../os.md)
-describes SuckOS as a whole, and [`../progress.md`](../progress.md) is
-what has still to be built.
+describes SuckOS as a whole, including what it does not do yet.
 
 It is loaded from the disk by the [boot ROM](../bootrom/), which finds
 `KERNEL.ROM` in the filesystem and jumps to it.

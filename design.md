@@ -498,10 +498,9 @@ written. Test against images the host made and can still read afterwards;
 
 ## 9. Not there yet
 
-The system that runs on this machine is described in [`os.md`](os.md), and
-what remains to be built is listed in [`progress.md`](progress.md). Two
-items belong here rather than there, because they are decisions about the
-machine:
+The system that runs on this machine is described in [`os.md`](os.md),
+whose last section says where its edges are. Two items belong here rather
+than there, because they are decisions about the machine:
 
 - **Permissions and ownership needed a filesystem that could hold them.**
   FAT cannot (§8), which is the largest single reason the machine's

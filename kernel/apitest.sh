@@ -11,8 +11,8 @@
 # between a machine that can host other people's programs and one that
 # cannot.
 #
-# It grows as that surface does. Each group below is a task from
-# progress.md, and a group is only added once its calls actually work,
+# It grows as that surface does. Each group below is a piece of the
+# porting work, and a group is only added once its calls actually work,
 # so a failure here is always a regression rather than a thing not
 # written yet.
 #

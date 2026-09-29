@@ -246,7 +246,6 @@ The short version of the hardware gotchas:
 | `README.md` | this file |
 | `os.md` | the operating system, in full |
 | `design.md` | why the machine is shaped this way |
-| `progress.md` | what is still to be built |
 | `programmer-guide.md` | how to write code for the machine, bare metal or hosted |
 | `toolchain.md` | building the cross toolchain, the emulator and the C library |
 | `qemu-patch/` | the emulator changes, reproducible from pristine source |

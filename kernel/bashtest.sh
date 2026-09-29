@@ -79,9 +79,8 @@ BASH_TESTS=${BASH_TESTS:-"arith array braces case comsub func glob quote strip t
 #   varenv  three "expect ..." lines are missing from the output
 #
 # They are listed so that `make test` can finish and the other twenty
-# suites after this one are reachable. They are NOT understood, and
-# progress.md carries them as open work rather than as a property of
-# the machine.
+# suites after this one are reachable. They are NOT understood: they
+# are open work, not a property of the machine.
 #
 # A KNOWN test that starts PASSING is a failure, loudly. Closing one of
 # these gaps must force the entry to be removed rather than quietly
@@ -276,8 +275,8 @@ for n in $BASH_TESTS; do
     case $n in
     func)   why="process substitution: no /dev/fd, no FIFOs" ;;
     glob)   why="no locale command and no zh_TW.big5 locale" ;;
-    type)   why="NOT DIAGNOSED: function body differs (progress.md)" ;;
-    varenv) why="NOT DIAGNOSED: 'expect' lines missing (progress.md)" ;;
+    type)   why="NOT DIAGNOSED: function body differs" ;;
+    varenv) why="NOT DIAGNOSED: 'expect' lines missing" ;;
     *)    why="expected" ;;
     esac
     check_known "$n" $r "$why"

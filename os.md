@@ -15,8 +15,7 @@ does **CPython 3.14**, with its standard library on the disk.
 
 It is not a Unix clone and it is not a Linux. Its filesystem records who
 owns a file and what may be done with it, and nothing checks either yet.
-**What it is not**, at the end of this document, says where the edges are;
-`progress.md` is what is still to be built.
+**What it is not**, at the end of this document, says where the edges are.
 
 ---
 
@@ -1143,7 +1142,7 @@ drive it over its serial line.
 | `kernel/sedtest.sh` | 21 | sed, against the same sed built for the host |
 | `kernel/greptest.sh` | 37 | grep's own 329 pattern cases, and its options against the host's grep |
 | `kernel/sbasetest.sh` | 77 | the utilities, against the host's own, and what only the disk can say |
-| `kernel/bashtest.sh` | 13 + 4 known | the shell language against the host's bash, and part of bash's own suite. Four of bash's tests are expected to fail and are reported `[KNOWN]` with the reason -- `func` and `glob` want `/dev/fd` and a locale, which this system has not got; `type` and `varenv` are not diagnosed (progress.md). One that starts PASSING is a loud failure |
+| `kernel/bashtest.sh` | 13 + 4 known | the shell language against the host's bash, and part of bash's own suite. Four of bash's tests are expected to fail and are reported `[KNOWN]` with the reason -- `func` and `glob` want `/dev/fd` and a locale, which this system has not got; `type` and `varenv` are not diagnosed yet. One that starts PASSING is a loud failure |
 | `kernel/threadtest.sh` | 52 | threads: clone, futexes, and the pthread layer, with the lock's own negative control |
 | `kernel/ptytest.sh` | 34 | pseudo-terminals, and that the pairs are given back |
 | `kernel/curstest.sh` | 28 | terminfo and curses, with the database renamed away as the control |
@@ -1245,9 +1244,9 @@ no chosen victim.
 
 A swap cache -- keeping the slot, and using the MMU's `M` bit to DROP a
 page nothing had written rather than write it again -- was built and
-taken back out; progress.md says what went wrong and what to know before
-trying it a second time. The short version is that `M` lives on a
-descriptor while a remembered slot belongs to a frame, and that the
+taken back out. The short version of what went wrong, for anyone trying
+it a second time, is that `M` lives on a descriptor while a remembered
+slot belongs to a frame, and that the
 kernel writes user pages by physical address, so `read(2)` filling a
 buffer sets no `M` bit at all.
 

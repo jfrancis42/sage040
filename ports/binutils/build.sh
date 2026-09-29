@@ -72,7 +72,7 @@
 #
 # Giving this system real __thread support is worth doing and is a
 # subsystem of its own: PT_TLS in ld.so, a per-thread block, and
-# __m68k_read_tp in the C library. It is written up in progress.md.
+# __m68k_read_tp in the C library.
 #
 # zlib is binutils' own in-tree copy, deliberately: --with-system-zlib
 # would point at ports/zlib, and there is nothing to gain from making

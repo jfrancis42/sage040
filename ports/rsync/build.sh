@@ -31,7 +31,7 @@
 # --disable-xxhash only because there is no xxhash port yet. It is a
 # checksum, not a feature -- rsync falls back to MD5 and transfers the
 # same bytes, more slowly. xxhash is one C file and would be an easy
-# port; it is listed in progress.md rather than done here.
+# port, and has not been done yet.
 #
 # The bundled zlib and popt are used rather than ports/zlib: rsync's
 # zlib carries its own patches for the protocol's history, and using a

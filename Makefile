@@ -554,7 +554,7 @@ libc-if-missing:
 	fi
 
 # The system call surface a ported program expects. Grows with the
-# porting work; see progress.md.
+# porting work.
 apitest:
 	cd kernel && ./apitest.sh
 
