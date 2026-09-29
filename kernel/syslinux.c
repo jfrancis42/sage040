@@ -455,11 +455,11 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
 
     case __NR_openat:
         err = at_path((int)a1, a2, path);
-        return err < 0 ? err : fd_open(path, (int)a3);
+        return err < 0 ? err : fd_open_mode(path, (int)a3, a4);
 
     case __NR_mkdirat:
         err = at_path((int)a1, a2, path);
-        return err < 0 ? err : vfs_mkdir(path);
+        return err < 0 ? err : vfs_mkdir_mode(path, a3);
 
     case __NR_unlinkat:
         if (a3 & ~(u32)AT_REMOVEDIR) {

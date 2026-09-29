@@ -468,9 +468,12 @@ void put_mac(const u8 *m)
     }
 }
 
+/* The mode is 0666, less the umask, when the call creates: the kernel
+ * reads a third argument whether or not a program passed one, and with
+ * two it was whatever d3 held. */
 int open(const char *path, int flags)
 {
-    return (int)sc2(__NR_open, (u32)path, (u32)flags);
+    return (int)sc3(__NR_open, (u32)path, (u32)flags, 0666);
 }
 
 int close(int fd)
@@ -819,7 +822,7 @@ int getcwd(char *buf, u32 size)
 
 int mkdir(const char *path)
 {
-    return (int)sc1(__NR_mkdir, (u32)path);
+    return (int)sc2(__NR_mkdir, (u32)path, 0777);   /* less the umask */
 }
 
 int rmdir(const char *path)

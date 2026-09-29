@@ -38,6 +38,83 @@ static struct fs_type *types;
 static struct fs_type *mounted_fs;
 
 /*
+ * THE MOUNTS. "/" is whatever was mounted from the disk; /tmp and
+ * /dev/shm are tmpfs (fs/tmpfs.c), in memory. There are no others, so
+ * this is a routing function rather than a table: vfs_route() says
+ * which filesystem a path is on, every call below that takes a path
+ * asks it, and every open file remembers which one it came from
+ * (file_fs, beside files[]). /proc is not a filesystem here; it is
+ * answered before any of this is asked.
+ *
+ * A relative path is the working directory's filesystem's. The disk's
+ * working directory is its own number for it (cwd_ino); tmpfs's is its
+ * path only, so a relative name from inside tmpfs is made absolute here
+ * -- as is a /tmp path with ".." in it, which may lead out.
+ */
+extern struct fs_type *tmpfs_fs(void);
+extern int tmpfs_is_file(const struct file *f);
+
+static int tmp_path(const char *p)
+{
+    return (strncmp(p, "/tmp", 4) == 0 && (p[4] == '/' || !p[4])) ||
+           (strncmp(p, "/dev/shm", 8) == 0 && (p[8] == '/' || !p[8]));
+}
+
+static int tmp_cwd(void)
+{
+    return current && tmp_path(current->cwd_path);
+}
+
+static int has_dotdot(const char *p)
+{
+    for (; *p; p++) {
+        if (p[0] == '.' && p[1] == '.' && (p[2] == '/' || !p[2]) &&
+            (p[-1] == '/')) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static struct fs_type *vfs_route(const char **path, char *buf)
+{
+    const char *p = *path;
+    int rel = p[0] != '/';
+
+    if (!rel && !has_dotdot(p)) {
+        return tmp_path(p) ? tmpfs_fs() : mounted_fs;
+    }
+    /*
+     * Relative, or with ".." in it: where does it LAND? From "/",
+     * "tmp/x" is tmpfs's; from /tmp, "../etc" is the disk's. Worked
+     * out by name. The disk is still handed the path as it was when it
+     * is the disk's, so its own ".." and symbolic links mean what they
+     * always did.
+     */
+    if (vfs_abspath(p, buf, PATH_MAX) < 0) {
+        buf[0] = '\0';         /* too long: nothing will be found */
+        *path = buf;
+        return tmp_cwd() ? tmpfs_fs() : mounted_fs;
+    }
+    if (tmp_path(buf)) {
+        *path = buf;
+        return tmpfs_fs();
+    }
+    if (rel && tmp_cwd()) {
+        *path = buf;            /* out of tmpfs, onto the disk */
+    }
+    return mounted_fs;
+}
+
+int vfs_tmp_owns(const char *path)
+{
+    char buf[PATH_MAX];
+    const char *p = path;
+
+    return vfs_route(&p, buf) != mounted_fs;
+}
+
+/*
  * THE FILESYSTEM LOCK (task 22).
  *
  * The filesystem was never re-entered because nothing in it ever slept:
@@ -126,6 +203,9 @@ static struct file files[FILE_MAX];
  * This does not, and says the name the file was opened by.
  */
 static char file_paths[FILE_MAX][PATH_MAX];
+
+/* Which filesystem each open file or directory is on: see vfs_route. */
+static struct fs_type *file_fs[FILE_MAX];
 
 /* ---------------------------------------------------------------- */
 /* Filesystem types                                                  */
@@ -593,6 +673,7 @@ static struct file *file_alloc(void)
             files[i].used = 1;
             files[i].refs = 1;
             file_paths[i][0] = '\0';
+            file_fs[i] = 0;
             return &files[i];
         }
     }
@@ -602,6 +683,13 @@ static struct file *file_alloc(void)
 static int file_index(const struct file *f)
 {
     return (f >= files && f < files + FILE_MAX) ? (int)(f - files) : -1;
+}
+
+static struct fs_type *fs_of(const struct file *f)
+{
+    int i = file_index(f);
+
+    return (i >= 0 && file_fs[i]) ? file_fs[i] : mounted_fs;
 }
 
 void vfs_file_set_path(struct file *f, const char *path)
@@ -1051,23 +1139,26 @@ static const struct file_ops dir_ops = {
     0,                          /* mmap: not memory to map */
 };
 
-static int dir_open(const char *path, int flags)
+static int dir_open(struct fs_type *fs, const char *path, int flags)
 {
     u32 ino;
     int err;
 
-    if (!mounted_fs->dir_ino || !mounted_fs->readdir_in) {
+    if (!fs->dir_ino || !fs->readdir_in) {
         return -ENOSYS;
     }
     fs_lock();
-    err = mounted_fs->dir_ino(path, &ino);
+    err = fs->dir_ino(path, &ino);
     fs_unlock();
     if (err < 0) {
         return err;
     }
     err = fd_install(&dir_ops, (void *)(ino + 1), flags & ~O_ACCMODE);
     if (err >= 0) {
-        vfs_file_set_path(fd_get(err), path);
+        struct file *f = fd_get(err);
+
+        vfs_file_set_path(f, path);
+        file_fs[file_index(f)] = fs;
     }
     return err;
 }
@@ -1089,30 +1180,49 @@ int vfs_dir_path(struct file *f, char *out, u32 size)
     if (proc_is_dir_file(f)) {
         return proc_dir_path(f, out, size);
     }
-    if (!mounted_fs || !mounted_fs->dir_path) {
-        return -ENOSYS;
+    {
+        struct fs_type *fs = fs_of(f);
+
+        if (!fs || !fs->dir_path) {
+            return -ENOSYS;
+        }
+        fs_lock();
+        r = fs->dir_path(dir_ino_of(f), out, size);
+        fs_unlock();
+        /* tmpfs names /dev/shm "/shm" among its own: say it as the
+         * system does. */
+        if (r == 0 && fs != mounted_fs && strncmp(out, "/shm", 4) == 0 &&
+            (out[4] == '/' || !out[4])) {
+            u32 n = (u32)strlen(out);
+
+            if (n + 4 >= size) {
+                return -ENAMETOOLONG;
+            }
+            memmove(out + 4, out, n + 1);
+            memcpy(out, "/dev", 4);
+        }
+        return r;
     }
-    fs_lock();
-    r = mounted_fs->dir_path(dir_ino_of(f), out, size);
-    fs_unlock();
-    return r;
 }
 
 int vfs_utime(const char *path, u32 mtime, u32 atime)
 {
+    struct fs_type *fs;
+    char rbuf[PATH_MAX];
     int r;
+    fs = vfs_route(&path, rbuf);
 
     if (proc_owns(path)) {
         return proc_modify(PO_UTIME, path, 0, mtime, atime);
     }
-    if (resolve_dev(path)) {
+    if (fs == mounted_fs && resolve_dev(path)) {
         return 0;               /* a device has no time to keep */
     }
-    if (!mounted_fs || !mounted_fs->utime) {
+    if (!fs || !fs->utime) {
         return -ENOSYS;
     }
     fs_lock();
-    r = mounted_fs->utime(path, mtime, atime);
+    r = fs->utime(path, mtime, atime);
     fs_unlock();
     return r;
 }
@@ -1134,13 +1244,17 @@ int vfs_futime(int fd, u32 mtime, u32 atime)
     if (!f->fs) {
         return 0;               /* a device, a pipe: nothing to keep */
     }
-    if (!mounted_fs || !mounted_fs->futime) {
-        return -ENOSYS;
+    {
+        struct fs_type *fs = fs_of(f);
+
+        if (!fs || !fs->futime) {
+            return -ENOSYS;
+        }
+        fs_lock();
+        r = fs->futime(f, mtime, atime);
+        fs_unlock();
+        return r;
     }
-    fs_lock();
-    r = mounted_fs->futime(f, mtime, atime);
-    fs_unlock();
-    return r;
 }
 
 int vfs_fchdir(int fd)
@@ -1152,8 +1266,8 @@ int vfs_fchdir(int fd)
     if (!f) {
         return -EBADF;
     }
-    if (proc_is_dir_file(f)) {
-        r = proc_dir_path(f, path, sizeof(path));
+    if (proc_is_dir_file(f) || (vfs_is_dir_file(f) && fs_of(f) != mounted_fs)) {
+        r = vfs_dir_path(f, path, sizeof(path));
         if (r == 0) {
             vfs_cwd_set(current->cwd_ino, path);    /* see vfs_chdir */
         }
@@ -1192,7 +1306,8 @@ s32 vfs_getdents64(int fd, u8 *buf, u32 len)
         return proc_getdents64(f, buf, len);
     }
     ino = dir_ino_of(f);
-    synth = (ino == 0) ? 2 : 0;
+    /* FAT's root, and only the disk's: tmpfs lists its own dots. */
+    synth = (ino == 0 && fs_of(f) == mounted_fs) ? 2 : 0;
 
     for (;;) {
         struct dirent d;
@@ -1209,7 +1324,7 @@ s32 vfs_getdents64(int fd, u8 *buf, u32 len)
             int err;
 
             fs_lock();
-            err = mounted_fs->readdir_in(ino, idx - synth, &d);
+            err = fs_of(f)->readdir_in(ino, idx - synth, &d);
             fs_unlock();
 
             if (err == -ENOENT) {
@@ -1247,7 +1362,23 @@ static int is_swapfile(int fd);
 
 int fd_open(const char *path, int flags)
 {
-    struct chardev *cd;
+    return fd_open_mode(path, flags, VFS_NO_MODE);
+}
+
+/*
+ * open(2)'s MODE, applied as it says: to a file this call creates, less
+ * the caller's umask. It used to be ignored -- a filesystem created
+ * every file 0644 whatever was asked -- so a program that made a
+ * private file with 0600 got one anybody could read. Set through the
+ * filesystem's own fsetattr once the file exists, which is the one path
+ * every filesystem already has.
+ */
+int fd_open_mode(const char *path, int flags, u32 mode)
+{
+    struct chardev *cd = 0;
+    int created = 0;
+    struct fs_type *fs;
+    char rbuf[PATH_MAX];
     int fd, err;
 
     if (!path || !*path) {
@@ -1259,11 +1390,14 @@ int fd_open(const char *path, int flags)
     if (proc_owns(path)) {
         return proc_open_path(path, flags);
     }
+    fs = vfs_route(&path, rbuf);
 
     /* A device node is not a file on the volume and does not need one to
      * be mounted, which is what lets the console work before the disk
-     * has been looked at. */
-    cd = resolve_dev(path);
+     * has been looked at. (/dev/shm is not a device: tmpfs.) */
+    if (fs == mounted_fs) {
+        cd = resolve_dev(path);
+    }
     if (cd) {
         int fd = fd_install(cd->ops, cd->priv, flags);
         struct file *f;
@@ -1295,11 +1429,11 @@ int fd_open(const char *path, int flags)
         }
         return fd;
     }
-    if (strncmp(path, DEV_PREFIX, DEV_PREFIX_LEN) == 0) {
+    if (fs == mounted_fs && strncmp(path, DEV_PREFIX, DEV_PREFIX_LEN) == 0) {
         return -ENXIO;          /* under /dev, but no such device */
     }
 
-    if (!mounted_fs) {
+    if (!fs) {
         return -ENODEV;
     }
 
@@ -1313,14 +1447,14 @@ int fd_open(const char *path, int flags)
         int exists;
 
         fs_lock();
-        exists = mounted_fs->stat && mounted_fs->stat(path, &st) == 0;
+        exists = fs->stat && fs->stat(path, &st) == 0;
         fs_unlock();
 
         if (exists && S_ISDIR(st.st_mode)) {
             if ((flags & O_ACCMODE) != O_RDONLY || (flags & O_CREAT)) {
                 return -EISDIR;
             }
-            return dir_open(path, flags);
+            return dir_open(fs, path, flags);
         }
         if (flags & O_DIRECTORY) {
             return exists ? -ENOTDIR : -ENOENT;
@@ -1328,6 +1462,7 @@ int fd_open(const char *path, int flags)
         if (exists && (flags & O_CREAT) && (flags & O_EXCL)) {
             return -EEXIST;
         }
+        created = !exists && (flags & O_CREAT);
         /* Truncating happens inside the filesystem's open: refused
          * before it, not after. */
         if (exists && (flags & O_TRUNC) && path_is_swapfile(path)) {
@@ -1379,14 +1514,20 @@ int fd_open(const char *path, int flags)
         }
         f->flags = flags & ~O_CLOEXEC;
         fs_lock();
-        err = mounted_fs->open(path, flags & ~O_CLOEXEC, f);
+        err = fs->open(path, flags & ~O_CLOEXEC, f);
         fs_unlock();
         f->fs = 1;
+        file_fs[file_index(f)] = fs;
         if (err < 0) {
             f->used = 0;
             return err;
         }
         vfs_file_set_path(f, path);
+        if (created && mode != VFS_NO_MODE && fs->fsetattr && current) {
+            fs_lock();
+            fs->fsetattr(f, ATTR_MODE, (mode & ~current->umask) & 07777, 0, 0);
+            fs_unlock();
+        }
         current->files->fd[fd] = f;
         current->files->flags[fd] = (flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
     }
@@ -1869,10 +2010,20 @@ int fd_ioctl(int fd, u32 request, u32 arg)
 
 int vfs_mkdir(const char *path)
 {
+    return vfs_mkdir_mode(path, VFS_NO_MODE);
+}
+
+/* mkdir(2)'s mode, less the umask, as open's is (fd_open_mode). */
+int vfs_mkdir_mode(const char *path, u32 mode)
+{
+    struct fs_type *fs;
+    char rbuf[PATH_MAX];
+
     if (proc_owns(path)) {
         return proc_modify(PO_MKDIR, path, 0, 0, 0);
     }
-    if (!mounted_fs || !mounted_fs->mkdir) {
+    fs = vfs_route(&path, rbuf);
+    if (!fs || !fs->mkdir) {
         return -ENOSYS;
     }
     {
@@ -1882,7 +2033,11 @@ int vfs_mkdir(const char *path)
             return r;
         }
         fs_lock();
-        r = mounted_fs->mkdir(path);
+        r = fs->mkdir(path);
+        if (r == 0 && mode != VFS_NO_MODE && fs->setattr && current) {
+            fs->setattr(path, ATTR_MODE, (mode & ~current->umask) & 07777,
+                        0, 0);
+        }
         fs_unlock();
         return r;
     }
@@ -1890,10 +2045,14 @@ int vfs_mkdir(const char *path)
 
 int vfs_rmdir(const char *path)
 {
+    struct fs_type *fs;
+    char rbuf[PATH_MAX];
+
     if (proc_owns(path)) {
         return proc_modify(PO_RMDIR, path, 0, 0, 0);
     }
-    if (!mounted_fs || !mounted_fs->rmdir) {
+    fs = vfs_route(&path, rbuf);
+    if (!fs || !fs->rmdir) {
         return -ENOSYS;
     }
     {
@@ -1903,16 +2062,57 @@ int vfs_rmdir(const char *path)
             return r;
         }
         fs_lock();
-        r = mounted_fs->rmdir(path);
+        r = fs->rmdir(path);
         fs_unlock();
         return r;
     }
+}
+
+/*
+ * Into tmpfs: the working directory is its path alone, as it is in /proc
+ * -- the disk's number for it (cwd_ino) stays as it was and is not
+ * consulted while cwd_path is in tmpfs, because every relative name is
+ * routed there first (vfs_route). `path` is absolute.
+ */
+static int tmp_chdir(const char *path)
+{
+    struct stat st;
+    int r = vfs_stat(path, &st);
+
+    if (r < 0) {
+        return r;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        return -ENOTDIR;
+    }
+    r = vfs_may(path, X_OK);
+    if (r < 0) {
+        return r;
+    }
+    vfs_cwd_set(current->cwd_ino, path);
+    return 0;
 }
 
 int vfs_chdir(const char *path)
 {
     if (proc_owns(path)) {
         return proc_modify(PO_CHDIR, path, 0, 0, 0);
+    }
+    {
+        char rbuf[PATH_MAX];
+
+        /* Routed first: from inside tmpfs a relative name comes back
+         * absolute, so the disk is never asked about ".." from the
+         * working directory it last had. */
+        if (vfs_route(&path, rbuf) != mounted_fs) {
+            return tmp_chdir(path);
+        }
+        if (path == rbuf) {
+            char abs[PATH_MAX];
+
+            strcpy(abs, rbuf);
+            return vfs_chdir(abs);      /* ".." led out, to the disk */
+        }
     }
     if (!mounted_fs || !mounted_fs->chdir) {
         return -ENOSYS;
@@ -1932,7 +2132,7 @@ int vfs_chdir(const char *path)
 
 const char *vfs_getcwd(void)
 {
-    if (proc_cwd()) {
+    if (proc_cwd() || tmp_cwd()) {
         return current->cwd_path;       /* the filesystem's is stale */
     }
     if (!mounted_fs || !mounted_fs->getcwd) {
@@ -1950,16 +2150,20 @@ const char *vfs_getcwd(void)
 
 int vfs_unlink(const char *path)
 {
+    struct fs_type *fs;
+    char rbuf[PATH_MAX];
+
     if (proc_owns(path)) {
         return proc_modify(PO_UNLINK, path, 0, 0, 0);
     }
-    if (resolve_dev(path)) {
+    fs = vfs_route(&path, rbuf);
+    if (fs == mounted_fs && resolve_dev(path)) {
         return -EPERM;          /* device nodes are not files */
     }
-    if (!mounted_fs) {
+    if (!fs) {
         return -ENODEV;
     }
-    if (!mounted_fs->unlink) {
+    if (!fs->unlink) {
         return -ENOSYS;
     }
     if (path_is_swapfile(path)) {
@@ -1986,7 +2190,7 @@ int vfs_unlink(const char *path)
         int r;
 
         fs_lock();
-        r = mounted_fs->unlink(path);
+        r = fs->unlink(path);
         fs_unlock();
         return r;
     }
@@ -1999,18 +2203,25 @@ int vfs_unlink(const char *path)
  */
 int vfs_link(const char *from, const char *to)
 {
+    struct fs_type *fs, *fs2;
+    char rbuf[PATH_MAX], rbuf2[PATH_MAX];
     int err;
 
     if (proc_owns(from) || proc_owns(to)) {
         return proc_modify(PO_LINK, from, to, 0, 0);
     }
-    if (resolve_dev(from) || resolve_dev(to)) {
+    fs = vfs_route(&from, rbuf);
+    fs2 = vfs_route(&to, rbuf2);
+    if (fs != fs2) {
+        return -EXDEV;          /* a link cannot cross filesystems */
+    }
+    if (fs == mounted_fs && (resolve_dev(from) || resolve_dev(to))) {
         return -EPERM;          /* device nodes are not files */
     }
-    if (!mounted_fs) {
+    if (!fs) {
         return -ENODEV;
     }
-    if (!mounted_fs->link) {
+    if (!fs->link) {
         return -EPERM;          /* what link(2) says for a volume that
                                  * has no such thing */
     }
@@ -2026,7 +2237,7 @@ int vfs_link(const char *from, const char *to)
         int r;
 
         fs_lock();
-        r = mounted_fs->link(from, to);
+        r = fs->link(from, to);
         fs_unlock();
         return r;
     }
@@ -2047,20 +2258,24 @@ int vfs_link(const char *from, const char *to)
  */
 int vfs_lstat(const char *path, struct stat *st)
 {
+    struct fs_type *fs;
+    char rbuf[PATH_MAX];
+
     if (proc_owns(path)) {
         return proc_stat_path(path, st, 0);
     }
-    if (!mounted_fs) {
+    fs = vfs_route(&path, rbuf);
+    if (!fs) {
         return -ENODEV;
     }
-    if (!mounted_fs->lstat) {
+    if (!fs->lstat) {
         return vfs_stat(path, st);
     }
     {
         int r;
 
         fs_lock();
-        r = mounted_fs->lstat(path, st);
+        r = fs->lstat(path, st);
         fs_unlock();
         return r;
     }
@@ -2068,18 +2283,21 @@ int vfs_lstat(const char *path, struct stat *st)
 
 int vfs_symlink(const char *target, const char *linkpath)
 {
+    struct fs_type *fs;
+    char rbuf[PATH_MAX];
     int err;
+    fs = vfs_route(&linkpath, rbuf);
 
     if (proc_owns(linkpath)) {
         return proc_modify(PO_SYMLINK, target, linkpath, 0, 0);
     }
-    if (resolve_dev(linkpath)) {
+    if (fs == mounted_fs && resolve_dev(linkpath)) {
         return -EEXIST;
     }
-    if (!mounted_fs) {
+    if (!fs) {
         return -ENODEV;
     }
-    if (!mounted_fs->symlink) {
+    if (!fs->symlink) {
         return -EPERM;
     }
     err = vfs_may_parent(linkpath, W_OK | X_OK);
@@ -2090,7 +2308,7 @@ int vfs_symlink(const char *target, const char *linkpath)
         int r;
 
         fs_lock();
-        r = mounted_fs->symlink(target, linkpath);
+        r = fs->symlink(target, linkpath);
         fs_unlock();
         return r;
     }
@@ -2103,15 +2321,18 @@ int vfs_symlink(const char *target, const char *linkpath)
  */
 int vfs_readlink(const char *path, char *out, u32 size)
 {
+    struct fs_type *fs;
+    char rbuf[PATH_MAX];
     int err;
+    fs = vfs_route(&path, rbuf);
 
     if (proc_owns(path)) {
         return proc_readlink_path(path, out, size);
     }
-    if (!mounted_fs) {
+    if (!fs) {
         return -ENODEV;
     }
-    if (!mounted_fs->readlink) {
+    if (!fs->readlink) {
         return -EINVAL;         /* what readlink says for a non-link */
     }
     err = vfs_may_parent(path, X_OK);
@@ -2122,7 +2343,7 @@ int vfs_readlink(const char *path, char *out, u32 size)
         int r;
 
         fs_lock();
-        r = mounted_fs->readlink(path, out, size);
+        r = fs->readlink(path, out, size);
         fs_unlock();
         return r;
     }
@@ -2130,16 +2351,24 @@ int vfs_readlink(const char *path, char *out, u32 size)
 
 int vfs_rename(const char *from, const char *to)
 {
+    struct fs_type *fs, *fs2;
+    char rbuf[PATH_MAX], rbuf2[PATH_MAX];
+
     if (proc_owns(from) || proc_owns(to)) {
         return proc_modify(PO_RENAME, from, to, 0, 0);
     }
-    if (resolve_dev(from) || resolve_dev(to)) {
+    fs = vfs_route(&from, rbuf);
+    fs2 = vfs_route(&to, rbuf2);
+    if (fs != fs2) {
+        return -EXDEV;          /* mv copies, when it is told this */
+    }
+    if (fs == mounted_fs && (resolve_dev(from) || resolve_dev(to))) {
         return -EPERM;
     }
-    if (!mounted_fs) {
+    if (!fs) {
         return -ENODEV;
     }
-    if (!mounted_fs->rename) {
+    if (!fs->rename) {
         return -ENOSYS;
     }
     if (path_is_swapfile(from) || path_is_swapfile(to)) {
@@ -2166,7 +2395,7 @@ int vfs_rename(const char *from, const char *to)
         int r;
 
         fs_lock();
-        r = mounted_fs->rename(from, to);
+        r = fs->rename(from, to);
         fs_unlock();
         return r;
     }
@@ -2174,14 +2403,17 @@ int vfs_rename(const char *from, const char *to)
 
 int vfs_stat(const char *path, struct stat *st)
 {
+    struct fs_type *fs;
+    char rbuf[PATH_MAX];
     struct chardev *cd;
+    fs = vfs_route(&path, rbuf);
 
     if (proc_owns(path)) {
         return proc_stat_path(path, st, 1);
     }
-    cd = resolve_dev(path);
+    cd = fs == mounted_fs ? resolve_dev(path) : 0;
 
-    if (!cd && dev_is_dir(path)) {
+    if (!cd && fs == mounted_fs && dev_is_dir(path)) {
         /* A synthesised directory: /dev, and /dev/pts. Searchable and
          * readable by everybody, writable by nobody -- nothing can be
          * created in it, because what is in it is the registry. */
@@ -2202,17 +2434,17 @@ int vfs_stat(const char *path, struct stat *st)
         st->st_nlink = 1;
         return 0;
     }
-    if (!mounted_fs) {
+    if (!fs) {
         return -ENODEV;
     }
-    if (!mounted_fs->stat) {
+    if (!fs->stat) {
         return -ENOSYS;
     }
     {
         int r;
 
         fs_lock();
-        r = mounted_fs->stat(path, st);
+        r = fs->stat(path, st);
         fs_unlock();
         return r;
     }
@@ -2279,7 +2511,7 @@ int vfs_bmap(int fd, u32 off, u32 *lba, struct blockdev **dev)
     if (!f) {
         return -EBADF;
     }
-    if (!mounted_fs || !mounted_fs->bmap || !f->ops || !f->ops->fstat ||
+    if (!fs_of(fd_get(fd)) || !fs_of(fd_get(fd))->bmap || !f->ops || !f->ops->fstat ||
         vfs_fstat(fd, &st) < 0 || !S_ISREG(st.st_mode)) {
         return -EINVAL;
     }
@@ -2287,7 +2519,7 @@ int vfs_bmap(int fd, u32 off, u32 *lba, struct blockdev **dev)
         int r;
 
         fs_lock();
-        r = mounted_fs->bmap(f, off, lba, dev);
+        r = fs_of(fd_get(fd))->bmap(f, off, lba, dev);
         fs_unlock();
         return r;
     }
@@ -2316,7 +2548,7 @@ int vfs_check(int flags, struct fsck_report *r)
 
 int vfs_readdir(int index, struct dirent *d)
 {
-    if (proc_cwd()) {
+    if (proc_cwd() || tmp_cwd()) {
         /* The old getdents reads the filesystem's working directory,
          * which is not where the caller is. getdents64 lists /proc. */
         return -EOPNOTSUPP;
@@ -2714,9 +2946,12 @@ static int dev_setattr(struct chardev *cd, u32 mask, u32 mode,
 
 int vfs_setattr(const char *path, u32 mask, u32 mode, u32 uid, u32 gid)
 {
+    struct fs_type *fs;
+    char rbuf[PATH_MAX];
     struct chardev *cd;
     struct stat st;
     int err;
+    fs = vfs_route(&path, rbuf);
 
     if (proc_owns(path)) {
         return proc_setattr_path(path, mask, mode, uid, gid);
@@ -2725,17 +2960,17 @@ int vfs_setattr(const char *path, u32 mask, u32 mode, u32 uid, u32 gid)
     if (err < 0) {
         return err;
     }
-    cd = resolve_dev(path);
+    cd = fs == mounted_fs ? resolve_dev(path) : 0;
     if (cd) {
         return dev_setattr(cd, mask, mode, uid, gid);
     }
-    if (strncmp(path, DEV_PREFIX, DEV_PREFIX_LEN) == 0) {
+    if (fs == mounted_fs && strncmp(path, DEV_PREFIX, DEV_PREFIX_LEN) == 0) {
         return -ENXIO;          /* under /dev, but no such device */
     }
-    if (!mounted_fs) {
+    if (!fs) {
         return -ENODEV;
     }
-    if (!mounted_fs->setattr) {
+    if (!fs->setattr) {
         return -ENOSYS;         /* a volume with nowhere to put it */
     }
     err = vfs_stat(path, &st);
@@ -2753,7 +2988,7 @@ int vfs_setattr(const char *path, u32 mask, u32 mode, u32 uid, u32 gid)
         int r;
 
         fs_lock();
-        r = mounted_fs->setattr(path, mask, mode, uid, gid);
+        r = fs->setattr(path, mask, mode, uid, gid);
         fs_unlock();
         return r;
     }
@@ -2786,10 +3021,10 @@ int vfs_fsetattr(int fd, u32 mask, u32 mode, u32 uid, u32 gid)
          * one of its own files. */
         return -EPERM;
     }
-    if (!mounted_fs) {
+    if (!fs_of(fd_get(fd))) {
         return -ENODEV;
     }
-    if (!mounted_fs->fsetattr) {
+    if (!fs_of(fd_get(fd))->fsetattr) {
         return -ENOSYS;
     }
     err = vfs_fstat(fd, &st);
@@ -2811,7 +3046,7 @@ int vfs_fsetattr(int fd, u32 mask, u32 mode, u32 uid, u32 gid)
             return -EBADF;
         }
         fs_lock();
-        r = mounted_fs->fsetattr(f, mask, mode, uid, gid);
+        r = fs_of(fd_get(fd))->fsetattr(f, mask, mode, uid, gid);
         fs_unlock();
         return r;
     }
@@ -2934,6 +3169,9 @@ int vfs_chroot(const char *path)
 
     if (!current) {
         return -EPERM;
+    }
+    if (vfs_tmp_owns(path)) {
+        return -EINVAL;         /* a root has to be on the disk */
     }
     if (!mounted_fs || !mounted_fs->dir_ino) {
         return -ENOSYS;

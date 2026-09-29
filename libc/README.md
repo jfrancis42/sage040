@@ -180,6 +180,8 @@ Two things are deliberately absent.
   needs room in the static block every thread already has; `dlerror`'s
   message is per process, not per thread; and `dlopen` in a STATIC
   program fails with a message saying so.
+- **`shm_open` and `shm_unlink` exist** (`posix-files.c`, declared in
+  `<sys/mman.h>` by `patches/41`): a file in `/dev/shm`, which is tmpfs.
 - **`pread` and `pwrite` exist** now (Linux/m68k's `pread64` and
   `pwrite64`). picolibc declared them and never provided them, so a
   program using them failed to link, and one whose configure tested

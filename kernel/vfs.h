@@ -150,6 +150,10 @@ const char *vfs_dev_name(void);
 /* ---------------------------------------------------------------- */
 
 int  fd_open(const char *path, int flags);
+/* With open(2)'s mode for a file it creates; VFS_NO_MODE for none. */
+#define VFS_NO_MODE  0xffffffffUL
+int  fd_open_mode(const char *path, int flags, u32 mode);
+int  vfs_mkdir_mode(const char *path, u32 mode);
 int  fd_close(int fd);
 s32  fd_read(int fd, void *buf, u32 len);
 s32  fd_write(int fd, const void *buf, u32 len);

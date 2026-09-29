@@ -1,0 +1,29 @@
+shm_open() and shm_unlink() were not declared, and picolibc has no
+implementation of them either; the m68k backend now does (posix-files.c)
+on top of /dev/shm, which the kernel serves from tmpfs. POSIX puts both
+in <sys/mman.h>, with mode_t.
+
+--- a/libc/include/sys/mman.h	2026-09-29 15:34:32.130316856 -0600
++++ b/libc/include/sys/mman.h	2026-09-29 15:34:43.131193216 -0600
+@@ -51,6 +51,11 @@
+ #define _OFF_T_DECLARED
+ #endif
+ 
++#ifndef _MODE_T_DECLARED
++typedef __mode_t mode_t;
++#define _MODE_T_DECLARED
++#endif
++
+ /*
+  * Protection flags (prot argument to mmap / mprotect).
+  */
+@@ -140,6 +145,9 @@
+ int   mlockall(int flags);
+ int   munlockall(void);
+ int   posix_madvise(void *addr, size_t len, int advice);
++/* POSIX shared memory: a file in /dev/shm, which is tmpfs. */
++int   shm_open(const char *name, int oflag, mode_t mode);
++int   shm_unlink(const char *name);
+ #if __GNU_VISIBLE
+ int madvise(void *addr, size_t len, int advice);
+ #endif

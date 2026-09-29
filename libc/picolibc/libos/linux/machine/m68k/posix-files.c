@@ -54,6 +54,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <utime.h>
@@ -385,4 +386,51 @@ pwrite(int fd, const void *buf, size_t n, off_t off)
 {
     return (ssize_t)syscall(LINUX_SYS_pwrite64, fd, buf, n,
                             off < 0 ? -1L : 0L, (long)off);
+}
+
+/*
+ * POSIX shared memory: a file in /dev/shm, which the kernel serves from
+ * tmpfs (kernel/fs/tmpfs.c), mapped MAP_SHARED like any other file.
+ * The name is one component with a leading slash, as POSIX asks and
+ * glibc checks; the descriptor is close-on-exec, and never follows a
+ * symbolic link someone else planted in the shared directory.
+ */
+static int
+shm_path(const char *name, char *out, size_t size)
+{
+    size_t n;
+
+    while (*name == '/') {
+        name++;
+    }
+    n = strlen(name);
+    if (n == 0 || strchr(name, '/') || n + 10 > size) {
+        errno = n + 10 > size ? ENAMETOOLONG : EINVAL;
+        return -1;
+    }
+    memcpy(out, "/dev/shm/", 9);
+    memcpy(out + 9, name, n + 1);
+    return 0;
+}
+
+int
+shm_open(const char *name, int oflag, mode_t mode)
+{
+    char path[288];
+
+    if (shm_path(name, path, sizeof(path)) < 0) {
+        return -1;
+    }
+    return open(path, oflag | O_NOFOLLOW | O_CLOEXEC, mode);
+}
+
+int
+shm_unlink(const char *name)
+{
+    char path[288];
+
+    if (shm_path(name, path, sizeof(path)) < 0) {
+        return -1;
+    }
+    return unlink(path);
 }

@@ -78,7 +78,8 @@ s32 syscall3(u32 nr, u32 a1, u32 a2, u32 a3)
 
 int sys_open(const char *path, int flags)
 {
-    return (int)syscall2(__NR_open, (u32)path, (u32)flags);
+    /* 0666 less the umask when it creates: see lib/ulib.c's open. */
+    return (int)syscall3(__NR_open, (u32)path, (u32)flags, 0666);
 }
 
 int sys_close(int fd)
@@ -185,7 +186,7 @@ int sys_jobctl(int cmd, int arg, void *p)
 
 int sys_mkdir(const char *path)
 {
-    return (int)syscall1(__NR_mkdir, (u32)path);
+    return (int)syscall2(__NR_mkdir, (u32)path, 0777);
 }
 
 int sys_rmdir(const char *path)

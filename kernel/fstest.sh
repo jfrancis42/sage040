@@ -204,9 +204,9 @@ printf '%s\n' \
   'mkdir etc' \
   'rmdir bin' \
   'rmdir etc' \
-  'mkdir tmp' \
-  'echo in tmp > /tmp/moved.txt' \
-  'mv /tmp/moved.txt /etc/moved.txt' \
+  'mkdir work' \
+  'echo in work > /work/moved.txt' \
+  'mv /work/moved.txt /etc/moved.txt' \
   'echo target > /etc/over.txt' \
   'echo source > /etc/src.txt' \
   'mv /etc/src.txt /etc/over.txt' \
@@ -215,11 +215,11 @@ printf '%s\n' \
   'cd etc' \
   'echo etc copy > rootf.txt' \
   'rm rootf.txt' \
-  'cd /tmp' \
+  'cd /work' \
   'rm /etc/gone.txt' \
   'cd /' \
   'mkdir mvdir' \
-  'mv mvdir /tmp/mvdir' \
+  'mv mvdir /work/mvdir' \
   'echo long > "A Long File Name.txt"' \
   'echo mixed > MixedCase.c' \
   'echo CASE-TEST' \
@@ -245,7 +245,7 @@ printf '%s\n' \
   $'echo utf > "caf\xc3\xa9.txt"' \
   'echo LFN-LS' \
   'ls' \
-  'cd /tmp/mvdir' \
+  'cd /work/mvdir' \
   'echo LS-DOTDOT' \
   'ls ..' \
   'cd /' \
@@ -446,8 +446,8 @@ check "  and its size is right, so the copy did not stop early" $?
 # the path said, and unlink wrote its deletion through a directory
 # pointer it never set. Everything above ran in the root, so none of it
 # showed. These are the cases that would have.
-fsimg cat /etc/moved.txt 2>/dev/null | grep -qx "in tmp" &&
-    ! fsimg ls /tmp | grep -qx "moved.txt"
+fsimg cat /etc/moved.txt 2>/dev/null | grep -qx "in work" &&
+    ! fsimg ls /work | grep -qx "moved.txt"
 check "mv between directories moved the file" $?
 
 fsimg cat /etc/over.txt 2>/dev/null | grep -qx "source" &&
@@ -461,20 +461,20 @@ check "rm of a relative name in a subdirectory removed that one, not the root's"
 ! fsimg ls /etc | grep -qx "gone.txt"
 check "rm of an absolute path from another directory" $?
 
-fsimg ls /tmp | grep -qx "mvdir" &&
+fsimg ls /work | grep -qx "mvdir" &&
     ! fsimg ls / | grep -qx "mvdir"
 check "mv moved a directory into another" $?
 
-# From inside /tmp/mvdir, `ls ..` lists /tmp, which holds mvdir. Had the
-# ".." still named the root, it would list etc and tmp and no mvdir.
+# From inside /work/mvdir, `ls ..` lists /work, which holds mvdir. Had the
+# ".." still named the root, it would list etc and work and no mvdir.
 tr -d '\r' < "$LOG" | grep -A2 '^LS-DOTDOT$' | grep -qi 'mvdir'
 check "  and its .. now leads to its new parent" $?
 
 # A directory moved to a new parent carries its ".." with it, and both
 # parents' link counts follow. Nothing in the guest can see this; it is
 # what e2fsck checks below, and this is the direct form of it.
-[ "$(fsimg ls-l /tmp/mvdir | awk '$NF == ".." { print $1 }')" = \
-  "$(fsimg ls-l / | awk '$NF == "tmp" { print $1 }')" ]
+[ "$(fsimg ls-l /work/mvdir | awk '$NF == ".." { print $1 }')" = \
+  "$(fsimg ls-l / | awk '$NF == "work" { print $1 }')" ]
 check "  and the moved directory's .. names the inode of its new parent" $?
 
 echo "=== checks: names are bytes ==="

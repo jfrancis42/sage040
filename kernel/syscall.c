@@ -1720,7 +1720,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         if (err < 0) {
             return err;
         }
-        return fd_open(path, (int)a2);
+        return fd_open_mode(path, (int)a2, a3);
     }
 
     case __NR_close:
@@ -1770,7 +1770,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
             return err;
         }
         if (nr == __NR_mkdir) {
-            return vfs_mkdir(path);
+            return vfs_mkdir_mode(path, a2);
         }
         if (nr == __NR_rmdir) {
             return vfs_rmdir(path);

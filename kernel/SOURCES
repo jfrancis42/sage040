@@ -86,6 +86,7 @@ net/socket.c
 # The filesystems.
 fs/fat16.c
 fs/ext2.c
+fs/tmpfs.c
 
 # Motorola's M68040 Floating-Point Software Package: the handler for
 # the floating-point instructions and operand types the 68040 has no

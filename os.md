@@ -666,6 +666,32 @@ directory: `resolve_dev()` turns `/dev/<rest>` into a device of that
 name, which is also how `pts/0` is a device whose name contains a
 slash. Making it listable is a VFS change and is on the list.
 
+### /tmp and /dev/shm: tmpfs
+
+`/tmp` and `/dev/shm` are **tmpfs** (`fs/tmpfs.c`): files in pages of
+memory, so scratch files cost no disk writes and are gone at the next
+boot rather than surviving a crash as litter. The disk's own `/tmp`
+directory is still there, hidden under it. `shm_open(3)` makes its files
+in `/dev/shm`, and they map `MAP_SHARED` like any file (the text cache's
+pages, see "Shared pages").
+
+It is a `struct fs_type` like ext2's, and `vfs.c` routes to it by path
+(`vfs_route`): a path under `/tmp` or `/dev/shm`, or a relative one from
+a working directory there, is tmpfs's; everything else is the disk's.
+Every open file records which filesystem it came from. So permissions,
+the text cache, shared mappings and descriptors work on its files
+exactly as on the disk's. Regular files, directories, hard and symbolic
+links, modes, owners and times; the sticky bit on `/tmp` is enforced.
+Half the machine's memory at most; `ENOSPC` past it. A rename or link
+between tmpfs and the disk is `EXDEV`, as between any two filesystems
+(`mv` copies); a symbolic link in tmpfs that leads out of it is refused
+with `EXDEV` rather than followed onto the disk; and `statfs`, so `df`,
+reports the disk.
+
+**`open` and `mkdir` honour their mode now**, less the umask, on every
+filesystem. They used to be ignored -- every file was created 0644 --
+so a program making a private file with 0600 got one anybody could read.
+
 ### /proc
 
 Linux's `/proc`, the part ported software reads (`procfs.c`), made out
@@ -1319,6 +1345,7 @@ drive it over its serial line.
 | `kernel/devtest.sh` | 41 | interrupts, the filesystem under concurrency, the limits, the NVRAM, `mmap` of the framebuffer |
 | `kernel/libctest.sh` | 255 | picolibc and the POSIX layer added to it |
 | `kernel/sotest.sh` | 126 | shared libraries, `ld.so`, and the sharing of their pages |
+| `kernel/tmpfstest.sh` | 36 | tmpfs at `/tmp` and `/dev/shm`: files, holes, truncate, links, rename and `EXDEV`, the working directory, `shm_open` shared between processes, the sticky bit, and from the host: the disk's `/tmp` hidden, nothing written to it |
 | `kernel/shmaptest.sh` | 21 | `MAP_SHARED` of a file against read() and write(), a forked child, another process, a second mapping and `/proc/self/maps`; msync, munmap and exit writing back; truncate; a mapping outliving its name; and a file written only through a mapping, checked byte for byte from the host |
 | `kernel/tlstest.sh` | 46 | `__thread`, static and dynamic: initial values, a fresh copy per thread, alignment, fork; a start-time library's TLS reached two ways that must agree; `dlopen` of a library with TLS, a dependency and a constructor, its TLS made per thread on first use; refusal and rollback of an initial-exec TLS library; `dlsym` scopes, `dladdr`, `dl_iterate_phdr`, `dlerror` |
 | `kernel/fscktest.sh` | 23 | `fsck`, against seven kinds of damage made on the host, each repaired and then agreed with by e2fsck |

@@ -90,6 +90,7 @@ libc/test/sotest
 libc/test/tlstest
 libc/test/tlstest.dyn
 libc/test/shmaptest
+libc/test/tmpfstest
 libc/test/*.so
 ldso/ld.so
 system/fsck

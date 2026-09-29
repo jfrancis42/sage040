@@ -761,6 +761,8 @@ static void gen_mounts(struct pbuf *b)
     }
     puts_(b, "devtmpfs /dev devtmpfs rw 0 0\n");
     puts_(b, "proc /proc proc rw 0 0\n");
+    puts_(b, "tmpfs /tmp tmpfs rw 0 0\n");
+    puts_(b, "tmpfs /dev/shm tmpfs rw 0 0\n");
 }
 
 /*
