@@ -503,8 +503,15 @@ grep -A3 "sigtest: sigreturn to a context that asks for supervisor" "$C" |
     grep -q "privilege violation" && ! grep -q "SUPERVISOR MODE REACHED" "$C"
 check "a forged sigreturn cannot reach supervisor mode" $?
 
-test "$(grep -c "^sigtest: segmentation fault" "$C")" -eq 2
-check "  and both of those programs were killed for it" $?
+# Each by its own signal: an unusable stack is SIGSEGV; the privilege
+# violation the forgery ends in is SIGILL (ILL_PRVOPC), as on Linux --
+# it was SIGSEGV while every fault was, before faults became signals a
+# program can catch (kernel/faulttest.sh).
+grep -A1 "sigtest: taking a signal with an unusable stack" "$C" |
+    grep -q "^sigtest: segmentation fault" &&
+    grep -A8 "sigtest: sigreturn to a context that asks for supervisor" "$C" |
+    grep -q "^sigtest: illegal instruction"
+check "  and both of those programs were killed for it, each by its own signal" $?
 
 echo "=== checks: an alarm nobody catches ends the program ==="
 

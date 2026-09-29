@@ -1783,11 +1783,27 @@ struct siginfo {
             s32 si_utime;
             s32 si_stime;
         } _chld;
+        struct {
+            u32 si_addr;            /* the address that faulted     */
+        } _sigfault;
     } _sifields;
 };
 
 #define SI_USER     0
 #define SI_KERNEL   0x80
+
+/* si_code for a signal raised by a fault in the program -- Linux's. */
+#define ILL_ILLOPC  1               /* SIGILL: illegal opcode         */
+#define ILL_ILLTRP  4               /*   illegal trap                 */
+#define ILL_PRVOPC  5               /*   privileged opcode            */
+#define FPE_INTDIV  1               /* SIGFPE: integer divide by zero */
+#define FPE_INTOVF  2               /*   integer overflow (CHK, TRAPV) */
+#define SEGV_MAPERR 1               /* SIGSEGV: nothing mapped there  */
+#define SEGV_ACCERR 2               /*   mapped, but not for this     */
+#define BUS_ADRALN  1               /* SIGBUS: misaligned address     */
+#define BUS_ADRERR  2               /*   no such physical address     */
+#define TRAP_BRKPT  1               /* SIGTRAP: breakpoint            */
+#define TRAP_TRACE  2               /*   trace                        */
 
 /*
  * And as its third: Linux/m68k's ucontext. The registers are d0-d7,

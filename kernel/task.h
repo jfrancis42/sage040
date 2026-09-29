@@ -44,6 +44,7 @@
 #ifndef TASK_H
 #define TASK_H
 
+#include "wb040.h"
 #include "kernel.h"
 #include "uapi.h"
 #include "wait.h"
@@ -157,6 +158,19 @@ struct task {
     int   slice;                /* ticks left in this turn             */
     int   nice;                 /* -20..19: how long its turns are     */
     u32   ss_sp, ss_size;       /* sigaltstack; size 0 when there is none */
+
+    /*
+     * A fault the program is about to be told of (trap.c): which
+     * signal, its si_code and address for an SA_SIGINFO handler, and --
+     * on a real 68040 -- the writes the faulting instruction left
+     * pending that could not be done, for the signal frame to carry so
+     * that sigreturn can do them once the handler has made them
+     * possible. Consumed by the frame for that signal.
+     */
+    int   fault_sig;
+    int   fault_code;
+    u32   fault_addr;
+    struct fault_wb pending_wb;
     int   background;
     int   exiting;
     int   stop_reported;        /* its stop has been told to the parent */

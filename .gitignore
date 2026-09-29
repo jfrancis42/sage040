@@ -50,6 +50,7 @@ apps/wator
 apps/life
 apps/attractor
 apps/fpsptest
+apps/faulttest
 apps/hello
 apps/fbtest
 apps/faulter

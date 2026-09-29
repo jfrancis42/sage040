@@ -59,6 +59,7 @@ cache.c
 font8x16.c
 probe.c
 fpsp.c
+wb040.c
 shell.c
 
 # The drivers. Everything here names a chip, and only here.

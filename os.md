@@ -485,6 +485,37 @@ and otherwise returns `-EINTR`. `pause` and `sigsuspend` always return
 `-EINTR` after a handler. Restarting puts the call number back in d0 and
 steps the pc back over the trap.
 
+**A program's own faults are signals it can catch.** An access fault
+the kernel cannot resolve, an illegal instruction, divide by zero, CHK,
+TRAPV, a privileged instruction, `trap #15` -- each becomes SIGSEGV,
+SIGBUS, SIGILL, SIGFPE or SIGTRAP with Linux's `si_code` (SEGV_MAPERR or
+SEGV_ACCERR, FPE_INTDIV, ILL_ILLOPC, TRAP_BRKPT, ...) and, for an
+`SA_SIGINFO` handler, the faulting address in `si_addr`. It is delivered
+at once: `_exc_common` returns through `task_ret_to_user` as a system
+call does, after `make_format0` in `trap.c` has turned the 68040's
+30-word access-fault frame into a four-word one at the same PC -- the
+only kind a handler can be sent through. A handler that repairs the
+cause and returns (an `mprotect`, say) gets the instruction run again; one
+that changes the PC in its `ucontext` moves the program on.
+`kernel/faulttest.sh` does seven. A fault cannot be ignored or blocked:
+either way it ends the program, printing the registers, exactly as a
+fault with no handler does -- as Linux does, since the instruction would
+only fault again. A SEGV_ACCERR is a refused access to a resident page;
+a `PROT_NONE` page is not resident here and reports SEGV_MAPERR, where
+Linux says ACCERR.
+
+**On a real 68040 a store that faults has already happened** as far as
+the instruction is concerned: its write waits in the access-fault frame's
+write-back registers, and the chip leaves the handler to do it
+(MC68040 User's Manual 8.4.6). `kernel/wb040.c` completes them after
+demand paging makes the page -- which is what a program's first write
+to any new page needs -- and when a fault becomes a signal, carries the
+writes it could not make in the signal frame for `sigreturn` to make
+once the handler has made them possible. QEMU re-runs a faulting
+instruction instead and never leaves a write-back, so none of this runs
+under emulation; it is written from the manual and first runs on the
+chip.
+
 **Kernel tasks take no signals.** They never return to user mode, so a
 signal to one could never be acted on, and `kill` of one is refused with
 `EPERM`. **An ignored signal is discarded when it is sent**, not left
@@ -1174,6 +1205,7 @@ drive it over its serial line.
 | `kernel/cryptotest.sh` | 4 | ChaCha20 and BLAKE2s against the RFCs, built for the host |
 | `kernel/fstest.sh` | 69 | the filesystem, names of any shape included, and a file past what one indirect block reaches -- verified with the host's debugfs and e2fsck |
 | `kernel/apitest.sh` | 376 | the system call surface a ported program expects |
+| `kernel/faulttest.sh` | 12 | a program's faults as signals it catches and survives: SIGSEGV repaired by mprotect and retried, SEGV_ACCERR and si_addr, SIGILL stepped over, SIGFPE, SIGTRAP, a blocked fault still fatal |
 | `kernel/fpsptest.sh` | 7 | the 68040's missing FPU instructions: 59 results from Motorola's FPSP (`fpsp-trap=on`) and from QEMU, each against the host's libm; two at once; F-line as SIGILL |
 | `kernel/edittest.sh` | 41 | the line editor, history, job control, command lists, scripts, shutdown |
 | `kernel/vmtest.sh` | 18 | what a program cannot touch |

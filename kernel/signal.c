@@ -24,6 +24,7 @@
 #include "console.h"
 #include "errno.h"
 #include "string.h"
+#include "wb040.h"
 
 extern void fpu_save(u32 *area);
 extern void fpu_restore(const u32 *area);
@@ -456,6 +457,7 @@ struct sigframe {
     u32 scp;                    /* -> sc, for a handler that wants it      */
     struct sigcontext sc;
     u16 retcode[4];             /* the trampoline, if no restorer given   */
+    struct fault_wb wb;         /* writes a fault left for sigreturn      */
 } __attribute__((packed));
 
 #define SIGFRAME_SC_OFFSET  16
@@ -474,6 +476,32 @@ struct rt_sigframe {
     struct siginfo info;
     struct ucontext uc;
 };                              /* no padding: m68k aligns ints to two */
+
+/*
+ * Where an rt frame carries a fault's undone writes (wb040.c): in the
+ * ucontext's filler, past the 100 bytes the FPU's state frame uses.
+ * Linux keeps nothing there for m68k beyond the frame.
+ */
+#define UC_WB_OFFSET    240
+
+/*
+ * The fault this frame is for, if any: si_code and si_addr for the
+ * handler, and the writes to carry. Taken once, by the frame for the
+ * signal the fault raised.
+ */
+static int take_fault(struct task *t, int sig, struct fault_wb *wb)
+{
+    if (t->fault_sig != sig) {
+        return 0;
+    }
+    t->fault_sig = 0;
+    if (wb) {
+        *wb = t->pending_wb;
+    }
+    memset(&t->pending_wb, 0, sizeof(t->pending_wb));
+    return 1;
+}
+
 
 /*
  * Where a handler returns to. For the old frame with SA_RESTORER, the
@@ -621,6 +649,7 @@ static int setup_frame(struct task *t, struct pt_regs *regs, int sig,
     f.sig = (u32)sig;
     f.code = 0;
     f.scp = fp + SIGFRAME_SC_OFFSET;
+    take_fault(t, sig, &f.wb);
 
     if (copy_to_user(fp, &f, sizeof(f)) < 0) {
         return -1;              /* the stack is not usable */
@@ -689,6 +718,17 @@ static int setup_rt_frame(struct task *t, struct pt_regs *regs, int sig,
 
     f.info.si_signo = sig;
     f.info.si_code = SI_USER;
+    {
+        struct fault_wb wb;
+        int code = t->fault_code;
+        u32 addr = t->fault_addr;
+
+        if (take_fault(t, sig, &wb)) {
+            f.info.si_code = code;
+            f.info._sifields._sigfault.si_addr = addr;
+            memcpy((u8 *)f.uc.uc_filler + UC_WB_OFFSET, &wb, sizeof(wb));
+        }
+    }
 
     f.uc.uc_stack.ss_sp = (void *)t->ss_sp;
     f.uc.uc_stack.ss_size = t->ss_size;
@@ -760,6 +800,22 @@ s32 signal_return(struct pt_regs *regs)
     set_usp(sc.sc_usp);
     t->sig_blocked = sc.sc_mask & ~SIG_UNBLOCKABLE;
 
+    /*
+     * Writes the fault left undone (wb040.c), now that the handler has
+     * had its chance to make them possible. One that still cannot be
+     * made is the fault again, and this time nothing is left to try.
+     */
+    {
+        static struct fault_wb wb;
+
+        if (copy_from_user(&wb, usp + 12 - SIGFRAME_SC_OFFSET +
+                               (u32)__builtin_offsetof(struct sigframe, wb),
+                           sizeof(wb)) < 0 ||
+            wb040_redo(&wb) < 0) {
+            force_segv(t);
+        }
+    }
+
     /* Only frames the kernel itself writes are restored. Under QEMU that
      * is always idle; a real 68040 could have saved a busy frame, which
      * this would reduce to idle -- losing an exception that was pending
@@ -812,6 +868,16 @@ s32 signal_rt_return(struct pt_regs *regs)
                      ((u16)uc.uc_mcontext.gregs[17] & SR_CCR));
     set_usp((u32)uc.uc_mcontext.gregs[15]);
     t->sig_blocked = uc.uc_sigmask[0] & ~SIG_UNBLOCKABLE;
+
+    /* As in sigreturn: the writes a fault left, now possible or fatal. */
+    {
+        struct fault_wb wb;
+
+        memcpy(&wb, (u8 *)uc.uc_filler + UC_WB_OFFSET, sizeof(wb));
+        if (wb040_redo(&wb) < 0) {
+            force_segv(t);
+        }
+    }
 
     uc_to_fpu(&uc, fpu);
     if (fpu[0] != 0 && fpu[0] != FPU_IDLE_FRAME) {

@@ -53,6 +53,15 @@ halt:
 | Registers are saved so the C handler can report them, and the frame
 | pointer is passed as its argument.
 |
+| The handler returns how many bytes of the frame to drop: nonzero when
+| a fault in a program is to become a signal, and it has rewritten the
+| end of the frame as a four-word format $0 frame at the same PC (trap.c,
+| make_format0) -- the only kind the signal code redirects. The saved
+| registers are moved up to sit on top of it. Then a fault from a
+| program returns through task_ret_to_user, as a system call does,
+| which is where the signal is delivered: returning straight to the
+| program would only run the faulting instruction again.
+|
         .globl  _exc_common
         .type   _exc_common,@function
 _exc_common:
@@ -64,7 +73,20 @@ _exc_common:
         move.l  %a0,-(%sp)
         jsr     exception_handler
         addq.l  #8,%sp
-        movem.l (%sp)+,%d0-%d7/%a0-%a6
+        tst.l   %d0
+        beq.s   1f
+        lea     60(%sp),%a0             | end of the registers
+        lea     60(%sp,%d0.l),%a1       | where their end goes
+        moveq   #14,%d1                 | 15 longwords, top first
+2:      move.l  -(%a0),-(%a1)
+        dbra    %d1,2b
+        add.l   %d0,%sp
+1:      btst    #5,60(%sp)              | S bit of the saved SR
+        bne.s   3f
+        move.l  %sp,-(%sp)              | -> struct pt_regs
+        jsr     task_ret_to_user
+        addq.l  #4,%sp
+3:      movem.l (%sp)+,%d0-%d7/%a0-%a6
         rte
 
 |

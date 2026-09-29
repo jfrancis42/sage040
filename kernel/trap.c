@@ -19,11 +19,12 @@
  * rather than around it, so nothing above had to change when it did.
  *
  * An access fault from user mode is first offered to vm_fault(), which
- * may make the page (demand paging, task 21): then the handler returns,
- * and the 68040 runs the faulting instruction again. A fault it cannot
- * resolve kills the program (SIGSEGV) and leaves the machine running; a
- * fault in supervisor mode panics, because there is nothing else it
- * could safely do.
+ * may make the page (demand paging, task 21): then any writes the fault
+ * left pending are done (wb040.c) and the handler returns. A fault that
+ * cannot be resolved becomes a signal the program can catch -- SIGSEGV,
+ * SIGBUS, SIGILL, SIGFPE, SIGTRAP -- or, with no handler, ends it and
+ * leaves the machine running; a fault in supervisor mode panics,
+ * because there is nothing else it could safely do.
  */
 #include "kernel.h"
 #include "console.h"
@@ -32,6 +33,8 @@
 #include "vm.h"
 #include "errno.h"
 #include "uapi.h"
+#include "wb040.h"
+#include "string.h"
 
 #define VEC_TRAP0   32          /* vectors 32..47 are TRAP #0..#15 */
 
@@ -83,24 +86,18 @@ static u32 fault_address(const u16 *f)
 
 /*
  * The special status word of a format 7 frame, and the bits of it that
- * matter here. RW is set for a read. WBnS are the 68040's pending
- * write-backs: a fault can leave up to three writes the processor had
- * accepted but not done, and the handler must do them before returning
- * (chapter 8). QEMU never leaves any -- it re-runs the whole instruction
- * -- so they are checked rather than emulated, and a frame that has one
- * is reported rather than resumed with a write silently lost.
+ * matter here (Figure 8-7). RW is set for a read; ATC for a fault in
+ * translation -- a page not there, or not allowed -- and clear for a
+ * physical bus error. The frame also holds up to three writes the
+ * processor had accepted but not done, which the handler must do before
+ * returning: wb040.c.
  */
 #define SSW_RW          0x0100
-#define WB_VALID        0x0080
+#define SSW_ATC         0x0400
 
 static u16 fault_ssw(const u16 *f)
 {
     return f[6];
-}
-
-static int writebacks_pending(const u16 *f)
-{
-    return (f[7] | f[8] | f[9]) & WB_VALID;
 }
 
 static const char *exception_name(unsigned vec)
@@ -141,36 +138,91 @@ static const char *regnames[15] = {
 };
 
 /*
- * Called from _exc_common with the fifteen saved registers and the
- * exception frame. An access fault from a program may be resolved --
- * demand paging, below -- and then this returns and the instruction runs
- * again. Anything else reports as much as it can and stops -- a silent
- * hang is the one outcome worth ruling out.
+ * exception_handler() is called from _exc_common with the fifteen saved
+ * registers and the exception frame. An access fault from a program may
+ * be resolved -- demand paging -- and then it returns and the program
+ * carries on. A fault the program has a handler for becomes that signal.
+ * Anything else reports as much as it can and stops -- a silent hang is
+ * the one outcome worth ruling out. It returns how many bytes of the
+ * frame _exc_common must drop (make_format0), usually none.
  */
-void exception_handler(const u32 *regs, const u16 *frame)
+
+/*
+ * What a fault in a program is, as a signal: Linux/m68k's mapping.
+ */
+static int fault_signal(unsigned vec, int *code)
+{
+    switch (vec) {
+    case 2:  *code = SEGV_MAPERR; return SIGSEGV;   /* refined by caller */
+    case 3:  *code = BUS_ADRALN;  return SIGBUS;    /* address error      */
+    case 5:  *code = FPE_INTDIV;  return SIGFPE;    /* divide by zero     */
+    case 6:                                         /* CHK                */
+    case 7:  *code = FPE_INTOVF;  return SIGFPE;    /* TRAPcc, TRAPV      */
+    case 8:  *code = ILL_PRVOPC;  return SIGILL;    /* privilege          */
+    case 9:  *code = TRAP_TRACE;  return SIGTRAP;
+    case 47: *code = TRAP_BRKPT;  return SIGTRAP;   /* TRAP #15           */
+    default:
+        if (vec >= 33 && vec <= 46) {               /* TRAP #1..#14       */
+            *code = ILL_ILLTRP;
+            return SIGILL;
+        }
+        *code = ILL_ILLOPC;                          /* illegal, line A,   */
+        return SIGILL;                               /* anything else      */
+    }
+}
+
+/*
+ * Will this program run a handler for `sig`? A fault is not a signal
+ * anybody sent: it cannot be ignored or deferred, because the
+ * instruction would only fault again. Blocked or ignored, it is taken
+ * as its default -- the end of the program -- as Linux does.
+ */
+static int catches(struct task *t, int sig)
+{
+    sighandler_t h = t->sigact[sig].sa_handler;
+
+    return h != SIG_DFL && h != SIG_IGN && !(t->sig_blocked & SIGMASK(sig));
+}
+
+/*
+ * Turn the exception frame into a four-word format $0 frame at the
+ * same PC, so that the signal machinery -- which redirects a frame by
+ * changing its PC, and so accepts only frames an rte simply returns
+ * through -- can send the program to its handler. The new frame goes at
+ * the END of the old one; the number of bytes before it is what
+ * _exc_common has to drop, moving the saved registers up to meet it
+ * (Linux calls this the stack adjustment).
+ */
+static int make_format0(u16 *frame, unsigned fmt, unsigned vec)
+{
+    int size = fmt == 7 ? 60 : fmt == 2 || fmt == 3 ? 12 : 8;
+    u16 sr = frame[0], pchi = frame[1], pclo = frame[2];
+    u16 *nf = frame + (size - 8) / 2;
+
+    nf[0] = sr;
+    nf[1] = pchi;
+    nf[2] = pclo;
+    nf[3] = (u16)(vec << 2);            /* format 0 */
+    return size - 8;
+}
+
+int exception_handler(const u32 *regs, u16 *frame)
 {
     unsigned vec = (unsigned)((frame[3] & 0x0fff) >> 2);
     unsigned fmt = (unsigned)(frame[3] >> 12);
     int i;
 
     /*
-     * A fault in a program kills the program, not the machine.
+     * A fault in a program kills the program, not the machine -- or,
+     * if the program asked, becomes a signal it handles.
      *
-     * This is the first thing the MMU actually buys, and it only works
-     * because the exception came from user mode: the kernel is intact,
-     * its stack is its own, and the only thing that has to go is the
-     * address space of whatever ran off the end of itself.
-     *
-     * Note what is NOT done here: returning. The 68040 pushes the
-     * address of the FAULTING INSTRUCTION, so an rte re-runs it -- which
-     * is what the demand paging above relies on, and why a fault it
-     * could not resolve must end the program here, not return and fault
-     * again forever.
-     */
-    /*
-     * DEMAND PAGING. The page may be lazy, in the swap file, or shared
-     * copy-on-write: vm_fault() makes it what the access needs, and
-     * returning re-runs the instruction.
+     * DEMAND PAGING. An access fault (format $7) whose page is lazy, in
+     * the swap file, or shared copy-on-write: vm_fault() makes it what
+     * the access needs, and the pending write-backs are completed
+     * (wb040.c) -- which on a real 68040 is what a store to a new page
+     * needs, its write having been left in WB2 with the instruction
+     * already past. Then the rte resumes: a read re-runs its
+     * instruction, a store carries on after it.
      *
      * One answer can loop: VM_FAULT_NOCHANGE, a page the tables say is
      * there and accessible, which is taken to be a stale translation and
@@ -183,16 +235,12 @@ void exception_handler(const u32 *regs, const u16 *frame)
      * slot, the same first-touch fault its predecessor had made.
      */
     if (vec == 2 && fmt == 7 && from_user(frame) && current && current->as &&
-        !writebacks_pending(frame)) {
+        !wb040_push_fault(frame)) {
         static u32 last_addr, last_pc, nochange;
         u32 addr = fault_address(frame);
         int write = !(fault_ssw(frame) & SSW_RW);
         int r = vm_fault(current->as, addr, write);
 
-        if (r == 0) {
-            nochange = 0;
-            return;
-        }
         if (r == VM_FAULT_NOCHANGE) {
             if (addr == last_addr && frame_pc(frame) == last_pc) {
                 nochange++;
@@ -202,9 +250,24 @@ void exception_handler(const u32 *regs, const u16 *frame)
             last_addr = addr;
             last_pc = frame_pc(frame);
             if (nochange < 3) {
-                return;
+                r = 0;
+            } else {
+                nochange = 0;
             }
+        } else if (r == 0) {
             nochange = 0;
+        }
+        if (r == 0) {
+            struct fault_wb undone;
+
+            memset(&undone, 0, sizeof(undone));
+            if (wb040_complete(frame, &undone) == 0) {
+                return 0;
+            }
+            /* A write-back whose own address is bad: that is the fault
+             * the program is told of. */
+            addr = undone.w[0].addr;
+            r = -EFAULT;
         }
         if (r == -ENOMEM) {
             /* Linux's answer to a page that cannot be had: SIGKILL. */
@@ -217,6 +280,50 @@ void exception_handler(const u32 *regs, const u16 *frame)
     }
 
     if (from_user(frame) && current && current->as) {
+        struct task *t = current;
+        int code;
+        int sig = fault_signal(vec, &code);
+        u32 addr = frame_pc(frame);
+
+        if (vec == 2 && fmt == 7) {
+            addr = fault_address(frame);
+            if (!(fault_ssw(frame) & SSW_ATC)) {
+                sig = SIGBUS;                   /* a physical bus error */
+                code = BUS_ADRERR;
+            } else if (vm_translate(t->as, addr, 0)) {
+                /* Resident -- readable, even -- and still refused: a
+                 * write to a read-only page. (A PROT_NONE mapping is not
+                 * resident and reads as MAPERR here, where Linux says
+                 * ACCERR: this kernel keeps no record of mappings apart
+                 * from their pages.) */
+                code = SEGV_ACCERR;
+            }
+        } else if (vec == 3 && fmt == 2) {
+            addr = ((u32)frame[4] << 16) | frame[5];
+        }
+
+        /*
+         * A HANDLER: the program gets the signal, now -- _exc_common
+         * returns through task_ret_to_user, which delivers it -- with
+         * the fault's address and code for an SA_SIGINFO handler, and
+         * any writes the instruction left undone carried in the frame
+         * for sigreturn to finish. Resuming re-runs the faulting
+         * instruction, or carries on after one that had completed, as
+         * the frame's own PC says.
+         */
+        if (catches(t, sig) && !(vec == 2 && fmt == 7 &&
+                                 wb040_push_fault(frame))) {
+            memset(&t->pending_wb, 0, sizeof(t->pending_wb));
+            if (vec == 2 && fmt == 7) {
+                wb040_complete(frame, &t->pending_wb);
+            }
+            t->fault_sig = sig;
+            t->fault_code = code;
+            t->fault_addr = addr;
+            signal_send(t, sig);
+            return make_format0(frame, fmt, vec);
+        }
+
         kputs("\n");
         kputs(exception_name(vec));
         if (fmt == 7) {
@@ -244,19 +351,13 @@ void exception_handler(const u32 *regs, const u16 *frame)
         }
         kputc('\n');
         /*
-         * 139 is what a shell reports for a program killed by a
-         * segmentation fault: 128 plus the signal number. Nothing
-         * catches signals here, but the number a person sees should
-         * still be the number they would see anywhere else.
+         * Its own fault ends its own task and nothing else, with the
+         * status a shell reports for that signal: 128 plus its number
+         * (139 for SIGSEGV). The kernel is intact -- the exception came
+         * from user mode, so its stack is its own.
          */
-        /*
-         * Its own fault ends its own task and nothing else. The kernel
-         * is intact -- the exception came from user mode, so its stack
-         * is its own -- and the only thing that has to go is the address
-         * space of whatever ran off the end of itself.
-         */
-        current->signalled = SIGSEGV;
-        task_exit(128 + SIGSEGV);
+        t->signalled = sig;
+        task_exit(128 + sig);
     }
 
     kputs("\n*** exception ");
