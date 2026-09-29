@@ -1,0 +1,186 @@
+m68k: split a move whose auto-modified source register the destination uses.
+
+At -O2, gcc 15.2's late-combine pass substitutes one address into
+another and can make
+
+	move.b (%a0)+,(0,%a0,%d1.l)
+
+from a copy loop whose destination is computed from its source. In RTL
+that insn is well defined: every use of %a0 in it sees the value before
+the increment. The 68000 family does not execute it that way. It
+finishes the source operand, post-increment or pre-decrement included,
+before it calculates the destination address, so the destination is off
+by the size of the move -- and QEMU, which follows the hardware, does
+the same. A copy lands a byte (or two, or four) away from where it was
+meant to, with nothing to say so.
+
+It was found in the Sage040 dynamic linker, where a thread's TLS image
+arrived shifted by one byte and its last byte landed on the next thing
+in memory. Reproduced from four lines of C:
+
+	struct m { unsigned long a, b, c; const void *img; };
+	void cp3(unsigned long base, const struct m *m)
+	{
+	    unsigned char *dp = (unsigned char *)(base + m->a);
+	    const unsigned char *sp = m->img;
+	    unsigned long n = m->c;
+	    while (n--) *dp++ = *sp++;
+	}
+
+The fix is at output, where every such insn has to pass: a memory to
+memory move whose source address is (An)+ or -(An), with An in the
+destination address, is written as the plain move followed by the
+adjustment of An. addq/subq to an address register leave the condition
+codes alone, so the flags still describe the move; the recorded flag
+operands are cleared, because once An has moved neither operand's
+address names the location they describe. The destination-side case
+needs nothing: the hardware computes the source first, which is what
+RTL means.
+
+---
+--- a/gcc/config/m68k/m68k-protos.h	2025-08-08 00:51:40.572039754 -0600
++++ b/gcc/config/m68k/m68k-protos.h	2026-09-29 13:28:08.425835599 -0600
+@@ -27,6 +27,7 @@
+ 
+ extern bool valid_mov3q_const (HOST_WIDE_INT);
+ extern const char *output_move_simode (rtx *);
++extern const char *m68k_output_move_autoinc_conflict (rtx *);
+ extern const char *output_move_himode (rtx *);
+ extern const char *output_move_qimode (rtx *);
+ extern const char *output_move_stricthi (rtx *);
+--- a/gcc/config/m68k/m68k.cc	2025-08-08 00:51:40.572349774 -0600
++++ b/gcc/config/m68k/m68k.cc	2026-09-29 13:28:08.422770776 -0600
+@@ -3270,10 +3270,75 @@
+   return "move%.l %1,%0";
+ }
+ 
++/* A memory-to-memory move whose SOURCE address auto-modifies a register
++   that the DESTINATION address also uses, such as
++
++	move.b (%a0)+,(0,%a0,%d1.l)
++
++   In RTL every use of %a0 in the insn sees its value before the
++   increment, and passes that substitute one address into another
++   (late-combine does) are entitled to make such an insn.  The 68000
++   family does not execute it that way: it finishes the source operand,
++   post-increment or pre-decrement included, before it calculates the
++   destination address, so the destination is off by the size of the
++   move.  Emit it as the plain move, with the source's register
++   unmodified, followed by the adjustment -- addq/subq to an address
++   register leaves the condition codes alone, so the move's flags stand.
++   Returns "" having output both, or NULL when OPERANDS need nothing.  */
++
++const char *
++m68k_output_move_autoinc_conflict (rtx *operands)
++{
++  rtx dst = operands[0], src = operands[1], addr, reg, xops[4];
++  HOST_WIDE_INT n;
++  enum rtx_code code;
++
++  if (!MEM_P (src) || !MEM_P (dst))
++    return NULL;
++  addr = XEXP (src, 0);
++  code = GET_CODE (addr);
++  if (code != POST_INC && code != PRE_DEC)
++    return NULL;
++  reg = XEXP (addr, 0);
++  if (!reg_mentioned_p (reg, XEXP (dst, 0)))
++    return NULL;
++
++  n = GET_MODE_SIZE (GET_MODE (src));
++  /* A byte push or pop moves the stack pointer by two.  */
++  if (n == 1 && REGNO (reg) == STACK_POINTER_REGNUM)
++    n = 2;
++  gcc_assert (n >= 1 && n <= 8);
++
++  /* What the flags describe is no longer a location either operand
++     names once the register has moved.  */
++  flags_operand1 = flags_operand2 = NULL_RTX;
++
++  xops[0] = dst;
++  xops[1] = replace_equiv_address_nv (src, code == POST_INC
++					   ? reg
++					   : plus_constant (Pmode, reg, -n));
++  xops[2] = reg;
++  xops[3] = GEN_INT (n);
++  switch (GET_MODE_SIZE (GET_MODE (src)))
++    {
++    case 1: output_asm_insn ("move%.b %1,%0", xops); break;
++    case 2: output_asm_insn ("move%.w %1,%0", xops); break;
++    case 4: output_asm_insn ("move%.l %1,%0", xops); break;
++    default: gcc_unreachable ();
++    }
++  output_asm_insn (code == POST_INC ? "addq%.l %3,%2" : "subq%.l %3,%2",
++		   xops);
++  return "";
++}
++
+ const char *
+ output_move_simode (rtx *operands)
+ {
++  const char *split;
++
+   handle_flags_for_move (operands);
++  if ((split = m68k_output_move_autoinc_conflict (operands)) != NULL)
++    return split;
+ 
+   if (GET_CODE (operands[1]) == CONST_INT)
+     return output_move_simode_const (operands);
+@@ -3291,6 +3356,10 @@
+ const char *
+ output_move_himode (rtx *operands)
+ {
++  const char *split = m68k_output_move_autoinc_conflict (operands);
++
++  if (split)
++    return split;
+   if (GET_CODE (operands[1]) == CONST_INT)
+     {
+       if (operands[1] == const0_rtx
+@@ -3320,7 +3389,11 @@
+ const char *
+ output_move_qimode (rtx *operands)
+ {
++  const char *split;
++
+   handle_flags_for_move (operands);
++  if ((split = m68k_output_move_autoinc_conflict (operands)) != NULL)
++    return split;
+ 
+   /* 68k family always modifies the stack pointer by at least 2, even for
+      byte pushes.  The 5200 (ColdFire) does not do this.  */
+@@ -3370,6 +3443,10 @@
+ const char *
+ output_move_stricthi (rtx *operands)
+ {
++  const char *split = m68k_output_move_autoinc_conflict (operands);
++
++  if (split)
++    return split;
+   if (operands[1] == const0_rtx
+       /* clr insns on 68000 read before writing.  */
+       && ((TARGET_68010 || TARGET_COLDFIRE)
+@@ -3381,6 +3458,10 @@
+ const char *
+ output_move_strictqi (rtx *operands)
+ {
++  const char *split = m68k_output_move_autoinc_conflict (operands);
++
++  if (split)
++    return split;
+   if (operands[1] == const0_rtx
+       /* clr insns on 68000 read before writing.  */
+       && ((TARGET_68010 || TARGET_COLDFIRE)
+--- a/gcc/config/m68k/m68k.md	2025-08-08 00:51:40.573349790 -0600
++++ b/gcc/config/m68k/m68k.md	2026-09-29 13:28:08.424770787 -0600
+@@ -1212,6 +1212,10 @@
+ 	(match_operand:SF 1 "general_operand" "rmfF"))]
+   "!TARGET_COLDFIRE"
+ {
++  const char *split = m68k_output_move_autoinc_conflict (operands);
++
++  if (split)
++    return split;
+   if (FP_REG_P (operands[0]))
+     {
+       if (FP_REG_P (operands[1]))

@@ -28,7 +28,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: pagecheck fpsptest faulttest procfstest tlstest logintest fsimgtest fattest all boot run install src qemu world libc-if-missing toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest qemutest libc cube programs clean distclean
+.PHONY: pagecheck autoinccheck fpsptest faulttest procfstest tlstest logintest fsimgtest fattest all boot run install src qemu world libc-if-missing toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest qemutest libc cube programs clean distclean
 
 all:
 	$(MAKE) -C bootrom
@@ -279,12 +279,18 @@ qemu:
 run:
 	$(MAKE) -C kernel run
 
-test: pagecheck fsimgtest tests cryptotest fstest fattest apitest fpsptest faulttest procfstest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest tlstest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest logintest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest qemutest
+test: autoinccheck pagecheck fsimgtest tests cryptotest fstest fattest apitest fpsptest faulttest procfstest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest tlstest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest logintest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest qemutest
 
 # Code and data on separate pages, in everything built for the machine
 # (tools/pagecheck.py says why). First, and cheap: what it catches never
 # fails a test, it only makes programs slow, so no suite would see it.
 # Checks what is BUILT, which is whatever the last `make` made.
+# The compiler first: a toolchain that emits a move the CPU executes
+# differently from what gcc meant (ports/gcc/patches/03) makes every
+# test after it meaningless.
+autoinccheck:
+	tools/autoinccheck.py
+
 pagecheck:
 	tools/pagecheck.py
 

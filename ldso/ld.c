@@ -210,8 +210,9 @@ static int seq(const char *a, const char *b)
  * increment a0 before working out the destination, so every byte went
  * one place too far: a thread's TLS arrived shifted by a byte, and the
  * last byte landed on the next thing in memory. Out of line, with its
- * own two pointers, it is `move.b (%a0)+,(%a1)+`. See todo.md for the
- * compiler fault itself.
+ * own two pointers, it is `move.b (%a0)+,(%a1)+`. ports/gcc/patches/03
+ * fixes the compiler; this stays, because ld.so is the one program that
+ * cannot be rebuilt around a bad compiler after the fact.
  */
 static __attribute__((noinline)) void mcopy(void *d, const void *s, u32 n)
 {

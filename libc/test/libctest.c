@@ -526,6 +526,37 @@ static void test_signals(void)
 
 /* --- time and the terminal ----------------------------------------- */
 
+/*
+ * Code and constants are read-only, static and dynamic alike: exec
+ * write-protects every segment the file does not mark writable, and the
+ * linker scripts (libc/sage040.ld for a static program) put text and
+ * data in separate segments for that to have something to act on. A
+ * store into either must end the program with SIGSEGV -- in a child,
+ * since it is the end of whoever does it.
+ */
+static const char literal[] = "not to be written";
+
+static int dies_writing(volatile char *where)
+{
+    int st = 0;
+    pid_t pid = fork();
+
+    if (pid == 0) {
+        *where = 'X';
+        _exit(0);               /* it worked, which is the failure */
+    }
+    waitpid(pid, &st, 0);
+    return WIFSIGNALED(st) && WTERMSIG(st) == SIGSEGV;
+}
+
+static void test_readonly(void)
+{
+    report("writing a string literal is SIGSEGV",
+           dies_writing((volatile char *)literal));
+    report("writing the program's own code is SIGSEGV",
+           dies_writing((volatile char *)(void *)test_readonly));
+}
+
 static void test_time(void)
 {
     struct timespec a, b;
@@ -644,6 +675,7 @@ int main(int argc, char **argv)
     test_dirs(argv[0][0] == '/' ? argv[0] : "/libctest");
     test_processes(argv[0][0] == '/' ? argv[0] : "/libctest");
     test_signals();
+    test_readonly();
     test_time();
     test_tty();
 

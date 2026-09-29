@@ -178,7 +178,11 @@ gcc_vdir=$(cd "$GCCOUT" && find lib/gcc -mindepth 2 -maxdepth 2 -type d | head -
 if [ -n "$gcc_vdir" ]; then
     fsimg put "$SRCDIR/build-gcc-native/specs.sage040" "/usr/$gcc_vdir/specs"
 fi
-for f in hello maths part1 part2; do
+# The loops that made gcc 15.2 emit a move the CPU runs wrong
+# (ports/gcc/patches/03): the machine's own compiler must not either.
+python3 -c "import sys; sys.path.insert(0, '../tools'); import autoinccheck; \
+print(autoinccheck.SOURCE)" > "$WORK/loops.c"
+for f in hello maths part1 part2 loops; do
     fsimg put "$WORK/$f.c" /ST/$f.c
 done
 
@@ -229,6 +233,8 @@ run './parts > /ST/run3.out 2>&1'                            r3
 echo "    -c only, for the byte-for-byte comparison ..."
 run 'gcc -mcpu=68040 -O2 -c hello.c -o hello.native.o > /ST/c4.out 2>&1' c4
 run 'gcc -mcpu=68040 -O2 -c maths.c -o maths.native.o > /ST/c5.out 2>&1' c5
+run 'gcc -O2 -S loops.c -o loops2.s > /ST/c7.out 2>&1'       c7
+run 'gcc -O3 -S loops.c -o loops3.s > /ST/c8.out 2>&1'       c8
 run 'ls -l /ST > /ST/ls.out 2>&1'                            ls
 run 'echo ALL-DONE'                                          end
 wait_for "ALL-DONE"
@@ -243,7 +249,8 @@ tr -d '\r' < "$LOG" > "$WORK/session.txt"
 get() { fsimg get /ST/$1 $WORK/$1 2>/dev/null; }
 for f in ver.out asver.out c0.out c1.out c2.out c3.out c4.out c5.out \
          c6.out run0.out run1.out run2.out run3.out run6.out ls.out \
-         hello0 hello maths parts hello.native.o maths.native.o; do
+         hello0 hello maths parts hello.native.o maths.native.o \
+         loops2.s loops3.s; do
     get "$f"
 done
 
@@ -257,6 +264,14 @@ check "no panic, no kernel exception" $?
 
 grep -q "15.2.0" "$WORK/ver.out" 2>/dev/null
 check "gcc runs on the machine and reports 15.2.0" $?
+
+for lvl in 2 3; do
+    [ -s "$WORK/loops$lvl.s" ] && python3 -c "
+import sys; sys.path.insert(0, '../tools'); import autoinccheck
+bad = autoinccheck.conflicts(open('$WORK/loops$lvl.s').read())
+print('\n'.join('    ' + b for b in bad)); sys.exit(1 if bad else 0)"
+    check "the machine's gcc -O$lvl moves through no register it also auto-modifies" $?
+done
 
 grep -qi "GNU assembler" "$WORK/asver.out" 2>/dev/null
 check "  and so does the assembler" $?

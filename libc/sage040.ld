@@ -15,12 +15,27 @@ MEMORY {
     USER (rwx) : ORIGIN = 0x10000000, LENGTH = 256M - 1M - 4K
 }
 
+/*
+ * THREE SEGMENTS, named, as lib/user.ld has them: code and constants
+ * R-X, everything writable RW, and the TLS image. Left to itself ld made
+ * one PT_LOAD of the lot, flagged RWE, and exec -- which write-protects
+ * every segment the file does not mark writable -- could protect
+ * nothing in a static program: a store into code or a string literal
+ * succeeded silently. Naming PHDRS at all means ld makes no segment it
+ * is not told about, so the TLS one is here too.
+ */
+PHDRS {
+    text PT_LOAD FLAGS(5);      /* PF_R | PF_X */
+    data PT_LOAD FLAGS(6);      /* PF_R | PF_W */
+    tls  PT_TLS;
+}
+
 SECTIONS {
     .text 0x10000000 : {
         KEEP(*(.text.start))
         *(.text .text.*)
-    } > USER
-    .rodata : { *(.rodata .rodata.*) } > USER
+    } > USER :text
+    .rodata : { *(.rodata .rodata.*) } > USER :text
     /* Writable sections start on a page of their own: under QEMU a
      * store to a page it has translated code from throws the
      * translation away. See lib/user.ld -- and see there too for why
@@ -45,7 +60,7 @@ SECTIONS {
         KEEP(*(.init_array .ctors))
         PROVIDE_HIDDEN(__init_array_end = .);
         PROVIDE_HIDDEN(__bothinit_array_end = .);
-    } > USER
+    } > USER :data
     .fini_array . : {
         PROVIDE_HIDDEN(__fini_array_start = .);
         /* .dtors.*: this gcc puts a destructor WITH A PRIORITY there,
@@ -61,7 +76,7 @@ SECTIONS {
          * without it no atexit handler ever ran. */
         KEEP(*(.fini_array*))
         PROVIDE_HIDDEN(__fini_array_end = .);
-    } > USER
+    } > USER :data
 
     /*
      * THE GLOBAL OFFSET TABLE, and it has to be named here.
@@ -81,8 +96,8 @@ SECTIONS {
      */
     .got . : {
         *(.got.plt) *(.igot.plt) *(.got) *(.igot)
-    } > USER
-    .data.rel.ro . : { *(.data.rel.ro .data.rel.ro.*) } > USER
+    } > USER :data
+    .data.rel.ro . : { *(.data.rel.ro .data.rel.ro.*) } > USER :data
 
     /*
      * THREAD-LOCAL STORAGE: the initial image of a thread's variables,
@@ -95,23 +110,25 @@ SECTIONS {
     .tdata . : {
         __tls_template_start = .;
         *(.tdata .tdata.* .gnu.linkonce.td.*)
-    } > USER
+    } > USER :data :tls
     .tbss . : {
         *(.tbss .tbss.* .gnu.linkonce.tb.*) *(.tcommon)
         __tls_template_end = .;
-    } > USER
+    } > USER :data :tls
     __tls_template_filesz = SIZEOF(.tdata);
     __tls_template_memsz = __tls_template_end - __tls_template_start;
     __tls_template_align = MAX(ALIGNOF(.tdata), ALIGNOF(.tbss));
 
-    .data . : { *(.data .data.*) } > USER
+    /* :data by name: a section with no list takes the one before it,
+     * which would put .data in the TLS segment. */
+    .data . : { *(.data .data.*) } > USER :data
     .bss . : {
         . = ALIGN(4);
         __bss_start = .;
         *(.bss .bss.*) *(COMMON)
         . = ALIGN(4);
         __bss_end = .;
-    } > USER
+    } > USER :data
     _end = .;
     /DISCARD/ : { *(.eh_frame) *(.comment) *(.note*) }
 }

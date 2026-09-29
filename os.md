@@ -174,9 +174,11 @@ address space is:
 segment into writable pages and then write-protects every page of a
 segment the ELF file does not mark writable, so a store into a
 program's code or a string literal is a SIGSEGV (`SEGV_ACCERR`), as on
-Linux, rather than silently succeeding. `lib/user.ld` puts text and
-data in separate segments for that to have anything to act on -- it
-used to make one segment of everything, flagged RWE. A read-only page is
+Linux, rather than silently succeeding. The linker scripts --
+`lib/user.ld` for ulib programs, `libc/sage040.ld` for static picolibc
+ones, ld's own for dynamic ones -- put text and data in separate
+segments for that to have anything to act on; the first two used to make
+one segment of everything, flagged RWE. A read-only page is
 also one `fork` shares without copying.
 
 Supervisor-only on every kernel page, so a program cannot read the kernel.

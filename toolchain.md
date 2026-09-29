@@ -62,7 +62,9 @@ there is no target libc, which is exactly the situation.
 ```bash
 curl -LO https://ftp.gnu.org/gnu/gcc/gcc-15.2.0/gcc-15.2.0.tar.xz
 tar xf gcc-15.2.0.tar.xz
-cd gcc-15.2.0 && ./contrib/download_prerequisites && cd ..
+cd gcc-15.2.0 && ./contrib/download_prerequisites
+for p in /path/to/this/repository/ports/gcc/patches/*.patch; do patch -p1 < "$p"; done
+cd ..
 mkdir build-gcc && cd build-gcc
 ../gcc-15.2.0/configure --target=$TARGET --prefix="$PREFIX" \
     --disable-nls --enable-languages=c --without-headers
@@ -70,6 +72,18 @@ make -j"$(nproc)" all-gcc all-target-libgcc
 make install-gcc install-target-libgcc
 cd ..
 ```
+
+**The patches in `ports/gcc/patches/` are not optional**, for the cross
+compilers any more than the native one -- one source tree builds all
+three. `03` is a miscompile: gcc 15.2's late-combine pass makes
+`move.b (%a0)+,(0,%a0,%d1.l)` out of an ordinary copy loop, and the
+68000 family increments a0 BEFORE it computes the destination, so the
+copy lands a byte off with nothing to say so. The patch writes such a
+move as the move and a separate `addq`. `tools/autoinccheck.py` (first
+in `make test`) compiles the loop that showed it with every compiler
+here and fails if the pattern is back. `02` makes size_t and uint32_t
+Linux's `unsigned int`; a C++ compiler built without it mangles size_t
+differently from a libstdc++ built with it, and nothing links.
 
 ### 3. GDB
 
