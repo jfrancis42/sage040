@@ -112,8 +112,8 @@ while IFS= read -r line; do
 done < <(grep -E '^  (ok|FAIL) ' "$SCRATCH/fault.clean")
 
 n=$(grep -cE '^  (ok|FAIL) ' "$SCRATCH/fault.clean")
-[ "$n" -eq 9 ]
-check "all nine of its checks ran ($n)" $?
+[ "$n" -eq 12 ]
+check "all twelve of its checks ran ($n)" $?
 grep -q '^faulttest: all right' "$SCRATCH/fault.clean" &&
     grep -q '^status 0' "$SCRATCH/fault.clean"
 check "and it said so, and exited 0" $?

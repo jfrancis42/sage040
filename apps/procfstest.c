@@ -405,12 +405,9 @@ static void memory(void)
     int local = 0;
     u8 *heap, *none, *anon;
 
-    /* r and x, and w whatever it is: exec maps text writable today
-     * (see procfs.c), which maps reports as it is. */
-    report("maps: main() is in the program's text, r?xp, named",
+    report("maps: main() is in the program's text, r-xp, named",
            maps_line((u32)memory, line, sizeof(line)) &&
-           line[18] == 'r' && line[20] == 'x' && line[21] == 'p' &&
-           ends_with(line, " /bin/procfstest"));
+           strstr_(line, " r-xp ") && ends_with(line, " /bin/procfstest"));
     report("maps: initialised data is the program's too, rw-p",
            maps_line((u32)&data_word, line, sizeof(line)) &&
            strstr_(line, " rw-p ") && ends_with(line, " /bin/procfstest"));

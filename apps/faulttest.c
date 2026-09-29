@@ -15,6 +15,9 @@
  *   5  TRAP #15                        SIGTRAP TRAP_BRKPT
  *   6  an old-style handler            SIGSEGV repaired without siginfo
  *   7  SIGSEGV blocked                 still the end of the program
+ *   8  write to the program's own code SIGSEGV SEGV_ACCERR: text is read
+ *                                      only; mprotect, and the write lands
+ *   9  write to a string literal       SIGSEGV too: .rodata is text's
  *
  * Not here: SIGBUS. On a real 68040 a jump to an odd address is an
  * address error, and trap.c makes it SIGBUS BUS_ADRALN; QEMU raises its
@@ -70,6 +73,23 @@ static void on_note(int sig, struct siginfo *si, void *uc)
     (void)uc;
     remember(sig, si);
 }
+
+/* 8, 9: make the page of the faulting address writable, and return. */
+static void on_segv_text(int sig, struct siginfo *si, void *uc)
+{
+    (void)uc;
+    remember(sig, si);
+    mprotect((void *)(si->_sifields._sigfault.si_addr & ~4095UL), 4096,
+             PROT_READ | PROT_WRITE);
+}
+
+/* Something to write over: never called. */
+static void __attribute__((noinline)) victim(void)
+{
+    __asm__ volatile("nop");
+}
+
+static const char literal[] = "a string the program may not change";
 
 /* 6: no siginfo; the page is repaired all the same. */
 static void on_segv_old(int sig)
@@ -170,6 +190,25 @@ int main(void)
     waitpid(pid, &st, 0);
     report("a blocked SIGSEGV still ends the program",
            pid > 0 && WTERMSIG(st) == SIGSEGV);
+
+    /* 8 */
+    catch3(SIGSEGV, on_segv_text);
+    hits = 0;
+    *(volatile u16 *)(void *)victim = 0x4e71;       /* nop over its nop */
+    report("writing the program's own code is SIGSEGV SEGV_ACCERR, there",
+           hits == 1 && got_code == SEGV_ACCERR &&
+           got_addr == (u32)(void *)victim);
+    report("  and after mprotect the write lands",
+           *(volatile u16 *)(void *)victim == 0x4e71);
+    /* Read-only again: the literal below may well share the page. */
+    mprotect((void *)((u32)(void *)victim & ~4095UL), 4096, PROT_READ);
+
+    /* 9 */
+    hits = 0;
+    *(volatile char *)&literal[0] = 'A';
+    report("writing a string literal is SIGSEGV too",
+           hits == 1 && got_code == SEGV_ACCERR &&
+           *(volatile const char *)&literal[0] == 'A');
 
     puts(failures ? "faulttest: FAILED\n" : "faulttest: all right\n");
     return failures != 0;

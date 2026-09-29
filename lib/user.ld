@@ -35,12 +35,26 @@ MEMORY {
     USER (rwx) : ORIGIN = 0x10000000, LENGTH = 256M - 1M - 4K
 }
 
+/*
+ * TWO SEGMENTS: code and constants readable and executable, data
+ * readable and writable. Without this ld made one segment of the lot,
+ * flagged RWE, and exec -- which write-protects every segment the file
+ * does not mark writable -- had nothing it could protect: a store
+ * through a stray pointer into a program's own code, or into a string
+ * literal, succeeded silently. The data already starts on a page of its
+ * own (below), so no page belongs to both.
+ */
+PHDRS {
+    text PT_LOAD FLAGS(5);      /* PF_R | PF_X */
+    data PT_LOAD FLAGS(6);      /* PF_R | PF_W */
+}
+
 SECTIONS {
     .text 0x10000000 : {
         KEEP(*(.text.start))
         *(.text .text.*)
-    } > USER
-    .rodata : { *(.rodata .rodata.*) } > USER
+    } > USER :text
+    .rodata : { *(.rodata .rodata.*) } > USER :text
     /*
      * Everything writable starts on a page of its own. Under QEMU, a
      * store to a page holding code it has translated throws that
@@ -65,14 +79,14 @@ SECTIONS {
      * no .data, had its .bss back on the page of its code. `.` does
      * follow the section before, empty or not.
      */
-    .data ALIGN(4096) : { . = ALIGN(4); *(.data .data.*) } > USER
+    .data ALIGN(4096) : { . = ALIGN(4); *(.data .data.*) } > USER :data
     .bss . : {
         . = ALIGN(4);
         __bss_start = .;
         *(.bss .bss.*) *(COMMON)
         . = ALIGN(4);
         __bss_end = .;
-    } > USER
+    } > USER :data
     _end = .;
     /DISCARD/ : { *(.eh_frame) *(.comment) *(.note*) }
 }

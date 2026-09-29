@@ -106,6 +106,7 @@ struct image {
 #define P_MEMSZ       20
 #define P_FLAGS       24
 #define PF_X          1
+#define PF_W          2
 
 static u16 be16(const u8 *p)
 {
@@ -252,9 +253,61 @@ static int read_into(struct addrspace *as, int fd, u32 off, u32 va, u32 len)
  * and `hi` bound where the segments may go: the whole user area for a
  * program, the interpreter's megabyte for an interpreter.
  */
+/*
+ * WRITE-PROTECT WHAT THE FILE DOES NOT MARK WRITABLE, once it is loaded.
+ *
+ * reserve() maps every page writable, because the pages are filled
+ * after they are mapped; left that way, a store through a stray pointer
+ * into a program's code or its string literals succeeded, where on
+ * Linux it faults. So each page of a segment without PF_W is made read
+ * only -- unless a writable segment also covers it, when the page has
+ * to stay writable for that one's sake (a linker that puts .data on
+ * the page where .rodata ends does this; ours start data on a page of
+ * its own).
+ *
+ * The pages are filled through their physical addresses, which the
+ * protection does not touch, so the order is free; after is simply
+ * where the whole list of segments is known. A read-only page is also
+ * one fork() shares without copying or marking (vm_clone), so this
+ * saves memory as well.
+ */
+#define SEG_MAX 16
+
+struct seg {
+    u32 lo, hi;                 /* page-aligned                         */
+    int writable;
+};
+
+static void protect_text(struct addrspace *as, const struct seg *s, int n)
+{
+    int i, j;
+
+    for (i = 0; i < n; i++) {
+        u32 p;
+
+        if (s[i].writable) {
+            continue;
+        }
+        for (p = s[i].lo; p < s[i].hi; p += PAGE_SIZE) {
+            int shared = 0;
+
+            for (j = 0; j < n; j++) {
+                if (s[j].writable && p >= s[j].lo && p < s[j].hi) {
+                    shared = 1;
+                }
+            }
+            if (!shared) {
+                vm_protect(as, p, 0);
+            }
+        }
+    }
+}
+
 static int load_image(struct addrspace *as, int fd, struct image *img,
                       u32 lo, u32 hi)
 {
+    struct seg segs[SEG_MAX];
+    int nseg = 0;
     u8 ehdr[EHDR_SIZE];
     u8 phdr[PHDR_SIZE];
     u32 phoff;
@@ -371,6 +424,17 @@ static int load_image(struct addrspace *as, int fd, struct image *img,
         if (vaddr + memsz > image_end) {
             image_end = vaddr + memsz;
         }
+        /* More segments than this and nothing is protected at all:
+         * leaving one writable page writable is safe, and guessing is
+         * not. */
+        if (nseg <= SEG_MAX) {
+            if (nseg < SEG_MAX) {
+                segs[nseg].lo = PAGE_ALIGN_DOWN(vaddr);
+                segs[nseg].hi = PAGE_ALIGN_UP(vaddr + memsz);
+                segs[nseg].writable = (pflags & PF_W) != 0;
+            }
+            nseg++;
+        }
         if (vaddr < img->start) {
             img->start = vaddr;
         }
@@ -398,6 +462,9 @@ static int load_image(struct addrspace *as, int fd, struct image *img,
         return -ENOEXEC;
     }
     img->end = image_end;
+    if (nseg <= SEG_MAX) {
+        protect_text(as, segs, nseg);
+    }
     if (img->code_lo > img->code_hi) {
         img->code_lo = img->code_hi = 0;
     }

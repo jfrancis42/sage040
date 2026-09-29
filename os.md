@@ -170,6 +170,15 @@ address space is:
 0x20000000   end: 256 MB total
 ```
 
+**A program's code and constants are read-only.** exec loads each
+segment into writable pages and then write-protects every page of a
+segment the ELF file does not mark writable, so a store into a
+program's code or a string literal is a SIGSEGV (`SEGV_ACCERR`), as on
+Linux, rather than silently succeeding. `lib/user.ld` puts text and
+data in separate segments for that to have anything to act on -- it
+used to make one segment of everything, flagged RWE. A read-only page is
+also one `fork` shares without copying.
+
 Supervisor-only on every kernel page, so a program cannot read the kernel.
 That is checked rather than asserted — `kernel/vmtest.sh` is fifteen
 attempts by a program to touch something it should not, and it exists
@@ -681,9 +690,7 @@ path alone, and while it is under `/proc` every relative name is
 mappings (see `mmap.c`), and named from what exec recorded: the program,
 its interpreter, `[heap]` and `[stack]`. A shared library's pages are
 unnamed, because nothing records which file a text-cache page came from.
-`x` comes from the ELF segment's flags, the 68040 having no execute bit;
-**a program's text reads `rwxp`** because exec maps it writable -- the
-truth about this kernel, not a formatting choice.
+`x` comes from the ELF segment's flags, the 68040 having no execute bit.
 
 ### Where "/" is
 
@@ -1271,7 +1278,7 @@ drive it over its serial line.
 | `kernel/cryptotest.sh` | 4 | ChaCha20 and BLAKE2s against the RFCs, built for the host |
 | `kernel/fstest.sh` | 69 | the filesystem, names of any shape included, and a file past what one indirect block reaches -- verified with the host's debugfs and e2fsck |
 | `kernel/apitest.sh` | 376 | the system call surface a ported program expects |
-| `kernel/faulttest.sh` | 12 | a program's faults as signals it catches and survives: SIGSEGV repaired by mprotect and retried, SEGV_ACCERR and si_addr, SIGILL stepped over, SIGFPE, SIGTRAP, a blocked fault still fatal |
+| `kernel/faulttest.sh` | 15 | a program's faults as signals it catches and survives: SIGSEGV repaired by mprotect and retried, SEGV_ACCERR and si_addr, SIGILL stepped over, SIGFPE, SIGTRAP, a blocked fault still fatal; writing its own code or a string literal is SIGSEGV |
 | `kernel/procfstest.sh` | 73 | `/proc` against what a program knows for itself -- getpid, argv, environ, its own inode, sysinfo, where `main` and a local are -- and read by sbase's `cat`, `ls` and `readlink`; refusals, another user's process, stopped and zombie states, standing in `/proc` |
 | `kernel/fpsptest.sh` | 17 | the 68040's missing FPU instructions: 59 results from Motorola's FPSP (`fpsp-trap=on`) and from QEMU, each against the host's libm; two at once; F-line as SIGILL; enabled divide by zero, operand error, signalling NaN and BSUN each a SIGFPE with its si_code; FMOVEM's control-register order |
 | `kernel/edittest.sh` | 41 | the line editor, history, job control, command lists, scripts, shutdown |

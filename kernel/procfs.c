@@ -1088,12 +1088,6 @@ static void gen_status(struct pbuf *b, struct task *t)
  * and so is any other page the program may read but not write, which
  * is where a shared library's text is. That is where a debugger looks
  * for code, and what the file itself declared.
- *
- * NOTE THE "w" ON A PROGRAM'S TEXT. exec maps every segment writable
- * (exec.c, reserve), so a program's code reads "rwxp" here where Linux
- * says "r-xp". That is the truth about this kernel, not a slip in the
- * formatting, and the day exec write-protects text it changes here by
- * itself.
  */
 struct maps_ctx {
     struct pbuf *b;
@@ -1190,8 +1184,8 @@ static int maps_region(void *arg, u32 start, u32 end, int prot, int shared)
     cuts[3] = im->interp_start;
     cuts[4] = im->interp_end;
     cuts[5] = USER_VA_END - (u32)USER_STACK_PAGES * PAGE_SIZE;
-    /* And where code meets data, which differ only in x while text is
-     * writable (see above). */
+    /* And where code meets data: a linker may leave them adjacent with
+     * the same protection, and they are still two lines. */
     cuts[6] = im->end_code;
     cuts[7] = im->start_data;
     cuts[8] = im->interp_code_hi;

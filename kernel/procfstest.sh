@@ -185,8 +185,7 @@ check "  and MemFree is below it" $?
 [ "$(head -1 "$WORK/mounts.out")" = "/dev/hda / ext2 rw 0 0" ]
 check "/proc/mounts says the root is the ext2 volume the host made" $?
 
-# r-x on Linux; rwx here, because exec maps text writable (procfs.c).
-grep -qE '^[0-9a-f]{8}-[0-9a-f]{8} r[-w]xp 00000000 03:01 [0-9]+ +/bin/cat$' \
+grep -qE '^[0-9a-f]{8}-[0-9a-f]{8} r-xp 00000000 03:01 [0-9]+ +/bin/cat$' \
     "$WORK/maps.out"
 check "cat's own maps: its text, named, with an inode" $?
 grep -qE ' +\[stack\]$' "$WORK/maps.out"
