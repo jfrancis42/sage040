@@ -24,9 +24,17 @@
 # F-line instruction that is not floating point, which the package must
 # hand back as SIGILL.
 #
-# Not tested here, because QEMU raises no floating-point arithmetic
-# exception (overflow, divide by zero, ...) whatever FPCR enables: the
-# package's paths that report those as SIGFPE.
+# And with fpsp-trap=on, the arithmetic exceptions a program enables in
+# FPCR: divide by zero, operand error, signalling NaN and BSUN, each
+# posted by the instruction that caused it, taken by the next one,
+# handled by the FPSP and delivered as SIGFPE with its si_code -- and
+# the program carrying on after its handler. Not tested, because the
+# patched QEMU does not model them (fpu_helper.c says why): overflow,
+# underflow and inexact from the arithmetic instructions.
+#
+# The same session checks FMOVEM's order for the control registers
+# (FPCR, FPSR, FPIAR, ascending), which QEMU had backwards and which
+# every FPSP handler depends on.
 #
 # Runs on a scratch image.
 
@@ -102,6 +110,8 @@ session() {
         printf "wait; echo TWO-DO''NE\r" >&3; wait_for TWO-DONE
         printf 'fpsptest -i\r' >&3
         printf "echo ILL-DO''NE\r" >&3; wait_for ILL-DONE
+        printf 'fpsptest -x > /x.out\r' >&3
+        printf "echo X-DO''NE\r" >&3; wait_for X-DONE
     fi
     printf "echo ALL-DO''NE\r" >&3; wait_for ALL-DONE
     exec 3>&-
@@ -163,6 +173,20 @@ check "two copies at once, switching tasks mid-emulation, both right" $?
 
 tr -d '\r' < "$LOG.trap" | grep -q '^fpsptest: SIGILL, as it should be'
 check "an F-line instruction that is not floating point is SIGILL" $?
+
+echo "=== floating-point exceptions, enabled (fpsp-trap=on) ==="
+get /x.out "$SCRATCH/fpsp-x.out"
+sed 's/^/  | /' "$SCRATCH/fpsp-x.out"
+while IFS= read -r line; do
+    case "$line" in
+        "  ok   "*)   check "${line#  ok   }" 0 ;;
+        "  FAIL "*)   check "${line#  FAIL }" 1 ;;
+    esac
+done < <(grep -E '^  (ok|FAIL) ' "$SCRATCH/fpsp-x.out")
+[ "$(grep -cE '^  (ok|FAIL) ' "$SCRATCH/fpsp-x.out")" -eq 8 ]
+check "  all eight ran" $?
+grep -q '^fpsptest: 5 exceptions reported' "$SCRATCH/fpsp-x.out"
+check "  and the FPSP reported exactly the five that were enabled" $?
 
 ! cat "$LOG.native" "$LOG.trap" | tr -d '\r' | grep -qE 'panic|FPSP:'
 check "no panic, and no FPSP complaint" $?

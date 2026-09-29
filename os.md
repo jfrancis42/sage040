@@ -401,9 +401,19 @@ Motorola's `skeleton.sa` left to each operating system:
   task.
 - An arithmetic exception the program has enabled in FPCR (overflow,
   divide by zero, ...) and the package decides is real becomes
-  **SIGFPE**; an F-line instruction that is not floating point at all
-  becomes **SIGILL**. Both arrive through the ordinary signal path, on
-  the 68040's format $3 or $0 frames.
+  **SIGFPE**, with Linux/m68k's `si_code` -- `FPE_FLTDIV` for divide by
+  zero, `FPE_FLTOVF`, `FPE_FLTUND`, `FPE_FLTRES` for inexact, and
+  `FPE_FLTINV` for operand error, signalling NaN and BSUN -- and the PC
+  of the instruction that took it as `si_addr`. An F-line instruction
+  that is not floating point at all becomes **SIGILL**. Both arrive
+  through the ordinary signal path, on the 68040's format $3 or $0
+  frames.
+- An enabled exception is *posted*: the instruction that caused it
+  leaves its destination alone, and the NEXT floating-point instruction
+  takes it. So a handler that simply returns lets that next instruction
+  run, with the destination as it was before -- a signalling NaN in an
+  FADD's source does not deliver a NaN; the FPSP writes a quieted one
+  only for an FMOVE out to memory or an integer.
 - `kstat(KSTAT_FPSP)` counts what the package did: instructions
   completed, operands handled, exceptions reported.
 
@@ -417,8 +427,13 @@ CPU is `-cpu m68040,fpsp-trap=on`, a property of this tree's QEMU patch
 that makes it trap exactly as the silicon does. `kernel/fpsptest.sh`
 boots both ways and checks every function against the host's libm, and
 checks that with the property on it was the package that computed them.
-What QEMU cannot show is the SIGFPE path: it raises no floating-point
-arithmetic exception whatever FPCR enables.
+With the property on, QEMU also posts the E1 exceptions -- divide by
+zero, operand error, signalling NaN -- and BSUN as the chip does, and the
+suite runs each through the package to a SIGFPE with its `si_code`. What
+it cannot show is overflow, underflow and inexact from the arithmetic
+instructions: their state frame holds an intermediate result softfloat
+never produces, so the patched QEMU does not raise them
+(`qemu-patch/README.md`).
 
 A ulib program gets these as `<math.h>` (`lib/math.h`, the instructions
 themselves); a picolibc program has picolibc's libm.
@@ -1206,7 +1221,7 @@ drive it over its serial line.
 | `kernel/fstest.sh` | 69 | the filesystem, names of any shape included, and a file past what one indirect block reaches -- verified with the host's debugfs and e2fsck |
 | `kernel/apitest.sh` | 376 | the system call surface a ported program expects |
 | `kernel/faulttest.sh` | 12 | a program's faults as signals it catches and survives: SIGSEGV repaired by mprotect and retried, SEGV_ACCERR and si_addr, SIGILL stepped over, SIGFPE, SIGTRAP, a blocked fault still fatal |
-| `kernel/fpsptest.sh` | 7 | the 68040's missing FPU instructions: 59 results from Motorola's FPSP (`fpsp-trap=on`) and from QEMU, each against the host's libm; two at once; F-line as SIGILL |
+| `kernel/fpsptest.sh` | 17 | the 68040's missing FPU instructions: 59 results from Motorola's FPSP (`fpsp-trap=on`) and from QEMU, each against the host's libm; two at once; F-line as SIGILL; enabled divide by zero, operand error, signalling NaN and BSUN each a SIGFPE with its si_code; FMOVEM's control-register order |
 | `kernel/edittest.sh` | 41 | the line editor, history, job control, command lists, scripts, shutdown |
 | `kernel/vmtest.sh` | 18 | what a program cannot touch |
 | `kernel/pagetest.sh` | 51 | demand paging, copy-on-write, swap, and running out of memory |

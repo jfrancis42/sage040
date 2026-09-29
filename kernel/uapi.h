@@ -1798,6 +1798,11 @@ struct siginfo {
 #define ILL_PRVOPC  5               /*   privileged opcode            */
 #define FPE_INTDIV  1               /* SIGFPE: integer divide by zero */
 #define FPE_INTOVF  2               /*   integer overflow (CHK, TRAPV) */
+#define FPE_FLTDIV  3               /*   floating divide by zero      */
+#define FPE_FLTOVF  4               /*   floating overflow            */
+#define FPE_FLTUND  5               /*   floating underflow           */
+#define FPE_FLTRES  6               /*   floating inexact result      */
+#define FPE_FLTINV  7               /*   floating invalid operation   */
 #define SEGV_MAPERR 1               /* SIGSEGV: nothing mapped there  */
 #define SEGV_ACCERR 2               /*   mapped, but not for this     */
 #define BUS_ADRALN  1               /* SIGBUS: misaligned address     */

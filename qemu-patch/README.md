@@ -108,14 +108,47 @@ CPU, so an FPSP is never reached and never tested.
   frame only; the FPSP restores frames of 4, 52 and 100 bytes. This part
   applies whether or not `fpsp-trap` is on.
 
+- **Arithmetic exceptions**, with `fpsp-trap=on`: an exception the
+  program enables in FPCR is *posted* as on the chip — the destination
+  left as it was, the operands kept — and taken as a pre-instruction
+  exception (format $0, PC the next floating-point instruction) by
+  whatever floating-point instruction comes next (section 9.7). Modelled
+  are the E1 exceptions, found by the conversion unit: signalling NaN
+  (vector 54), operand error (52) and divide by zero (50). Their FSAVE
+  is the 26-word frame with E1 set, which is what the FPSP's handlers
+  expect: `x_snan.s` grows it into a busy frame itself. FRESTORE of a
+  frame still carrying E1 posts the exception again, which is how the
+  FPSP hands one on to the operating system; which one it was comes
+  from FPSR's exception byte masked by FPCR's enables, because the frame
+  has no byte the FPSP does not use. The FPSR exception byte is set for
+  those three whether or not they are enabled. BSUN (48) is taken by the
+  conditional instruction itself when FPCR enables it and the condition
+  codes say NaN.
+- **FMOVEM of the control registers** now puts them in memory as FPCR,
+  FPSR, FPIAR at ascending addresses, as the M68000 Family Programmer's
+  Reference Manual requires. Upstream stores and loads them the other way
+  round. Because it does so *consistently*, a save and a restore agree and
+  nothing looks wrong, but code that reads the saved block — the FPSP's
+  USER_FPCR, a signal frame's `f_fpcntl` — gets FPIAR where it asked for
+  FPCR. The predecrement loop also tested one register's mask bit while
+  storing another's, so a two-register list stored the wrong pair. This
+  fix applies whether or not `fpsp-trap` is on, and is the clearest
+  upstream candidate here.
+
 Not modelled, and said so in `fpu_helper.c`: the frame's address field
 (0 here; the FPSP reads it only for instructions that write memory),
-tag 101 for single- and double-precision denormal sources, and the BUSY
-frames of the arithmetic exceptions — QEMU raises no floating-point
-arithmetic exception at all, so there is nothing to put in one.
+tag 101 for single- and double-precision denormal sources, and the E3
+exceptions — overflow, underflow and inexact from FADD, FSUB, FMUL, FDIV
+and FSQRT. Their busy frame holds the intermediate result before final
+rounding, with its unbounded exponent and guard, round and sticky bits,
+and softfloat produces only the rounded answer. Faking those fields
+would make the FPSP compute a wrong result, which is worse than not
+trapping.
 
 `kernel/fpsptest.sh` boots the machine both ways and checks the FPSP's
-answers against QEMU's softfloat and against the host's libm.
+answers against QEMU's softfloat and against the host's libm. It also
+runs each modelled exception to a SIGFPE with the right `si_code`, and
+checks FMOVEM's order against single FMOVEs.
 
 ## Building
 

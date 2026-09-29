@@ -6,6 +6,9 @@
  *     fpsptest        every <math.h> function against the host's libm
  *     fpsptest -i     an F-line instruction that is not floating point:
  *                     it must come back as SIGILL
+ *     fpsptest -x     floating-point exceptions enabled in FPCR, each
+ *                     reported as SIGFPE with its si_code, and the
+ *                     program going on after the handler
  *
  * Driven by kernel/fpsptest.sh, which runs it twice: once with the CPU
  * computing these itself (QEMU's softfloat), and once as
@@ -172,10 +175,205 @@ static double call(const struct ref *r)
     return 0;
 }
 
+static void check_bool(const char *what, int ok)
+{
+    puts(ok ? "  ok   " : "  FAIL ");
+    puts(what);
+    putch('\n');
+    if (!ok) {
+        failures++;
+    }
+}
+
 static void fpsp_counts(struct fpspstats *s)
 {
     memset(s, 0, sizeof(*s));
     syscall(__NR_kstat, KSTAT_FPSP, sizeof(*s), (u32)s);
+}
+
+static volatile int fpe_hits, fpe_code;
+
+static void on_sigfpe(int sig, struct siginfo *si, void *uc)
+{
+    (void)sig;
+    (void)uc;
+    fpe_hits++;
+    fpe_code = si->si_code;
+}
+
+static void set_fpcr(u32 v)
+{
+    __asm__ volatile("fmove.l %0,%%fpcr" : : "d"(v));
+}
+
+/*
+ * a / b with the result stored, all in one asm so the compiler cannot
+ * move the store: the division POSTS an enabled exception and the
+ * store -- the next floating-point instruction -- is what takes it. The
+ * destination register starts as `a`; with the exception taken, the
+ * 68040 leaves it untouched, so `a` is what is stored.
+ */
+static double div_store(double a, double b)
+{
+    double r;
+
+    __asm__ volatile("fmove.d %1,%%fp0\n\t"
+                     "fdiv.d %2,%%fp0\n\t"
+                     "fmove.d %%fp0,%0"
+                     : "=m"(r) : "m"(a), "m"(b) : "fp0");
+    return r;
+}
+
+static double add_store(double a, double b)
+{
+    double r;
+
+    __asm__ volatile("fmove.d %1,%%fp0\n\t"
+                     "fadd.d %2,%%fp0\n\t"
+                     "fmove.d %%fp0,%0"
+                     : "=m"(r) : "m"(a), "m"(b) : "fp0");
+    return r;
+}
+
+static double sqrt_store(double a)
+{
+    double r;
+
+    __asm__ volatile("fmove.d %1,%%fp0\n\t"
+                     "fsqrt.x %%fp0,%%fp0\n\t"
+                     "fmove.d %%fp0,%0"
+                     : "=m"(r) : "m"(a) : "fp0");
+    return r;
+}
+
+
+static void fpe_check(const char *what, int want_code, int ok)
+{
+    char buf[80];
+    u32 i, j = 0;
+
+    for (i = 0; what[i] && j < sizeof(buf) - 1; i++) {
+        buf[j++] = what[i];
+    }
+    buf[j] = 0;
+    check_bool(buf, fpe_hits == 1 && fpe_code == want_code && ok);
+    if (!(fpe_hits == 1 && fpe_code == want_code && ok)) {
+        puts("         (signals ");
+        putdec((u32)fpe_hits);
+        puts(", si_code ");
+        putdec((u32)fpe_code);
+        puts(ok ? ", result right)\n" : ", result WRONG)\n");
+    }
+}
+
+/*
+ * FMOVEM of control registers puts them in memory as FPCR, FPSR, FPIAR
+ * at ascending addresses, whatever the addressing mode. QEMU used to
+ * store them the other way round -- consistently, so a save and a
+ * restore agreed and nothing looked wrong -- while every FPSP handler
+ * read its FPCR enables and rounding mode from where the FPIAR was.
+ * Checked against single FMOVEs, which cannot be out of order.
+ */
+static void fmovem_order(void)
+{
+    u32 cr, sr, ia, m[3], p[4], *pp = &p[3], q[2], *qp = &q[2];
+
+    set_fpcr(0x0020);                   /* round toward minus infinity */
+    __asm__ volatile("fmove.l %%fpcr,%0\n\t"
+                     "fmove.l %%fpsr,%1\n\t"
+                     "fmove.l %%fpiar,%2"
+                     : "=d"(cr), "=d"(sr), "=d"(ia));
+    __asm__ volatile("fmovem.l %%fpcr/%%fpsr/%%fpiar,%0"
+                     : "=m"(m));
+    __asm__ volatile("fmovem.l %%fpcr/%%fpsr/%%fpiar,-(%0)"
+                     : "+a"(pp) : : "memory");
+    __asm__ volatile("fmovem.l %%fpcr/%%fpiar,-(%0)"
+                     : "+a"(qp) : : "memory");
+    set_fpcr(0);
+    check_bool("fmovem.l of the control registers: FPCR, FPSR, FPIAR",
+               m[0] == cr && m[1] == sr && m[2] == ia);
+    check_bool("  and the same by predecrement, all three and two",
+               pp == &p[0] && p[0] == cr && p[1] == sr && p[2] == ia &&
+               qp == &q[0] && q[0] == cr && q[1] == ia);
+}
+
+static int exceptions(void)
+{
+    struct sigaction sa;
+    union { u64 u; double d; } snan;
+    double r;
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = (sighandler_t)(void *)on_sigfpe;
+    sa.sa_flags = SA_SIGINFO;
+    sigaction(SIGFPE, &sa, 0);
+
+    fmovem_order();
+
+    /* Nothing enabled: 1/0 is infinity, and no signal. */
+    set_fpcr(0);
+    fpe_hits = 0;
+    r = div_store(1.0, 0.0);
+    check_bool("with nothing enabled, 1/0 is infinity and no signal",
+               fpe_hits == 0 && bits(r) == 0x7ff0000000000000ULL);
+
+    /* Divide by zero enabled. */
+    set_fpcr(0x0400);
+    fpe_hits = 0;
+    r = div_store(1.0, 0.0);
+    fpe_check("divide by zero enabled: SIGFPE FPE_FLTDIV, destination "
+              "untouched", FPE_FLTDIV, r == 1.0);
+
+    /* Operand error enabled: 0/0, and the square root of -1. */
+    set_fpcr(0x2000);
+    fpe_hits = 0;
+    r = div_store(0.0, 0.0);
+    fpe_check("operand error enabled, 0/0: SIGFPE FPE_FLTINV",
+              FPE_FLTINV, r == 0.0);
+    fpe_hits = 0;
+    r = sqrt_store(-1.0);
+    fpe_check("operand error enabled, sqrt(-1): SIGFPE FPE_FLTINV",
+              FPE_FLTINV, r == -1.0);
+
+    /* Signalling NaN enabled, as the source of an FADD. With the trap
+     * enabled the destination is left alone: the FPSP writes a quieted
+     * NaN only for an FMOVE out to memory or an integer (x_snan.s,
+     * move_out), and for everything else only sets the condition codes
+     * (not_out). So fp0 still holds the 2.0 it was given. */
+    set_fpcr(0x4000);
+    snan.u = 0x7ff4000000000000ULL;
+    fpe_hits = 0;
+    r = add_store(2.0, snan.d);
+    fpe_check("signalling NaN enabled: SIGFPE FPE_FLTINV, destination "
+              "untouched", FPE_FLTINV, r == 2.0);
+
+    /* BSUN enabled: an IEEE-nonaware branch on an unordered compare. */
+    set_fpcr(0x8000);
+    fpe_hits = 0;
+    {
+        int taken = 0;
+        double nan;
+
+        snan.u = 0x7ff8000000000000ULL;     /* a quiet NaN */
+        nan = snan.d;
+        __asm__ volatile("fmove.d %1,%%fp0\n\t"
+                         "fcmp.d %2,%%fp0\n\t"
+                         "fbgt 1f\n\t"
+                         "bra 2f\n"
+                         "1:\tmoveq #1,%0\n"
+                         "2:"
+                         : "+d"(taken) : "m"(nan), "m"(nan) : "fp0");
+        /* Which way the branch then goes is not the question: the
+         * FPSP's real_bsun clears the NaN condition code before handing
+         * the exception on (Motorola's skeleton.sa does), so the fbgt
+         * that runs again after the handler sees no NaN. The program
+         * going on at all is the point. */
+        (void)taken;
+        fpe_check("BSUN enabled: fbgt on a NaN is SIGFPE FPE_FLTINV, "
+                  "and the program goes on", FPE_FLTINV, 1);
+    }
+    set_fpcr(0);
+    return 0;
 }
 
 static void on_sigill(int sig)
@@ -201,6 +399,17 @@ int main(int argc, char **argv)
         __asm__ volatile(".word 0xfe00");
         puts("fpsptest: the F-line instruction did NOT trap\n");
         return 1;
+    }
+
+    if (argc > 1 && !strcmp(argv[1], "-x")) {
+        fpsp_counts(&before);
+        exceptions();
+        fpsp_counts(&after);
+        puts("fpsptest: ");
+        putdec(after.reported - before.reported);
+        puts(" exceptions reported\n");
+        puts(failures ? "fpsptest: FAILED\n" : "fpsptest: all right\n");
+        return failures != 0;
     }
 
     fpsp_counts(&before);

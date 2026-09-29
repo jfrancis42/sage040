@@ -26,6 +26,7 @@
 #include "signal.h"
 #include "ptregs.h"
 #include "uapi.h"
+#include "string.h"
 
 /* Read and incremented by fpspglue.s as well as here: the offsets of
  * its members are hard-coded there, in struct fpspstats order. */
@@ -43,13 +44,32 @@ void fpsp_counts(struct fpspstats *out)
  */
 void fpsp_report(struct pt_regs *regs, int sig)
 {
-    if (!pt_user_mode(regs) || !current || !current->as) {
+    struct task *t = current;
+    unsigned vec = (regs->format & 0x0fff) >> 2;
+    int code;
+
+    if (!pt_user_mode(regs) || !t || !t->as) {
         kputs("\n*** floating-point exception in the kernel, pc=0x");
         kputhex32(regs->pc);
         kputln("");
         panic("FPSP: exception from supervisor mode");
     }
-    signal_send(current, sig);
+    /* Linux/m68k's si_code for each, and the PC as si_addr. */
+    switch (vec) {
+    case 49: code = FPE_FLTRES; break;          /* inexact          */
+    case 50: code = FPE_FLTDIV; break;          /* divide by zero   */
+    case 51: code = FPE_FLTUND; break;          /* underflow        */
+    case 53: code = FPE_FLTOVF; break;          /* overflow         */
+    case 48:                                    /* BSUN             */
+    case 52:                                    /* operand error    */
+    case 54: code = FPE_FLTINV; break;          /* signalling NaN   */
+    default: code = ILL_ILLOPC; break;          /* F-line: SIGILL   */
+    }
+    memset(&t->pending_wb, 0, sizeof(t->pending_wb));
+    t->fault_sig = sig;
+    t->fault_code = code;
+    t->fault_addr = regs->pc;
+    signal_send(t, sig);
 }
 
 static void fpsp_kill(const char *why, int sig)

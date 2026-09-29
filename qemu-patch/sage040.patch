@@ -146,8 +146,8 @@
  
  static void m68k_cpu_class_init_cf_core(ObjectClass *c, const void *data)
 --- a/target/m68k/cpu.h	2026-08-27 06:23:32.000000000 -0600
-+++ b/target/m68k/cpu.h	2026-09-28 20:15:07.414388833 -0600
-@@ -149,11 +149,53 @@
++++ b/target/m68k/cpu.h	2026-09-28 23:30:23.183103893 -0600
+@@ -149,11 +149,73 @@
      int pending_vector;
      int pending_level;
  
@@ -169,6 +169,26 @@
 +        uint8_t stag;       /* their data type tags                   */
 +        uint8_t dtag;
 +    } fpu_unimp;
++
++    /*
++     * A floating-point arithmetic exception posted, for fpsp-trap=on
++     * (fpu_helper.c): an enabled SNAN, OPERR or divide by zero is not
++     * taken by the instruction that caused it but reported as a
++     * pre-instruction exception by the next floating-point instruction,
++     * with the unit holding the operands for FSAVE's busy frame.
++     */
++    struct {
++        int vector;         /* 0, or 50 DZ / 52 OPERR / 54 SNAN        */
++        uint16_t cmd;
++        floatx80 etemp;
++        floatx80 fptemp;
++        uint8_t stag;
++        uint8_t dtag;
++        bool armed;         /* between fpx_begin and fpx_post          */
++        bool src_snan;      /* the source was a signalling NaN         */
++        FPReg saved;        /* the destination as it was               */
++        int saved_flags;
++    } fpu_exc;
 +
      /* Fields up to this point are cleared by a CPU reset */
      struct {} end_reset_fields;
@@ -201,7 +221,7 @@
  } CPUM68KState;
  
  /*
-@@ -472,6 +514,9 @@
+@@ -472,6 +534,9 @@
  #define MACSR_EV    0x001
  
  void m68k_set_irq_level(M68kCPU *cpu, int level, uint8_t vector);
@@ -212,8 +232,16 @@
  
  void do_m68k_semihosting(CPUM68KState *env, int nr);
 --- a/target/m68k/fpu_helper.c	2026-08-27 06:23:32.000000000 -0600
-+++ b/target/m68k/fpu_helper.c	2026-09-28 20:18:04.026842491 -0600
-@@ -462,6 +462,148 @@
++++ b/target/m68k/fpu_helper.c	2026-09-28 23:52:39.079111503 -0600
+@@ -22,6 +22,7 @@
+ #include "cpu.h"
+ #include "exec/helper-proto.h"
+ #include "accel/tcg/cpu-ldst.h"
++#include "accel/tcg/cpu-loop.h"
+ #include "softfloat.h"
+ 
+ /*
+@@ -462,6 +463,393 @@
      env->fpsr = (env->fpsr & ~FPSR_CC_MASK) | cc;
  }
  
@@ -243,9 +271,8 @@
 + * reads it only for instructions that write memory, which none of
 + * these do); single- and double-precision denormal sources (tag 101 on
 + * the chip; converted already by the time they reach this helper, so
-+ * tagged by what they became); and the BUSY frames of the arithmetic
-+ * exceptions, so an FPSP that re-posts an enabled exception through
-+ * FRESTORE will not see it re-raised.
++ * tagged by what they became); and the busy frames of the E3
++ * exceptions (overflow, underflow, inexact), described below.
 + */
 +
 +#define M68040_UNIMP_FRAME  0x30    /* bytes after the header        */
@@ -276,9 +303,181 @@
 +    env->fpu_unimp.dtag = m68040_tag(dst->d);
 +}
 +
++#define M68040_BUSY_FRAME   0x60    /* bytes after the header        */
++
++/*
++ * The fields of a posted exception, as offsets back from the END of the
++ * frame -- which is how the FPSP's fpsp.h names them, and the only way
++ * that serves both sizes: the FPSP grows a 26-word frame into a busy one
++ * by pushing words on the FRONT (x_snan.s, "expanding the unimp frame
++ * into a busy frame"), and every field stays where it was, counted from
++ * the end.
++ */
++#define FEND_STAG       0x28
++#define FEND_CMDREG1B   0x24
++#define FEND_DTAG       0x20
++#define FEND_E_BYTE     0x1c    /* E1 = 0x04                          */
++#define FEND_FPTEMP     0x18
++#define FEND_ETEMP      0x0c
++
++/*
++ * Floating-point arithmetic exceptions, for fpsp-trap=on.
++ *
++ * An enabled exception on the 68040 is POSTED: the destination is left
++ * as it was, the unit keeps the operands, and the next floating-point
++ * instruction takes it as a pre-instruction exception -- a format $0
++ * frame whose PC is that instruction (MC68040 User's Manual 9.7). The
++ * FPSP's handler finds the operands in the frame FSAVE writes.
++ *
++ * Modelled: SNAN, OPERR and divide by zero, the E1 exceptions -- found
++ * by the conversion unit, with the operands as their only state (Table
++ * 9-16), which is all this model has. Not modelled: overflow, underflow
++ * and inexact from FADD, FSUB, FMUL, FDIV and FSQRT, which are E3: their
++ * frame holds the intermediate result before final rounding, with its
++ * exponent unbounded and its guard, round and sticky bits, and softfloat
++ * produces only the rounded answer. Faking those fields would make the
++ * FPSP compute a wrong result, which is worse than not trapping.
++ * QEMU's own FPSR keeps only the accrued byte; the exception byte bits
++ * for these three are set here when one happens.
++ */
++#define FPCR_EN_SNAN    0x4000
++#define FPCR_EN_OPERR   0x2000
++#define FPCR_EN_DZ      0x0400
++#define FPCR_EN_BSUN    0x8000
++
++static bool m68040_snan(floatx80 f)
++{
++    return (f.high & 0x7fff) == 0x7fff && !(f.low & (1ULL << 62)) &&
++           (f.low & ((1ULL << 62) - 1));
++}
++
++/* Operations with two operands, whose destination is an input too. */
++static bool m68040_dyadic(int opmode)
++{
++    int op = opmode & 0x3f;
++
++    return (op >= 0x20 && op <= 0x28) || op == 0x38;
++}
++
++void HELPER(fpx_check)(CPUM68KState *env)
++{
++    if (env->fpu_exc.vector) {
++        CPUState *cs = env_cpu(env);
++
++        /* Taken before this instruction does anything; the unit keeps
++         * the exceptional state for the handler's FSAVE. */
++        cs->exception_index = env->fpu_exc.vector;
++        cpu_loop_exit_restore(cs, GETPC());
++    }
++}
++
++/*
++ * Before the source operand is fetched: its conversion to extended
++ * precision is part of the instruction, and a signalling NaN in memory
++ * is what raises "invalid" there -- softfloat quiets it as it converts,
++ * so the flag is the only record that it was ever signalling.
++ */
++void HELPER(fpx_begin)(CPUM68KState *env)
++{
++    /* The exception byte is this instruction's, as on the chip; the
++     * accrued byte below it is not touched. */
++    env->fpsr &= ~0xff00;
++    env->fpu_exc.armed = false;
++    if (!(env->fpcr & (FPCR_EN_SNAN | FPCR_EN_OPERR | FPCR_EN_DZ))) {
++        return;
++    }
++    env->fpu_exc.armed = true;
++    env->fpu_exc.saved_flags = get_float_exception_flags(&env->fp_status);
++    set_float_exception_flags(0, &env->fp_status);
++}
++
++/* After the fetch, before the operation. */
++void HELPER(fpx_pre)(CPUM68KState *env, FPReg *src, FPReg *dst, uint32_t ext)
++{
++    if (!env->fpu_exc.armed) {
++        return;
++    }
++    env->fpu_exc.saved = *dst;
++    env->fpu_exc.cmd = ext;
++    env->fpu_exc.etemp = src->d;
++    env->fpu_exc.fptemp = dst->d;
++    env->fpu_exc.src_snan =
++        (get_float_exception_flags(&env->fp_status) & float_flag_invalid) ||
++        m68040_snan(src->d);
++    if (env->fpu_exc.src_snan && (env->fpu_exc.etemp.high & 0x7fff) == 0x7fff) {
++        /* ETEMP holds it as the chip does: still signalling. */
++        env->fpu_exc.etemp.low &= ~(1ULL << 62);
++        if (!(env->fpu_exc.etemp.low & ((1ULL << 62) - 1))) {
++            env->fpu_exc.etemp.low |= 1;
++        }
++    }
++}
++
++void HELPER(fpx_post)(CPUM68KState *env, FPReg *dst)
++{
++    int flags, vec = 0;
++    uint32_t bit = 0, en = 0;
++    int opmode = env->fpu_exc.cmd & 0x7f;
++
++    if (!env->fpu_exc.armed) {
++        return;
++    }
++    env->fpu_exc.armed = false;
++    flags = get_float_exception_flags(&env->fp_status);
++    set_float_exception_flags(flags | env->fpu_exc.saved_flags,
++                              &env->fp_status);
++
++    if (flags & float_flag_invalid) {
++        if (env->fpu_exc.src_snan ||
++            (m68040_dyadic(opmode) && m68040_snan(env->fpu_exc.fptemp))) {
++            vec = 54, bit = 0x4000, en = FPCR_EN_SNAN;
++        } else {
++            vec = 52, bit = 0x2000, en = FPCR_EN_OPERR;
++        }
++    } else if (flags & float_flag_divbyzero) {
++        vec = 50, bit = 0x0400, en = FPCR_EN_DZ;
++    }
++    if (!vec) {
++        return;
++    }
++    env->fpsr |= bit;                   /* the exception byte */
++    if (!(env->fpcr & en)) {
++        return;
++    }
++    /* Posted: the destination as it was, the operands kept. */
++    *dst = env->fpu_exc.saved;
++    env->fpu_exc.vector = vec;
++    env->fpu_exc.stag = m68040_tag(env->fpu_exc.etemp);
++    env->fpu_exc.dtag = m68040_tag(env->fpu_exc.fptemp);
++}
++
++/*
++ * BSUN: an IEEE-nonaware conditional (predicates $10-$1F) tested with
++ * the NaN condition code set. With BSUN enabled it is taken at once, a
++ * pre-instruction exception on the conditional itself. The FPSP's
++ * fpsp_bsun reads nothing from the state frame, so none is posted.
++ */
++void HELPER(fpx_bsun)(CPUM68KState *env, uint32_t cond)
++{
++    if (!(cond & 0x10) || !(env->fpsr & FPSR_CC_A)) {
++        return;
++    }
++    env->fpsr |= 0x8000;                /* BSUN in the exception byte */
++    /* Accrued IOP: the accrued byte is kept in softfloat's flags. */
++    set_float_exception_flags(get_float_exception_flags(&env->fp_status) |
++                              float_flag_invalid, &env->fp_status);
++    if (env->fpcr & FPCR_EN_BSUN) {
++        CPUState *cs = env_cpu(env);
++
++        cs->exception_index = 48;
++        cpu_loop_exit_restore(cs, GETPC());
++    }
++}
++
 +static uint32_t m68040_fsave_size(CPUM68KState *env)
 +{
-+    return env->fpu_unimp.pending ? 4 + M68040_UNIMP_FRAME : 4;
++    return env->fpu_exc.vector || env->fpu_unimp.pending
++           ? 4 + M68040_UNIMP_FRAME : 4;
 +}
 +
 +static void m68040_st_ext(CPUM68KState *env, uint32_t addr, floatx80 v,
@@ -294,10 +493,42 @@
 + * frame. Offsets are from the header; fpsp.h has the same fields as
 + * offsets from the end, 0x34 bytes on.
 + */
++/*
++ * A posted E1 exception (SNAN, OPERR, DZ) saves the 26-word frame the
++ * unimplemented instruction does, with E1 set and T and U clear: the
++ * frame the FPSP's handlers expect, since x_snan.s turns it into a busy
++ * frame itself before handing it on (Table 9-16 lists the same fields
++ * for both).
++ */
++static void m68040_fsave_exc(CPUM68KState *env, uint32_t addr,
++                             uintptr_t ra)
++{
++    uint32_t end = addr + 4 + M68040_UNIMP_FRAME;
++    int i;
++
++    cpu_stl_be_data_ra(env, addr,
++                       (M68040_VERSION << 24) | (M68040_UNIMP_FRAME << 16),
++                       ra);
++    for (i = 4; i < 4 + M68040_UNIMP_FRAME; i += 4) {
++        cpu_stl_be_data_ra(env, addr + i, 0, ra);
++    }
++    cpu_stb_data_ra(env, end - FEND_STAG, env->fpu_exc.stag << 5, ra);
++    cpu_stw_be_data_ra(env, end - FEND_CMDREG1B, env->fpu_exc.cmd, ra);
++    cpu_stb_data_ra(env, end - FEND_DTAG, env->fpu_exc.dtag << 5, ra);
++    cpu_stb_data_ra(env, end - FEND_E_BYTE, 0x04, ra);  /* E1 */
++    m68040_st_ext(env, end - FEND_FPTEMP, env->fpu_exc.fptemp, ra);
++    m68040_st_ext(env, end - FEND_ETEMP, env->fpu_exc.etemp, ra);
++    env->fpu_exc.vector = 0;
++}
++
 +static void m68040_fsave(CPUM68KState *env, uint32_t addr, uintptr_t ra)
 +{
 +    int i;
 +
++    if (env->fpu_exc.vector) {
++        m68040_fsave_exc(env, addr, ra);
++        return;
++    }
 +    if (!env->fpu_unimp.pending) {
 +        cpu_stl_be_data_ra(env, addr, M68040_VERSION << 24, ra);
 +        return;
@@ -338,13 +569,55 @@
 + * this model has none to reload into but the pending unimplemented
 + * instruction, which a restore ends.
 + */
++static floatx80 m68040_ld_ext(CPUM68KState *env, uint32_t addr,
++                              uintptr_t ra)
++{
++    floatx80 v;
++
++    v.high = cpu_ldl_be_data_ra(env, addr, ra) >> 16;
++    v.low = cpu_ldq_be_data_ra(env, addr + 4, ra);
++    return v;
++}
++
 +static uint32_t m68040_frestore(CPUM68KState *env, uint32_t addr,
 +                                uintptr_t ra)
 +{
 +    uint32_t hdr = cpu_ldl_be_data_ra(env, addr, ra);
++    uint32_t size = (hdr >> 16) & 0xff;
 +
 +    env->fpu_unimp.pending = false;
-+    return 4 + ((hdr >> 16) & 0xff);
++    env->fpu_exc.vector = 0;
++    /*
++     * A frame with E1 still set is an exception still pending: the next
++     * floating-point instruction reports it, as it would have if the
++     * frame had never left the unit. With E1 clear -- the FPSP's real_*
++     * handlers clear it before restoring -- it is finished. Either size:
++     * the FPSP restores the 26-word frame it was given, or the busy
++     * frame it grew from it.
++     *
++     * Which exception is the FPSR's to say: its exception byte, masked
++     * by the FPCR's enables, in the chip's priority. The frame has no
++     * field for it (every byte of it is one the FPSP uses), and both the
++     * FPSP and a task switch restore the control registers BEFORE the
++     * frame, as the manual requires.
++     */
++    if (size == M68040_UNIMP_FRAME || size == M68040_BUSY_FRAME) {
++        uint32_t end = addr + 4 + size;
++        uint32_t live = env->fpsr & env->fpcr;
++        int vec = live & FPCR_EN_SNAN ? 54 :
++                  live & FPCR_EN_OPERR ? 52 :
++                  live & FPCR_EN_DZ ? 50 : 0;
++
++        if ((cpu_ldub_data_ra(env, end - FEND_E_BYTE, ra) & 0x04) && vec) {
++            env->fpu_exc.vector = vec;
++            env->fpu_exc.stag = cpu_ldub_data_ra(env, end - FEND_STAG, ra) >> 5;
++            env->fpu_exc.cmd = cpu_lduw_be_data_ra(env, end - FEND_CMDREG1B, ra);
++            env->fpu_exc.dtag = cpu_ldub_data_ra(env, end - FEND_DTAG, ra) >> 5;
++            env->fpu_exc.fptemp = m68040_ld_ext(env, end - FEND_FPTEMP, ra);
++            env->fpu_exc.etemp = m68040_ld_ext(env, end - FEND_ETEMP, ra);
++        }
++    }
++    return 4 + size;
 +}
 +
 +void HELPER(frestore)(CPUM68KState *env, uint32_t addr)
@@ -380,12 +653,17 @@
  {
      CPUState *cs = CPU(cpu);
 --- a/target/m68k/helper.h	2026-08-27 06:23:32.000000000 -0600
-+++ b/target/m68k/helper.h	2026-09-28 20:18:04.026516921 -0600
-@@ -59,6 +59,11 @@
++++ b/target/m68k/helper.h	2026-09-28 23:30:23.182643834 -0600
+@@ -59,6 +59,16 @@
  DEF_HELPER_FLAGS_2(set_fpcr, TCG_CALL_NO_RWG, void, env, i32)
  DEF_HELPER_FLAGS_2(ftst, TCG_CALL_NO_RWG, void, env, fp)
  DEF_HELPER_3(fconst, void, env, fp, i32)
 +DEF_HELPER_4(fpu_unimp, void, env, fp, fp, i32)
++DEF_HELPER_1(fpx_check, void, env)
++DEF_HELPER_1(fpx_begin, void, env)
++DEF_HELPER_4(fpx_pre, void, env, fp, fp, i32)
++DEF_HELPER_2(fpx_post, void, env, fp)
++DEF_HELPER_2(fpx_bsun, void, env, i32)
 +DEF_HELPER_2(fsave, void, env, i32)
 +DEF_HELPER_2(fsave_predec, void, env, i32)
 +DEF_HELPER_2(frestore, void, env, i32)
@@ -436,8 +714,56 @@
      }
      return false;
 --- a/target/m68k/translate.c	2026-08-27 06:23:32.000000000 -0600
-+++ b/target/m68k/translate.c	2026-09-28 20:32:57.455695973 -0600
-@@ -4926,6 +4926,43 @@
++++ b/target/m68k/translate.c	2026-09-28 23:54:21.095748376 -0600
+@@ -4834,27 +4834,36 @@
+      * 0b010 Floating-Point Status Register
+      * 0b001 Floating-Point Instruction Address Register
+      *
++     * Whatever the mode, memory holds them in the order FPCR, FPSR,
++     * FPIAR at ascending addresses (M68000PRM, FMOVEM): a predecrement
++     * store writes FPIAR first, at the highest address. The FPSP depends
++     * on it (its USER_FPCR, USER_FPSR and USER_FPIAR), and so does every
++     * saved context that names the three.
+      */
++    static const int order[3] = { M68K_FPCR, M68K_FPSR, M68K_FPIAR };
++    int left = mask;
+ 
+     if (is_write && mode == 4) {
+-        for (i = 2; i >= 0; i--, mask >>= 1) {
+-            if (mask & 1) {
+-                gen_qemu_store_fcr(s, addr, 1 << i);
+-                if (mask != 1) {
++        for (i = 2; i >= 0; i--) {
++            if (mask & order[i]) {
++                gen_qemu_store_fcr(s, addr, order[i]);
++                left &= ~order[i];
++                if (left) {
+                     tcg_gen_subi_i32(addr, addr, opsize_bytes(OS_LONG));
+                 }
+             }
+-       }
+-       tcg_gen_mov_i32(AREG(insn, 0), addr);
++        }
++        tcg_gen_mov_i32(AREG(insn, 0), addr);
+     } else {
+-        for (i = 0; i < 3; i++, mask >>= 1) {
+-            if (mask & 1) {
++        for (i = 0; i < 3; i++) {
++            if (mask & order[i]) {
+                 if (is_write) {
+-                    gen_qemu_store_fcr(s, addr, 1 << i);
++                    gen_qemu_store_fcr(s, addr, order[i]);
+                 } else {
+-                    gen_qemu_load_fcr(s, addr, 1 << i);
++                    gen_qemu_load_fcr(s, addr, order[i]);
+                 }
+-                if (mask != 1 || mode == 3) {
++                left &= ~order[i];
++                if (left || mode == 3) {
+                     tcg_gen_addi_i32(addr, addr, opsize_bytes(OS_LONG));
+                 }
+             }
+@@ -4926,8 +4935,71 @@
  }
  
  /*
@@ -478,10 +804,48 @@
 +}
 +
 +/*
++ * fpsp-trap=on: a floating-point exception posted by an earlier
++ * instruction is taken here, before this one does anything (see
++ * fpu_helper.c) -- and a conditional that finds the NaN condition code
++ * set raises BSUN. Not for FMOVEM or FMOVE to or from a control
++ * register, which cannot cause an exception (MC68040 User's Manual
++ * 9.7.2) and are what an operating system saves and restores the unit
++ * with.
++ */
++static bool fpsp_trap(DisasContext *s)
++{
++    return m68k_feature(s->env, M68K_FEATURE_M68040) && s->env->fpsp_trap;
++}
++
++static void gen_m68040_fpx(DisasContext *s, int cond)
++{
++    if (!fpsp_trap(s)) {
++        return;
++    }
++    gen_helper_fpx_check(tcg_env);
++    if (cond >= 0) {
++        gen_helper_fpx_bsun(tcg_env, tcg_constant_i32(cond));
++    }
++}
++
++/*
   * ??? FP exceptions are not implemented.  Most exceptions are deferred until
   * immediately before the next FP instruction is executed.
++ * (With fpsp-trap=on, the 68040's SNAN, OPERR and DZ are: fpu_helper.c.)
   */
-@@ -4948,6 +4985,11 @@
+ DISAS_INSN(fpu)
+ {
+@@ -4938,6 +5010,9 @@
+ 
+     ext = read_im16(env, s);
+     opmode = ext & 0x7f;
++    if (((ext >> 13) & 7) <= 3) {
++        gen_m68040_fpx(s, -1);
++    }
+     switch ((ext >> 13) & 7) {
+     case 0:
+         break;
+@@ -4948,6 +5023,11 @@
              /* fmovecr */
              TCGv rom_offset = tcg_constant_i32(opmode);
              cpu_dest = gen_fp_ptr(REG(ext, 7));
@@ -493,7 +857,20 @@
              gen_helper_fconst(tcg_env, cpu_dest, rom_offset);
              return;
          }
-@@ -4988,6 +5030,10 @@
+@@ -4973,6 +5053,12 @@
+         gen_op_fmovem(env, s, insn, ext);
+         return;
+     }
++    /* Before the fetch: converting the source is part of the operation
++     * (fpu_helper.c, fpx_begin). Not for an unimplemented one, which
++     * traps to the FPSP instead of reaching fpx_post. */
++    if (fpsp_trap(s) && !m68040_unimplemented(opmode)) {
++        gen_helper_fpx_begin(tcg_env);
++    }
+     if (ext & (1 << 14)) {
+         /* Source effective address.  */
+         opsize = ext_opsize(ext, 10);
+@@ -4988,6 +5074,13 @@
          cpu_src = gen_fp_ptr(REG(ext, 10));
      }
      cpu_dest = gen_fp_ptr(REG(ext, 7));
@@ -501,10 +878,60 @@
 +        gen_m68040_unimp(s, cpu_src, cpu_dest, ext)) {
 +        return;
 +    }
++    if (fpsp_trap(s)) {
++        gen_helper_fpx_pre(tcg_env, cpu_src, cpu_dest, tcg_constant_i32(ext));
++    }
      switch (opmode) {
      case 0: /* fmove */
          gen_fp_move(cpu_dest, cpu_src);
-@@ -5365,8 +5411,21 @@
+@@ -5151,13 +5244,22 @@
+         break;
+     case 0x38: /* fcmp */
+         gen_helper_fcmp(tcg_env, cpu_src, cpu_dest);
++        if (fpsp_trap(s)) {
++            gen_helper_fpx_post(tcg_env, cpu_dest);
++        }
+         return;
+     case 0x3a: /* ftst */
+         gen_helper_ftst(tcg_env, cpu_src);
++        if (fpsp_trap(s)) {
++            gen_helper_fpx_post(tcg_env, cpu_dest);
++        }
+         return;
+     default:
+         goto undef;
+     }
++    if (fpsp_trap(s)) {
++        gen_helper_fpx_post(tcg_env, cpu_dest);
++    }
+     gen_helper_ftst(tcg_env, cpu_dest);
+     return;
+ undef:
+@@ -5296,6 +5398,7 @@
+     uint32_t base;
+     TCGLabel *l1;
+ 
++    gen_m68040_fpx(s, insn & 0x3f);
+     base = s->pc;
+     offset = (int16_t)read_im16(env, s);
+     if (insn & (1 << 6)) {
+@@ -5319,6 +5422,7 @@
+ 
+     ext = read_im16(env, s);
+     cond = ext & 0x3f;
++    gen_m68040_fpx(s, cond);
+     gen_fcc_cond(&c, s, cond);
+ 
+     tmp = tcg_temp_new();
+@@ -5335,6 +5439,7 @@
+ 
+     ext = read_im16(env, s);
+     cond = ext & 0x3f;
++    gen_m68040_fpx(s, cond);
+ 
+     /* Consume and discard the immediate operand. */
+     switch (extract32(insn, 0, 3)) {
+@@ -5365,8 +5470,21 @@
          return;
      }
      if (m68k_feature(s->env, M68K_FEATURE_M68040)) {
@@ -528,7 +955,7 @@
      } else {
          disas_undef(env, s, insn);
      }
-@@ -5380,9 +5439,23 @@
+@@ -5380,9 +5498,23 @@
      }
  
      if (m68k_feature(s->env, M68K_FEATURE_M68040)) {
