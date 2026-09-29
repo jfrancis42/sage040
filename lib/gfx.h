@@ -59,6 +59,15 @@ struct gfx_opt {
 int  gfx_options(int argc, char **argv, const char *prog,
                  struct gfx_opt *opts, int n, void (*more)(void));
 
+/*
+ * A decimal number -- "-1.4", "2.5e-3" -- from a GFX_STR option, or -1
+ * if it is not one. And one printed with `places` digits after the
+ * point, for a banner that says how to repeat a run exactly. These use
+ * the FPU; a program that never calls them never carries them.
+ */
+int  gfx_real(const char *s, double *out);
+void gfx_put_real(double v, int places);
+
 /* ---------------------------------------------------------------- */
 /* Random numbers                                                    */
 /* ---------------------------------------------------------------- */

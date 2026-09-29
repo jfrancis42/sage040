@@ -145,6 +145,87 @@ bad:
     return -1;
 }
 
+int gfx_real(const char *s, double *out)
+{
+    double v = 0, scale = 1;
+    int neg = 0, any = 0, e = 0, eneg = 0;
+
+    if (*s == '-' || *s == '+') {
+        neg = *s++ == '-';
+    }
+    while (*s >= '0' && *s <= '9') {
+        v = v * 10 + (*s++ - '0');
+        any = 1;
+    }
+    if (*s == '.') {
+        s++;
+        while (*s >= '0' && *s <= '9') {
+            scale /= 10;
+            v += (*s++ - '0') * scale;
+            any = 1;
+        }
+    }
+    if (any && (*s == 'e' || *s == 'E')) {
+        s++;
+        if (*s == '-' || *s == '+') {
+            eneg = *s++ == '-';
+        }
+        if (*s < '0' || *s > '9') {
+            return -1;
+        }
+        while (*s >= '0' && *s <= '9') {
+            e = e * 10 + (*s++ - '0');
+            if (e > 300) {
+                return -1;
+            }
+        }
+        while (e--) {
+            v = eneg ? v / 10 : v * 10;
+        }
+    }
+    if (!any || *s != '\0') {
+        return -1;
+    }
+    *out = neg ? -v : v;
+    return 0;
+}
+
+void gfx_put_real(double v, int places)
+{
+    u32 whole, frac, scale = 1;
+    int i;
+
+    if (v < 0) {
+        putch('-');
+        v = -v;
+    }
+    for (i = 0; i < places; i++) {
+        scale *= 10;
+    }
+    /* Rounded once, as a whole number of the last place, so that 0.99996
+     * to four places prints as 1.0000 and not as 0.10000. */
+    v = v * scale + 0.5;
+    if (v >= 4294967295.0) {
+        puts("(big)");
+        return;
+    }
+    whole = (u32)v / scale;
+    frac = (u32)v % scale;
+    putdec(whole);
+    if (places > 0) {
+        char digits[10];
+
+        putch('.');
+        for (i = places - 1; i >= 0; i--) {
+            digits[i] = (char)('0' + frac % 10);
+            frac /= 10;
+        }
+        for (i = 0; i < places; i++) {
+            putch(digits[i]);
+        }
+    }
+}
+
 /* ---------------------------------------------------------------- */
 /* Random numbers                                                    */
 /* ---------------------------------------------------------------- */

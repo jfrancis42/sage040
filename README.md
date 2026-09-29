@@ -205,7 +205,7 @@ the POSIX layer added to it.
 | `ports/awk` | the one true awk |
 | `ports/uemacs`, `ports/vi` | uEmacs/PK and neatvi |
 | `system/` | the system's own programs: `ifconfig`, `ping`, `netstat`, `route`, `arp`, `host`, `ntpdate`, `fsck`, `swapon`, `nvram`, `irqs`, `stty`, `df`, `id`, `who`, `w`, `uptime`, `sh` |
-| `apps/` | demonstrations and test programs: `cube`, `boids`, `wator`, `life`, `httpd`, `fetch`, `fbmap`, `pagetest` |
+| `apps/` | demonstrations and test programs: `cube`, `boids`, `wator`, `life`, `attractor`, `httpd`, `fetch`, `fbmap`, `pagetest` |
 
 ---
 

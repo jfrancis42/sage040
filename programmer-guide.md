@@ -1559,6 +1559,19 @@ Colours are palette indices. The driver sets up eight: 0 black, 1 green,
 Off-screen coordinates are clipped, not rejected — a shape that runs off
 the edge is not an error.
 
+#### `<math.h>` for ulib programs: the FPU's own instructions
+
+`lib/math.h` gives a ulib program `sin`, `cos`, `tan`, their inverses
+and hyperbolics, `exp`, `exp2`, `exp10`, `expm1`, `log`, `log2`,
+`log10`, `log1p`, `sqrt`, `fabs`, `trunc`, `rint`, `fmod`,
+`remainder`, `ldexp` and `sincos` -- each one MC68881 instruction,
+inlined. The 68040 has `fsqrt`, `fabs` and the four arithmetic
+operations in silicon and not the rest (MC68040 User's Manual, Table
+9-10): on the real chip the others raise the unimplemented
+floating-point instruction exception and Motorola's FPSP completes
+them. Nothing here reimplements them. `apps/attractor.c` uses it. A
+picolibc program has picolibc's libm instead.
+
 #### `lib/gfx.h`: what every graphics program needs
 
 Built into every program with ulib, and dropped by the linker from any
@@ -1572,6 +1585,7 @@ that does not call it. `apps/cube.c` is the smallest user of it;
 | `gfx_line`, `gfx_clear`, `gfx_copy_row`, `gfx_fill_row` | through the driver, or into the mapping a longword at a time |
 | `gfx_options(argc, argv, "prog", table, n, more)` | an option table in, `-N 80` or `-N80`, ranges checked, `-h` listed with defaults; `-x` is the random seed everywhere |
 | `gfx_seed()`, `gfx_rand()` | xorshift32, seeded from `-x` or the clock |
+| `gfx_real(str, &d)`, `gfx_put_real(d, places)` | a decimal number from a `GFX_STR` option, and one printed back so a run can be repeated |
 | `gfx_sin`, `gfx_cos`, `gfx_isqrt` | Q12 over 256ths of a turn, and an integer square root |
 | `gfx_colour`, `gfx_blend`, `gfx_ramp` | palette entries from `GFX_PAL_FREE` (32) up, and ramps through key colours, straight or cyclic |
 | `gfx_key()`, `gfx_key_wait()`, `gfx_quit_key(k)` | one key, arrows and Home/End/PgUp/PgDn as `GFX_KEY_*`; q, Q or Escape is "stop" |

@@ -48,6 +48,7 @@ apps/cube
 apps/boids
 apps/wator
 apps/life
+apps/attractor
 apps/hello
 apps/fbtest
 apps/faulter

@@ -44,6 +44,7 @@ LDFLAGS  := $(CPUFLAGS) -ffreestanding -nostdlib -T $(LIB)/user.ld \
 # until something happened to touch its source.
 COMMON := $(LIB)/crt0.s $(LIB)/ulib.c $(LIB)/ulib.h $(LIB)/malloc.c \
           $(LIB)/malloc.h $(LIB)/resolv.c $(LIB)/gfx.c $(LIB)/gfx.h \
+          $(LIB)/math.h \
           $(LIB)/user.ld \
           $(TOPDIR)/kernel/uapi.h $(TOPDIR)/types.h
 
