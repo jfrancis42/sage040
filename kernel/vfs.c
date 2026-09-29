@@ -29,6 +29,7 @@
 #include "wait.h"
 #include "signal.h"
 #include "pty.h"
+#include "procfs.h"
 
 #define DEV_PREFIX     "/dev/"
 #define DEV_PREFIX_LEN 5
@@ -109,6 +110,22 @@ static struct blockdev *mounted_dev;
 #define FILE_MAX  256           /* open files, the whole machine */
 
 static struct file files[FILE_MAX];
+
+/*
+ * WHAT EACH OPEN FILE WAS OPENED AS, for /proc/<pid>/fd (procfs.c).
+ *
+ * An absolute path with "." and ".." taken out, recorded when a path is
+ * opened; empty for what was never a path -- a pipe, a socket -- which
+ * /proc names by kind instead. Beside `files` rather than in struct
+ * file, which every driver sees: it is 256 KB, and nothing but /proc
+ * reads it.
+ *
+ * What it is NOT is where the file is now. A rename leaves it naming
+ * the old place, which is also what Linux does for a file renamed out
+ * from under an open descriptor... almost: Linux follows the rename.
+ * This does not, and says the name the file was opened by.
+ */
+static char file_paths[FILE_MAX][PATH_MAX];
 
 /* ---------------------------------------------------------------- */
 /* Filesystem types                                                  */
@@ -293,6 +310,246 @@ static int dev_is_dir(const char *path)
 }
 
 /*
+ * /proc.
+ *
+ * A path under /proc is procfs's before it is anybody's: its symbolic
+ * links -- self, and a process's exe, cwd, root and fd/N -- are followed
+ * by proc_lookup(), and what comes back is either a path procfs answers
+ * itself or one somewhere else entirely (/proc/self/cwd/notes.txt is a
+ * file on the volume), which the call then goes on with as though it
+ * had been given that. So every call below that takes a path starts
+ * with "if (proc_owns(path))" and one of these.
+ *
+ * Each is a separate function, not inline, so that the PATH_MAX buffer
+ * it needs is on the stack only for a /proc path: the rest of this file
+ * is already a kilobyte or two deep by the time the filesystem is
+ * reached, and kernel stacks are 16 KB.
+ */
+#define NOINLINE __attribute__((noinline))
+
+enum proc_op {
+    PO_UNLINK, PO_RMDIR, PO_MKDIR, PO_CHDIR, PO_UTIME,
+    PO_LINK, PO_SYMLINK, PO_RENAME
+};
+
+/* Resolve one path for an operation that changes something. 0 with
+ * `out` a path elsewhere to carry on with; -errno to refuse. */
+static int proc_modify_path(const char *path, int follow, int creates,
+                            char *out)
+{
+    struct file *anon = 0;
+    int r;
+
+    if (!proc_owns(path)) {
+        strcpy(out, path);
+        return 0;
+    }
+    r = proc_lookup(path, follow, out, &anon);
+    if (r == PROC_ELSEWHERE) {
+        return 0;
+    }
+    if (r == PROC_ANON) {
+        file_put(anon);
+        return -EPERM;          /* a pipe has no name to change */
+    }
+    if (r == -ENOENT && creates) {
+        /* A new name in a /proc directory: nothing can be added to
+         * one, which is a permission question and not a missing file.
+         * A missing directory above it is still ENOENT. */
+        char parent[PATH_MAX];
+        u32 cut = 0, i;
+        int slash = 0;
+
+        for (i = 0; path[i]; i++) {
+            if (path[i] == '/') {
+                cut = i;
+                slash = 1;
+            }
+        }
+        if (!slash) {
+            strcpy(parent, ".");        /* a bare name: here */
+        } else if (cut == 0) {
+            strcpy(parent, "/");
+        } else {
+            memcpy(parent, path, cut);
+            parent[cut] = '\0';
+        }
+        r = proc_lookup(parent, 1, out, &anon);
+        if (r == PROC_ANON) {
+            file_put(anon);
+        }
+        return r == PROC_HERE ? -EACCES : -ENOENT;
+    }
+    if (r < 0) {
+        return r;
+    }
+    /* PROC_HERE: something /proc has, and nothing in /proc changes. */
+    if (creates) {
+        return -EEXIST;
+    }
+    return -EPERM;
+}
+
+static int NOINLINE proc_modify(enum proc_op op, const char *a,
+                                const char *b, u32 x, u32 y)
+{
+    char pa[PATH_MAX], pb[PATH_MAX];
+    int err;
+
+    switch (op) {
+    case PO_UNLINK:
+    case PO_RMDIR:
+        err = proc_modify_path(a, 0, 0, pa);
+        if (err < 0) {
+            return err;
+        }
+        return op == PO_UNLINK ? vfs_unlink(pa) : vfs_rmdir(pa);
+    case PO_MKDIR:
+        err = proc_modify_path(a, 0, 1, pa);
+        return err < 0 ? err : vfs_mkdir(pa);
+    case PO_CHDIR:
+        if (proc_owns(a)) {
+            struct file *anon = 0;
+            int r = proc_lookup(a, 1, pa, &anon);
+
+            if (r == PROC_ANON) {
+                file_put(anon);
+                return -ENOTDIR;
+            }
+            if (r == PROC_HERE) {
+                struct stat st;
+
+                /*
+                 * Standing in /proc: the path is the whole of it. The
+                 * filesystem's number for the working directory is
+                 * left as it was and not consulted while the path is
+                 * under /proc, when every relative name is /proc's
+                 * (procfs.c, proc_owns).
+                 */
+                r = proc_stat(pa, &st);
+                if (r < 0) {
+                    return r;
+                }
+                if (!S_ISDIR(st.st_mode)) {
+                    return -ENOTDIR;
+                }
+                r = vfs_may(pa, X_OK);
+                if (r < 0) {
+                    return r;
+                }
+                vfs_cwd_set(current->cwd_ino, pa);
+                return 0;
+            }
+            if (r < 0) {
+                return r;
+            }
+            return vfs_chdir(pa);
+        }
+        return vfs_chdir(a);
+    case PO_UTIME:
+        err = proc_modify_path(a, 1, 0, pa);
+        return err < 0 ? err : vfs_utime(pa, x, y);
+    case PO_LINK:
+        err = proc_modify_path(a, 1, 0, pa);
+        if (err == -EPERM) {
+            err = 0;            /* linking TO /proc is refused below */
+            strcpy(pa, a);
+        }
+        if (err < 0) {
+            return err;
+        }
+        if (proc_owns(pa)) {
+            return -EXDEV;      /* another filesystem, as it is on Linux */
+        }
+        err = proc_modify_path(b, 0, 1, pb);
+        return err < 0 ? err : vfs_link(pa, pb);
+    case PO_SYMLINK:
+        /* The target is only a string; the new name is what matters. */
+        err = proc_modify_path(b, 0, 1, pb);
+        return err < 0 ? err : vfs_symlink(a, pb);
+    case PO_RENAME:
+        err = proc_modify_path(a, 0, 0, pa);
+        if (err < 0) {
+            return err;
+        }
+        err = proc_modify_path(b, 0, 1, pb);
+        if (err == -EEXIST) {
+            err = -EPERM;       /* over something /proc has */
+        }
+        return err < 0 ? err : vfs_rename(pa, pb);
+    }
+    return -EINVAL;
+}
+
+/* chmod and chown: of what a link leads to, as they are elsewhere. */
+static int NOINLINE proc_setattr_path(const char *path, u32 mask, u32 mode,
+                                      u32 uid, u32 gid)
+{
+    char buf[PATH_MAX];
+    int err = proc_modify_path(path, 1, 0, buf);
+
+    return err < 0 ? err : vfs_setattr(buf, mask, mode, uid, gid);
+}
+
+static int NOINLINE proc_stat_path(const char *path, struct stat *st,
+                                   int follow)
+{
+    char buf[PATH_MAX];
+    struct file *anon = 0;
+    int r = proc_lookup(path, follow, buf, &anon);
+
+    switch (r) {
+    case PROC_HERE:
+        return proc_stat(buf, st);
+    case PROC_ELSEWHERE:
+        return follow ? vfs_stat(buf, st) : vfs_lstat(buf, st);
+    case PROC_ANON:
+        r = vfs_file_stat(anon, st);
+        file_put(anon);
+        return r;
+    }
+    return r;
+}
+
+static int NOINLINE proc_readlink_path(const char *path, char *out, u32 size)
+{
+    char buf[PATH_MAX];
+    struct file *anon = 0;
+    int r = proc_lookup(path, 0, buf, &anon);
+
+    switch (r) {
+    case PROC_HERE:
+        return proc_readlink(buf, out, size);
+    case PROC_ELSEWHERE:
+        return vfs_readlink(buf, out, size);
+    case PROC_ANON:
+        file_put(anon);
+        return -EINVAL;
+    }
+    return r;
+}
+
+static int NOINLINE proc_open_path(const char *path, int flags)
+{
+    char buf[PATH_MAX];
+    struct file *anon = 0;
+    int r = proc_lookup(path, (flags & O_NOFOLLOW) ? 0 : 1, buf, &anon);
+
+    switch (r) {
+    case PROC_HERE:
+        return proc_open(buf, flags);
+    case PROC_ELSEWHERE:
+        return fd_open(buf, flags);
+    case PROC_ANON:
+        return fd_install_file(anon, flags);
+    }
+    if (r == -ENOENT && (flags & O_CREAT)) {
+        return -EACCES;         /* nothing is created in /proc */
+    }
+    return r;
+}
+
+/*
  * THE LEADING SLASH IS LOAD-BEARING AND MUST BE PASSED DOWN.
  *
  * There used to be a strip_root() here that removed it before handing
@@ -335,9 +592,146 @@ static struct file *file_alloc(void)
             memset(&files[i], 0, sizeof(files[i]));
             files[i].used = 1;
             files[i].refs = 1;
+            file_paths[i][0] = '\0';
             return &files[i];
         }
     }
+    return 0;
+}
+
+static int file_index(const struct file *f)
+{
+    return (f >= files && f < files + FILE_MAX) ? (int)(f - files) : -1;
+}
+
+void vfs_file_set_path(struct file *f, const char *path)
+{
+    int i = file_index(f);
+
+    if (i >= 0 && vfs_abspath(path, file_paths[i], PATH_MAX) < 0) {
+        file_paths[i][0] = '\0';
+    }
+}
+
+/*
+ * The name /proc gives an open file: the path it was opened by, or, for
+ * one that never had a path, its kind and a number that tells two of
+ * them apart -- Linux's "pipe:[12345]", with the open file's slot for
+ * the inode number a pipe here does not have.
+ */
+int vfs_file_name(struct file *f, char *out, u32 size)
+{
+    struct stat st;
+    const char *kind = "anon_inode";
+    char num[12];
+    int i = file_index(f), n = 0;
+    u32 v;
+
+    if (i < 0 || size < 32) {
+        return -EINVAL;
+    }
+    if (file_paths[i][0]) {
+        if (strlen(file_paths[i]) >= size) {
+            return -ENAMETOOLONG;
+        }
+        strcpy(out, file_paths[i]);
+        return 0;
+    }
+    if (vfs_file_stat(f, &st) == 0) {
+        if (S_ISFIFO(st.st_mode)) {
+            kind = "pipe";
+        } else if (S_ISSOCK(st.st_mode)) {
+            kind = "socket";
+        }
+    }
+    v = st.st_ino ? st.st_ino : (u32)i + 1;
+    do {
+        num[n++] = (char)('0' + v % 10);
+        v /= 10;
+    } while (v);
+    strcpy(out, kind);
+    i = (int)strlen(out);
+    out[i++] = ':';
+    out[i++] = '[';
+    while (n) {
+        out[i++] = num[--n];
+    }
+    out[i++] = ']';
+    out[i] = '\0';
+    return 0;
+}
+
+/*
+ * An absolute path with every "." and ".." taken out and every run of
+ * slashes made one: what `path` means from the caller's working
+ * directory, written out. Symbolic links are NOT resolved -- that needs
+ * the filesystem, and a name is what this is for.
+ */
+int vfs_abspath(const char *path, char *out, u32 size)
+{
+    char tmp[PATH_MAX];
+    u32 n = 0, i = 0;
+
+    if (!path || !*path) {
+        return -ENOENT;
+    }
+    if (path[0] == '/') {
+        if (strlen(path) >= sizeof(tmp)) {
+            return -ENAMETOOLONG;
+        }
+        strcpy(tmp, path);
+    } else {
+        const char *cwd = vfs_cwd_path();
+        u32 c = (u32)strlen(cwd);
+
+        if (c + 1 + strlen(path) >= sizeof(tmp)) {
+            return -ENAMETOOLONG;
+        }
+        strcpy(tmp, cwd);
+        tmp[c] = '/';
+        strcpy(tmp + c + 1, path);
+    }
+
+    /* One component at a time, into out, which always starts with "/". */
+    if (size < 2) {
+        return -ENAMETOOLONG;
+    }
+    out[n++] = '/';
+    while (tmp[i]) {
+        u32 start, len;
+
+        while (tmp[i] == '/') {
+            i++;
+        }
+        start = i;
+        while (tmp[i] && tmp[i] != '/') {
+            i++;
+        }
+        len = i - start;
+        if (len == 0 || (len == 1 && tmp[start] == '.')) {
+            continue;
+        }
+        if (len == 2 && tmp[start] == '.' && tmp[start + 1] == '.') {
+            /* Back to the slash before the last component; the root's
+             * parent is the root. */
+            while (n > 1 && out[n - 1] != '/') {
+                n--;
+            }
+            if (n > 1) {
+                n--;            /* and the slash before it */
+            }
+            continue;
+        }
+        if (n + len + 1 >= size) {
+            return -ENAMETOOLONG;
+        }
+        if (n > 1) {
+            out[n++] = '/';
+        }
+        memcpy(out + n, tmp + start, len);
+        n += len;
+    }
+    out[n] = '\0';
     return 0;
 }
 
@@ -526,9 +920,45 @@ int fd_bind(int fd, const struct file_ops *ops, void *priv, int flags)
     f->ops = ops;
     f->priv = priv;
     f->flags = flags & ~O_CLOEXEC;
+    {
+        /* A terminal bound at boot, or by a getty, is still a device
+         * with a name: /proc/<pid>/fd/0 says which. */
+        struct chardev *cd = dev_char_for(f);
+
+        if (cd) {
+            char name[PATH_MAX];
+
+            strcpy(name, DEV_PREFIX);
+            strncpy(name + DEV_PREFIX_LEN, cd->name,
+                    PATH_MAX - DEV_PREFIX_LEN - 1);
+            name[PATH_MAX - 1] = '\0';
+            vfs_file_set_path(f, name);
+        }
+    }
 
     if (current->files->fd[fd]) {
         file_put(current->files->fd[fd]);
+    }
+    current->files->fd[fd] = f;
+    current->files->flags[fd] = (flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
+    return fd;
+}
+
+/*
+ * A new descriptor for an open file that already exists, taking the
+ * caller's reference to it: how /proc/<pid>/fd/N opens something that
+ * has no path to open again (a pipe, a socket). The two descriptors
+ * then share one open file, position and all, where Linux would give a
+ * new open file on the same pipe -- the difference is only visible to
+ * a program that seeks, and a pipe cannot be sought.
+ */
+int fd_install_file(struct file *f, int flags)
+{
+    int fd = fd_alloc();
+
+    if (fd < 0) {
+        file_put(f);
+        return fd;
     }
     current->files->fd[fd] = f;
     current->files->flags[fd] = (flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
@@ -635,12 +1065,16 @@ static int dir_open(const char *path, int flags)
     if (err < 0) {
         return err;
     }
-    return fd_install(&dir_ops, (void *)(ino + 1), flags & ~O_ACCMODE);
+    err = fd_install(&dir_ops, (void *)(ino + 1), flags & ~O_ACCMODE);
+    if (err >= 0) {
+        vfs_file_set_path(fd_get(err), path);
+    }
+    return err;
 }
 
 int vfs_is_dir_file(struct file *f)
 {
-    return f && f->ops == &dir_ops;
+    return f && (f->ops == &dir_ops || proc_is_dir_file(f));
 }
 
 /* Where an open directory is now -- worked out, not remembered, so it
@@ -651,6 +1085,9 @@ int vfs_dir_path(struct file *f, char *out, u32 size)
 
     if (!vfs_is_dir_file(f)) {
         return -ENOTDIR;
+    }
+    if (proc_is_dir_file(f)) {
+        return proc_dir_path(f, out, size);
     }
     if (!mounted_fs || !mounted_fs->dir_path) {
         return -ENOSYS;
@@ -665,6 +1102,9 @@ int vfs_utime(const char *path, u32 mtime, u32 atime)
 {
     int r;
 
+    if (proc_owns(path)) {
+        return proc_modify(PO_UTIME, path, 0, mtime, atime);
+    }
     if (resolve_dev(path)) {
         return 0;               /* a device has no time to keep */
     }
@@ -712,6 +1152,13 @@ int vfs_fchdir(int fd)
     if (!f) {
         return -EBADF;
     }
+    if (proc_is_dir_file(f)) {
+        r = proc_dir_path(f, path, sizeof(path));
+        if (r == 0) {
+            vfs_cwd_set(current->cwd_ino, path);    /* see vfs_chdir */
+        }
+        return r;
+    }
     r = vfs_dir_path(f, path, sizeof(path));
     if (r < 0) {
         return r;
@@ -740,6 +1187,9 @@ s32 vfs_getdents64(int fd, u8 *buf, u32 len)
     }
     if (!vfs_is_dir_file(f)) {
         return -ENOTDIR;
+    }
+    if (proc_is_dir_file(f)) {
+        return proc_getdents64(f, buf, len);
     }
     ino = dir_ino_of(f);
     synth = (ino == 0) ? 2 : 0;
@@ -783,7 +1233,8 @@ s32 vfs_getdents64(int fd, u8 *buf, u32 len)
         r->d_ino = d.d_ino ? d.d_ino : 1;
         r->d_off = idx + 1;
         r->d_reclen = (u16)reclen;
-        r->d_type = S_ISDIR(d.d_mode) ? DT_DIR : DT_REG;
+        r->d_type = S_ISDIR(d.d_mode) ? DT_DIR :
+                    S_ISLNK(d.d_mode) ? DT_LNK : DT_REG;
         memcpy(r->d_name, d.d_name, n + 1);
         used += reclen;
         f->pos++;
@@ -805,6 +1256,9 @@ int fd_open(const char *path, int flags)
     if (strlen(path) > PATH_MAX) {
         return -ENAMETOOLONG;
     }
+    if (proc_owns(path)) {
+        return proc_open_path(path, flags);
+    }
 
     /* A device node is not a file on the volume and does not need one to
      * be mounted, which is what lets the console work before the disk
@@ -818,6 +1272,9 @@ int fd_open(const char *path, int flags)
             return fd;
         }
         f = fd_get(fd);
+        if (f) {
+            vfs_file_set_path(f, path);
+        }
         /*
          * /dev/ptmx is not a device to open: opening it ALLOCATES a
          * pseudo-terminal pair and gives back the master of it, so the
@@ -929,6 +1386,7 @@ int fd_open(const char *path, int flags)
             f->used = 0;
             return err;
         }
+        vfs_file_set_path(f, path);
         current->files->fd[fd] = f;
         current->files->flags[fd] = (flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
     }
@@ -1297,6 +1755,9 @@ int fd_ioctl(int fd, u32 request, u32 arg)
 
 int vfs_mkdir(const char *path)
 {
+    if (proc_owns(path)) {
+        return proc_modify(PO_MKDIR, path, 0, 0, 0);
+    }
     if (!mounted_fs || !mounted_fs->mkdir) {
         return -ENOSYS;
     }
@@ -1315,6 +1776,9 @@ int vfs_mkdir(const char *path)
 
 int vfs_rmdir(const char *path)
 {
+    if (proc_owns(path)) {
+        return proc_modify(PO_RMDIR, path, 0, 0, 0);
+    }
     if (!mounted_fs || !mounted_fs->rmdir) {
         return -ENOSYS;
     }
@@ -1333,6 +1797,9 @@ int vfs_rmdir(const char *path)
 
 int vfs_chdir(const char *path)
 {
+    if (proc_owns(path)) {
+        return proc_modify(PO_CHDIR, path, 0, 0, 0);
+    }
     if (!mounted_fs || !mounted_fs->chdir) {
         return -ENOSYS;
     }
@@ -1351,6 +1818,9 @@ int vfs_chdir(const char *path)
 
 const char *vfs_getcwd(void)
 {
+    if (proc_cwd()) {
+        return current->cwd_path;       /* the filesystem's is stale */
+    }
     if (!mounted_fs || !mounted_fs->getcwd) {
         return "/";
     }
@@ -1366,6 +1836,9 @@ const char *vfs_getcwd(void)
 
 int vfs_unlink(const char *path)
 {
+    if (proc_owns(path)) {
+        return proc_modify(PO_UNLINK, path, 0, 0, 0);
+    }
     if (resolve_dev(path)) {
         return -EPERM;          /* device nodes are not files */
     }
@@ -1414,6 +1887,9 @@ int vfs_link(const char *from, const char *to)
 {
     int err;
 
+    if (proc_owns(from) || proc_owns(to)) {
+        return proc_modify(PO_LINK, from, to, 0, 0);
+    }
     if (resolve_dev(from) || resolve_dev(to)) {
         return -EPERM;          /* device nodes are not files */
     }
@@ -1457,6 +1933,9 @@ int vfs_link(const char *from, const char *to)
  */
 int vfs_lstat(const char *path, struct stat *st)
 {
+    if (proc_owns(path)) {
+        return proc_stat_path(path, st, 0);
+    }
     if (!mounted_fs) {
         return -ENODEV;
     }
@@ -1477,6 +1956,9 @@ int vfs_symlink(const char *target, const char *linkpath)
 {
     int err;
 
+    if (proc_owns(linkpath)) {
+        return proc_modify(PO_SYMLINK, target, linkpath, 0, 0);
+    }
     if (resolve_dev(linkpath)) {
         return -EEXIST;
     }
@@ -1509,6 +1991,9 @@ int vfs_readlink(const char *path, char *out, u32 size)
 {
     int err;
 
+    if (proc_owns(path)) {
+        return proc_readlink_path(path, out, size);
+    }
     if (!mounted_fs) {
         return -ENODEV;
     }
@@ -1531,6 +2016,9 @@ int vfs_readlink(const char *path, char *out, u32 size)
 
 int vfs_rename(const char *from, const char *to)
 {
+    if (proc_owns(from) || proc_owns(to)) {
+        return proc_modify(PO_RENAME, from, to, 0, 0);
+    }
     if (resolve_dev(from) || resolve_dev(to)) {
         return -EPERM;
     }
@@ -1572,7 +2060,12 @@ int vfs_rename(const char *from, const char *to)
 
 int vfs_stat(const char *path, struct stat *st)
 {
-    struct chardev *cd = resolve_dev(path);
+    struct chardev *cd;
+
+    if (proc_owns(path)) {
+        return proc_stat_path(path, st, 1);
+    }
+    cd = resolve_dev(path);
 
     if (!cd && dev_is_dir(path)) {
         /* A synthesised directory: /dev, and /dev/pts. Searchable and
@@ -1705,6 +2198,11 @@ int vfs_check(int flags, struct fsck_report *r)
 
 int vfs_readdir(int index, struct dirent *d)
 {
+    if (proc_cwd()) {
+        /* The old getdents reads the filesystem's working directory,
+         * which is not where the caller is. getdents64 lists /proc. */
+        return -EOPNOTSUPP;
+    }
     if (!mounted_fs) {
         return -ENODEV;
     }
@@ -1736,6 +2234,13 @@ int vfs_fstat(int fd, struct stat *st)
     if (!f) {
         return -EBADF;
     }
+    return vfs_file_stat(f, st);
+}
+
+/* The same, of an open file rather than a descriptor: what /proc needs
+ * to describe another task's. */
+int vfs_file_stat(struct file *f, struct stat *st)
+{
     memset(st, 0, sizeof(*st));
 
     if (f->ops && f->ops->fstat) {
@@ -2095,6 +2600,9 @@ int vfs_setattr(const char *path, u32 mask, u32 mode, u32 uid, u32 gid)
     struct stat st;
     int err;
 
+    if (proc_owns(path)) {
+        return proc_setattr_path(path, mask, mode, uid, gid);
+    }
     err = walk_ok(path);
     if (err < 0) {
         return err;
@@ -2153,6 +2661,12 @@ int vfs_fsetattr(int fd, u32 mask, u32 mode, u32 uid, u32 gid)
     cd = dev_char_for(fd_get(fd));
     if (cd) {
         return dev_setattr(cd, mask, mode, uid, gid);
+    }
+    if (fd_get(fd) && !fd_get(fd)->fs) {
+        /* A pipe, a socket, a file in /proc: nowhere to keep a mode.
+         * It used to be handed to the filesystem, which took it for
+         * one of its own files. */
+        return -EPERM;
     }
     if (!mounted_fs) {
         return -ENODEV;

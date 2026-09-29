@@ -37,6 +37,16 @@ struct task *current;
 
 static struct task tasks[TASK_MAX];
 static struct task *idle;
+
+/* Every tick since boot, as user, system and idle. */
+static u32 cpu_ticks[3];
+
+void task_cpu_ticks(u32 out[3])
+{
+    out[0] = cpu_ticks[0];
+    out[1] = cpu_ticks[1];
+    out[2] = cpu_ticks[2];
+}
 static int next_pid = 1;
 
 /*
@@ -636,6 +646,12 @@ struct task *task_nth(int index)
     return 0;
 }
 
+/* The pid most recently given out -- /proc/loadavg's last field. */
+int task_last_pid(void)
+{
+    return next_pid - 1;
+}
+
 int task_count(void)
 {
     int i, n = 0;
@@ -892,6 +908,9 @@ void task_tick(void)
     } else {
         t->stime++;
     }
+    /* And the machine's, for /proc/stat: a tick in the idle task is
+     * idle time, not system time, whatever mode it came in. */
+    cpu_ticks[t == idle ? 2 : user ? 0 : 1]++;
     if (t->as) {
         if (user && t->it_virt && --t->it_virt == 0) {
             t->it_virt = t->it_virt_interval;

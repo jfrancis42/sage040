@@ -168,6 +168,9 @@ static int pipe_fstat(struct file *f, struct stat *st)
     st->st_size = p->count;
     st->st_mtime = 0;
     st->st_blocks = 0;
+    /* One number for both ends, as a pipe is one inode on Linux: what
+     * makes /proc/<pid>/fd show "pipe:[N]" twice for the same pipe. */
+    st->st_ino = 0x40000000UL | (u32)(p - pipes + 1);
     return 0;
 }
 

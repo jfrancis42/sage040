@@ -27,6 +27,7 @@ syscall.c
 syslinux.c
 sysuser.c
 vfs.c
+procfs.c
 dev.c
 time.c
 timer.c

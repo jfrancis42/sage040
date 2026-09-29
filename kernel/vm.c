@@ -677,6 +677,7 @@ struct addrspace *vm_create(void)
     as->slot_off = 0;
     as->brk_start = 0;
     as->brk_cur = 0;
+    memset(&as->img, 0, sizeof(as->img));
 
     as->root = as_table_alloc(as);
     if (!as->root) {
@@ -939,6 +940,62 @@ int vm_is_mapped(struct addrspace *as, u32 va)
     u32 pt_pa = as_pagetable(as, va, 0);
 
     return pt_pa && desc_owned(table(pt_pa)[PAGE_INDEX(va)]);
+}
+
+/* What the program may do with the page a descriptor holds, as
+ * vm_regions reports it; -1 for a page the address space does not own. */
+static int desc_prot(u32 d)
+{
+    if (!desc_owned(d)) {
+        return -1;
+    }
+    if (d & PDT_RESIDENT) {
+        /* SW_COW shares its bit with SW_NONE, and means it only on a
+         * resident page: writable to the program, after a fault. */
+        return (!(d & DESC_WP) || (d & DESC_SW_COW)) ? VM_WRITE : 0;
+    }
+    if (d & DESC_SW_NONE) {
+        return VM_NONE;
+    }
+    return (d & DESC_WP) ? 0 : VM_WRITE;
+}
+
+void vm_regions(struct addrspace *as,
+                int (*fn)(void *arg, u32 start, u32 end, int prot, int shared),
+                void *arg)
+{
+    u32 va, start = 0;
+    int cur = -1, cur_shared = 0;
+
+    /* A table at a time where there is none, as vm_mapped_pages does. */
+    for (va = USER_VA_BASE; va < USER_VA_END; ) {
+        u32 pt_pa = as_pagetable(as, va, 0);
+        u32 i;
+
+        for (i = 0; i < PAGE_ENTRIES; i++, va += PAGE_SIZE) {
+            u32 d = pt_pa ? table(pt_pa)[i] : 0;
+            int prot = desc_prot(d);
+            int shared = prot >= 0 && (d & PDT_RESIDENT) &&
+                         pmm_refcount(d & PAGE_ADDR_MASK) == 0;
+
+            if (prot != cur || shared != cur_shared) {
+                if (cur >= 0 && fn(arg, start, va, cur, cur_shared)) {
+                    return;
+                }
+                cur = prot;
+                cur_shared = shared;
+                start = va;
+            }
+            if (!pt_pa && cur < 0) {
+                /* Nothing here and nothing open: skip the table. */
+                va += (PAGE_ENTRIES - i) * PAGE_SIZE;
+                break;
+            }
+        }
+    }
+    if (cur >= 0) {
+        fn(arg, start, USER_VA_END, cur, cur_shared);
+    }
 }
 
 int vm_protect(struct addrspace *as, u32 va, int flags)
@@ -1208,6 +1265,7 @@ struct addrspace *vm_clone(struct addrspace *src)
     }
     as->brk_start = src->brk_start;
     as->brk_cur = src->brk_cur;
+    as->img = src->img;
     as->busy = 0;
     /* The parent's writable pages just became read-only: its cached
      * translations still say writable. */

@@ -75,6 +75,7 @@
 
 #include "kernel.h"
 #include "pmm.h"
+#include "uapi.h"
 
 /*
  * Where a program lives, in its own address space.
@@ -126,6 +127,33 @@
 #define VM_NOCACHE  0x04        /* device memory, not cached       */
 #define VM_NONE     0x08        /* owned but inaccessible: vm_protect */
 
+/*
+ * WHAT EXEC PUT WHERE, kept for /proc (procfs.c): the ranges of the
+ * image, the interpreter and the argument and environment strings, and
+ * the file each came from. Nothing else reads them -- the page tables
+ * are still the only record of what is mapped (mmap.c) -- but only exec
+ * knows which pages are the program and which of the stack's bytes are
+ * its command line, and it knows it only while it runs.
+ *
+ * Linux keeps the same fields in its mm_struct, for the same readers:
+ * /proc/<pid>/stat's startcode..env_end, cmdline, environ, maps.
+ * Per address space rather than per task, because the threads of a
+ * process share all of it, and copied by fork with the rest.
+ */
+#define AS_INTERP_MAX   64
+
+struct as_image {
+    u32 start_code, end_code;   /* the program's executable segments   */
+    u32 start_data, end_data;   /* ... and the rest (.bss included)    */
+    u32 interp_start, interp_end;       /* ld.so's, when there is one  */
+    u32 interp_code_lo, interp_code_hi; /* ... and its executable part */
+    u32 start_stack;            /* the stack pointer the program began with */
+    u32 arg_start, arg_end;     /* argv's strings, NUL-separated       */
+    u32 env_start, env_end;     /* envp's strings, likewise            */
+    char exe[PATH_MAX];         /* the program, as an absolute path    */
+    char interp[AS_INTERP_MAX]; /* its interpreter, or ""              */
+};
+
 struct addrspace {
     u32 root;                   /* physical address of the root table  */
 
@@ -167,6 +195,8 @@ struct addrspace {
      * would take the loaded bytes with it. vm_ready() clears it.
      */
     int busy;
+
+    struct as_image img;        /* for /proc: see above                */
 };
 
 /*
@@ -225,6 +255,19 @@ void vm_unmap(struct addrspace *as, u32 va);
 
 /* Does the address space own the page at `va`, accessible or not? */
 int  vm_is_mapped(struct addrspace *as, u32 va);
+
+/*
+ * The owned pages of an address space as REGIONS: maximal runs of
+ * adjacent pages the program may use in the same way, in address order,
+ * which is what /proc/<pid>/maps lists. `prot` is what the program sees
+ * -- VM_WRITE for writable (copy-on-write counts, as it does to the
+ * program), VM_NONE for PROT_NONE, 0 for read-only -- and `shared` is
+ * set for a device's own memory (/dev/fb0 mapped), the only mapping here
+ * that really is shared. Stops early if `fn` returns nonzero.
+ */
+void vm_regions(struct addrspace *as,
+                int (*fn)(void *arg, u32 start, u32 end, int prot, int shared),
+                void *arg);
 
 /*
  * Change what may be done to an owned page: VM_WRITE for read-write,

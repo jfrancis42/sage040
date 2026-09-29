@@ -379,6 +379,9 @@ int  task_wait(int pid, int *status, int options);
 void task_reap(struct task *t);
 
 int  task_count(void);
+int  task_last_pid(void);
+/* Ticks since boot spent in user mode, in the kernel, and idle. */
+void task_cpu_ticks(u32 out[3]);
 
 /* How many tasks are runnable right now -- RUNNING or READY,
  * excluding the idle task. What the load average samples. */

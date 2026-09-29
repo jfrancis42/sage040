@@ -168,6 +168,21 @@ int  fd_bind(int fd, const struct file_ops *ops, void *priv, int flags);
  * socket is the case that needed it. Returns the descriptor or -errno.
  */
 int  fd_install(const struct file_ops *ops, void *priv, int flags);
+int  fd_install_file(struct file *f, int flags);
+
+/*
+ * For /proc (procfs.c). What an open file was opened as, recorded at
+ * open: set by whatever opens one from a path, and named -- the path,
+ * or "pipe:[N]" and the like for one that never had one -- when a
+ * program reads /proc/<pid>/fd.
+ */
+void vfs_file_set_path(struct file *f, const char *path);
+int  vfs_file_name(struct file *f, char *out, u32 size);
+int  vfs_file_stat(struct file *f, struct stat *st);
+
+/* `path` from the caller's working directory, absolute, with "." and
+ * ".." resolved and no symbolic link followed. 0, or -errno. */
+int  vfs_abspath(const char *path, char *out, u32 size);
 
 /*
  * An OPEN FILE, which is not the same thing as a descriptor.

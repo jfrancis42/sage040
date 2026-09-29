@@ -84,6 +84,9 @@ struct image {
     u32 phdr;                   /* where its program headers are, loaded */
     u32 phnum;
     u32 end;                    /* the highest byte of any segment      */
+    u32 start;                  /* the lowest                           */
+    u32 code_lo, code_hi;       /* the executable segments, for /proc   */
+    u32 data_lo, data_hi;       /* ... and the rest                      */
     char interp[INTERP_MAX];    /* "" for a static program               */
 };
 
@@ -101,6 +104,8 @@ struct image {
 #define P_VADDR       8
 #define P_FILESZ      16
 #define P_MEMSZ       20
+#define P_FLAGS       24
+#define PF_X          1
 
 static u16 be16(const u8 *p)
 {
@@ -282,8 +287,10 @@ static int load_image(struct addrspace *as, int fd, struct image *img,
     }
     img->phnum = (u32)phnum;
 
+    img->start = 0xffffffffUL;
+    img->code_lo = img->data_lo = 0xffffffffUL;
     for (i = 0; i < phnum; i++) {
-        u32 type, off, vaddr, filesz, memsz;
+        u32 type, off, vaddr, filesz, memsz, pflags;
 
         err = read_at(fd, phoff + (u32)i * (u32)phentsize,
                       phdr, PHDR_SIZE);
@@ -296,6 +303,7 @@ static int load_image(struct addrspace *as, int fd, struct image *img,
         vaddr = be32(&phdr[P_VADDR]);
         filesz = be32(&phdr[P_FILESZ]);
         memsz = be32(&phdr[P_MEMSZ]);
+        pflags = be32(&phdr[P_FLAGS]);
 
         if (type == PT_INTERP) {
             if (filesz < 2 || filesz > INTERP_MAX) {
@@ -363,12 +371,39 @@ static int load_image(struct addrspace *as, int fd, struct image *img,
         if (vaddr + memsz > image_end) {
             image_end = vaddr + memsz;
         }
+        if (vaddr < img->start) {
+            img->start = vaddr;
+        }
+        /* Code or data by what the segment says it is, which is what
+         * the linker decided: /proc's startcode and friends, and the x
+         * in its maps, are all this is for. */
+        if (!(pflags & PF_X)) {
+            if (vaddr < img->data_lo) {
+                img->data_lo = vaddr;
+            }
+            if (vaddr + memsz > img->data_hi) {
+                img->data_hi = vaddr + memsz;
+            }
+        } else {
+            if (vaddr < img->code_lo) {
+                img->code_lo = vaddr;
+            }
+            if (vaddr + memsz > img->code_hi) {
+                img->code_hi = vaddr + memsz;
+            }
+        }
         loaded++;
     }
     if (loaded == 0) {
         return -ENOEXEC;
     }
     img->end = image_end;
+    if (img->code_lo > img->code_hi) {
+        img->code_lo = img->code_hi = 0;
+    }
+    if (img->data_lo > img->data_hi) {
+        img->data_lo = img->data_hi = 0;
+    }
     return 0;
 }
 
@@ -390,7 +425,7 @@ static int load_image(struct addrspace *as, int fd, struct image *img,
  * return from _start faults instead of wandering.
  */
 static int setup_stack(int argc, char **argv, char **envp, const u32 *auxv,
-                       u32 auxv_words, u32 *out_sp)
+                       u32 auxv_words, u32 *out_sp, struct as_image *im)
 {
     /* Static: 2 KB of them, too much for a kernel stack, and nothing in
      * here can sleep, so no second exec can be in the middle of it. */
@@ -400,6 +435,7 @@ static int setup_stack(int argc, char **argv, char **envp, const u32 *auxv,
     u32 envc = 0;
     int i, err;
 
+    im->env_start = im->env_end = sp;
     /*
      * The environment goes in first, above the arguments, because the
      * conventional Unix layout puts envp above argv on the stack and
@@ -420,6 +456,7 @@ static int setup_stack(int argc, char **argv, char **envp, const u32 *auxv,
             }
             uenv[i] = sp;
         }
+        im->env_start = sp;
     }
     uenv[envc] = 0;
 
@@ -444,6 +481,7 @@ static int setup_stack(int argc, char **argv, char **envp, const u32 *auxv,
     {
         u32 uenvp = sp;
 
+        im->arg_start = im->arg_end = sp;
         for (i = argc - 1; i >= 0; i--) {
         u32 len = (u32)strlen(argv[i]) + 1;
 
@@ -455,7 +493,7 @@ static int setup_stack(int argc, char **argv, char **envp, const u32 *auxv,
         uargv[i] = sp;
     }
     uargv[argc] = 0;                    /* argv is NULL terminated */
-
+    im->arg_start = sp;
     sp &= ~3UL;
     sp -= (u32)(argc + 1) * 4;
     err = copy_to_user(sp, uargv, (u32)(argc + 1) * 4);
@@ -479,6 +517,7 @@ static int setup_stack(int argc, char **argv, char **envp, const u32 *auxv,
     }
 
     *out_sp = sp;
+    im->start_stack = sp;
     return 0;
 }
 
@@ -535,6 +574,15 @@ static int build(struct addrspace *as, const char *path,
     as->brk_cur = as->brk_start;
     *entry = prog.entry;
 
+    /* For /proc: what the program is, and where its parts went. */
+    if (vfs_abspath(path, as->img.exe, sizeof(as->img.exe)) < 0) {
+        as->img.exe[0] = '\0';
+    }
+    as->img.start_code = prog.code_lo;
+    as->img.end_code = prog.code_hi;
+    as->img.start_data = prog.data_lo;
+    as->img.end_data = prog.data_hi;
+
     /*
      * A dynamically linked program: load its interpreter too, and start
      * THERE. The interpreter must be a plain program -- one that names
@@ -555,6 +603,12 @@ static int build(struct addrspace *as, const char *path,
             return -ELIBBAD;
         }
         *entry = interp.entry;
+        as->img.interp_start = interp.start;
+        as->img.interp_end = PAGE_ALIGN_UP(interp.end);
+        as->img.interp_code_lo = interp.code_lo;
+        as->img.interp_code_hi = interp.code_hi;
+        strncpy(as->img.interp, prog.interp, AS_INTERP_MAX - 1);
+        as->img.interp[AS_INTERP_MAX - 1] = '\0';
     }
 
     auxv[n++] = AT_PHDR;   auxv[n++] = prog.phdr;
@@ -588,7 +642,7 @@ static int build(struct addrspace *as, const char *path,
         }
     }
 
-    return setup_stack(argc, argv, envp, auxv, n, sp);
+    return setup_stack(argc, argv, envp, auxv, n, sp, &as->img);
 }
 
 /*

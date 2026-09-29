@@ -602,27 +602,90 @@ static void print_stamp(time_t when)
 /*
  * ls, optionally somewhere else.
  *
- * `getdents` reads the CURRENT directory and takes no path, so listing
- * another one means going there and coming back. That is not elegant,
- * and the alternative -- a path argument on the system call -- is a
- * change to the ABI for the benefit of one caller.
+ * By opening the directory and reading it with getdents64, which is
+ * what every C library's readdir() is -- so it lists whatever open()
+ * can open as a directory, /proc and /dev included. It used to go
+ * there with chdir and read the working directory, because the old
+ * getdents takes no descriptor; that could never list /proc, which is
+ * not somewhere a working directory can be.
  *
- * It is worth the ugliness because the previous behaviour was to accept
- * `ls /bin`, ignore the argument, and list the current directory
- * instead. Silently answering a different question than the one asked is
- * the worst failure mode available: nothing looks wrong.
+ * The long form asks lstat about each name, so a link is shown as a
+ * link, with what it points at -- which is most of what /proc/<pid> is.
  */
+static void ls_entry(const char *dir, const char *name, int long_form,
+                     int *col, u32 *bytes)
+{
+    int n;
+
+    if (long_form) {
+        char path[PATH_MAX];
+        struct stat st;
+        u32 dl = (u32)strlen(dir), nl = (u32)strlen(name);
+
+        memset(&st, 0, sizeof(st));
+        if (dl + 1 + nl < sizeof(path)) {
+            strcpy(path, dir);
+            if (dl && path[dl - 1] != '/') {
+                path[dl++] = '/';
+            }
+            strcpy(path + dl, name);
+            syscall2(__NR_lstat, (u32)path, (u32)&st);
+        }
+        /* The name last, as Unix has it: with long names there is no
+         * width a column of them can be padded to. */
+        print_mode(st.st_mode);
+        out_putdec_pad(st.st_size, 10);
+        out_puts("  ");
+        print_stamp(st.st_mtime);
+        out_puts("  ");
+        out_puts(name);
+        if (S_ISLNK(st.st_mode)) {
+            /* For display only, and cut short silently as readlink
+             * does: the kernel shell's system calls share this stack. */
+            char target[256];
+            s32 t = syscall3(__NR_readlink, (u32)path, (u32)target,
+                             sizeof(target) - 1);
+
+            if (t >= 0) {
+                target[t] = '\0';
+                out_puts(" -> ");
+                out_puts(target);
+            }
+        }
+        out_putc('\n');
+        *bytes += st.st_size;
+        return;
+    }
+    /* Five columns of fourteen; a longer name takes a line of its own
+     * rather than pushing the grid out of shape. */
+    n = (int)strlen(name);
+    if (n >= 14 && *col != 0) {
+        out_putc('\n');
+        *col = 0;
+    }
+    out_puts(name);
+    if (n >= 14) {
+        out_putc('\n');
+        *col = 0;
+    } else {
+        for (; n < 14; n++) {
+            out_putc(' ');
+        }
+        if (++*col == 5) {
+            out_putc('\n');
+            *col = 0;
+        }
+    }
+}
+
 static void cmd_ls(int argc, char **args)
 {
-    struct dirent de;
     int argi = 1;
     int long_form = 0;
     const char *where = 0;
-    char saved[PATH_MAX];
-    int moved = 0;
-    int i = 0;
-    int col = 0;
+    int i = 0, col = 0, fd;
     u32 bytes = 0;
+    s32 got;
 
     for (; argi < argc; argi++) {
         if (strcmp(args[argi], "-l") == 0) {
@@ -634,62 +697,35 @@ static void cmd_ls(int argc, char **args)
             return;
         }
     }
-
-    if (where) {
-        if (sys_getcwd(saved, sizeof(saved)) < 0) {
-            out_puts("ls: cannot find the current directory\n");
-            return;
-        }
-        if (sys_chdir(where) < 0) {
-            out_puts("ls: ");
-            out_puts(where);
-            out_puts(": no such directory\n");
-            return;
-        }
-        moved = 1;
+    if (!where) {
+        where = ".";
     }
 
-    while (sys_getdents(i, &de) == 0) {
-        int n;
-
-        if (long_form) {
-            /* The name last, as Unix has it: with long names there is
-             * no width a column of them can be padded to. */
-            print_mode(de.d_mode);
-            out_putdec_pad(de.d_size, 10);
-            out_puts("  ");
-            print_stamp(de.d_mtime);
-            out_puts("  ");
-            out_puts(de.d_name);
-            out_putc('\n');
-        } else {
-            /* Five columns of fourteen; a longer name takes a line of
-             * its own rather than pushing the grid out of shape. */
-            n = (int)strlen(de.d_name);
-            if (n >= 14 && col != 0) {
-                out_putc('\n');
-                col = 0;
-            }
-            out_puts(de.d_name);
-            if (n >= 14) {
-                out_putc('\n');
-                col = 0;
-            } else {
-                for (; n < 14; n++) {
-                    out_putc(' ');
-                }
-                if (++col == 5) {
-                    out_putc('\n');
-                    col = 0;
-                }
-            }
-        }
-        bytes += de.d_size;
-        i++;
+    fd = sys_open(where, O_RDONLY | O_DIRECTORY);
+    if (fd < 0) {
+        err_report(where, fd);
+        return;
     }
+    /* iobuf: the records are copied out of it one at a time, and
+     * nothing else in the shell uses it while ls runs. */
+    while ((got = syscall3(__NR_getdents64, (u32)fd, (u32)iobuf,
+                           IOBUF_SIZE)) > 0) {
+        s32 off = 0;
 
-    if (moved) {
-        sys_chdir(saved);
+        while (off < got) {
+            struct linux_dirent64 *d = (struct linux_dirent64 *)(iobuf + off);
+            char name[NAME_MAX + 1];
+
+            strncpy(name, d->d_name, NAME_MAX);
+            name[NAME_MAX] = '\0';
+            off += d->d_reclen;
+            ls_entry(where, name, long_form, &col, &bytes);
+            i++;
+        }
+    }
+    sys_close(fd);
+    if (got < 0) {
+        err_report(where, (int)got);
     }
 
     if (!long_form) {

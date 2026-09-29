@@ -638,6 +638,53 @@ directory: `resolve_dev()` turns `/dev/<rest>` into a device of that
 name, which is also how `pts/0` is a device whose name contains a
 slash. Making it listable is a VFS change and is on the list.
 
+### /proc
+
+Linux's `/proc`, the part ported software reads (`procfs.c`), made out
+of the kernel's own tables the moment a file is opened -- a snapshot,
+so a reader taking it in small pieces sees one moment -- and read-only.
+
+| | |
+|---|---|
+| `/proc/cpuinfo` | Linux/m68k's layout: CPU, MMU and FPU 68040. No clock figures, because none is measured |
+| `/proc/meminfo` | MemTotal, MemFree, MemAvailable, Cached, SwapTotal, SwapFree: Linux's exact line shape, which `free` splits on |
+| `/proc/loadavg` `/proc/uptime` | the load average, running/total tasks and last pid; uptime and idle time |
+| `/proc/stat` | `cpu` and `cpu0` (user, system and idle ticks), `btime`, `processes`, `procs_running` |
+| `/proc/mounts` | the root volume, `/dev` and `/proc` |
+| `/proc/self` | a link to the caller's own directory |
+| `/proc/<pid>/` | `cmdline` `environ` `comm` `stat` `statm` `status` `maps`, and the links `exe` `cwd` `root` `fd/<N>` |
+
+The formats are Linux's field for field -- `stat` is all fifty-two --
+because the only reason to have `/proc` is that programs written for
+Linux parse it. A figure this kernel does not keep (a process's
+controlling terminal, fault counts) is a 0 in its place, not a missing
+field.
+
+**The links are followed like any symbolic link**, anywhere in a path:
+`/proc/self/cwd/notes.txt` is a file on the volume, and opening
+`/proc/<pid>/fd/3` opens what descriptor 3 is -- afresh, for a path; the
+same open pipe, for a pipe. `fd/<N>` names what the descriptor was opened
+by (a path made absolute, or `pipe:[N]`, `socket:[N]`); a rename after
+the open is not followed, where Linux's is.
+
+**A process's links, its `fd/` and its `environ` are its own user's and
+root's**; everything else is readable by all. Nothing in `/proc` can be
+written, created, removed or renamed.
+
+**The working directory can be in `/proc`**, as sbase's `ls`, `find` and
+`du` need -- they change into every directory they list. It is kept as a
+path alone, and while it is under `/proc` every relative name is
+`/proc`'s. `..` is taken by name there: `/proc/self/cwd/..` is
+`/proc/self`.
+
+**`maps` is read off the page tables**, since there is no table of
+mappings (see `mmap.c`), and named from what exec recorded: the program,
+its interpreter, `[heap]` and `[stack]`. A shared library's pages are
+unnamed, because nothing records which file a text-cache page came from.
+`x` comes from the ELF segment's flags, the 68040 having no execute bit;
+**a program's text reads `rwxp`** because exec maps it writable -- the
+truth about this kernel, not a formatting choice.
+
 ### Where "/" is
 
 Each task has a root directory as well as a working directory, so
@@ -1188,6 +1235,10 @@ The builtins are `.` `bg` `cat` `cd` `clear` `console` `cp` `date` `df`
 `ls` `mkdir` `mv` `ps` `pwd` `rm` `rmdir` `set` `source` `stat` `sync`
 `test` `uname` `unset` `uptime`.
 
+`ls` reads a directory the way a C library's `readdir` does, by opening
+it and calling `getdents64`, so it lists `/proc` like anything else;
+`ls -l` asks `lstat` about each name and shows a link's target.
+
 `set` is a builtin and `env` deliberately is not: `set` changes the
 shell's own state, which only the shell can do, while `env` only reports
 what it was given and so proves that inheritance works.
@@ -1221,6 +1272,7 @@ drive it over its serial line.
 | `kernel/fstest.sh` | 69 | the filesystem, names of any shape included, and a file past what one indirect block reaches -- verified with the host's debugfs and e2fsck |
 | `kernel/apitest.sh` | 376 | the system call surface a ported program expects |
 | `kernel/faulttest.sh` | 12 | a program's faults as signals it catches and survives: SIGSEGV repaired by mprotect and retried, SEGV_ACCERR and si_addr, SIGILL stepped over, SIGFPE, SIGTRAP, a blocked fault still fatal |
+| `kernel/procfstest.sh` | 73 | `/proc` against what a program knows for itself -- getpid, argv, environ, its own inode, sysinfo, where `main` and a local are -- and read by sbase's `cat`, `ls` and `readlink`; refusals, another user's process, stopped and zombie states, standing in `/proc` |
 | `kernel/fpsptest.sh` | 17 | the 68040's missing FPU instructions: 59 results from Motorola's FPSP (`fpsp-trap=on`) and from QEMU, each against the host's libm; two at once; F-line as SIGILL; enabled divide by zero, operand error, signalling NaN and BSUN each a SIGFPE with its si_code; FMOVEM's control-register order |
 | `kernel/edittest.sh` | 41 | the line editor, history, job control, command lists, scripts, shutdown |
 | `kernel/vmtest.sh` | 18 | what a program cannot touch |
