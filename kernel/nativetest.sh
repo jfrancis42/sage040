@@ -166,13 +166,17 @@ fsimg put "$("$CROSS_CC" -mcpu=68040 -print-libgcc-file-name)" /usr/lib/
 fsimg put ../libc/crt0.o ../libc/crt0-dyn.o /usr/lib/
 fsimg put ../libc/sage040.ld /usr/lib/
 fsimg put ../libc/sage040.specs /usr/lib/
-# And as the specs file gcc reads at startup, in its own version dir, so
-# a plain `gcc hello.c -o hello` with no -specs= flag works too -- which
-# is what somebody at the prompt actually types. (This is exactly what
-# `make -C ports/gcc install` does for the real disk.)
+# And the specs file gcc reads at startup, in its own version dir, so a
+# plain `gcc hello.c -o hello` with no -specs= flag works too -- which
+# is what somebody at the prompt actually types. It is ports/gcc's, the
+# same file `make -C ports/gcc install` puts on the real disk: all of
+# gcc's specs with this system's four in. This suite used to install
+# sage040.specs here instead, the same four-spec fragment the install
+# did, so it tested the same mistake it should have caught (mkspecs.py).
+make -s -C ../ports/gcc specs >/dev/null || exit 1
 gcc_vdir=$(cd "$GCCOUT" && find lib/gcc -mindepth 2 -maxdepth 2 -type d | head -1)
 if [ -n "$gcc_vdir" ]; then
-    fsimg put ../libc/sage040.specs "/usr/$gcc_vdir/specs"
+    fsimg put "$SRCDIR/build-gcc-native/specs.sage040" "/usr/$gcc_vdir/specs"
 fi
 for f in hello maths part1 part2; do
     fsimg put "$WORK/$f.c" /ST/$f.c
@@ -216,6 +220,9 @@ run './hello > /ST/run1.out 2>&1'                            r1
 echo "    compiling maths.c ..."
 run 'gcc -specs=/usr/lib/sage040.specs -O2 maths.c -o maths > /ST/c2.out 2>&1' c2
 run './maths > /ST/run2.out 2>&1'                            r2
+echo "    and maths.c with a plain 'gcc' -- no flags at all ..."
+run 'gcc -O2 maths.c -o maths0 > /ST/c6.out 2>&1' c6
+run './maths0 > /ST/run6.out 2>&1'                           r6
 echo "    two files, linked by the machine's own ld ..."
 run 'gcc -specs=/usr/lib/sage040.specs part1.c part2.c -o parts > /ST/c3.out 2>&1' c3
 run './parts > /ST/run3.out 2>&1'                            r3
@@ -235,7 +242,7 @@ tr -d '\r' < "$LOG" > "$WORK/session.txt"
 
 get() { fsimg get /ST/$1 $WORK/$1 2>/dev/null; }
 for f in ver.out asver.out c0.out c1.out c2.out c3.out c4.out c5.out \
-         run0.out run1.out run2.out run3.out ls.out \
+         c6.out run0.out run1.out run2.out run3.out run6.out ls.out \
          hello0 hello maths parts hello.native.o maths.native.o; do
     get "$f"
 done
@@ -285,6 +292,17 @@ check "  and the type sizes are this target's" $?
 
 grep -q "twice(21)=42" "$WORK/run3.out" 2>/dev/null
 check "two source files, linked by the machine's own ld, run" $?
+
+# Plain `gcc -O2 maths.c` -- no -specs=, no -mcpu=. The assembler still
+# has to be told the CPU is a 68040, and only the specs file in gcc's
+# version directory can tell it: that file used to hold just this
+# system's four specs, gcc reads such a file INSTEAD of its built-ins,
+# and the assembler ran as a 68020 and refused every floating-point
+# instruction (ports/gcc/mkspecs.py). Every check above passes -mcpu or
+# has no floating point, and passed throughout.
+grep -q "fib(90)=2880067194370816120" "$WORK/run6.out" 2>/dev/null &&
+    grep -q "harmonic=3.928968" "$WORK/run6.out" 2>/dev/null
+check "plain 'gcc -O2 maths.c' -- no flags -- builds floating point, and it runs" $?
 
 # --- the one that matters --------------------------------------------
 #

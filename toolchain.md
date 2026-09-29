@@ -282,6 +282,24 @@ every link needs eleven flags, and a configure script that writes
 binutils' own does -- cannot pass. With it, `gcc hello.c -o hello` links
 a dynamic program against `/lib/libc.so` and `gcc -static` a static one.
 
+**On the machine, the specs file gcc finds by itself must be complete.**
+The native gcc needs no `-specs=` flag because a file named `specs` sits
+in its version directory (`/usr/lib/gcc/m68k-unknown-elf/15.2.0/`) --
+and gcc reads such a file *instead of* its built-in specs, not on top of
+them. It has to be all of `gcc -dumpspecs`. It used to be
+`sage040.specs`'s four specs alone: links found their start files, and
+every other spec was silently empty, so `%(asm_cpu_spec)` gave the
+assembler no `-mcpu=68040` and it refused every floating-point
+instruction. `gcc -dumpspecs` looked right the whole time, because it
+fills the built-ins in itself before printing. `ports/gcc/mkspecs.py`
+builds the real file: the full dump of the `install-cxx` cross compiler
+(configured as the native one; the dumps are identical), with this
+system's four specs put in and `cross_compile` set back to 0 -- a
+driver that thinks it is a cross compiler leaves `/usr/lib` out of its
+search for start files. `make -C ports/gcc install` and
+`kernel/nativetest.sh` put the same file on their disks, and
+`nativetest` builds `maths.c` with no flags at all to prove it.
+
 **Cache variables have to be exported**, not passed as configure
 arguments: a subdirectory's configure is run later, by `make`, with a
 cache file of its own. `ac_cv_tls=none` is needed because this system
