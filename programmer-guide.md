@@ -1317,8 +1317,9 @@ u32 n;
 ioctl(STDIN_FILENO, FIONREAD, (u32)&n);   /* n = 0 or 1 */
 ```
 
-`ulib.h` wraps that as `key_waiting()`, which is what `apps/cube.c`
-actually calls.
+`ulib.h` wraps that as `key_waiting()`. A program that wants keys one
+at a time -- arrows included -- uses `gfx_key()` from `lib/gfx.h`
+instead, which is raw mode (below) and the escape sequences decoded.
 
 #### Raw mode, if you want the keystrokes yourself
 
@@ -1558,6 +1559,24 @@ Colours are palette indices. The driver sets up eight: 0 black, 1 green,
 Off-screen coordinates are clipped, not rejected — a shape that runs off
 the edge is not an error.
 
+#### `lib/gfx.h`: what every graphics program needs
+
+Built into every program with ulib, and dropped by the linker from any
+that does not call it. `apps/cube.c` is the smallest user of it;
+`apps/life.c` uses all of it.
+
+| | |
+|---|---|
+| `gfx_open(&g, "prog", GFX_MAP)` / `gfx_close(&g)` | `/dev/fb0`, double buffered, mapped if asked; keys raw; ctrl-C, ctrl-Z and a kill all leave the screen blank and the terminal as it was, and `fg` takes both back |
+| `gfx_frame(&g)` / `gfx_flip(&g)` | the buffer to draw this frame in; show it |
+| `gfx_line`, `gfx_clear`, `gfx_copy_row`, `gfx_fill_row` | through the driver, or into the mapping a longword at a time |
+| `gfx_options(argc, argv, "prog", table, n, more)` | an option table in, `-N 80` or `-N80`, ranges checked, `-h` listed with defaults; `-x` is the random seed everywhere |
+| `gfx_seed()`, `gfx_rand()` | xorshift32, seeded from `-x` or the clock |
+| `gfx_sin`, `gfx_cos`, `gfx_isqrt` | Q12 over 256ths of a turn, and an integer square root |
+| `gfx_colour`, `gfx_blend`, `gfx_ramp` | palette entries from `GFX_PAL_FREE` (32) up, and ramps through key colours, straight or cyclic |
+| `gfx_key()`, `gfx_key_wait()`, `gfx_quit_key(k)` | one key, arrows and Home/End/PgUp/PgDn as `GFX_KEY_*`; q, Q or Escape is "stop" |
+| `gfx_clock_start`, `_tick`, `_pause`, `_resume`, `_summary` | frames paced to a deadline from the start, so the rate is the one asked for |
+
 ### The text console
 
 The screen can be a terminal instead of a canvas. `/dev/fbcon` is 80x30
@@ -1606,7 +1625,9 @@ know which: descriptor 0 works either way.
 Note that writing to it turns double buffering **off**, because a console
 draws a character at a time and each one has to appear. A program that
 wants to animate afterwards must ask for it back with
-`ioctl(fb, FBIO_DOUBLE, 1)`, which is why `apps/cube.c` does.
+`ioctl(fb, FBIO_DOUBLE, 1)` -- which `gfx_frame()` does every frame, so
+that something printed on the screen's terminal while a demo runs costs
+one frame, not the rest of the run.
 
 ### Time
 

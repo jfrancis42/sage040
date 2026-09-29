@@ -3,14 +3,14 @@
 /*
  * cube.c - a rotating wireframe cube, as a program.
  *
- *     sage$ cube [frames-per-second]
+ *     sage$ cube [-F frames-per-second]
  *
- * Loaded from the disk by name, run, and back to the shell when you
- * press a key.
+ * Loaded from the disk by name, run, and back to the shell on q or
+ * Escape. The arrows change how fast it turns; space pauses.
  *
  * It touches no hardware. The screen is /dev/fb0, opened and drawn
- * through ioctls; the frame rate comes from nanosleep() against the
- * kernel's tick; the keyboard is asked through ioctl(FIONREAD). There is
+ * through ioctls (lib/gfx.c); the frame rate comes from nanosleep()
+ * against the kernel's tick; the keys come from standard input. There is
  * no #include of the machine's hardware header anywhere in this file,
  * which is the thing worth checking if it is ever edited -- an earlier
  * version of this program wrote to the SM501 directly, and could,
@@ -21,7 +21,7 @@
  * drive the MFP's timers directly. That one is a hardware test. This one
  * is an application.
  */
-#include "ulib.h"
+#include "gfx.h"
 
 /* ---------------------------------------------------------------- */
 /* Geometry                                                          */
@@ -30,44 +30,11 @@
 #define HALF        64          /* cube half-edge, object units      */
 #define SCALE       1800        /* projection scale                  */
 #define DIST        1000        /* camera distance, object units     */
-#define FRAC        12          /* sine table fixed point: 4096 = 1  */
-#define ONE         (1 << FRAC)
+#define FRAC        GFX_FRAC    /* sine table fixed point: 4096 = 1  */
+#define ONE         GFX_ONE
 
 #define COL_BG      0
 #define COL_EDGE    1           /* green, in the default palette     */
-
-/*
- * Quarter-turn of sine in Q12: sin(i * 2pi / 256) for i = 0..64. The
- * rest of the circle comes from symmetry. Checked in rather than
- * computed, so the program needs no floating point at all -- the FPU is
- * there, but a cube does not need it and integers are what a machine of
- * this size would have used.
- */
-static const short sin_q[65] = {
-       0,  100,  201,  301,  401,  501,  601,  700,
-     799,  897,  995, 1092, 1189, 1285, 1380, 1474,
-    1567, 1660, 1751, 1842, 1931, 2019, 2106, 2191,
-    2276, 2359, 2440, 2520, 2598, 2675, 2751, 2824,
-    2896, 2967, 3035, 3102, 3166, 3229, 3290, 3349,
-    3406, 3461, 3513, 3564, 3612, 3659, 3703, 3745,
-    3784, 3822, 3857, 3889, 3920, 3948, 3973, 3996,
-    4017, 4036, 4052, 4065, 4076, 4085, 4091, 4095,
-    4096
-};
-
-static int isin(int a)
-{
-    a &= 255;
-    if (a <= 64)  return sin_q[a];
-    if (a <= 128) return sin_q[128 - a];
-    if (a <= 192) return -sin_q[a - 128];
-    return -sin_q[256 - a];
-}
-
-static int icos(int a)
-{
-    return isin(a + 64);
-}
 
 /* Cube vertices: bit 0 = +X, bit 1 = +Y, bit 2 = +Z. */
 static const signed char vtx[8][3] = {
@@ -99,17 +66,17 @@ static void rotate(int x, int y, int z, int ax, int ay, int az,
 {
     int s, c, t;
 
-    s = isin(ax); c = icos(ax);
+    s = gfx_sin(ax); c = gfx_cos(ax);
     t = (y * c - z * s) >> FRAC;
     z = (y * s + z * c) >> FRAC;
     y = t;
 
-    s = isin(ay); c = icos(ay);
+    s = gfx_sin(ay); c = gfx_cos(ay);
     t = (x * c + z * s) >> FRAC;
     z = (z * c - x * s) >> FRAC;
     x = t;
 
-    s = isin(az); c = icos(az);
+    s = gfx_sin(az); c = gfx_cos(az);
     t = (x * c - y * s) >> FRAC;
     y = (x * s + y * c) >> FRAC;
     x = t;
@@ -121,8 +88,7 @@ static void rotate(int x, int y, int z, int ax, int ay, int az,
 /* The screen                                                        */
 /* ---------------------------------------------------------------- */
 
-static int fb = -1;
-static struct fb_info info;
+static struct gfx g;
 static int cx, cy;
 
 /*
@@ -143,21 +109,12 @@ static void project(int x, int y, int z, int *px, int *py)
     *py = cy - (y * SCALE) / d;
 }
 
-static void draw_line(int x0, int y0, int x1, int y1, u32 colour)
-{
-    struct fb_line l;
-
-    l.x0 = x0; l.y0 = y0;
-    l.x1 = x1; l.y1 = y1;
-    l.colour = colour;
-    ioctl(fb, FBIO_LINE, (u32)&l);
-}
-
 static void render(int ax, int ay, int az)
 {
     int i, rx, ry, rz;
 
-    ioctl(fb, FBIO_CLEAR, COL_BG);
+    gfx_frame(&g);
+    gfx_clear(&g, COL_BG);
 
     /*
      * Which faces point at the viewer? A face is visible when its
@@ -184,109 +141,50 @@ static void render(int ax, int ay, int az)
 
     for (i = 0; i < 12; i++) {
         if (visible[edge[i][2]] || visible[edge[i][3]]) {
-            draw_line(sx[edge[i][0]], sy[edge[i][0]],
-                      sx[edge[i][1]], sy[edge[i][1]], COL_EDGE);
+            gfx_line(&g, sx[edge[i][0]], sy[edge[i][0]],
+                     sx[edge[i][1]], sy[edge[i][1]], COL_EDGE);
         }
     }
 
-    ioctl(fb, FBIO_FLIP, 0);
+    gfx_flip(&g);
 }
 
-static u32 parse_u32(const char *s, u32 fallback)
-{
-    u32 v = 0;
-    int any = 0;
+enum { P_FPS, P_NPARAM };
 
-    while (*s >= '0' && *s <= '9') {
-        v = v * 10 + (u32)(*s - '0');
-        s++;
-        any = 1;
-    }
-    return (any && *s == '\0') ? v : fallback;
-}
-
-/*
- * Sleep until frame `n` is due, counting from the tick `*start`.
- *
- * Sleeping a fixed period each frame undershoots by construction: the
- * period is rounded to whole ticks, and the frame's own drawing time
- * comes on top. 30 fps asked for came out as 24. Aiming at a deadline
- * measured from the start instead lets one frame's rounding be made up
- * by the next, so the average is what was asked for. A program that
- * falls more than a frame behind -- the machine was busy -- starts the
- * schedule again from now rather than racing to catch up, which would
- * show as a burst of speed.
- */
-static void frame_wait(u32 *start, u32 *n, u32 fps)
-{
-    u32 due, now;
-    s32 ahead;
-
-    (*n)++;
-    due = *start + (*n * HZ) / fps;
-    now = times(0);
-    ahead = (s32)(due - now);
-    if (ahead > 0) {
-        msleep((u32)ahead * 1000 / HZ);
-    } else if (-ahead > (s32)(HZ / fps) + 1) {
-        *start = now;
-        *n = 0;
-    }
-}
+static struct gfx_opt par[P_NPARAM] = {
+    [P_FPS] = GFX_OPT_NUM('F', "frames per second", 50, 1, 200, ""),
+};
 
 int main(int argc, char **argv)
 {
     int ax = 0, ay = 0, az = 0;
-    u32 frames = 0;
-    u32 fps = 50;
-    u32 sched = 0, sched_start;
-    u32 started;
+    int dx = 1, dy = 2, dz = 1;         /* turn per frame, 256ths      */
+    struct gfx_clock clk;
+    int k, r;
 
-    if (argc > 1) {
-        fps = parse_u32(argv[1], 0);
-        if (fps == 0 || fps > 200) {
-            eputs("usage: cube [frames-per-second]\n");
-            return 2;
-        }
+    r = gfx_options(argc, argv, "cube", par, P_NPARAM, 0);
+    if (r) {
+        return r > 0 ? 0 : 2;
     }
-
-    fb = open("/dev/fb0", O_RDWR);
-    if (fb < 0) {
-        eputs("cube: no /dev/fb0\n");
-        return 1;
-    }
-    if (ioctl(fb, FBIO_GETINFO, (u32)&info) < 0) {
-        eputs("cube: /dev/fb0 will not say how big it is\n");
-        close(fb);
-        return 1;
-    }
-    /*
-     * Ask for double buffering. It is not the default state of the
-     * framebuffer -- the text console turns it off, because a console
-     * draws a character at a time and each one has to appear -- and
-     * whatever ran last leaves it however it left it.
-     */
-    if (ioctl(fb, FBIO_DOUBLE, 1) < 0) {
-        eputs("cube: /dev/fb0 cannot double buffer\n");
-        close(fb);
+    if (gfx_open(&g, "cube", 0) < 0) {
         return 1;
     }
 
-    cx = (int)info.width / 2;
-    cy = (int)info.height / 2;
+    cx = (int)g.info.width / 2;
+    cy = (int)g.info.height / 2;
 
     puts("cube: ");
-    putdec(info.width);
+    putdec(g.info.width);
     putch('x');
-    putdec(info.height);
+    putdec(g.info.height);
     putch('x');
-    putdec(info.bpp);
+    putdec(g.info.bpp);
     puts(" on ");
-    puts(info.name);
+    puts(g.info.name);
     puts(", Q12 fixed point, ");
-    putdec(fps);
+    putdec(par[P_FPS].value);
     puts(" fps\n");
-    puts("press any key to stop\n");
+    puts("arrows turn it faster or slower, space pauses, q stops\n");
 
     /*
      * Sleep out each frame rather than spinning it out. The kernel has a
@@ -294,48 +192,43 @@ int main(int argc, char **argv)
      * the rate is the same wherever this runs, which a counted delay
      * loop never was.
      */
-    started = times(0);
-    sched_start = started;
+    gfx_clock_start(&clk, par[P_FPS].value);
 
-    while (!key_waiting()) {
+    for (;;) {
+        k = gfx_key();
+        if (gfx_quit_key(k)) {
+            break;
+        }
+        switch (k) {
+        case GFX_KEY_UP:    if (dx < 8)  dx++; break;
+        case GFX_KEY_DOWN:  if (dx > -8) dx--; break;
+        case GFX_KEY_RIGHT: if (dy < 8)  dy++; break;
+        case GFX_KEY_LEFT:  if (dy > -8) dy--; break;
+        case ' ': {
+            u32 at = gfx_clock_pause(&clk);
+
+            while (!gfx_quit_key(k = gfx_key_wait()) && k != ' ') {
+            }
+            gfx_clock_resume(&clk, at);
+            if (gfx_quit_key(k)) {
+                goto done;
+            }
+            break;
+        }
+        }
+
         render(ax, ay, az);
 
-        ax = (ax + 1) & 255;
-        ay = (ay + 2) & 255;
-        az = (az + 1) & 255;
-        frames++;
+        ax = (ax + dx) & 255;
+        ay = (ay + dy) & 255;
+        az = (az + dz) & 255;
 
-        frame_wait(&sched_start, &sched, fps);
+        gfx_clock_tick(&clk);
     }
+done:
+    gfx_close(&g);
 
-    /* Take the keystroke that stopped it, so it does not turn up at the
-     * shell prompt as a stray command. */
-    {
-        char c;
-
-        read(STDIN_FILENO, &c, 1);
-    }
-
-    /* Leave a blank screen rather than the last frame frozen on it, so
-     * the display does not look like a machine that has hung. */
-    ioctl(fb, FBIO_CLEAR, COL_BG);
-    ioctl(fb, FBIO_FLIP, 0);
-    close(fb);
-
-    {
-        u32 elapsed = times(0) - started;
-
-        puts("cube: ");
-        putdec(frames);
-        puts(" frames in ");
-        putdec(elapsed / 100);
-        puts(" seconds");
-        if (elapsed > 0) {
-            puts(" (");
-            putdec(frames * 100 / elapsed);
-            puts(" fps)");
-        }
-        putch('\n');
-    }
+    gfx_clock_summary(&clk, "cube", "frames");
+    putch('\n');
     return 0;
 }

@@ -43,7 +43,8 @@ LDFLAGS  := $(CPUFLAGS) -ffreestanding -nostdlib -T $(LIB)/user.ld \
 # renumbering the socket calls left every program calling the wrong ones
 # until something happened to touch its source.
 COMMON := $(LIB)/crt0.s $(LIB)/ulib.c $(LIB)/ulib.h $(LIB)/malloc.c \
-          $(LIB)/malloc.h $(LIB)/resolv.c $(LIB)/user.ld \
+          $(LIB)/malloc.h $(LIB)/resolv.c $(LIB)/gfx.c $(LIB)/gfx.h \
+          $(LIB)/user.ld \
           $(TOPDIR)/kernel/uapi.h $(TOPDIR)/types.h
 
 .PHONY: all install list clean
@@ -64,7 +65,8 @@ all: $(PROGS)
 %: %.c $(COMMON)
 	$(CC) $(CFLAGS) $(LDFLAGS) \
 	    -x assembler-with-cpp $(LIB)/crt0.s \
-	    -x c $(LIB)/ulib.c $(LIB)/malloc.c $(LIB)/resolv.c $< -lgcc -o $@
+	    -x c $(LIB)/ulib.c $(LIB)/malloc.c $(LIB)/resolv.c $(LIB)/gfx.c \
+	    $< -lgcc -o $@
 	@$(SIZE) $@
 
 # A program keeps its own name. It used to be upper-cased on the way in,

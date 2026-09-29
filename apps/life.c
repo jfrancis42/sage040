@@ -25,16 +25,19 @@
  * population flat for long enough that nothing is happening but
  * oscillators and gliders -- it starts again, unless -R 0 says not to.
  *
+ * Keys: space pauses, n steps a generation while paused, r starts a new
+ * board, c switches the colouring, p prints the population, q stops.
+ *
  * Drawn the way wator is, by mapping /dev/fb0 and writing bytes; see
  * that program for why.
  */
-#include "ulib.h"
+#include "gfx.h"
 #include "malloc.h"
 
 #define COL_MONO    1           /* green, in the driver's palette    */
-#define PAL_LIVE    32          /* 16 ages, 32-47                    */
+#define PAL_LIVE    GFX_PAL_FREE /* 16 ages                          */
 #define NLIVE       16
-#define PAL_TRAIL   48          /* 8 fading trail levels, 48-55      */
+#define PAL_TRAIL   (PAL_LIVE + NLIVE) /* 8 fading trail levels      */
 #define NTRAIL      8
 
 /*
@@ -49,20 +52,6 @@
 #define SETTLE_REPEAT   60
 #define FLAT_GENS       500
 #define FLAT_BAND       12
-
-static u32 rng_state;
-
-/* xorshift32: small, fast, and a seed can be given to repeat a run. */
-static u32 rnd(void)
-{
-    u32 x = rng_state;
-
-    x ^= x << 13;
-    x ^= x >> 17;
-    x ^= x << 5;
-    rng_state = x;
-    return x;
-}
 
 /* ---------------------------------------------------------------- */
 /* Patterns                                                          */
@@ -127,93 +116,47 @@ static const struct pattern patterns[] = {
 /* Parameters                                                        */
 /* ---------------------------------------------------------------- */
 
-struct param {
-    char opt;
-    const char *name;
-    u32 value;
-    u32 min, max;
-    const char *unit;
-};
-
 enum {
     P_CELL, P_DENSITY, P_TRAIL, P_COLOUR, P_RESTART, P_PRINT, P_FPS,
-    P_NPARAM
+    P_RULE, P_PATTERN, P_NPARAM
 };
 
-static struct param par[P_NPARAM] = {
-    [P_CELL]    = { 'z', "cell size",                  4, 1, 32, "px" },
-    [P_DENSITY] = { 'd', "random soup density",       25, 1, 100, "%" },
-    [P_TRAIL]   = { 'T', "trail length",               8, 0, 255,
-                    "generations, 0 for none" },
-    [P_COLOUR]  = { 'c', "colour: 0 mono, 1 by age",   1, 0, 1, "" },
-    [P_RESTART] = { 'R', "restart when settled",       1, 0, 1, "0 or 1" },
-    [P_PRINT]   = { 'v', "print the population every", 0, 0, 100000,
-                    "generations, 0 for never" },
-    [P_FPS]     = { 'F', "generations per second",    20, 0, 200,
-                    "0 for as fast as it will go" },
+static struct gfx_opt par[P_NPARAM] = {
+    [P_CELL]    = GFX_OPT_NUM('z', "cell size", 4, 1, 32, "px"),
+    [P_DENSITY] = GFX_OPT_NUM('d', "random soup density", 25, 1, 100, "%"),
+    [P_TRAIL]   = GFX_OPT_NUM('T', "trail length", 8, 0, 255,
+                              "generations, 0 for none"),
+    [P_COLOUR]  = GFX_OPT_NUM('c', "colour: 0 mono, 1 by age", 1, 0, 1, ""),
+    [P_RESTART] = GFX_OPT_NUM('R', "restart when settled", 1, 0, 1,
+                              "0 or 1"),
+    [P_PRINT]   = GFX_OPT_NUM('v', "print the population every", 0, 0,
+                              100000, "generations, 0 for never"),
+    [P_FPS]     = GFX_OPT_NUM('F', "generations per second", 20, 0, 200,
+                              "0 for as fast as it will go"),
+    [P_RULE]    = GFX_OPT_STR('r', "rule, as B<born>/S<survives>", "B3/S23"),
+    [P_PATTERN] = GFX_OPT_STR('p', "starting pattern", "random"),
 };
 
-static u32 seed;                /* -x: 0 means "from the clock"     */
-static const char *rule_text = "B3/S23";
 static u32 birth, survive;      /* bit n: a count of n qualifies    */
 static const struct pattern *pattern = &patterns[0];
 
-/* To stdout: it is only printed when -h asks for it. */
-static void usage(void)
+/* The end of -h: what the table cannot say. */
+static void more_help(void)
 {
     u32 i;
 
-    puts("usage: life [-r RULE] [-p PATTERN] [-x seed] [-OPT value ...]\n");
-    for (i = 0; i < P_NPARAM; i++) {
-        char buf[4] = { ' ', '-', par[i].opt, '\0' };
-
-        puts(buf);
-        puts("  ");
-        puts(par[i].name);
-        if (par[i].unit[0]) {
-            puts(", ");
-            puts(par[i].unit);
-        }
-        puts(" (default ");
-        putdec(par[i].value);
-        puts(")\n");
-    }
-    puts(" -r  rule, as B<born>/S<survives> (default B3/S23, Conway's);\n"
-         "     try B36/S23, B3678/S34678, B2/S, B3/S12345\n");
-    puts(" -p  starting pattern (default random):\n");
+    puts("rules to try: B3/S23 is Conway's; B36/S23 HighLife,\n"
+         "B3678/S34678 Day & Night, B2/S Seeds, B3/S12345 Maze\n");
+    puts("patterns:\n");
     for (i = 0; i < NPATTERNS; i++) {
-        puts("       ");
+        puts("  ");
         puts(patterns[i].name);
         puts("  ");
         puts(patterns[i].what);
         putch('\n');
     }
-    puts(" -x  random seed (default: from the clock)\n");
-    puts(" -h  this\n");
 }
 
-static int parse_u32(const char *s, u32 *out)
-{
-    u32 v = 0;
-    int any = 0;
-
-    while (*s >= '0' && *s <= '9') {
-        v = v * 10 + (u32)(*s - '0');
-        s++;
-        any = 1;
-    }
-    if (!any || *s != '\0') {
-        return -1;
-    }
-    *out = v;
-    return 0;
-}
-
-/*
- * "B3/S23": digits after B are the counts that give birth, after S the
- * counts that let a cell survive. Either half may be empty (Seeds is
- * B2/S) and the case of the letters does not matter.
- */
 static int parse_rule(const char *s)
 {
     u32 *set = 0;
@@ -237,85 +180,26 @@ static int parse_rule(const char *s)
     return set && !(birth & 1) ? 0 : -1;
 }
 
-/* -z 4 and -z4 both work. */
-static int parse_args(int argc, char **argv)
+static int check_args(void)
 {
-    int i, k;
+    u32 n;
 
-    for (i = 1; i < argc; i++) {
-        const char *a = argv[i];
-        const char *val;
-        u32 v;
-
-        if (a[0] != '-' || a[1] == '\0') {
-            return -1;
+    for (n = 0; n < NPATTERNS; n++) {
+        if (strcmp(par[P_PATTERN].str, patterns[n].name) == 0) {
+            break;
         }
-        if (a[1] == 'h' && a[2] == '\0') {
-            usage();
-            return 1;
-        }
-
-        val = a[2] ? a + 2 : (i + 1 < argc ? argv[++i] : 0);
-        if (!val) {
-            eputs("life: -");
-            eputs(a + 1);
-            eputs(" wants a value\n");
-            return -1;
-        }
-        if (a[1] == 'r') {
-            rule_text = val;
-            continue;
-        }
-        if (a[1] == 'p') {
-            u32 n;
-
-            for (n = 0; n < NPATTERNS; n++) {
-                if (strcmp(val, patterns[n].name) == 0) {
-                    break;
-                }
-            }
-            if (n == NPATTERNS) {
-                eputs("life: no pattern called ");
-                eputs(val);
-                eputs("\n");
-                return -1;
-            }
-            pattern = &patterns[n];
-            continue;
-        }
-        if (parse_u32(val, &v) < 0) {
-            eputs("life: -");
-            eputs(a + 1);
-            eputs(" wants a number\n");
-            return -1;
-        }
-        if (a[1] == 'x') {
-            seed = v;
-            continue;
-        }
-        for (k = 0; k < P_NPARAM; k++) {
-            if (par[k].opt == a[1]) {
-                break;
-            }
-        }
-        if (k == P_NPARAM) {
-            eputs("life: unknown option ");
-            eputs(a);
-            eputs("\n");
-            return -1;
-        }
-        if (v < par[k].min || v > par[k].max) {
-            eputs("life: ");
-            eputs(par[k].name);
-            eputs(" out of range\n");
-            return -1;
-        }
-        par[k].value = v;
     }
+    if (n == NPATTERNS) {
+        eputs("life: no pattern called ");
+        eputs(par[P_PATTERN].str);
+        eputs("\n");
+        return -1;
+    }
+    pattern = &patterns[n];
 
-    if (parse_rule(rule_text) < 0) {
+    if (parse_rule(par[P_RULE].str) < 0) {
         eputs("life: cannot read the rule ");
-        eputs(rule_text);
+        eputs(par[P_RULE].str);
         eputs(" -- it wants the form B3/S23, and no B0\n");
         return -1;
     }
@@ -365,7 +249,7 @@ static void seed_board(void)
     if (!pattern->rows) {
         for (y = 1; y <= gh; y++) {
             for (x = 1; x <= gw; x++) {
-                if (rnd() % 100 < par[P_DENSITY].value) {
+                if (gfx_rand() % 100 < par[P_DENSITY].value) {
                     cur[y * stride + x] = 1;
                     age[(y - 1) * gw + (x - 1)] = 0;
                     population++;
@@ -504,10 +388,7 @@ static int settled(void)
 /* The screen                                                        */
 /* ---------------------------------------------------------------- */
 
-static int fb = -1;
-static struct fb_info info;
-static u8 *map;                 /* all of video memory, mapped       */
-static u32 map_len;
+static struct gfx g;
 static u8 rowbuf[1024] __attribute__((aligned(4)));
 static u8 shade[256];           /* age -> palette entry, dead or alive */
 static u8 shade_live[256];
@@ -520,47 +401,18 @@ static const u32 live_keys[5] = {
     0xffffffUL, 0xffff40UL, 0xff8030UL, 0xd03070UL, 0x5040c0UL
 };
 
-static u32 blend(u32 a, u32 b, u32 num, u32 den)
-{
-    u32 r = 0;
-    int shift;
-
-    for (shift = 0; shift <= 16; shift += 8) {
-        u32 ca = (a >> shift) & 255, cb = (b >> shift) & 255;
-
-        r |= ((ca * (den - num) + cb * num) / den) << shift;
-    }
-    return r;
-}
-
-static void set_colour(u32 index, u32 rgb)
-{
-    struct fb_palette p;
-
-    p.index = index;
-    p.rgb = rgb;
-    ioctl(fb, FBIO_PALETTE, (u32)&p);
-}
-
 static void make_palette(void)
 {
     u32 i, trail = par[P_TRAIL].value;
     int mono = par[P_COLOUR].value == 0;
     u32 ghost = mono ? 0x40ff40UL : 0x2080a0UL;
 
-    for (i = 0; i < NLIVE; i++) {
-        /* Sixteen entries over four spans between five keys. */
-        u32 k = i * 4 / NLIVE, f = i * 4 % NLIVE;
-
-        set_colour(PAL_LIVE + i,
-                   blend(live_keys[k], live_keys[k + 1], f, NLIVE));
-    }
+    gfx_ramp(&g, PAL_LIVE, NLIVE, live_keys, 5, 0);
     /* The trail starts at a third of the ghost colour's brightness and
      * fades to black. */
     for (i = 0; i < NTRAIL; i++) {
-        u32 dim = blend(0, ghost, NTRAIL - i, NTRAIL * 3);
-
-        set_colour(PAL_TRAIL + i, dim);
+        gfx_colour(&g, PAL_TRAIL + i,
+                   gfx_blend(0, ghost, NTRAIL - i, NTRAIL * 3));
     }
 
     for (i = 0; i < 256; i++) {
@@ -572,34 +424,13 @@ static void make_palette(void)
     }
 }
 
-/* See wator.c: a longword at a time, because ulib's memcpy is bytes. */
-static void put_row(u8 *dst, const u8 *src, u32 n)
-{
-    if ((((u32)dst | (u32)src) & 3) == 0) {
-        u32 *d = (u32 *)dst;
-        const u32 *s = (const u32 *)src;
-        u32 w = n >> 2;
-
-        while (w--) {
-            *d++ = *s++;
-        }
-        dst = (u8 *)d;
-        src = (const u8 *)s;
-        n &= 3;
-    }
-    while (n--) {
-        *dst++ = *src++;
-    }
-}
-
 static void render(void)
 {
     u32 cell = par[P_CELL].value;
     u32 x, y, k;
     u8 *draw;
 
-    ioctl(fb, FBIO_GETINFO, (u32)&info);
-    draw = map + info.draw_offset;
+    draw = gfx_frame(&g);
 
     for (y = 0; y < (u32)gh; y++) {
         const u8 *alive = cur + (y + 1) * (u32)stride + 1;
@@ -613,40 +444,20 @@ static void render(void)
                 *p++ = c;
             }
         }
-        while (p < rowbuf + info.width) {
+        while (p < rowbuf + g.info.width) {
             *p++ = 0;
         }
         for (k = 0; k < cell; k++) {
-            put_row(draw + (y * cell + k) * info.pitch, rowbuf, info.width);
+            gfx_copy_row(draw + (y * cell + k) * g.info.pitch, rowbuf,
+                         g.info.width);
         }
     }
-    memset(rowbuf, 0, info.width);
-    for (y = (u32)gh * cell; y < info.height; y++) {
-        put_row(draw + y * info.pitch, rowbuf, info.width);
+    memset(rowbuf, 0, g.info.width);
+    for (y = (u32)gh * cell; y < g.info.height; y++) {
+        gfx_copy_row(draw + y * g.info.pitch, rowbuf, g.info.width);
     }
 
-    ioctl(fb, FBIO_FLIP, 0);
-}
-
-/*
- * Sleep until frame `n` is due, counting from the tick `*start` -- see
- * boids.c, where this came from.
- */
-static void frame_wait(u32 *start, u32 *n, u32 fps)
-{
-    u32 due, now;
-    s32 ahead;
-
-    (*n)++;
-    due = *start + (*n * HZ) / fps;
-    now = times(0);
-    ahead = (s32)(due - now);
-    if (ahead > 0) {
-        msleep((u32)ahead * 1000 / HZ);
-    } else if (-ahead > (s32)(HZ / fps) + 1) {
-        *start = now;
-        *n = 0;
-    }
+    gfx_flip(&g);
 }
 
 static void report(const char *what)
@@ -662,61 +473,40 @@ static void report(const char *what)
 
 int main(int argc, char **argv)
 {
-    u32 frames = 0, boards = 1;
-    u32 sched = 0, sched_start;
-    u32 started;
-    u32 fps, every;
-    int r;
+    u32 boards = 1;
+    struct gfx_clock clk;
+    u32 seed, every;
+    int k, r;
 
-    r = parse_args(argc, argv);
-    if (r > 0) {
-        return 0;
+    r = gfx_options(argc, argv, "life", par, P_NPARAM, more_help);
+    if (r) {
+        return r > 0 ? 0 : 2;
     }
-    if (r < 0) {
+    if (check_args() < 0) {
         eputs("life -h lists the options\n");
         return 2;
     }
-    fps = par[P_FPS].value;
     every = par[P_PRINT].value;
 
-    fb = open("/dev/fb0", O_RDWR);
-    if (fb < 0) {
-        eputs("life: no /dev/fb0\n");
+    if (gfx_open(&g, "life", GFX_MAP) < 0) {
         return 1;
     }
-    if (ioctl(fb, FBIO_GETINFO, (u32)&info) < 0 || info.bpp != 8 ||
-        info.width > sizeof(rowbuf)) {
-        eputs("life: /dev/fb0 is not an 8-bit screen this can draw on\n");
-        close(fb);
-        return 1;
-    }
-    if (ioctl(fb, FBIO_DOUBLE, 1) < 0) {
-        eputs("life: /dev/fb0 cannot double buffer\n");
-        close(fb);
-        return 1;
-    }
-    ioctl(fb, FBIO_GETINFO, (u32)&info);
-    map_len = info.mem_size;
-    map = mmap(0, map_len, PROT_READ | PROT_WRITE, MAP_SHARED, fb, 0);
-    if (map == MAP_FAILED) {
-        eputs("life: cannot map /dev/fb0\n");
-        close(fb);
+    if (g.info.width > sizeof(rowbuf)) {
+        gfx_close(&g);
+        eputs("life: this screen is wider than it can draw\n");
         return 1;
     }
 
-    gw = (int)(info.width / par[P_CELL].value);
-    gh = (int)(info.height / par[P_CELL].value);
+    gw = (int)(g.info.width / par[P_CELL].value);
+    gh = (int)(g.info.height / par[P_CELL].value);
     stride = gw + 2;
     if (alloc_board() < 0) {
+        gfx_close(&g);
         eputs("life: not enough memory for that board\n");
         return 1;
     }
 
-    if (seed == 0) {
-        seed = (u32)time(0) ^ times(0);
-    }
-    rng_state = seed ? seed : 1;    /* xorshift is stuck at 0 */
-
+    seed = gfx_seed();
     make_palette();
     seed_board();
 
@@ -725,20 +515,55 @@ int main(int argc, char **argv)
     putch('x');
     putdec((u32)gh);
     puts(" board, rule ");
-    puts(rule_text);
+    puts(par[P_RULE].str);
     puts(", ");
     puts(pattern->name);
     puts(", seed ");
     putdec(seed);
-    puts("\npress any key to stop\n");
+    puts("\nspace pauses, n steps, r starts again, c colours, "
+         "p prints, q stops\n");
 
-    started = times(0);
-    sched_start = started;
+    gfx_clock_start(&clk, par[P_FPS].value);
 
-    while (!key_waiting()) {
+    for (;;) {
+        k = gfx_key();
+        if (gfx_quit_key(k)) {
+            break;
+        }
+        switch (k) {
+        case 'r':
+            seed_board();
+            boards++;
+            break;
+        case 'c':
+            par[P_COLOUR].value = !par[P_COLOUR].value;
+            make_palette();
+            break;
+        case 'p':
+            report("");
+            break;
+        case ' ': {
+            /* Paused: n steps one generation at a time. */
+            u32 at = gfx_clock_pause(&clk);
+
+            while (!gfx_quit_key(k = gfx_key_wait()) && k != ' ') {
+                if (k == 'n') {
+                    step();
+                    render();
+                } else if (k == 'p') {
+                    report("");
+                }
+            }
+            gfx_clock_resume(&clk, at);
+            if (gfx_quit_key(k)) {
+                goto done;
+            }
+            break;
+        }
+        }
+
         render();
         step();
-        frames++;
 
         if (every && generation % every == 0) {
             report("");
@@ -748,42 +573,18 @@ int main(int argc, char **argv)
             seed_board();
             boards++;
         }
-        if (fps) {
-            frame_wait(&sched_start, &sched, fps);
-        }
+        gfx_clock_tick(&clk);
     }
-
-    {
-        char c;
-
-        read(STDIN_FILENO, &c, 1);
-    }
-
-    ioctl(fb, FBIO_CLEAR, 0);
-    ioctl(fb, FBIO_FLIP, 0);
-    munmap(map, map_len);
-    close(fb);
+done:
+    gfx_close(&g);
 
     report("stopped at ");
-    {
-        u32 elapsed = times(0) - started;
-
-        puts("life: ");
-        putdec(frames);
-        puts(" generations in ");
-        putdec(elapsed / HZ);
-        puts(" seconds");
-        if (elapsed > 0) {
-            puts(" (");
-            putdec(frames * HZ / elapsed);
-            puts(" per second)");
-        }
-        if (boards > 1) {
-            puts(", ");
-            putdec(boards);
-            puts(" boards");
-        }
-        putch('\n');
+    gfx_clock_summary(&clk, "life", "generations");
+    if (boards > 1) {
+        puts(", ");
+        putdec(boards);
+        puts(" boards");
     }
+    putch('\n');
     return 0;
 }
