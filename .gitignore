@@ -49,6 +49,7 @@ apps/boids
 apps/wator
 apps/life
 apps/attractor
+apps/fpsptest
 apps/hello
 apps/fbtest
 apps/faulter

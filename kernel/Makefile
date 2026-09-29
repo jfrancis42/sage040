@@ -62,7 +62,7 @@ SRCS   := $(filter %.c,$(ALLSRC))
 # Every header, by wildcard. The list used to be written out and had
 # fallen well behind -- task.h, signal.h and most of the rest were not
 # on it, so a change to one alone rebuilt nothing.
-HDRS := $(wildcard *.h drivers/*.h fs/*.h net/*.h) ../types.h \
+HDRS := $(wildcard *.h drivers/*.h fs/*.h net/*.h fpsp/*.h) ../types.h \
  $(SUP)/sage040.h
 
 .PHONY: all run install install-src boot disasm syms clean distclean
@@ -156,7 +156,7 @@ boot: install
 install-src: $(DISK)
 	@rm -rf .srcstage
 	@mkdir -p .srcstage/kernel/drivers .srcstage/kernel/net \
-	          .srcstage/kernel/fs .srcstage/tests
+	          .srcstage/kernel/fs .srcstage/kernel/fpsp .srcstage/tests
 	@cp ../types.h .srcstage/
 	@cp $(SUP)/sage040.h .srcstage/tests/
 	@cp *.c *.h *.s kernel.ld SOURCES build.sh \
@@ -166,6 +166,7 @@ install-src: $(DISK)
 	@# Whatever each one HAS: fs/ has no headers, and a bare
 	@# `cp fs/*.h` fails the whole target on the glob that matched
 	@# nothing rather than on anything being wrong.
+	@cp fpsp/*.s fpsp/*.h fpsp/README fpsp/ORIGIN.md .srcstage/kernel/fpsp/
 	@for d in drivers net fs; do \
 	    for f in $$d/*.c $$d/*.h; do \
 	        [ -f "$$f" ] && cp "$$f" .srcstage/kernel/$$d/; \
@@ -186,7 +187,7 @@ syms: kernel.elf
 
 clean:
 	rm -f kernel.elf kernel.rom kernel.map
-	rm -f *.o drivers/*.o fs/*.o net/*.o
+	rm -f *.o drivers/*.o fs/*.o net/*.o fpsp/*.o
 	rm -rf .srcstage
 
 distclean: clean

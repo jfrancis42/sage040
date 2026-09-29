@@ -29,73 +29,48 @@
  }
  
  type_init(sm501_register_types)
---- a/target/m68k/cpu.h	2026-08-27 06:23:32.000000000 -0600
-+++ b/target/m68k/cpu.h	2026-09-20 08:55:37.665983150 -0600
-@@ -154,6 +154,18 @@
+--- a/hw/input/Kconfig	2026-08-27 06:23:31.000000000 -0600
++++ b/hw/input/Kconfig	2026-09-21 10:50:27.791149209 -0600
+@@ -4,7 +4,6 @@
+ config PCKBD
+     bool
+     select PS2
+-    depends on ISA_BUS
  
-     /* Fields from here on are preserved across CPU reset. */
-     uint64_t features;
+ config PL050
+     bool
+--- a/hw/input/pckbd.c	2026-08-27 06:23:31.000000000 -0600
++++ b/hw/input/pckbd.c	2026-09-21 10:50:27.791960111 -0600
+@@ -769,6 +769,15 @@
+     .class_init    = i8042_mmio_class_init
+ };
+ 
++/*
++ * The ISA variant.  Guarded because this file also provides i8042-mmio,
++ * which is a sysbus device and needs no ISA bus -- a board that has one
++ * but not the other would otherwise fail to link on isa_register_ioport
++ * and on the ACPI AML builder.  Same shape as the CONFIG_PCI guard in
++ * hw/display/sm501.c, and for the same reason.
++ */
++#ifdef CONFIG_ISA_BUS
 +
-+    /*
-+     * Optional interrupt-acknowledge callback.  A vectored interrupt
-+     * controller (e.g. the MC68901 MFP) registers this so it can perform
-+     * the side effects real silicon performs during the IACK cycle -
-+     * clearing the pending bit and flagging the channel in service.
-+     *
-+     * This must live below end_reset_fields: it is installed once when
-+     * the controller is realized, and a CPU reset must not erase it.
-+     */
-+    void (*iack_handler)(void *opaque, int level);
-+    void *iack_opaque;
- } CPUM68KState;
- 
- /*
-@@ -472,6 +484,9 @@
- #define MACSR_EV    0x001
- 
- void m68k_set_irq_level(M68kCPU *cpu, int level, uint8_t vector);
-+void m68k_set_iack_handler(M68kCPU *cpu,
-+                           void (*handler)(void *opaque, int level),
-+                           void *opaque);
- void m68k_switch_sp(CPUM68KState *env);
- 
- void do_m68k_semihosting(CPUM68KState *env, int nr);
---- a/target/m68k/helper.c	2026-08-27 06:23:32.000000000 -0600
-+++ b/target/m68k/helper.c	2026-09-20 08:45:33.676509022 -0600
-@@ -940,6 +940,14 @@
-  * the vector when the interrupt is acknowledged by the CPU.  For
-  * simplicity we calculate it when the interrupt is signalled.
-  */
-+void m68k_set_iack_handler(M68kCPU *cpu,
-+                           void (*handler)(void *opaque, int level),
-+                           void *opaque)
-+{
-+    cpu->env.iack_handler = handler;
-+    cpu->env.iack_opaque = opaque;
-+}
-+
- void m68k_set_irq_level(M68kCPU *cpu, int level, uint8_t vector)
+ void i8042_isa_mouse_fake_event(ISAKBDState *isa)
  {
-     CPUState *cs = CPU(cpu);
---- a/target/m68k/op_helper.c	2026-08-27 06:23:32.000000000 -0600
-+++ b/target/m68k/op_helper.c	2026-09-20 08:55:37.667381556 -0600
-@@ -531,7 +531,16 @@
-          * first signalled.
-          */
-         cs->exception_index = env->pending_vector;
-+        /*
-+         * Exception entry first: do_interrupt_all() reads pending_level
-+         * to set the new interrupt mask in SR, so the acknowledge
-+         * callback must not disturb it until that has happened.
-+         */
-         do_interrupt_m68k_hardirq(env);
-+        if (env->iack_handler) {
-+            env->iack_handler(env->iack_opaque,
-+                              (env->sr & SR_I) >> SR_I_SHIFT);
-+        }
-         return true;
-     }
-     return false;
+     KBDState *s = &isa->kbd;
+@@ -964,9 +973,13 @@
+     },
+ };
+ 
++#endif /* CONFIG_ISA_BUS */
++
+ static void i8042_register_types(void)
+ {
++#ifdef CONFIG_ISA_BUS
+     type_register_static(&i8042_info);
++#endif
+     type_register_static(&i8042_mmio_info);
+ }
+ 
 --- a/hw/m68k/Kconfig	2026-08-27 06:23:31.000000000 -0600
 +++ b/hw/m68k/Kconfig	2026-09-21 10:50:27.796342309 -0600
 @@ -46,3 +46,15 @@
@@ -140,45 +115,443 @@
  system_ss.add(when: 'CONFIG_APPLESMC', if_true: files('applesmc.c'))
  system_ss.add(when: 'CONFIG_EDU', if_true: files('edu.c'))
  system_ss.add(when: 'CONFIG_FW_CFG_DMA', if_true: files('vmcoreinfo.c'))
---- a/hw/input/Kconfig	2026-08-27 06:23:31.000000000 -0600
-+++ b/hw/input/Kconfig	2026-09-21 10:50:27.791149209 -0600
-@@ -4,7 +4,6 @@
- config PCKBD
-     bool
-     select PS2
--    depends on ISA_BUS
+--- a/target/m68k/cpu.c	2026-08-27 06:23:32.000000000 -0600
++++ b/target/m68k/cpu.c	2026-09-28 20:15:07.416206556 -0600
+@@ -29,6 +29,7 @@
+ #endif
  
- config PL050
-     bool
---- a/hw/input/pckbd.c	2026-08-27 06:23:31.000000000 -0600
-+++ b/hw/input/pckbd.c	2026-09-21 10:50:27.791960111 -0600
-@@ -769,6 +769,15 @@
-     .class_init    = i8042_mmio_class_init
+ #include "cpu.h"
++#include "hw/core/qdev-properties.h"
+ 
+ static void m68k_cpu_set_pc(CPUState *cs, vaddr value)
+ {
+@@ -650,6 +651,11 @@
+ #endif /* !CONFIG_USER_ONLY */
  };
  
-+/*
-+ * The ISA variant.  Guarded because this file also provides i8042-mmio,
-+ * which is a sysbus device and needs no ISA bus -- a board that has one
-+ * but not the other would otherwise fail to link on isa_register_ioport
-+ * and on the ACPI AML builder.  Same shape as the CONFIG_PCI guard in
-+ * hw/display/sm501.c, and for the same reason.
-+ */
-+#ifdef CONFIG_ISA_BUS
++static const Property m68k_cpu_properties[] = {
++    /* See fpsp_trap in cpu.h. Meaningful for the m68040 only. */
++    DEFINE_PROP_BOOL("fpsp-trap", M68kCPU, env.fpsp_trap, false),
++};
 +
- void i8042_isa_mouse_fake_event(ISAKBDState *isa)
+ static void m68k_cpu_class_init(ObjectClass *c, const void *data)
  {
-     KBDState *s = &isa->kbd;
-@@ -964,9 +973,13 @@
-     },
- };
+     M68kCPUClass *mcc = M68K_CPU_CLASS(c);
+@@ -675,6 +681,7 @@
+     cc->disas_set_info = m68k_cpu_disas_set_info;
  
-+#endif /* CONFIG_ISA_BUS */
-+
- static void i8042_register_types(void)
- {
-+#ifdef CONFIG_ISA_BUS
-     type_register_static(&i8042_info);
-+#endif
-     type_register_static(&i8042_mmio_info);
+     cc->tcg_ops = &m68k_tcg_ops;
++    device_class_set_props(dc, m68k_cpu_properties);
  }
  
+ static void m68k_cpu_class_init_cf_core(ObjectClass *c, const void *data)
+--- a/target/m68k/cpu.h	2026-08-27 06:23:32.000000000 -0600
++++ b/target/m68k/cpu.h	2026-09-28 20:15:07.414388833 -0600
+@@ -149,11 +149,53 @@
+     int pending_vector;
+     int pending_level;
+ 
++    /*
++     * The MC68040's unimplemented floating-point instruction state, for
++     * fpsp-trap=on (see fpu_helper.c). Between an instruction the 68040
++     * does not implement in silicon and the handler's FSAVE, the chip
++     * holds the command word and both operands converted to extended
++     * precision; FSAVE then writes them out as the 26-word
++     * unimplemented instruction state frame (MC68040 User's Manual,
++     * section 9.6.1 and Table 9-16).
++     */
++    struct {
++        bool pending;       /* FSAVE yields the unimp frame           */
++        bool frame2;        /* the next F-line uses a format $2 frame */
++        uint16_t cmd;       /* CMDREG1B                               */
++        floatx80 etemp;     /* source operand                         */
++        floatx80 fptemp;    /* destination operand                    */
++        uint8_t stag;       /* their data type tags                   */
++        uint8_t dtag;
++    } fpu_unimp;
++
+     /* Fields up to this point are cleared by a CPU reset */
+     struct {} end_reset_fields;
+ 
+     /* Fields from here on are preserved across CPU reset. */
+     uint64_t features;
++
++    /*
++     * fpsp-trap: behave as the MC68040's silicon does for the
++     * floating-point instructions it does not implement -- FSIN, FETOX
++     * and the rest of Table 9-10 -- and take the unimplemented
++     * floating-point instruction exception instead of computing them, so
++     * that an operating system's copy of Motorola's FPSP is exercised.
++     * Off by default, when QEMU computes them directly, as it always has.
++     * A property, so set once at creation and preserved across reset.
++     */
++    bool fpsp_trap;
++
++    /*
++     * Optional interrupt-acknowledge callback.  A vectored interrupt
++     * controller (e.g. the MC68901 MFP) registers this so it can perform
++     * the side effects real silicon performs during the IACK cycle -
++     * clearing the pending bit and flagging the channel in service.
++     *
++     * This must live below end_reset_fields: it is installed once when
++     * the controller is realized, and a CPU reset must not erase it.
++     */
++    void (*iack_handler)(void *opaque, int level);
++    void *iack_opaque;
+ } CPUM68KState;
+ 
+ /*
+@@ -472,6 +514,9 @@
+ #define MACSR_EV    0x001
+ 
+ void m68k_set_irq_level(M68kCPU *cpu, int level, uint8_t vector);
++void m68k_set_iack_handler(M68kCPU *cpu,
++                           void (*handler)(void *opaque, int level),
++                           void *opaque);
+ void m68k_switch_sp(CPUM68KState *env);
+ 
+ void do_m68k_semihosting(CPUM68KState *env, int nr);
+--- a/target/m68k/fpu_helper.c	2026-08-27 06:23:32.000000000 -0600
++++ b/target/m68k/fpu_helper.c	2026-09-28 20:18:04.026842491 -0600
+@@ -462,6 +462,148 @@
+     env->fpsr = (env->fpsr & ~FPSR_CC_MASK) | cc;
+ }
+ 
++/*
++ * The MC68040's unimplemented floating-point instructions, for
++ * fpsp-trap=on (cpu.h).
++ *
++ * The 68040 has only part of the MC68881/MC68882 instruction set in
++ * silicon; Table 9-10 of the MC68040 User's Manual lists the rest --
++ * FSIN, FETOX, FLOGN and so on. For one of those the chip fetches the
++ * source operand, converts it to extended precision, and takes vector
++ * 11 with a format $2 frame whose PC is the NEXT instruction (section
++ * 9.6.1). The handler, normally Motorola's M68040FPSP, then executes
++ * FSAVE and finds the instruction in a 26-word "unimplemented
++ * instruction" state frame: CMDREG1B, and both operands with tags
++ * (Table 9-16).
++ *
++ * The frame's layout is the FPSP's own (fpsp.h gives every field as an
++ * offset from the end of the frame), which is the software written
++ * against the real chip. Where it and Table 9-16 disagree -- the table
++ * says E1 is "always 1" for this frame, while the E1 definition and the
++ * FPSP's get_op both read E1 set as "the source is packed decimal" --
++ * the FPSP is followed: E1 clear, and the U flag set, as the FPSP's own
++ * FMOVECR path builds the frame by hand.
++ *
++ * Not modelled: the frame's address field (always 0 here; the FPSP
++ * reads it only for instructions that write memory, which none of
++ * these do); single- and double-precision denormal sources (tag 101 on
++ * the chip; converted already by the time they reach this helper, so
++ * tagged by what they became); and the BUSY frames of the arithmetic
++ * exceptions, so an FPSP that re-posts an enabled exception through
++ * FRESTORE will not see it re-raised.
++ */
++
++#define M68040_UNIMP_FRAME  0x30    /* bytes after the header        */
++#define M68040_VERSION      0x41
++
++static uint8_t m68040_tag(floatx80 f)
++{
++    uint16_t exp = f.high & 0x7fff;
++
++    if (exp == 0x7fff) {
++        return (f.low << 1) ? 3 : 2;        /* NaN : infinity        */
++    }
++    if (exp == 0) {
++        return f.low ? 4 : 1;               /* denormal : zero       */
++    }
++    return (f.low >> 63) ? 0 : 4;           /* normal : unnormal     */
++}
++
++void HELPER(fpu_unimp)(CPUM68KState *env, FPReg *src, FPReg *dst,
++                       uint32_t ext)
++{
++    env->fpu_unimp.pending = true;
++    env->fpu_unimp.frame2 = true;
++    env->fpu_unimp.cmd = ext;
++    env->fpu_unimp.etemp = src->d;
++    env->fpu_unimp.fptemp = dst->d;
++    env->fpu_unimp.stag = m68040_tag(src->d);
++    env->fpu_unimp.dtag = m68040_tag(dst->d);
++}
++
++static uint32_t m68040_fsave_size(CPUM68KState *env)
++{
++    return env->fpu_unimp.pending ? 4 + M68040_UNIMP_FRAME : 4;
++}
++
++static void m68040_st_ext(CPUM68KState *env, uint32_t addr, floatx80 v,
++                          uintptr_t ra)
++{
++    cpu_stl_be_data_ra(env, addr, (uint32_t)v.high << 16, ra);
++    cpu_stq_be_data_ra(env, addr + 4, v.low, ra);
++}
++
++/*
++ * An IDLE frame (header only) when nothing is pending, which is all
++ * this model ever wrote before; otherwise the unimplemented instruction
++ * frame. Offsets are from the header; fpsp.h has the same fields as
++ * offsets from the end, 0x34 bytes on.
++ */
++static void m68040_fsave(CPUM68KState *env, uint32_t addr, uintptr_t ra)
++{
++    int i;
++
++    if (!env->fpu_unimp.pending) {
++        cpu_stl_be_data_ra(env, addr, M68040_VERSION << 24, ra);
++        return;
++    }
++    cpu_stl_be_data_ra(env, addr,
++                       (M68040_VERSION << 24) | (M68040_UNIMP_FRAME << 16),
++                       ra);
++    for (i = 4; i < 4 + M68040_UNIMP_FRAME; i += 4) {
++        cpu_stl_be_data_ra(env, addr + i, 0, ra);
++    }
++    cpu_stb_data_ra(env, addr + 0x0c, env->fpu_unimp.stag << 5, ra);
++    cpu_stw_be_data_ra(env, addr + 0x10, env->fpu_unimp.cmd, ra);
++    cpu_stb_data_ra(env, addr + 0x14, env->fpu_unimp.dtag << 5, ra);
++    cpu_stb_data_ra(env, addr + 0x19, 0x20, ra);        /* U flag */
++    m68040_st_ext(env, addr + 0x1c, env->fpu_unimp.fptemp, ra);
++    m68040_st_ext(env, addr + 0x28, env->fpu_unimp.etemp, ra);
++    /* The FSAVE takes the state out of the unit, which is left idle. */
++    env->fpu_unimp.pending = false;
++}
++
++void HELPER(fsave)(CPUM68KState *env, uint32_t addr)
++{
++    m68040_fsave(env, addr, GETPC());
++}
++
++void HELPER(fsave_predec)(CPUM68KState *env, uint32_t reg)
++{
++    uint32_t addr = env->aregs[reg] - m68040_fsave_size(env);
++
++    m68040_fsave(env, addr, GETPC());
++    env->aregs[reg] = addr;
++}
++
++/*
++ * FRESTORE: whatever the frame, its size is in the header, and a
++ * postincrement has to step over all of it -- the FPSP restores frames
++ * of 4, 0x2c, 0x34 and 0x64 bytes. The state itself is not reloaded:
++ * this model has none to reload into but the pending unimplemented
++ * instruction, which a restore ends.
++ */
++static uint32_t m68040_frestore(CPUM68KState *env, uint32_t addr,
++                                uintptr_t ra)
++{
++    uint32_t hdr = cpu_ldl_be_data_ra(env, addr, ra);
++
++    env->fpu_unimp.pending = false;
++    return 4 + ((hdr >> 16) & 0xff);
++}
++
++void HELPER(frestore)(CPUM68KState *env, uint32_t addr)
++{
++    m68040_frestore(env, addr, GETPC());
++}
++
++void HELPER(frestore_postinc)(CPUM68KState *env, uint32_t reg)
++{
++    uint32_t addr = env->aregs[reg];
++
++    env->aregs[reg] = addr + m68040_frestore(env, addr, GETPC());
++}
++
+ void HELPER(fconst)(CPUM68KState *env, FPReg *val, uint32_t offset)
+ {
+     val->d = fpu_rom[offset];
+--- a/target/m68k/helper.c	2026-08-27 06:23:32.000000000 -0600
++++ b/target/m68k/helper.c	2026-09-20 08:45:33.676509022 -0600
+@@ -940,6 +940,14 @@
+  * the vector when the interrupt is acknowledged by the CPU.  For
+  * simplicity we calculate it when the interrupt is signalled.
+  */
++void m68k_set_iack_handler(M68kCPU *cpu,
++                           void (*handler)(void *opaque, int level),
++                           void *opaque)
++{
++    cpu->env.iack_handler = handler;
++    cpu->env.iack_opaque = opaque;
++}
++
+ void m68k_set_irq_level(M68kCPU *cpu, int level, uint8_t vector)
+ {
+     CPUState *cs = CPU(cpu);
+--- a/target/m68k/helper.h	2026-08-27 06:23:32.000000000 -0600
++++ b/target/m68k/helper.h	2026-09-28 20:18:04.026516921 -0600
+@@ -59,6 +59,11 @@
+ DEF_HELPER_FLAGS_2(set_fpcr, TCG_CALL_NO_RWG, void, env, i32)
+ DEF_HELPER_FLAGS_2(ftst, TCG_CALL_NO_RWG, void, env, fp)
+ DEF_HELPER_3(fconst, void, env, fp, i32)
++DEF_HELPER_4(fpu_unimp, void, env, fp, fp, i32)
++DEF_HELPER_2(fsave, void, env, i32)
++DEF_HELPER_2(fsave_predec, void, env, i32)
++DEF_HELPER_2(frestore, void, env, i32)
++DEF_HELPER_2(frestore_postinc, void, env, i32)
+ DEF_HELPER_3(fmovemx_st_predec, i32, env, i32, i32)
+ DEF_HELPER_3(fmovemx_st_postinc, i32, env, i32, i32)
+ DEF_HELPER_3(fmovemx_ld_postinc, i32, env, i32, i32)
+--- a/target/m68k/op_helper.c	2026-08-27 06:23:32.000000000 -0600
++++ b/target/m68k/op_helper.c	2026-09-28 20:18:26.794360448 -0600
+@@ -405,6 +405,22 @@
+         do_stack_frame(env, &sp, 0, oldsr, 0, env->pc);
+         break;
+ 
++    case EXCP_LINEF:
++        /*
++         * An unimplemented floating-point instruction (fpsp-trap=on)
++         * shares vector 11 with the F-line illegal instruction, and the
++         * handler tells them apart by the frame: format $2, with the
++         * calculated effective address, rather than $0 (MC68040 User's
++         * Manual 9.6.1). The address is not modelled; see fpu_helper.c.
++         */
++        if (env->fpu_unimp.frame2) {
++            env->fpu_unimp.frame2 = false;
++            do_stack_frame(env, &sp, 2, oldsr, 0, env->pc);
++        } else {
++            do_stack_frame(env, &sp, 0, oldsr, 0, env->pc);
++        }
++        break;
++
+     case EXCP_ADDRESS:
+         do_stack_frame(env, &sp, 2, oldsr, 0, env->pc);
+         break;
+@@ -531,7 +547,16 @@
+          * first signalled.
+          */
+         cs->exception_index = env->pending_vector;
++        /*
++         * Exception entry first: do_interrupt_all() reads pending_level
++         * to set the new interrupt mask in SR, so the acknowledge
++         * callback must not disturb it until that has happened.
++         */
+         do_interrupt_m68k_hardirq(env);
++        if (env->iack_handler) {
++            env->iack_handler(env->iack_opaque,
++                              (env->sr & SR_I) >> SR_I_SHIFT);
++        }
+         return true;
+     }
+     return false;
+--- a/target/m68k/translate.c	2026-08-27 06:23:32.000000000 -0600
++++ b/target/m68k/translate.c	2026-09-28 20:32:57.455695973 -0600
+@@ -4926,6 +4926,43 @@
+ }
+ 
+ /*
++ * The operations the MC68040 does not implement in silicon (MC68040
++ * User's Manual, Table 9-10): FSINCOS is 0x30-0x37, the low three bits
++ * naming the cosine's register.
++ */
++static bool m68040_unimplemented(int opmode)
++{
++    switch (opmode) {
++    case 0x01: case 0x02: case 0x03: case 0x06:     /* fint fsinh fintrz */
++    case 0x08: case 0x09: case 0x0a: case 0x0c:     /* flognp1 fetoxm1   */
++    case 0x0d: case 0x0e: case 0x0f: case 0x10:     /* ftanh fatan fasin */
++    case 0x11: case 0x12: case 0x14: case 0x15:     /* fatanh fsin ftan  */
++    case 0x16: case 0x19: case 0x1c: case 0x1d:     /* fetox ftwotox ... */
++    case 0x1e: case 0x1f:                           /* fgetexp fgetman   */
++    case 0x21: case 0x25: case 0x26:                /* fmod frem fscale  */
++        return true;
++    }
++    return opmode >= 0x30 && opmode <= 0x37;        /* fsincos           */
++}
++
++/*
++ * fpsp-trap=on: take the unimplemented floating-point instruction
++ * exception as the 68040 does, with the operands latched for FSAVE
++ * (fpu_helper.c). The frame's PC is the NEXT instruction -- s->pc,
++ * past any extension words -- not the start of this one.
++ */
++static bool gen_m68040_unimp(DisasContext *s, TCGv_ptr src, TCGv_ptr dest,
++                             uint16_t ext)
++{
++    if (!m68k_feature(s->env, M68K_FEATURE_M68040) || !s->env->fpsp_trap) {
++        return false;
++    }
++    gen_helper_fpu_unimp(tcg_env, src, dest, tcg_constant_i32(ext));
++    gen_exception(s, s->pc, EXCP_LINEF);
++    return true;
++}
++
++/*
+  * ??? FP exceptions are not implemented.  Most exceptions are deferred until
+  * immediately before the next FP instruction is executed.
+  */
+@@ -4948,6 +4985,11 @@
+             /* fmovecr */
+             TCGv rom_offset = tcg_constant_i32(opmode);
+             cpu_dest = gen_fp_ptr(REG(ext, 7));
++            /* Unimplemented on the 68040 too; it has no source operand,
++             * and the FPSP reads only the command word. */
++            if (gen_m68040_unimp(s, cpu_dest, cpu_dest, ext)) {
++                return;
++            }
+             gen_helper_fconst(tcg_env, cpu_dest, rom_offset);
+             return;
+         }
+@@ -4988,6 +5030,10 @@
+         cpu_src = gen_fp_ptr(REG(ext, 10));
+     }
+     cpu_dest = gen_fp_ptr(REG(ext, 7));
++    if (m68040_unimplemented(opmode) &&
++        gen_m68040_unimp(s, cpu_src, cpu_dest, ext)) {
++        return;
++    }
+     switch (opmode) {
+     case 0: /* fmove */
+         gen_fp_move(cpu_dest, cpu_src);
+@@ -5365,8 +5411,21 @@
+         return;
+     }
+     if (m68k_feature(s->env, M68K_FEATURE_M68040)) {
+-        SRC_EA(env, addr, OS_LONG, 0, NULL);
+-        /* FIXME: check the state frame */
++        /*
++         * The frame's size is in its header, so a postincrement has to
++         * be done by the helper that reads it (fpu_helper.c).
++         */
++        if (((insn >> 3) & 7) == 3) {
++            gen_helper_frestore_postinc(tcg_env,
++                                        tcg_constant_i32(REG(insn, 0)));
++            return;
++        }
++        addr = gen_lea(env, s, insn, OS_LONG);
++        if (IS_NULL_QREG(addr)) {
++            gen_addr_fault(s);
++            return;
++        }
++        gen_helper_frestore(tcg_env, addr);
+     } else {
+         disas_undef(env, s, insn);
+     }
+@@ -5380,9 +5439,23 @@
+     }
+ 
+     if (m68k_feature(s->env, M68K_FEATURE_M68040)) {
+-        /* always write IDLE */
+-        TCGv idle = tcg_constant_i32(0x41000000);
+-        DEST_EA(env, insn, OS_LONG, idle, NULL);
++        /*
++         * An IDLE frame, or the unimplemented instruction frame after
++         * an fpsp-trap=on exception (fpu_helper.c). The size depends on
++         * which, so a predecrement is done by the helper.
++         */
++        TCGv addr;
++
++        if (((insn >> 3) & 7) == 4) {
++            gen_helper_fsave_predec(tcg_env, tcg_constant_i32(REG(insn, 0)));
++            return;
++        }
++        addr = gen_lea(env, s, insn, OS_LONG);
++        if (IS_NULL_QREG(addr)) {
++            gen_addr_fault(s);
++            return;
++        }
++        gen_helper_fsave(tcg_env, addr);
+     } else {
+         disas_undef(env, s, insn);
+     }

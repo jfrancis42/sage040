@@ -63,9 +63,9 @@ switch_context:
 | way back the registers go in first and frestore last.
 |
 | Layout, matching struct task's fpu[]:
-|       0       the state frame, up to 96 bytes
-|      96       fp0-fp7, 12 bytes each
-|     192       fpcr, fpsr, fpiar
+|       0       the state frame, up to 100 bytes (a busy frame)
+|     100       fp0-fp7, 12 bytes each
+|     196       fpcr, fpsr, fpiar
 | ------------------------------------------------------------------
         .globl  fpu_save
         .type   fpu_save,@function
@@ -74,8 +74,8 @@ fpu_save:
         fsave   (%a0)
         tst.b   (%a0)
         beq.s   1f
-        fmovem.x %fp0-%fp7,96(%a0)
-        fmovem.l %fpcr/%fpsr/%fpiar,192(%a0)
+        fmovem.x %fp0-%fp7,100(%a0)
+        fmovem.l %fpcr/%fpsr/%fpiar,196(%a0)
 1:      rts
 
         .globl  fpu_restore
@@ -84,8 +84,8 @@ fpu_restore:
         move.l  4(%sp),%a0
         tst.b   (%a0)
         beq.s   1f
-        fmovem.x 96(%a0),%fp0-%fp7
-        fmovem.l 192(%a0),%fpcr/%fpsr/%fpiar
+        fmovem.x 100(%a0),%fp0-%fp7
+        fmovem.l 196(%a0),%fpcr/%fpsr/%fpiar
 1:      frestore (%a0)
         rts
 

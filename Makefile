@@ -28,7 +28,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: pagecheck logintest fsimgtest fattest all boot run install src qemu world libc-if-missing toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest qemutest libc cube programs clean distclean
+.PHONY: pagecheck fpsptest logintest fsimgtest fattest all boot run install src qemu world libc-if-missing toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest qemutest libc cube programs clean distclean
 
 all:
 	$(MAKE) -C bootrom
@@ -279,7 +279,7 @@ qemu:
 run:
 	$(MAKE) -C kernel run
 
-test: pagecheck fsimgtest tests cryptotest fstest fattest apitest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest logintest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest qemutest
+test: pagecheck fsimgtest tests cryptotest fstest fattest apitest fpsptest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest logintest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest qemutest
 
 # Code and data on separate pages, in everything built for the machine
 # (tools/pagecheck.py says why). First, and cheap: what it catches never
@@ -297,6 +297,9 @@ fsimgtest:
 
 tests:
 	$(MAKE) -C tests run
+
+fpsptest:
+	cd kernel && ./fpsptest.sh
 
 cryptotest:
 	cd kernel && ./cryptotest.sh

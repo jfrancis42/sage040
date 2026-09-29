@@ -86,7 +86,7 @@ int fetch(void *dst, u32 p, u32 len)
     return copy_from_user(dst, p, len);
 }
 
-int store(u32 p, const void *src, u32 len)
+int sys_store(u32 p, const void *src, u32 len)
 {
     if (!p) {
         return -EFAULT;
@@ -474,7 +474,7 @@ static int do_ioctl(int fd, u32 request, u32 arg)
             return err;
         }
         if (ioctl_args[i].dir & IO_OUT) {
-            int e2 = store(arg, buf, ioctl_args[i].size);
+            int e2 = sys_store(arg, buf, ioctl_args[i].size);
 
             if (e2 < 0) {
                 return e2;
@@ -672,7 +672,7 @@ int do_poll(u32 ufds, u32 n, s32 timeout_ms)
         return r;
     }
     if (n) {
-        err = store(ufds, local, n * sizeof(struct pollfd));
+        err = sys_store(ufds, local, n * sizeof(struct pollfd));
         if (err < 0) {
             return err;
         }
@@ -714,16 +714,16 @@ int do_select(u32 nfds, u32 uin, u32 uout, u32 uex, u32 utv)
     if (r < 0) {
         return r;
     }
-    if ((uin && (err = store(uin, in, bytes)) < 0) ||
-        (uout && (err = store(uout, out, bytes)) < 0) ||
-        (uex && (err = store(uex, ex, bytes)) < 0)) {
+    if ((uin && (err = sys_store(uin, in, bytes)) < 0) ||
+        (uout && (err = sys_store(uout, out, bytes)) < 0) ||
+        (uex && (err = sys_store(uex, ex, bytes)) < 0)) {
         return err;
     }
     if (utv) {
         /* What was not used, as Linux writes it back. */
         tv.tv_sec = left / 1000;
         tv.tv_usec = (left % 1000) * 1000;
-        err = store(utv, &tv, sizeof(tv));
+        err = sys_store(utv, &tv, sizeof(tv));
         if (err < 0) {
             return err;
         }
@@ -787,12 +787,12 @@ static int store_addr(u32 uaddr, u32 ulen, const void *sa, u32 salen)
         return -EINVAL;
     }
     if (room) {
-        err = store(uaddr, sa, room < salen ? room : salen);
+        err = sys_store(uaddr, sa, room < salen ? room : salen);
         if (err < 0) {
             return err;
         }
     }
-    return store(ulen, &salen, sizeof(salen));
+    return sys_store(ulen, &salen, sizeof(salen));
 }
 
 static __attribute__((noinline))
@@ -810,7 +810,7 @@ int do_socketpair(int domain, int type, int protocol, u32 usv)
     if (err < 0) {
         return err;
     }
-    err = store(usv, sv, sizeof(sv));
+    err = sys_store(usv, sv, sizeof(sv));
     if (err < 0) {
         fd_close(sv[0]);
         fd_close(sv[1]);
@@ -969,11 +969,11 @@ int do_getsockopt(int fd, int level, int name, u32 uval, u32 ulen)
             return err;
         }
     }
-    err = store(uval, val, len);
+    err = sys_store(uval, val, len);
     if (err < 0) {
         return err;
     }
-    return store(ulen, &len, sizeof(len));
+    return sys_store(ulen, &len, sizeof(len));
 }
 
 /*
@@ -1087,7 +1087,7 @@ s32 do_recvfrom(int fd, u32 ubuf, u32 len, int flags, u32 uaddr, u32 ualen)
         if (got < 0) {
             return got;
         }
-        err = store(ubuf, dbuf, (u32)got < n ? (u32)got : n);
+        err = sys_store(ubuf, dbuf, (u32)got < n ? (u32)got : n);
         if (err < 0) {
             return err;
         }
@@ -1102,7 +1102,7 @@ s32 do_recvfrom(int fd, u32 ubuf, u32 len, int flags, u32 uaddr, u32 ualen)
         } else {
             u32 zero = 0;
 
-            err = store(ualen, &zero, sizeof(zero));
+            err = sys_store(ualen, &zero, sizeof(zero));
         }
         if (err < 0) {
             return err;
@@ -1176,7 +1176,7 @@ s32 do_msg(int fd, u32 umsg, int flags, int sending)
             u32 n = (u32)r - at < iov[i].iov_len ? (u32)r - at
                                                  : iov[i].iov_len;
 
-            err = store((u32)iov[i].iov_base, dbuf + at, n);
+            err = sys_store((u32)iov[i].iov_base, dbuf + at, n);
             if (err < 0) {
                 return err;
             }
@@ -1186,7 +1186,7 @@ s32 do_msg(int fd, u32 umsg, int flags, int sending)
         if (m.msg_name) {
             u32 room = m.msg_namelen < sizeof(sa) ? m.msg_namelen : sizeof(sa);
 
-            err = store((u32)m.msg_name, &sa, room);
+            err = sys_store((u32)m.msg_name, &sa, room);
             if (err < 0) {
                 return err;
             }
@@ -1218,7 +1218,7 @@ s32 do_msg(int fd, u32 umsg, int flags, int sending)
             m.msg_flags |= MSG_CTRUNC;
         }
         m.msg_controllen = 0;
-        err = store(umsg, &m, sizeof(m));
+        err = sys_store(umsg, &m, sizeof(m));
         if (err < 0) {
             return err;
         }
@@ -1268,7 +1268,7 @@ static int do_netctl(int cmd, u32 arg, u32 p)
         out.tx_packets = n->tx_packets;
         out.rx_dropped = n->rx_dropped;
         out.tx_errors = n->tx_errors;
-        return store(p, &out, sizeof(out));
+        return sys_store(p, &out, sizeof(out));
     }
 
     case NETCTL_UP:
@@ -1345,7 +1345,7 @@ static int do_netctl(int cmd, u32 arg, u32 p)
         if (err < 0) {
             return err;
         }
-        return store(p, &rtt, sizeof(rtt));
+        return sys_store(p, &rtt, sizeof(rtt));
     }
 
     case NETCTL_CONN: {
@@ -1377,7 +1377,7 @@ static int do_netctl(int cmd, u32 arg, u32 p)
         out.rexmit_segs = c->rexmit_segs;
         out.rexmit_bytes = c->rexmit_bytes;
         out.keep_sent = c->keep_sent;
-        return store(p, &out, sizeof(out));
+        return sys_store(p, &out, sizeof(out));
     }
 
     case NETCTL_TCPLOSS:
@@ -1402,7 +1402,7 @@ static int do_netctl(int cmd, u32 arg, u32 p)
         out.ip = n->ip;
         out.netmask = n->netmask;
         out.gateway = n->gateway;
-        return store(p, &out, sizeof(out));
+        return sys_store(p, &out, sizeof(out));
     }
 
     case NETCTL_ARP: {
@@ -1418,7 +1418,7 @@ static int do_netctl(int cmd, u32 arg, u32 p)
         out.ip = ip;
         memcpy(out.mac, mac, 6);
         out.age_ms = age;
-        return store(p, &out, sizeof(out));
+        return sys_store(p, &out, sizeof(out));
     }
 
     case NETCTL_ARPDEL:
@@ -1432,7 +1432,7 @@ static int do_netctl(int cmd, u32 arg, u32 p)
         if (err < 0) {
             return err;         /* -ENOENT past the last */
         }
-        return store(p, &out, sizeof(out));
+        return sys_store(p, &out, sizeof(out));
     }
 
     case NETCTL_ROUTEADD: {
@@ -1573,7 +1573,7 @@ static int do_jobctl(int cmd, int arg, u32 p)
         out.ppid = t->parent ? t->parent->pid : 0;
         strncpy(out.cmd, t->cmd, sizeof(out.cmd) - 1);
         out.cmd[sizeof(out.cmd) - 1] = '\0';
-        return store(p, &out, sizeof(out));
+        return sys_store(p, &out, sizeof(out));
     }
 
     case JOBCTL_WHO: {
@@ -1602,7 +1602,7 @@ static int do_jobctl(int cmd, int arg, u32 p)
         }
         strncpy(out.name, t->name, sizeof(out.name) - 1);
         strncpy(out.cmd, t->cmd, sizeof(out.cmd) - 1);
-        return store(p, &out, sizeof(out));
+        return sys_store(p, &out, sizeof(out));
     }
 
     case JOBCTL_FG:
@@ -1739,7 +1739,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
             return -ERANGE;
         }
         {
-            int err = store(a1, cwd, n);
+            int err = sys_store(a1, cwd, n);
 
             return err < 0 ? err : (s32)n;
         }
@@ -1771,7 +1771,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         if (err < 0) {
             return err;
         }
-        return store(a2, &st, sizeof(st));
+        return sys_store(a2, &st, sizeof(st));
     }
 
     case __NR_fstat: {
@@ -1781,7 +1781,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         if (err < 0) {
             return err;
         }
-        return store(a2, &st, sizeof(st));
+        return sys_store(a2, &st, sizeof(st));
     }
 
     case __NR_access: {
@@ -1801,7 +1801,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         if (err < 0) {
             return err;
         }
-        err = store(a1, fds, sizeof(fds));
+        err = sys_store(a1, fds, sizeof(fds));
         if (err < 0) {
             fd_close(fds[0]);
             fd_close(fds[1]);
@@ -1825,7 +1825,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         if (err < 0) {
             return err;
         }
-        err = store(a2, &d, sizeof(d));
+        err = sys_store(a2, &d, sizeof(d));
         return err < 0 ? err : 0;
     }
 
@@ -1836,7 +1836,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         if (err < 0) {
             return err;
         }
-        return store(a1, &sf, sizeof(sf));
+        return sys_store(a1, &sf, sizeof(sf));
     }
 
     /*
@@ -1853,7 +1853,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         time_t now = clock_now();
 
         if (a1) {
-            int err = store(a1, &now, sizeof(now));
+            int err = sys_store(a1, &now, sizeof(now));
 
             if (err < 0) {
                 return err;
@@ -1889,7 +1889,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         si.mem_unit = (u32)PAGE_SIZE;
         si.procs = (u16)task_count();
         loadavg_get(si.loads);
-        return store(a1, &si, sizeof(si));
+        return sys_store(a1, &si, sizeof(si));
     }
 
     case __NR_uname: {
@@ -1899,7 +1899,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         if (err < 0) {
             return err;
         }
-        return store(a1, &u, sizeof(u));
+        return sys_store(a1, &u, sizeof(u));
     }
 
     case __NR_reboot:
@@ -1935,7 +1935,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
             if (err < 0) {
                 return err;
             }
-            return a3 ? store(a3, &r, sizeof(r)) : 0;
+            return a3 ? sys_store(a3, &r, sizeof(r)) : 0;
         }
         case FSCTL_LABEL: {
             struct fslabel l;
@@ -1944,7 +1944,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
             if (err < 0) {
                 return err;
             }
-            return a3 ? store(a3, &l, sizeof(l)) : 0;
+            return a3 ? sys_store(a3, &l, sizeof(l)) : 0;
         }
         default:
             return -EINVAL;
@@ -1978,7 +1978,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
                 m.pageouts = s.pageouts;
                 m.pageins = s.pageins;
             }
-            return store(a3, &m, a2 < sizeof(m) ? a2 : sizeof(m));
+            return sys_store(a3, &m, a2 < sizeof(m) ? a2 : sizeof(m));
         }
         if (a1 == MEMCTL_PAGE) {
             struct pageinfo pi;
@@ -1989,7 +1989,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
             pi.pa = PAGE_ALIGN_DOWN(vm_translate(current->as, a2, 0));
             pi.refs = pi.pa ? pmm_refcount(pi.pa) : 0;
             pi.writable = vm_may_write(current->as, a2);
-            return store(a3, &pi, sizeof(pi));
+            return sys_store(a3, &pi, sizeof(pi));
         }
         return -EINVAL;
 
@@ -2001,7 +2001,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
             is.spurious = mfp_spurious();
             is.tty_overruns = tty_overruns();
             ata_counts(&is.disk_slept, &is.disk_polled);
-            return store(a3, &is, a2 < sizeof(is) ? a2 : sizeof(is));
+            return sys_store(a3, &is, a2 < sizeof(is) ? a2 : sizeof(is));
         }
         if (a1 == KSTAT_STACK) {
             struct kstackstats ks;
@@ -2009,7 +2009,13 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
             memset(&ks, 0, sizeof(ks));
             task_kstack_stats(&ks.size, &ks.max_used, ks.max_task,
                               sizeof(ks.max_task));
-            return store(a3, &ks, a2 < sizeof(ks) ? a2 : sizeof(ks));
+            return sys_store(a3, &ks, a2 < sizeof(ks) ? a2 : sizeof(ks));
+        }
+        if (a1 == KSTAT_FPSP) {
+            struct fpspstats fs;
+
+            fpsp_counts(&fs);
+            return sys_store(a3, &fs, a2 < sizeof(fs) ? a2 : sizeof(fs));
         }
         if (a1 == KSTAT_DISK_DELAY) {
             ata_set_delay(a2 > 1000 ? 1000 : a2);
@@ -2055,7 +2061,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
             tms.tms_stime = current->stime;
             tms.tms_cutime = current->cutime;
             tms.tms_cstime = current->cstime;
-            err = store(a1, &tms, sizeof(tms));
+            err = sys_store(a1, &tms, sizeof(tms));
             if (err < 0) {
                 return err;
             }
@@ -2068,7 +2074,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
 
         clock_get(&tv);
         /* The timezone is accepted and ignored, as it is everywhere. */
-        return a1 ? store(a1, &tv, sizeof(tv)) : 0;
+        return a1 ? sys_store(a1, &tv, sizeof(tv)) : 0;
     }
 
     case __NR_settimeofday: {
@@ -2122,7 +2128,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
                 return err;
             }
         }
-        return a3 ? store(a3, &old, sizeof(old)) : 0;
+        return a3 ? sys_store(a3, &old, sizeof(old)) : 0;
     }
 
     case __NR_getitimer: {
@@ -2132,7 +2138,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         if (err < 0) {
             return err;
         }
-        return store(a2, &cur, sizeof(cur));
+        return sys_store(a2, &cur, sizeof(cur));
     }
 
     case __NR_nanosleep: {
@@ -2185,7 +2191,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
             }
             rem.tv_sec = left_ms / 1000;
             rem.tv_nsec = (left_ms % 1000) * 1000000UL;
-            err = store(a2, &rem, sizeof(rem));
+            err = sys_store(a2, &rem, sizeof(rem));
             if (err < 0) {
                 return err;
             }
@@ -2294,7 +2300,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         if (err < 0) {
             return err;
         }
-        return a3 ? store(a3, &old, sizeof(old)) : 0;
+        return a3 ? sys_store(a3, &old, sizeof(old)) : 0;
     }
 
     case __NR_sigprocmask: {
@@ -2311,13 +2317,13 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         if (err < 0) {
             return err;
         }
-        return a3 ? store(a3, &old, sizeof(old)) : 0;
+        return a3 ? sys_store(a3, &old, sizeof(old)) : 0;
     }
 
     case __NR_sigpending: {
         u32 set = signal_pending_set();
 
-        return store(a1, &set, sizeof(set));
+        return sys_store(a1, &set, sizeof(set));
     }
 
     case __NR_sigsuspend:
@@ -2341,7 +2347,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
             return got;
         }
         if (a2) {
-            int err = store(a2, &status, sizeof(status));
+            int err = sys_store(a2, &status, sizeof(status));
 
             if (err < 0) {
                 return err;

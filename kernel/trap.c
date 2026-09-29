@@ -301,4 +301,5 @@ void trap_init(void)
     u32 *vectors = (u32 *)_vectors;
 
     vectors[VEC_TRAP0] = (u32)_trap0_entry;
+    fpsp_install(vectors);
 }

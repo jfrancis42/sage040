@@ -33,6 +33,11 @@ extern const char kernel_build[];
 
 /* Exception reporting (trap.c). */
 void trap_init(void);
+
+/* fpsp.c: Motorola's M68040 FPSP -- the vectors, and its counters. */
+struct fpspstats;
+void fpsp_install(u32 *vectors);
+void fpsp_counts(struct fpspstats *out);
 void panic(const char *msg) __attribute__((noreturn));
 
 /* The startup hardware inventory (probe.c). */

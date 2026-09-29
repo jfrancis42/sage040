@@ -231,9 +231,15 @@ struct task {
      * FP registers and one rounding mode, so without this every task
      * that used floating point would be sharing them with every other.
      *
-     *     0   the fsave frame: 4 bytes idle, up to 96 busy
-     *    96   fp0-fp7, 12 bytes each
-     *   192   fpcr, fpsr, fpiar
+     *     0   the fsave frame: 4 bytes idle, 52 unimplemented-
+     *         instruction, 100 busy (MC68040 User's Manual 9.7)
+     *   100   fp0-fp7, 12 bytes each
+     *   196   fpcr, fpsr, fpiar
+     *
+     * 208 bytes, all of it. The frame used to be given 96, which a busy
+     * frame -- a task switched out with an exception pending on a real
+     * 68040 -- overran into fp0; QEMU never writes one, so nothing here
+     * could have shown it.
      *
      * See taskasm.s. A new task starts with an IDLE frame and zeroed
      * registers, rather than a null frame, because under QEMU restoring

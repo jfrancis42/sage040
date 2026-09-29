@@ -188,7 +188,7 @@ static s32 do_statx(int dirfd, u32 upath, int flags, u32 ubuf)
                 return err;
             }
             to_statx(&st, 0, &sx);
-            return store(ubuf, &sx, sizeof(sx));
+            return sys_store(ubuf, &sx, sizeof(sx));
         }
     }
 
@@ -212,7 +212,7 @@ static s32 do_statx(int dirfd, u32 upath, int flags, u32 ubuf)
         is_prog = vfs_access(path, X_OK) == 0;
     }
     to_statx(&st, is_prog, &sx);
-    return store(ubuf, &sx, sizeof(sx));
+    return sys_store(ubuf, &sx, sizeof(sx));
 }
 
 /* ---------------------------------------------------------------- */
@@ -235,7 +235,7 @@ static s32 do_getdents64(int fd, u32 ubuf, u32 len)
         return n;
     }
     {
-        int err = store(ubuf, dents_buf, (u32)n);
+        int err = sys_store(ubuf, dents_buf, (u32)n);
 
         return err < 0 ? err : n;
     }
@@ -278,7 +278,7 @@ static s32 do_clock_gettime(int id, u32 uts)
     default:
         return -EINVAL;
     }
-    return store(uts, &ts, sizeof(ts));
+    return sys_store(uts, &ts, sizeof(ts));
 }
 
 /* ---------------------------------------------------------------- */
@@ -323,7 +323,7 @@ static s32 do_getrlimit(int res, u32 ubuf)
         return -EINVAL;
     }
     r.rlim_cur = r.rlim_max = limit_of(res);
-    return store(ubuf, &r, sizeof(r));
+    return sys_store(ubuf, &r, sizeof(r));
 }
 
 /*
@@ -358,7 +358,7 @@ static s32 do_prlimit64(int pid, int res, u32 unew, u32 uold)
     if (uold) {
         r.rlim_cur = r.rlim_max =
             (max == RLIM_INFINITY) ? ~(u64)0 : (u64)max;
-        return store(uold, &r, sizeof(r));
+        return sys_store(uold, &r, sizeof(r));
     }
     return 0;
 }
@@ -396,7 +396,7 @@ static s32 do_rt_sigaction(int sig, u32 uact, u32 uold, u32 size)
         ka.sa_flags = old.sa_flags;
         ka.sa_restorer = old.sa_restorer;
         ka.sa_mask[0] = old.sa_mask;
-        return store(uold, &ka, sizeof(ka));
+        return sys_store(uold, &ka, sizeof(ka));
     }
     return 0;
 }
@@ -419,7 +419,7 @@ static s32 do_rt_sigprocmask(int how, u32 uset, u32 uold, u32 size)
     if (err < 0) {
         return err;
     }
-    return uold ? store(uold, old, sizeof(old)) : 0;
+    return uold ? sys_store(uold, old, sizeof(old)) : 0;
 }
 
 /* ---------------------------------------------------------------- */
@@ -447,7 +447,7 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
             return err;
         }
         err = vfs_lstat(path, &st);
-        return err < 0 ? err : store(a2, &st, sizeof(st));
+        return err < 0 ? err : sys_store(a2, &st, sizeof(st));
     }
 
     case __NR_getdents64:
@@ -555,7 +555,7 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         }
         err = signal_altstack(a1 ? &ss : 0, a2 ? &old : 0);
         if (err == 0 && a2) {
-            err = store(a2, &old, sizeof(old));
+            err = sys_store(a2, &old, sizeof(old));
         }
         return err;
     }
@@ -739,7 +739,7 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         } else {
             return -EINVAL;
         }
-        return store(a2, &ru, sizeof(ru));
+        return sys_store(a2, &ru, sizeof(ru));
     }
 
     case __NR_readlink:
@@ -770,7 +770,7 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         if (n > want) {
             n = want;
         }
-        err = store((nr == __NR_readlink) ? a2 : a3, target, n);
+        err = sys_store((nr == __NR_readlink) ? a2 : a3, target, n);
         return err < 0 ? err : (int)n;
     }
 
@@ -848,7 +848,7 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         if (err < 0) {
             return err;
         }
-        err = store(a1, fds, sizeof(fds));
+        err = sys_store(a1, fds, sizeof(fds));
         if (err < 0) {
             fd_close(fds[0]);
             fd_close(fds[1]);
@@ -884,7 +884,7 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
             return r;
         }
         result = (u32)r;
-        return store(a4, &result, sizeof(result));
+        return sys_store(a4, &result, sizeof(result));
     }
 
     case __NR_umask: {
@@ -1103,9 +1103,9 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         v[0] = is_uid ? current->uid  : current->gid;
         v[1] = is_uid ? current->euid : current->egid;
         v[2] = is_uid ? current->suid : current->sgid;
-        e1 = store(a1, &v[0], sizeof(v[0]));
-        e2 = store(a2, &v[1], sizeof(v[1]));
-        e3 = store(a3, &v[2], sizeof(v[2]));
+        e1 = sys_store(a1, &v[0], sizeof(v[0]));
+        e2 = sys_store(a2, &v[1], sizeof(v[1]));
+        e3 = sys_store(a3, &v[2], sizeof(v[2]));
         if (e1 < 0) { return e1; }
         if (e2 < 0) { return e2; }
         if (e3 < 0) { return e3; }
@@ -1138,7 +1138,7 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
             buf[i] = current->groups[i];
         }
         if (n > 0) {
-            err = store(a2, buf, (u32)n * sizeof(u32));
+            err = sys_store(a2, buf, (u32)n * sizeof(u32));
             if (err < 0) {
                 return err;
             }
@@ -1186,7 +1186,7 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
             return got;
         }
         if (a2) {
-            err = store(a2, &status, sizeof(status));
+            err = sys_store(a2, &status, sizeof(status));
             if (err < 0) {
                 return err;
             }
@@ -1199,7 +1199,7 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
              * wait4 does for a child it does not reap. */
             rusage_of(&ru, current->waited_utime, current->waited_stime);
             current->waited_utime = current->waited_stime = 0;
-            err = store(a4, &ru, sizeof(ru));
+            err = sys_store(a4, &ru, sizeof(ru));
             if (err < 0) {
                 return err;
             }
@@ -1301,7 +1301,7 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         }
         ts.tv_sec = 0;
         ts.tv_nsec = 1000000000UL / HZ;
-        return a2 ? store(a2, &ts, sizeof(ts)) : 0;
+        return a2 ? sys_store(a2, &ts, sizeof(ts)) : 0;
     }
 
     case __NR_getrlimit:
@@ -1350,7 +1350,7 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
             u32 n = a2 - done < sizeof(buf) ? a2 - done : sizeof(buf);
 
             random_get(buf, n);
-            err = store(a1 + done, buf, n);
+            err = sys_store(a1 + done, buf, n);
             if (err < 0) {
                 memset(buf, 0, sizeof(buf));
                 return done ? (s32)done : err;
@@ -1385,7 +1385,7 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         }
         set[0] = signal_pending_set();
         set[1] = 0;
-        return store(a1, set, sizeof(set));
+        return sys_store(a1, set, sizeof(set));
     }
 
     case __NR_rt_sigsuspend: {

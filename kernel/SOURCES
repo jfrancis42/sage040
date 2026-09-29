@@ -58,6 +58,7 @@ pty.c
 cache.c
 font8x16.c
 probe.c
+fpsp.c
 shell.c
 
 # The drivers. Everything here names a chip, and only here.
@@ -83,3 +84,48 @@ net/socket.c
 # The filesystems.
 fs/fat16.c
 fs/ext2.c
+
+# Motorola's M68040 Floating-Point Software Package: the handler for
+# the floating-point instructions and operand types the 68040 has no
+# silicon for (fpsp/ORIGIN.md). fpspglue.s is this kernel's side of it.
+fpspglue.s
+fpsp/bindec.s
+fpsp/binstr.s
+fpsp/bugfix.s
+fpsp/decbin.s
+fpsp/do_func.s
+fpsp/gen_except.s
+fpsp/get_op.s
+fpsp/kernel_ex.s
+fpsp/res_func.s
+fpsp/round.s
+fpsp/sacos.s
+fpsp/sasin.s
+fpsp/satan.s
+fpsp/satanh.s
+fpsp/scale.s
+fpsp/scosh.s
+fpsp/setox.s
+fpsp/sgetem.s
+fpsp/sint.s
+fpsp/slog2.s
+fpsp/slogn.s
+fpsp/smovecr.s
+fpsp/srem_mod.s
+fpsp/ssin.s
+fpsp/ssinh.s
+fpsp/stan.s
+fpsp/stanh.s
+fpsp/sto_res.s
+fpsp/stwotox.s
+fpsp/tbldo.s
+fpsp/util.s
+fpsp/x_bsun.s
+fpsp/x_fline.s
+fpsp/x_operr.s
+fpsp/x_ovfl.s
+fpsp/x_snan.s
+fpsp/x_store.s
+fpsp/x_unfl.s
+fpsp/x_unimp.s
+fpsp/x_unsupp.s

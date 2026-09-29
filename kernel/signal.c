@@ -576,11 +576,14 @@ static int setup_frame(struct task *t, struct pt_regs *regs, int sig,
 
     /*
      * A frame can be redirected by changing its pc only if it is one
-     * the rte will simply return through: format 0, or format 2, which
-     * adds an address. The access-fault frame (7) re-runs the faulting
-     * access, and faults end the program before reaching here anyway.
+     * the rte will simply return through: format 0, format 2, which
+     * adds an address, or format 3, the 68040's floating-point
+     * post-instruction frame, which is the same shape -- and is what a
+     * SIGFPE the FPSP reports arrives on. The access-fault frame (7)
+     * re-runs the faulting access, and faults end the program before
+     * reaching here anyway.
      */
-    if (fmt != 0 && fmt != 2) {
+    if (fmt != 0 && fmt != 2 && fmt != 3) {
         return -1;
     }
 
@@ -645,23 +648,23 @@ static void block_for_handler(struct task *t, int sig, struct sigaction *act)
 
 /*
  * The FPU part of a ucontext, both ways. task->fpu's layout (taskasm.s)
- * is the fsave frame in its first 96 bytes, fp0-fp7 at 96, and the
- * three control registers at 192; Linux/m68k's ucontext has the
+ * is the fsave frame in its first 100 bytes, fp0-fp7 at 100, and the
+ * three control registers at 196; Linux/m68k's ucontext has the
  * registers in uc_mcontext.fpregs and the frame at the start of
  * uc_filler.
  */
 static void fpu_to_uc(const u32 *fpu, struct ucontext *uc)
 {
-    memcpy(uc->uc_filler, fpu, 96);
-    memcpy(uc->uc_mcontext.fpregs.f_fpregs, fpu + 24, 96);
-    memcpy(uc->uc_mcontext.fpregs.f_fpcntl, fpu + 48, 12);
+    memcpy(uc->uc_filler, fpu, 100);
+    memcpy(uc->uc_mcontext.fpregs.f_fpregs, fpu + 25, 96);
+    memcpy(uc->uc_mcontext.fpregs.f_fpcntl, fpu + 49, 12);
 }
 
 static void uc_to_fpu(const struct ucontext *uc, u32 *fpu)
 {
-    memcpy(fpu, uc->uc_filler, 96);
-    memcpy(fpu + 24, uc->uc_mcontext.fpregs.f_fpregs, 96);
-    memcpy(fpu + 48, uc->uc_mcontext.fpregs.f_fpcntl, 12);
+    memcpy(fpu, uc->uc_filler, 100);
+    memcpy(fpu + 25, uc->uc_mcontext.fpregs.f_fpregs, 96);
+    memcpy(fpu + 49, uc->uc_mcontext.fpregs.f_fpcntl, 12);
 }
 
 static int setup_rt_frame(struct task *t, struct pt_regs *regs, int sig,

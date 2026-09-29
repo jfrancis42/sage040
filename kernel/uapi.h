@@ -991,10 +991,29 @@ struct fsck_report {
 #define __NR_kstat     1005
 #define KSTAT_IRQ      1
 #define KSTAT_STACK    3        /* kstat(KSTAT_STACK, size, &kstackstats) */
+#define KSTAT_FPSP     4        /* kstat(KSTAT_FPSP, size, &fpspstats)   */
 #define KSTAT_DISK_DELAY 2      /* kstat(KSTAT_DISK_DELAY, ms, 0): a test
                                  * knob -- every disk request sleeps ms
                                  * first, to widen the windows in which
                                  * a task is asleep inside the filesystem */
+
+/*
+ * What the M68040 Floating-Point Software Package has done
+ * (kernel/fpsp/): floating-point instructions the 68040 has no silicon
+ * for, completed in software; operands of a type it cannot take
+ * (denormal, unnormal, packed decimal), handled; F-line instructions
+ * that were not floating point at all; exceptions that had to be
+ * reported to the program as a signal; and FPU state frames of a kind
+ * the package does not know. A test uses `unimp` to prove the package
+ * computed its answers rather than the CPU.
+ */
+struct fpspstats {
+    u32 unimp;
+    u32 unsupp;
+    u32 fline;
+    u32 reported;
+    u32 bad_frame;
+};
 
 /* How deep the kernel stacks have gone: measured by painting them. */
 struct kstackstats {

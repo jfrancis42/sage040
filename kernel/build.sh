@@ -72,7 +72,7 @@ bash ./abicheck.sh   || exit 1
 
 # The newest header, found once. Anything older than it is rebuilt.
 newest=""
-for h in *.h drivers/*.h fs/*.h net/*.h ../types.h ../tests/sage040.h; do
+for h in *.h drivers/*.h fs/*.h net/*.h fpsp/*.h ../types.h ../tests/sage040.h; do
     [ -f "$h" ] || continue
     if [ -z "$newest" ] || [ "$h" -nt "$newest" ]; then newest=$h; fi
 done

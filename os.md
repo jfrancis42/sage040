@@ -25,6 +25,7 @@ owns a file and what may be done with it, and nothing checks either yet.
 - [Booting](#booting)
 - [Memory](#memory)
 - [Tasks](#tasks)
+- [Floating point](#floating-point)
 - [Waiting](#waiting)
 - [Signals and job control](#signals-and-job-control)
 - [System calls](#system-calls)
@@ -371,6 +372,56 @@ The cost is real and must be respected. A *kernel* task — the shell is one
 doing either, the machine stops.
 
 ---
+
+## Floating point
+
+The MC68040's FPU has the MC68881/MC68882 registers and data types, and
+only part of their instruction set in silicon: the four arithmetic
+operations, `fsqrt`, `fabs`, `fneg`, compares and moves. The rest --
+`fsin`, `fcos`, `ftan` and their inverses and hyperbolics, `fetox`,
+`ftwotox`, `ftentox`, `flogn`, `flog2`, `flog10`, `fint`, `fintrz`,
+`fmod`, `frem`, `fscale`, `fgetexp`, `fgetman`, `fsincos` and `fmovecr`
+(MC68040 User's Manual, Table 9-10) -- raise the *unimplemented
+floating-point instruction* exception, and operands the chip cannot take
+(denormalised, unnormalised, packed decimal) raise *unsupported data
+type*. The kernel carries **Motorola's M68040 Floating-Point Software
+Package** (`kernel/fpsp/`, `fpsp/ORIGIN.md` says where it came from and
+what was changed) as the handler for both: it computes the result to the
+MC68881's precision, puts it in the program's register, and resumes the
+program, which cannot tell the difference. So a program may use every
+MC68881 instruction, as it could on a 68030 with a 68882.
+
+`kernel/fpspglue.s` is this kernel's side of the package -- what
+Motorola's `skeleton.sa` left to each operating system:
+
+- The package reads and writes the program's memory through
+  `copy_from_user`/`copy_to_user`, which may sleep on a page fault; a
+  task switch in the middle of an emulated instruction is safe, because
+  `schedule()` saves the whole FPU -- the state frame included -- in the
+  task.
+- An arithmetic exception the program has enabled in FPCR (overflow,
+  divide by zero, ...) and the package decides is real becomes
+  **SIGFPE**; an F-line instruction that is not floating point at all
+  becomes **SIGILL**. Both arrive through the ordinary signal path, on
+  the 68040's format $3 or $0 frames.
+- `kstat(KSTAT_FPSP)` counts what the package did: instructions
+  completed, operands handled, exceptions reported.
+
+A task's FPU save area gives the state frame 100 bytes, because a real
+68040 can FSAVE a 100-byte busy frame when a task is switched out with
+an exception pending.
+
+**Under QEMU** the transcendentals are computed by QEMU itself, as it
+does for every m68k CPU, and the package is not reached -- unless the
+CPU is `-cpu m68040,fpsp-trap=on`, a property of this tree's QEMU patch
+that makes it trap exactly as the silicon does. `kernel/fpsptest.sh`
+boots both ways and checks every function against the host's libm, and
+checks that with the property on it was the package that computed them.
+What QEMU cannot show is the SIGFPE path: it raises no floating-point
+arithmetic exception whatever FPCR enables.
+
+A ulib program gets these as `<math.h>` (`lib/math.h`, the instructions
+themselves); a picolibc program has picolibc's libm.
 
 ## Waiting
 
@@ -1123,6 +1174,7 @@ drive it over its serial line.
 | `kernel/cryptotest.sh` | 4 | ChaCha20 and BLAKE2s against the RFCs, built for the host |
 | `kernel/fstest.sh` | 69 | the filesystem, names of any shape included, and a file past what one indirect block reaches -- verified with the host's debugfs and e2fsck |
 | `kernel/apitest.sh` | 376 | the system call surface a ported program expects |
+| `kernel/fpsptest.sh` | 7 | the 68040's missing FPU instructions: 59 results from Motorola's FPSP (`fpsp-trap=on`) and from QEMU, each against the host's libm; two at once; F-line as SIGILL |
 | `kernel/edittest.sh` | 41 | the line editor, history, job control, command lists, scripts, shutdown |
 | `kernel/vmtest.sh` | 18 | what a program cannot touch |
 | `kernel/pagetest.sh` | 51 | demand paging, copy-on-write, swap, and running out of memory |
@@ -1250,7 +1302,9 @@ slot belongs to a frame, and that the
 kernel writes user pages by physical address, so `read(2)` filling a
 buffer sets no `M` bit at all.
 
-**No floating point in the kernel.** Programs may use the FPU; `cube`
-does.
+**No floating point in the kernel** -- of its own. The FPSP computes
+on the FPU in supervisor mode, but on behalf of the program whose
+instruction trapped, in that program's registers (see "Floating
+point").
 
 `design.md` keeps the list of what is planned, and what each would take.
