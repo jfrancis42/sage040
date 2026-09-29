@@ -1237,6 +1237,20 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         return current->pid;
 
     /*
+     * The thread pointer (task.h, `tp`): Linux/m68k's pair, which is
+     * all thread-local storage on a CPU with no register for it has.
+     * Any value is accepted, as Linux accepts it -- it is only ever
+     * handed back to the same thread. get_thread_area is on the path of
+     * every __thread access, so it is kept to this.
+     */
+    case __NR_set_thread_area:
+        current->tp = a1;
+        return 0;
+
+    case __NR_get_thread_area:
+        return (s32)current->tp;
+
+    /*
      * The word to clear and wake when this thread ends, which is what a
      * joiner sleeps on. Returns the caller's own tid, as Linux does.
      */

@@ -339,11 +339,15 @@ is identified by its address space and address, which is exact because
 nothing shares memory between address spaces.
 
 The C library's pthread layer is described in
-[`libc/README.md`](libc/README.md). Two things about it are properties
-of the machine rather than of the library: **there is no thread
-register**, so `__thread` does not work and `pthread_self()` finds a
-thread by the stack it is standing on, and `errno` is a call into the
-thread's own descriptor for the same reason.
+[`libc/README.md`](libc/README.md). **There is no thread register**, so
+the kernel keeps each task's thread pointer (`tp` in `task.h`), as
+Linux/m68k does: `set_thread_area` and clone's `CLONE_SETTLS` set it,
+fork keeps it, exec clears it, and `get_thread_area` is how
+`__m68k_read_tp` -- which gcc calls for every `__thread` access --
+reads it. That makes thread-local storage a system call per function
+that uses it, which is fine for `__thread` and too slow for
+`pthread_self()`, which still finds a thread by the stack it is
+standing on.
 
 exit_group(2) ends every thread, which is what a C library's `exit()`
 calls; `execve` ends every thread but the one calling it, as POSIX says.
@@ -1212,6 +1216,14 @@ library, binds every symbol before `main`, and jumps to the program.
 The editors in `ports/` are built that way. `programmer-guide.md` has
 the details, and why each is as it is.
 
+`ld.so` also lays out **thread-local storage** -- the program's and every
+start-time library's, in one block per thread, in Linux/m68k's layout --
+and stays in the process afterwards, so that **`dlopen`** can load a
+library, its dependencies and its TLS while the program runs. The C
+library reaches it through a table `ld.so` hands it at start
+(`sage040-dl.h`). Every library is global and none is ever unloaded, as
+in musl; `libc/README.md` has the rest.
+
 `crt0.s` reads `argc` and `argv` at `4(%sp)` and `8(%sp)`, not 0 and 4 —
 the kernel enters a program with `jsr`, which pushes a return address
 first. Getting that wrong gives a plausible-looking garbage `argc` and a
@@ -1292,6 +1304,7 @@ drive it over its serial line.
 | `kernel/devtest.sh` | 41 | interrupts, the filesystem under concurrency, the limits, the NVRAM, `mmap` of the framebuffer |
 | `kernel/libctest.sh` | 255 | picolibc and the POSIX layer added to it |
 | `kernel/sotest.sh` | 126 | shared libraries, `ld.so`, and the sharing of their pages |
+| `kernel/tlstest.sh` | 46 | `__thread`, static and dynamic: initial values, a fresh copy per thread, alignment, fork; a start-time library's TLS reached two ways that must agree; `dlopen` of a library with TLS, a dependency and a constructor, its TLS made per thread on first use; refusal and rollback of an initial-exec TLS library; `dlsym` scopes, `dladdr`, `dl_iterate_phdr`, `dlerror` |
 | `kernel/fscktest.sh` | 23 | `fsck`, against seven kinds of damage made on the host, each repaired and then agreed with by e2fsck |
 | `kernel/fattest.sh` | 10 | the FAT16 fallback, which is no longer the machine's own filesystem |
 | `tools/fsimgtest.sh` | 40 | the host's end of the disk, which every other suite stages its files through |
@@ -1374,22 +1387,9 @@ which is wrong for a command with `-h`, `-k` and `-i`. It runs
 -- which is what keeps it useful on a disk whose filesystem is the
 thing being investigated.
 
-**No `dlopen`.** `ld.so` resolves what a program was linked against and
-stops, so a library cannot be opened by name at run time. libffi is built
-and works, and Python's `ctypes` still cannot be built, because
-`_ctypes.c` wants `<dlfcn.h>`. This is the loader's missing feature, not
-the library's.
-
-**No thread-local storage.** The 68040 has no thread pointer register, so
-`__thread` compiles to a call to `__m68k_read_tp` that nothing provides.
-Giving the system real TLS means PT_TLS in `ld.so`, a per-thread block
-and that function in the C library. Software that uses `__thread` for an
-optimisation -- bfd does, for one variable -- falls back to a global.
-
-**A fault's own signal cannot be caught.** `SIGSEGV` from an access fault
-ends the program: the 68040's access-fault frame cannot be redirected to a
-handler in place. Every other signal works, including `SA_SIGINFO` with
-Linux/m68k's `siginfo` and `ucontext`, and `sigaltstack`.
+**No library is ever unloaded.** `dlclose` counts and returns; the
+library stays, as in musl. And a library that reaches its TLS
+initial-exec cannot be `dlopen`ed after start, only linked.
 
 **One filesystem, one partition, one network interface.** The static
 limits that were constants are larger now -- 64 tasks, 64 descriptors

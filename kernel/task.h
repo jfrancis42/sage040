@@ -132,6 +132,15 @@ struct task {
      * thread's last act in the kernel is to clear it and wake.
      */
     u32   clear_child_tid;
+    /*
+     * THE THREAD POINTER, for thread-local storage. The 68040 has no
+     * register for it, so -- as on Linux/m68k -- the kernel keeps it:
+     * set_thread_area() and clone's CLONE_SETTLS set it, and
+     * get_thread_area() is how __m68k_read_tp() in the C library reads
+     * it. fork keeps it (the child's memory is a copy, so its TLS is at
+     * the same address); exec clears it.
+     */
+    u32   tp;
 
     /*
      * Signals. A bitmask each, signal N in bit N-1 (SIGMASK), because

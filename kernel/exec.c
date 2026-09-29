@@ -949,6 +949,7 @@ int exec_replace(const char *path, int argc, char **argv, char **envp,
 
     /* The point of no return: the old image goes. */
     current->as = as;
+    current->tp = 0;            /* the old program's TLS is gone with it */
     vm_switch(as);
     vm_destroy(old);
     vm_ready(as);

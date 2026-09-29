@@ -227,7 +227,13 @@ cp -r "$HERE/net/include/." "$PREFIX/include/"
 # install (the overlay puts them where the build finds them).
 cp "$HERE/picolibc/libc/include/sys/utsname.h" "$PREFIX/include/sys/"
 cp "$HERE/picolibc/libc/include/stdio_ext.h" "$HERE/picolibc/libc/include/syslog.h" \
-   "$HERE/picolibc/libc/include/shadow.h" "$PREFIX/include/"
+   "$HERE/picolibc/libc/include/shadow.h" "$HERE/picolibc/libc/include/dlfcn.h" \
+   "$HERE/picolibc/libc/include/link.h" "$PREFIX/include/"
+# -ldl: dlopen and the rest are in libc itself, as in glibc 2.34 and
+# musl, but a great many configure scripts and Makefiles still say -ldl.
+# An empty archive makes that true without meaning anything.
+rm -f "$PREFIX/lib/libdl.a"
+"$BIN/m68k-elf-ar" rcs "$PREFIX/lib/libdl.a"
 cp "$HERE/picolibc/libc/include/sys/random.h" "$HERE/picolibc/libc/include/sys/sysmacros.h" \
     "$PREFIX/include/sys/"
 

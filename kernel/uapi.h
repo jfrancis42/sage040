@@ -1623,6 +1623,8 @@ struct sigcontext {
 #define __NR_faccessat     300
 #define __NR_dup3          326
 #define __NR_pipe2         327
+#define __NR_get_thread_area 333
+#define __NR_set_thread_area 334
 #define __NR_prlimit64     339
 #define __NR_getrandom     352
 #define __NR_statx         379

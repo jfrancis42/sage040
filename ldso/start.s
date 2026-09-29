@@ -45,3 +45,34 @@ dl_syscall:
         movem.l (%sp)+,%d2-%d5
         rts
         .size   dl_syscall, . - dl_syscall
+
+| ---------------------------------------------------------------------
+| dl_setjmp / dl_longjmp: a failure inside dlopen() has to come back to
+| dlopen and be an error, not end the process the way it does while the
+| program is starting. The registers the calling convention preserves,
+| the stack pointer among them, and the return address -- which is put
+| back on the stack at the far end, because the slot it was in belongs
+| to calls made since.
+|
+|   int  dl_setjmp(unsigned long buf[13]);     0, or the longjmp value
+|   void dl_longjmp(unsigned long buf[13], int val);    val must be > 0
+| ---------------------------------------------------------------------
+        .globl  dl_setjmp
+        .type   dl_setjmp,@function
+dl_setjmp:
+        move.l  4(%sp),%a0
+        movem.l %d2-%d7/%a2-%a7,(%a0)   | 12 registers, 48 bytes
+        move.l  (%sp),48(%a0)           | where to return to
+        moveq   #0,%d0
+        rts
+        .size   dl_setjmp, . - dl_setjmp
+
+        .globl  dl_longjmp
+        .type   dl_longjmp,@function
+dl_longjmp:
+        move.l  4(%sp),%a0
+        move.l  8(%sp),%d0
+        movem.l (%a0),%d2-%d7/%a2-%a7   | the stack as dl_setjmp saw it
+        move.l  48(%a0),(%sp)
+        rts
+        .size   dl_longjmp, . - dl_longjmp

@@ -35,7 +35,10 @@
 
 /*
  * int __clone(int (*fn)(void *), void *stack_top, int flags, void *arg,
- *             int *ptid, int *ctid);
+ *             int *ptid, int *ctid, void *tls);
+ *
+ * `tls` is the new thread's thread pointer, which the kernel sets when
+ * flags has CLONE_SETTLS (Linux/m68k's order: it goes in d5).
  *
  * WHY THIS IS ASSEMBLY. clone() returns twice, like fork, but the second
  * return is on a DIFFERENT STACK -- the one being handed to the new
@@ -83,7 +86,7 @@ __clone:
         move.l  %a1,%d2                 | child stack
         move.l  %d3,%d3                 | ptid (already there)
         move.l  %d4,%d4                 | ctid (already there)
-        sub.l   %d5,%d5                 | tls: none, see pthread.c
+        move.l  44(%sp),%d5             | tls
         trap    #0
 
         tst.l   %d0

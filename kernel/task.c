@@ -415,6 +415,7 @@ struct task *task_fork(struct pt_regs *regs)
     t->sid = p->sid;
     t->nice = p->nice;
     t->ss_sp = p->ss_sp;        /* the alternate stack is in the copy */
+    t->tp = p->tp;              /* and so is its thread-local storage */
     t->ss_size = p->ss_size;
     fd_fork(t, p);
     task_cwd_inherit(t, p);
@@ -447,9 +448,10 @@ struct task *task_fork(struct pt_regs *regs)
  * before calling, and what runs first in the new thread is the few
  * instructions after the trap.
  *
+ * CLONE_SETTLS gives the new thread its thread pointer (see `tp` in
+ * task.h), which is what makes its thread-local storage its own.
+ *
  * WHAT IS REFUSED, and why it is refused rather than approximated:
- * CLONE_SETTLS, because this system has no thread register and its
- * pthread layer finds a thread's own block from its stack pointer;
  * CLONE_PARENT, CLONE_PTRACE, CLONE_VFORK and the namespace flags,
  * because none of them mean anything here. A combination that is not
  * fork and is not a thread gets -EINVAL, which is a great deal better
@@ -459,7 +461,7 @@ struct task *task_fork(struct pt_regs *regs)
                           CLONE_SIGHAND | CLONE_THREAD)
 #define CLONE_OPTIONAL   (CLONE_PARENT_SETTID | CLONE_CHILD_SETTID | \
                           CLONE_CHILD_CLEARTID | CLONE_DETACHED | \
-                          CLONE_SYSVSEM)
+                          CLONE_SYSVSEM | CLONE_SETTLS)
 
 struct task *task_clone(struct pt_regs *regs, u32 flags, u32 child_stack,
                         u32 ptid, u32 ctid, u32 tls, int *err)
@@ -480,14 +482,12 @@ struct task *task_clone(struct pt_regs *regs, u32 flags, u32 child_stack,
         t = task_fork(regs);
         if (!t) {
             *err = (task_count() >= TASK_MAX) ? -EAGAIN : -ENOMEM;
+        } else if (flags & CLONE_SETTLS) {
+            t->tp = tls;
         }
         return t;
     }
 
-    if (tls) {
-        *err = -EINVAL;         /* no thread register: see above */
-        return 0;
-    }
     if ((flags & CLONE_THREAD_SET) != CLONE_THREAD_SET ||
         (flags & ~(u32)(CLONE_THREAD_SET | CLONE_OPTIONAL | CLONE_CSIGNAL))) {
         *err = -EINVAL;
@@ -511,6 +511,10 @@ struct task *task_clone(struct pt_regs *regs, u32 flags, u32 child_stack,
         *err = -ENOMEM;
         return 0;
     }
+
+    /* Its own thread-local storage, if it was given some; otherwise the
+     * caller's pointer, as Linux leaves it. */
+    t->tp = (flags & CLONE_SETTLS) ? tls : p->tp;
 
     /* The three things it shares rather than copies. */
     t->as = vm_share(p->as);

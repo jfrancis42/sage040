@@ -9,7 +9,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-PROGS := libctest inettest posixtest cryptest threadtest ptytest
+PROGS := libctest inettest posixtest cryptest threadtest ptytest tlstest
 
 include $(TOPDIR)/libc/libc.mk
 
@@ -35,6 +35,23 @@ libsot2.so: libsot.c $(SAGE_LIBC)/lib/libc.so
 libsot3.so: libsot.c $(SAGE_LIBC)/lib/libc.so
 	$(CC) $(SO_CFLAGS) -DSOT_VALUE=3 -DSOT_NO_BUMP $(SO_LDFLAGS) -Wl,-soname,libsot.so $< -lc -o $@
 
+# tlstest (tlstest.sh): TLS static and dynamic, and dlopen. libtlsa is
+# linked in; libtlsb, which needs libtlsc, and libtlsie are dlopened.
+TLS_LIBS := libtlsa.so libtlsb.so libtlsc.so libtlsie.so
+libtlsa.so: tlsa.c $(SAGE_LIBC)/lib/libc.so
+	$(CC) $(SO_CFLAGS) $(SO_LDFLAGS) -Wl,-soname,libtlsa.so $< -lc -o $@
+libtlsc.so: tlsc.c $(SAGE_LIBC)/lib/libc.so
+	$(CC) $(SO_CFLAGS) $(SO_LDFLAGS) -Wl,-soname,libtlsc.so $< -lc -o $@
+libtlsb.so: tlsb.c libtlsc.so $(SAGE_LIBC)/lib/libc.so
+	$(CC) $(SO_CFLAGS) $(SO_LDFLAGS) -Wl,-soname,libtlsb.so $< -L. -ltlsc -lc -o $@
+libtlsie.so: tlsie.c $(SAGE_LIBC)/lib/libc.so
+	$(CC) $(SO_CFLAGS) -ftls-model=initial-exec $(SO_LDFLAGS) \
+	    -Wl,-soname,libtlsie.so $< -lc -o $@
+tlstest.dyn: tlstest.c libtlsa.so $(DYN_DEPS)
+	$(CC) $(CFLAGS) -DDYNAMIC $(DYN_LDFLAGS) $(LIBC_DIR)/crt0-dyn.s $< -L. -ltlsa $(DYN_LDLIBS) -o $@
+	@$(SIZE) $@
+tls: tlstest tlstest.dyn $(TLS_LIBS)
+
 sotest: sotest.c libsot.so $(DYN_DEPS)
 	$(CC) $(CFLAGS) $(DYN_LDFLAGS) $(LIBC_DIR)/crt0-dyn.s $< -L. -lsot $(DYN_LDLIBS) -o $@
 	@$(SIZE) $@
@@ -50,4 +67,5 @@ cryptest: cryptest.c ../../kernel/crypto.c ../../kernel/crypto.h $(STATIC_DEPS)
 
 clean: clean-so
 clean-so:
-	rm -f libsot.so libsot2.so libsot3.so sotest libctest.dyn cryptest cryptest.c
+	rm -f libsot.so libsot2.so libsot3.so sotest libctest.dyn cryptest cryptest.c \
+	    tlstest.dyn $(TLS_LIBS)

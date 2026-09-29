@@ -87,6 +87,8 @@ apps/winsize
 libc/test/libctest
 libc/test/libctest.dyn
 libc/test/sotest
+libc/test/tlstest
+libc/test/tlstest.dyn
 libc/test/*.so
 ldso/ld.so
 system/fsck

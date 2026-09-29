@@ -121,15 +121,16 @@ size and stack address.
 An uncontended lock is one `cas.l` and no system call: a futex is only
 entered when there is something to wait for.
 
-Three things are deliberately absent.
+Each thread has its own thread-local storage: `pthread_create` gives it
+a copy of every module's TLS (`tls.c`) and `CLONE_SETTLS` its thread
+pointer.
+
+Two things are deliberately absent.
 
 - **`pthread_cancel` answers ENOSYS.** Cancellation needs cancellation
   points throughout the library, and half of them is worse than none
   -- a program that believes it can cancel a thread blocked in a call
   that never checks is worse off than one that knows it cannot.
-- **No compiler thread-local storage.** `__thread` does not work and
-  `CLONE_SETTLS` is refused rather than accepted and ignored. See the
-  note below.
 - **No realtime scheduling attributes.** There is one policy, and
   `nice(2)` is how a program asks for less of the processor.
 
@@ -151,16 +152,34 @@ Three things are deliberately absent.
   termcap from them.
 - **Threads are real**, and this line used to say they were not.
   picolibc is built with `__PICOLIBC_HAS_THREADS__` and
-  `-Derrno-function=__errno_location`, so `errno` is a call rather than
-  a global: there is no thread-local storage on m68k to put one in.
-  `pthread_self()` works by scanning the stack ranges, the CPU having
-  no thread pointer register.
-- **`__thread` does not work**, for that same reason: the compiler
-  emits a call to `__m68k_read_tp` and nothing provides one. Software
-  that uses it as an optimisation (bfd, for one variable) has to fall
-  back to a global -- `ac_cv_tls=none` is the usual way to say so to a
-  configure script, and it must be EXPORTED, since a subdirectory's
-  configure runs later with a cache file of its own.
+  `-Derrno-function=__errno_location`, so `errno` is a call into the
+  thread's descriptor rather than a TLS variable -- it was built that
+  way before there was TLS, and works. `pthread_self()` works by
+  scanning the stack ranges: reading the thread pointer is a system
+  call (below), too slow for something on every lock.
+- **`__thread` works, and costs a system call per access.** The 68040
+  has no thread pointer register, so -- as on Linux/m68k -- the kernel
+  keeps it and `__m68k_read_tp` reads it with `get_thread_area`. gcc
+  calls that once per function that touches TLS, not once per access,
+  but it is a trap each time: use a local copy in a hot loop. The layout
+  is Linux/m68k's (TLS variant I, thread pointer at the block + 0x7000;
+  `sage040-dl.h`), since the linker writes offsets against it. Static
+  programs get theirs from `crt0.s` (`__libc_init_tls`), dynamic ones
+  from `ld.so`. `ac_cv_tls=none`, which ports used to be given, is no
+  longer needed.
+- **`dlopen`, `dlsym`, `dlclose`, `dlerror`, `dladdr` and
+  `dl_iterate_phdr` are in libc itself** (`dl.c`), as in glibc 2.34 and
+  musl; `-ldl` links an empty archive so that build systems that say it
+  still work. The work is `ld.so`'s, which stays in the process and is
+  reached through a table it hands the library at start. Differences
+  from glibc: every library is loaded `RTLD_GLOBAL` whatever is asked,
+  and **none is ever unloaded** -- `dlclose` counts and returns 0, as in
+  musl; a library whose TLS is reached initial-exec (`-ftls-model=
+  initial-exec`, or `static __thread` in a library built without
+  `-fPIC`) can be linked at start but not `dlopen`ed later, because it
+  needs room in the static block every thread already has; `dlerror`'s
+  message is per process, not per thread; and `dlopen` in a STATIC
+  program fails with a message saying so.
 - **`crypt(3)` does not exist.** Nothing here can verify a password,
   which is why ssh authenticates by public key.
 - **A function's address is canonical**, as C requires: a dynamic

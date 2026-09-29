@@ -302,9 +302,11 @@ search for start files. `make -C ports/gcc install` and
 
 **Cache variables have to be exported**, not passed as configure
 arguments: a subdirectory's configure is run later, by `make`, with a
-cache file of its own. `ac_cv_tls=none` is needed because this system
-has no thread-local storage and binutils tests for it by *compiling*
-`thread_local int x;` and never linking it.
+cache file of its own. `ac_cv_tls=none` was needed while this system
+had no thread-local storage, because binutils tests for it by
+*compiling* `thread_local int x;` and never linking it; it has TLS now
+(`kernel/tlstest.sh`), and the setting can go the next time binutils is
+rebuilt.
 
 **Tools under the target's own name.** `--target=m68k-unknown-elf` makes
 gcc's build look for `m68k-unknown-elf-gcc` and `-as` when it needs to

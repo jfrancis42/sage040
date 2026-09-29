@@ -28,6 +28,9 @@ _start:
         move.l  (%a0),-(%sp)            |   and getprogname (posix-more.c)
         jsr     __sage040_progname
         addq.l  #4,%sp
+        | Thread-local storage before any constructor, which may use it.
+        | A dynamic program's was made by ld.so, so crt0-dyn has no call.
+        jsr     __libc_init_tls
         jsr     __libc_init_array
         move.l  12(%sp),-(%sp)          | envp
         move.l  12(%sp),-(%sp)          | argv (the stack moved by 4)

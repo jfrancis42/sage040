@@ -52,12 +52,16 @@
  *    instruction, so it is also atomic against the timer interrupt --
  *    which is the only thing that can interrupt a thread here.
  *
- * 3. THERE IS NO THREAD REGISTER. m68k has none to spare and this system
- *    has no thread-local storage in the compiler, so pthread_self() finds
- *    the current thread by looking for the descriptor whose stack the
- *    stack pointer is standing in. A short search over at most 64 entries,
- *    and the reason __thread does not work while pthread_getspecific does.
- *    The main thread is the one that matches nothing.
+ * 3. THERE IS NO THREAD REGISTER. m68k has none to spare, so the thread
+ *    pointer lives in the kernel and reading it is a system call
+ *    (__m68k_read_tp). That is fine for __thread, which every thread now
+ *    has (tls.c: each thread is given its own block, and CLONE_SETTLS its
+ *    pointer), and too slow for pthread_self(), which is on every lock
+ *    and every errno -- so pthread_self() still finds the current thread
+ *    by looking for the descriptor whose stack the stack pointer is
+ *    standing in: a short search over at most 64 entries, usually
+ *    answered by the one before. The main thread is the one that
+ *    matches nothing.
  *
  * WHAT THIS DELIBERATELY DOES NOT DO: cancellation. Unwinding a thread
  * from wherever it happens to be needs cancellation points throughout the
@@ -73,6 +77,7 @@
 #include "pthread.h"
 #include <sched.h>
 #include "semaphore.h"
+#include "sage040-dl.h"
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
@@ -190,6 +195,7 @@ struct __pthread {
     unsigned long  lo, hi;      /* its stack, for pthread_self()        */
     unsigned long  guard;
     int            err;         /* this thread's errno                 */
+    void          *tls;         /* its TLS block's TCB (tls.c), ours   */
     void          *specific[PTHREAD_KEYS_MAX];
     char           name[16];
 };
@@ -1076,7 +1082,7 @@ pthread_attr_getschedparam(const pthread_attr_t *a, struct sched_param *p)
 }
 
 extern int __clone(int (*fn)(void *), void *stack_top, int flags, void *arg,
-                   int *ptid, int *ctid);
+                   int *ptid, int *ctid, void *tls);
 
 #define CLONE_VM             0x00000100
 #define CLONE_FS             0x00000200
@@ -1085,6 +1091,7 @@ extern int __clone(int (*fn)(void *), void *stack_top, int flags, void *arg,
 #define CLONE_THREAD         0x00010000
 #define CLONE_CHILD_CLEARTID 0x00200000
 #define CLONE_PARENT_SETTID  0x00100000
+#define CLONE_SETTLS         0x00080000
 
 /* Free the stack of any detached thread that has finished. A detached
  * thread cannot free its own stack -- it is standing on it -- so the
@@ -1105,6 +1112,7 @@ reap_detached(void)
             if (t->stack) {
                 munmap(t->stack, t->stacksize);
             }
+            __sage040_tls_free(t->tls);
             memset(t, 0, sizeof(*t));
         }
     }
@@ -1167,6 +1175,18 @@ pthread_create(pthread_t *thread, const pthread_attr_t *attr,
         t->stack = stack;
     }
 
+    /* Its thread-local storage: a copy of every module's initial
+     * values, and the pointer the kernel gives it (tls.c). */
+    t->tls = __sage040_tls_alloc();
+    if (!t->tls) {
+        if (t->stack) {
+            munmap(t->stack, size);
+        }
+        memset(t, 0, sizeof(*t));
+        pthread_mutex_unlock(&table_lock);
+        return EAGAIN;
+    }
+
     memset(t->specific, 0, sizeof(t->specific));
     t->start = start;
     t->arg = arg;
@@ -1187,7 +1207,8 @@ pthread_create(pthread_t *thread, const pthread_attr_t *attr,
     t->used = 1;
 
     flags = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND |
-            CLONE_THREAD | CLONE_CHILD_CLEARTID | CLONE_PARENT_SETTID;
+            CLONE_THREAD | CLONE_CHILD_CLEARTID | CLONE_PARENT_SETTID |
+            CLONE_SETTLS;
 
     /*
      * The stack the thread starts on is the TOP of the block, aligned:
@@ -1195,7 +1216,8 @@ pthread_create(pthread_t *thread, const pthread_attr_t *attr,
      * access in that thread slower and some of them wrong.
      */
     tid = __clone(thread_start, (char *)stack + (size & ~(size_t)3),
-                  flags, t, (int *)&t->tid, (int *)&t->tid);
+                  flags, t, (int *)&t->tid, (int *)&t->tid,
+                  (char *)t->tls + DL_TLS_TP_OFFSET);
     if (tid < 0) {
         int err = errno;
 
@@ -1203,6 +1225,7 @@ pthread_create(pthread_t *thread, const pthread_attr_t *attr,
         if (t->stack) {
             munmap(t->stack, size);
         }
+        __sage040_tls_free(t->tls);
         memset(t, 0, sizeof(*t));
         pthread_mutex_unlock(&table_lock);
         return err == EAGAIN ? EAGAIN : err;
@@ -1254,6 +1277,7 @@ pthread_join(pthread_t t, void **value)
     if (t->stack) {
         munmap(t->stack, t->stacksize);
     }
+    __sage040_tls_free(t->tls);
     memset(t, 0, sizeof(*t));
     return 0;
 }

@@ -84,6 +84,26 @@ SECTIONS {
     } > USER
     .data.rel.ro . : { *(.data.rel.ro .data.rel.ro.*) } > USER
 
+    /*
+     * THREAD-LOCAL STORAGE: the initial image of a thread's variables,
+     * which ld turns into the program's PT_TLS. Nothing reads it where
+     * it lies; each thread gets a copy (libos/.../m68k/tls.c), found
+     * through the symbols below, since a static program has no loader
+     * to read its program headers. .tbss takes no room here -- ld does
+     * not advance past a TLS .bss -- only in each thread's copy.
+     */
+    .tdata . : {
+        __tls_template_start = .;
+        *(.tdata .tdata.* .gnu.linkonce.td.*)
+    } > USER
+    .tbss . : {
+        *(.tbss .tbss.* .gnu.linkonce.tb.*) *(.tcommon)
+        __tls_template_end = .;
+    } > USER
+    __tls_template_filesz = SIZEOF(.tdata);
+    __tls_template_memsz = __tls_template_end - __tls_template_start;
+    __tls_template_align = MAX(ALIGNOF(.tdata), ALIGNOF(.tbss));
+
     .data . : { *(.data .data.*) } > USER
     .bss . : {
         . = ALIGN(4);
