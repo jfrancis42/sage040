@@ -33,6 +33,25 @@ void textcache_forget_path(const char *path);
 void textcache_forget_all(void);
 
 void textcache_stats(struct tc_stats *out);
+/*
+ * MAP_SHARED. The page every shared mapping of that page of the file
+ * gets, with a reference for the caller, or 0; `writable` marks it
+ * dirty. vm.c reports each further mapping of it (fork), each one that
+ * becomes writable (mprotect) and each one that goes; the last to go
+ * writes it back. msync is textcache_sync_page; fsync, and read() and
+ * write() and truncate before they act, textcache_sync_file /
+ * textcache_before_io; write() and truncate after,
+ * textcache_after_change, which reads the shared pages in again.
+ */
+struct file;
+u32  textcache_get_shared(int fd, u32 off, int writable);
+void textcache_share_dup(u32 pa);
+void textcache_share_dirty(u32 pa);
+void textcache_share_release(u32 pa);
+int  textcache_sync_page(u32 pa);
+int  textcache_sync_file(struct file *f);
+void textcache_before_io(struct file *f);
+void textcache_after_change(struct file *f);
 
 /* Pages only the cache holds: memory that is free for the asking,
  * which sysinfo reports as bufferram and `free` as cache. */

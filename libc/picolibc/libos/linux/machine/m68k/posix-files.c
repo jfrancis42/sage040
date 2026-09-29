@@ -364,3 +364,25 @@ mkfifoat(int dirfd, const char *path, mode_t mode)
 {
     return mknodat(dirfd, path, (mode & 07777) | S_IFIFO, 0);
 }
+
+/*
+ * pread and pwrite: read() and write() at an offset, leaving the file's
+ * position alone. Linux/m68k's pread64/pwrite64, whose 64-bit offset is
+ * two registers, high word first. The declarations have always been in
+ * <sys/unistd.h>; the functions were missing, so a program that used
+ * them failed to link -- and one whose configure tested for them fell
+ * back to lseek and read, which is not atomic between threads.
+ */
+ssize_t
+pread(int fd, void *buf, size_t n, off_t off)
+{
+    return (ssize_t)syscall(LINUX_SYS_pread64, fd, buf, n,
+                            off < 0 ? -1L : 0L, (long)off);
+}
+
+ssize_t
+pwrite(int fd, const void *buf, size_t n, off_t off)
+{
+    return (ssize_t)syscall(LINUX_SYS_pwrite64, fd, buf, n,
+                            off < 0 ? -1L : 0L, (long)off);
+}

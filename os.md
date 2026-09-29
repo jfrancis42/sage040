@@ -249,6 +249,19 @@ two things use it:
   when the table is full a page only the cache still holds is given up.
 - **`fork`**, which shares every page neither side can write instead of
   copying it.
+- **`MAP_SHARED` of a file**, whose pages are the text cache's too: every
+  mapping of page N of the file, in any process, is the same physical
+  page, writable if the mapping is, so a store is seen by all of them at
+  once. Such a page is marked in each descriptor (`DESC_SW_SHARED`), so
+  fork shares it instead of copying it, mprotect never copies it, and
+  reclaim never swaps it -- it belongs to the file. It goes back to the
+  file on `msync`, `fsync`, the last unmap and exit, and the cache holds
+  the file open meanwhile, so a mapping outlives its descriptor and the
+  file's name. `read()` and `write()` agree with it: both write dirty
+  shared pages back first, and `write()` reads them in again after.
+  **Dirty is conservative**: a page is written back if a writable
+  mapping of it has existed, modified or not, because nothing can find
+  every descriptor of a shared page to read the MMU's modified bit.
 
 Nothing in the fault path knows about any of this, and nothing needs
 to: the only way a page becomes writable is `vm_protect()`, and that
@@ -1306,6 +1319,7 @@ drive it over its serial line.
 | `kernel/devtest.sh` | 41 | interrupts, the filesystem under concurrency, the limits, the NVRAM, `mmap` of the framebuffer |
 | `kernel/libctest.sh` | 255 | picolibc and the POSIX layer added to it |
 | `kernel/sotest.sh` | 126 | shared libraries, `ld.so`, and the sharing of their pages |
+| `kernel/shmaptest.sh` | 21 | `MAP_SHARED` of a file against read() and write(), a forked child, another process, a second mapping and `/proc/self/maps`; msync, munmap and exit writing back; truncate; a mapping outliving its name; and a file written only through a mapping, checked byte for byte from the host |
 | `kernel/tlstest.sh` | 46 | `__thread`, static and dynamic: initial values, a fresh copy per thread, alignment, fork; a start-time library's TLS reached two ways that must agree; `dlopen` of a library with TLS, a dependency and a constructor, its TLS made per thread on first use; refusal and rollback of an initial-exec TLS library; `dlsym` scopes, `dladdr`, `dl_iterate_phdr`, `dlerror` |
 | `kernel/fscktest.sh` | 23 | `fsck`, against seven kinds of damage made on the host, each repaired and then agreed with by e2fsck |
 | `kernel/fattest.sh` | 10 | the FAT16 fallback, which is no longer the machine's own filesystem |

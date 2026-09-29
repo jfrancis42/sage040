@@ -29,12 +29,16 @@
  * /dev/fb0, is mapped as its own physical pages. Anything else from a
  * file is a COPY, read in at mmap() time: file pages are not demand
  * paged, so nothing could fault them in later. MAP_PRIVATE is therefore
- * exact. MAP_SHARED of a file is accepted READ-ONLY and refused with
- * PROT_WRITE: a read-only shared mapping differs from the real thing
- * only in not seeing somebody else's later writes to the file, while a
- * writable one would silently not write the file at all -- and a shared
- * mapping that does not share is the kind of lie that costs somebody a
- * day. The framebuffer is the exception because it really is shared.
+ * exact.
+ *
+ * MAP_SHARED of a file is the file's own pages, shared: textcache.c
+ * gives every mapping of a page the same physical page, so a store
+ * through one is seen through all of them at once, and writes it back
+ * to the file on msync, fsync, the last unmap and exit; read() and
+ * write() on the file see and are seen by it. It used to be accepted
+ * read-only as a private copy and refused writable -- SQLite's WAL
+ * index and every database built on shared mappings need the real
+ * thing. See textcache.c for what "dirty" can and cannot mean here.
  */
 #include "mmap.h"
 #include "vm.h"
@@ -180,8 +184,17 @@ s32 do_mmap(u32 addr, u32 len, u32 prot, u32 flags, int fd, u32 offset)
         if (!S_ISREG(st.st_mode) && !is_dev) {
             return -ENODEV;     /* a terminal, a socket: nothing to copy */
         }
-        if (type == MAP_SHARED && (prot & PROT_WRITE) && !is_dev) {
-            return -ENODEV;
+        /* Linux's rules: a mapping needs a descriptor open for reading,
+         * and a shared writable one needs it open for writing too --
+         * the mapping is a way to write the file. */
+        {
+            int acc = fd_get(fd)->flags & O_ACCMODE;
+
+            if (acc == O_WRONLY ||
+                (type == MAP_SHARED && (prot & PROT_WRITE) && !is_dev &&
+                 acc != O_RDWR)) {
+                return -EACCES;
+            }
         }
     }
 
@@ -243,6 +256,38 @@ s32 do_mmap(u32 addr, u32 len, u32 prot, u32 flags, int fd, u32 offset)
                     vm_unmap(as, va);
                 }
                 return -EINVAL;
+            }
+        }
+        return (s32)addr;
+    }
+
+    /*
+     * MAP_SHARED of a file: textcache.c's page for each, the same one in
+     * every mapping, marked so that fork shares it and release reports
+     * it (vm.c, DESC_SW_SHARED).
+     */
+    if (!anon && type == MAP_SHARED) {
+        int w = (prot & PROT_WRITE) != 0;
+
+        for (va = addr; va < addr + len; va += PAGE_SIZE) {
+            u32 pa = textcache_get_shared(fd, offset + (va - addr), w);
+
+            if (!pa || !vm_map(as, va, pa, VM_USER | VM_SHARED |
+                                           (w ? VM_WRITE : 0))) {
+                if (pa) {
+                    textcache_share_release(pa);
+                    pmm_free(pa);
+                }
+                while (va > addr) {
+                    va -= PAGE_SIZE;
+                    vm_unmap(as, va);
+                }
+                return -ENOMEM;
+            }
+        }
+        if (prot == PROT_NONE) {
+            for (va = addr; va < addr + len; va += PAGE_SIZE) {
+                vm_protect(as, va, VM_NONE);
             }
         }
         return (s32)addr;
@@ -338,6 +383,49 @@ int do_munmap(u32 addr, u32 len)
         vm_unmap(as, va);
     }
     return 0;
+}
+
+/*
+ * msync: the shared file pages in the range, back to their file. Any
+ * of MS_ASYNC and MS_SYNC does it now -- there is nothing to schedule
+ * it for later on -- and MS_INVALIDATE has nothing to invalidate, the
+ * mappings and the file's cached pages being the same pages. ENOMEM for
+ * a range with an unmapped page in it, as Linux says.
+ */
+int do_msync(u32 addr, u32 len, u32 flags)
+{
+    struct addrspace *as = current ? current->as : 0;
+    u32 va;
+    int err = 0;
+
+    if (!as) {
+        return -ENODEV;
+    }
+    if ((addr & PAGE_MASK) || (flags & ~7UL) ||
+        ((flags & 1) && (flags & 4))) {         /* MS_ASYNC with MS_SYNC */
+        return -EINVAL;
+    }
+    len = PAGE_ALIGN_UP(len);
+    if (!range_ok(addr, len)) {
+        return -ENOMEM;
+    }
+    for (va = addr; va < addr + len; va += PAGE_SIZE) {
+        if (!vm_is_mapped(as, va)) {
+            return -ENOMEM;
+        }
+    }
+    for (va = addr; va < addr + len; va += PAGE_SIZE) {
+        u32 pa = vm_shared_page(as, va);
+
+        if (pa) {
+            int r = textcache_sync_page(pa);
+
+            if (r < 0 && !err) {
+                err = -EIO;
+            }
+        }
+    }
+    return err;
 }
 
 int do_mprotect(u32 addr, u32 len, u32 prot)

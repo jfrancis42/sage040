@@ -107,6 +107,17 @@
 #define DESC_SW_COW     0x800
 #define DESC_USED       0x008           /* set by the MMU on access     */
 
+/*
+ * A page of a FILE mapped MAP_SHARED (textcache.c). On a resident
+ * descriptor, and kept on a PROT_NONE one: bit 8, U0, a "user page
+ * attribute" the 68040 drives onto its UPA0 pin and otherwise ignores,
+ * with nothing on this board listening. It is what tells fork to share
+ * the page rather than copy it, mprotect not to copy it either, reclaim
+ * never to send it to swap -- it belongs to the file -- and release to
+ * tell textcache.c that one of its mappings has gone.
+ */
+#define DESC_SW_SHARED  0x100
+
 #define PTR_TABLE_MASK  0xfffffe00UL    /* root descriptor -> pointer table */
 #define PAGE_TABLE_MASK 0xffffff00UL    /* pointer descriptor -> page table */
 #define PAGE_ADDR_MASK  0xfffff000UL    /* page descriptor -> the page      */
@@ -219,6 +230,9 @@ static int desc_has_page(u32 d)
 static void desc_release(u32 d)
 {
     if (desc_has_page(d)) {
+        if (d & DESC_SW_SHARED) {
+            textcache_share_release(d & PAGE_ADDR_MASK);    /* may write */
+        }
         pmm_free(d & PAGE_ADDR_MASK);
     } else if (d & DESC_SW_SWAP) {
         swap_free(d >> PAGE_SHIFT);
@@ -267,6 +281,9 @@ static u32 page_bits(int flags)
 {
     u32 d = PDT_RESIDENT;
 
+    if (flags & VM_SHARED) {
+        d |= DESC_SW_SHARED;
+    }
     if (!(flags & VM_USER)) {
         d |= DESC_SUPER;
     }
@@ -935,6 +952,19 @@ u32 vm_mapped_pages(struct addrspace *as)
     return n;
 }
 
+u32 vm_shared_page(struct addrspace *as, u32 va)
+{
+    u32 pt_pa = as_pagetable(as, va, 0);
+    u32 d;
+
+    if (!pt_pa) {
+        return 0;
+    }
+    d = table(pt_pa)[PAGE_INDEX(va)];
+    return ((d & DESC_SW_SHARED) && desc_has_page(d)) ? d & PAGE_ADDR_MASK
+                                                       : 0;
+}
+
 int vm_is_mapped(struct addrspace *as, u32 va)
 {
     u32 pt_pa = as_pagetable(as, va, 0);
@@ -975,8 +1005,10 @@ void vm_regions(struct addrspace *as,
         for (i = 0; i < PAGE_ENTRIES; i++, va += PAGE_SIZE) {
             u32 d = pt_pa ? table(pt_pa)[i] : 0;
             int prot = desc_prot(d);
-            int shared = prot >= 0 && (d & PDT_RESIDENT) &&
-                         pmm_refcount(d & PAGE_ADDR_MASK) == 0;
+            int shared = prot >= 0 &&
+                         ((d & DESC_SW_SHARED) ||
+                          ((d & PDT_RESIDENT) &&
+                           pmm_refcount(d & PAGE_ADDR_MASK) == 0));
 
             if (prot != cur || shared != cur_shared) {
                 if (cur >= 0 && fn(arg, start, va, cur, cur_shared)) {
@@ -1037,7 +1069,16 @@ int vm_protect(struct addrspace *as, u32 va, int flags)
      * Nothing else in the tree maps a page writable that it did not
      * just allocate, which is why this one check is enough.
      */
-    if ((flags & VM_WRITE) && !(flags & VM_NONE) && pmm_refcount(pa) > 1) {
+    /* A shared file page is the file's, in every mapping of it: made
+     * writable, it is written where it is, and textcache.c is told it
+     * may now be dirty. Never copied. */
+    if (d & DESC_SW_SHARED) {
+        flags |= VM_SHARED;
+        if ((flags & VM_WRITE) && !(flags & VM_NONE)) {
+            textcache_share_dirty(pa);
+        }
+    } else if ((flags & VM_WRITE) && !(flags & VM_NONE) &&
+               pmm_refcount(pa) > 1) {
         u32 copy = page_alloc_user();           /* may sleep */
 
         if (!copy) {
@@ -1054,7 +1095,8 @@ int vm_protect(struct addrspace *as, u32 va, int flags)
     }
 
     if (flags & VM_NONE) {
-        pt[PAGE_INDEX(va)] = pa | DESC_SW_NONE;
+        pt[PAGE_INDEX(va)] = pa | DESC_SW_NONE |
+                             ((flags & VM_SHARED) ? DESC_SW_SHARED : 0);
     } else {
         pt[PAGE_INDEX(va)] = pa | page_bits(flags | VM_USER);
     }
@@ -1230,6 +1272,14 @@ struct addrspace *vm_clone(struct addrspace *src)
             }
 
             pa = d & PAGE_ADDR_MASK;
+            /* A shared file page: the child's mapping is another shared
+             * mapping of the same page, writable or not as the parent's
+             * is -- MAP_SHARED survives fork, which is its point. */
+            if ((d & DESC_SW_SHARED) && desc_has_page(d) && pmm_ref(pa)) {
+                textcache_share_dup(pa);
+                table(dst_pt)[PAGE_INDEX(va)] = d & ~DESC_USED;
+                continue;
+            }
             /* Not RAM at all -- a device's memory, /dev/fb0 mapped: the
              * same pages in both, as they are the device's. */
             if ((d & PDT_RESIDENT) && pmm_refcount(pa) == 0) {
@@ -1454,6 +1504,7 @@ u32 vm_reclaim(u32 want)
             u32 refs = (d & PDT_RESIDENT) ? pmm_refcount(d & PAGE_ADDR_MASK) : 0;
 
             if ((d & PDT_RESIDENT) && !(d & DESC_SUPER) &&
+                !(d & DESC_SW_SHARED) &&
                 (refs == 1 || (d & DESC_SW_COW))) {
                 if (d & DESC_USED) {
                     pt[idx] = d & ~DESC_USED;

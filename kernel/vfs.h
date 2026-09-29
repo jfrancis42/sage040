@@ -179,6 +179,12 @@ int  fd_install_file(struct file *f, int flags);
 void vfs_file_set_path(struct file *f, const char *path);
 int  vfs_file_name(struct file *f, char *out, u32 size);
 int  vfs_file_stat(struct file *f, struct stat *st);
+/* At an offset, without moving the position or honouring O_APPEND. */
+s32  vfs_file_pread(struct file *f, u32 off, void *buf, u32 len);
+s32  vfs_file_pwrite(struct file *f, u32 off, const void *buf, u32 len);
+int  vfs_fsync(int fd);
+s32  fd_pread(int fd, void *buf, u32 len, u32 off);
+s32  fd_pwrite(int fd, const void *buf, u32 len, u32 off);
 
 /* `path` from the caller's working directory, absolute, with "." and
  * ".." resolved and no symbolic link followed. 0, or -errno. */

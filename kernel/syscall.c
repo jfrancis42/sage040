@@ -176,6 +176,41 @@ static s32 rw_user(int fd, u32 ubuf, u32 len, int writing)
     return total;
 }
 
+/* The same, at an offset: a page of the user's buffer at a time, each
+ * at the offset that page's bytes belong at. */
+static s32 prw_user(int fd, u32 ubuf, u32 len, u32 off, int writing)
+{
+    s32 total = 0;
+
+    if (!from_program()) {
+        return writing ? fd_pwrite(fd, (const void *)ubuf, len, off)
+                       : fd_pread(fd, (void *)ubuf, len, off);
+    }
+    while (len > 0) {
+        u32 n = len;
+        void *k = uaccess_chunk(ubuf, &n, !writing);
+        s32 got;
+
+        if (!k) {
+            return total > 0 ? total : -EFAULT;
+        }
+        pmm_ref(PAGE_ALIGN_DOWN((u32)k));       /* pinned: see rw_user */
+        got = writing ? fd_pwrite(fd, k, n, off + (u32)total)
+                      : fd_pread(fd, k, n, off + (u32)total);
+        pmm_free(PAGE_ALIGN_DOWN((u32)k));
+        if (got < 0) {
+            return total > 0 ? total : got;
+        }
+        total += got;
+        if ((u32)got < n) {
+            break;
+        }
+        ubuf += n;
+        len -= n;
+    }
+    return total;
+}
+
 /* ---------------------------------------------------------------- */
 /* The implementations                                               */
 /* ---------------------------------------------------------------- */
@@ -1700,6 +1735,18 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
     case __NR_lseek:
         return fd_lseek((int)a1, (s32)a2, (int)a3);
 
+    /*
+     * pread64 and pwrite64: the offset is 64 bits, in two registers,
+     * the high word first (Linux/m68k's order, big-endian). A file here
+     * cannot be 4 GB, so a high word is EINVAL rather than an offset.
+     */
+    case __NR_pread64:
+    case __NR_pwrite64:
+        if (a4 != 0 || (s32)a5 < 0) {
+            return -EINVAL;
+        }
+        return prw_user((int)a1, a2, a3, a5, nr == __NR_pwrite64);
+
     case __NR_ioctl:
         return do_ioctl((int)a1, a2, a3);
 
@@ -1846,6 +1893,7 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
      */
     case __NR_fsync:
     case __NR_fdatasync:
+        return vfs_fsync((int)a1);
     case __NR_sync:
         return vfs_sync();
 

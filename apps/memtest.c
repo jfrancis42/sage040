@@ -276,8 +276,11 @@ static void test_mmap(void)
     report("MAP_SHARED read-only is allowed", r > 0);
     r = syscall(__NR_mmap2, 0, PAGE, PROT_READ | PROT_WRITE, MAP_SHARED,
                 fd, 0);
-    report("MAP_SHARED with PROT_WRITE is refused with ENODEV",
-           r == -ENODEV);
+    /* Shared writable mappings exist now (kernel/shmaptest.sh); what
+     * is refused is one through a descriptor that may not write, as
+     * Linux refuses it. */
+    report("MAP_SHARED with PROT_WRITE of a read-only descriptor is EACCES",
+           r == -EACCES);
     r = syscall(__NR_mmap2, 0, PAGE, PROT_READ, MAP_PRIVATE, 0, 0);
     report("mapping a terminal is refused with ENODEV", r == -ENODEV);
     r = syscall(__NR_mmap2, 0, PAGE, PROT_READ, MAP_PRIVATE, 29, 0);

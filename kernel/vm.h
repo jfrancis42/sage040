@@ -126,6 +126,7 @@
 #define VM_WRITE    0x02        /* writable                        */
 #define VM_NOCACHE  0x04        /* device memory, not cached       */
 #define VM_NONE     0x08        /* owned but inaccessible: vm_protect */
+#define VM_SHARED   0x10        /* a file's page, MAP_SHARED: textcache.c */
 
 /*
  * WHAT EXEC PUT WHERE, kept for /proc (procfs.c): the ranges of the
@@ -255,6 +256,10 @@ void vm_unmap(struct addrspace *as, u32 va);
 
 /* Does the address space own the page at `va`, accessible or not? */
 int  vm_is_mapped(struct addrspace *as, u32 va);
+
+/* The physical page at `va` if it is a file's page mapped MAP_SHARED,
+ * else 0: what msync walks. */
+u32  vm_shared_page(struct addrspace *as, u32 va);
 
 /*
  * The owned pages of an address space as REGIONS: maximal runs of

@@ -89,6 +89,7 @@ libc/test/libctest.dyn
 libc/test/sotest
 libc/test/tlstest
 libc/test/tlstest.dyn
+libc/test/shmaptest
 libc/test/*.so
 ldso/ld.so
 system/fsck

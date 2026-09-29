@@ -16,8 +16,7 @@
  *   - There is one user, and it is root: every uid and gid is 0.
  *   - FAT has no permissions and no links: chmod succeeds and changes
  *     nothing, readlink says "not a link", symlink is refused.
- *   - Nothing is ever paged out, so mlock and friends succeed, and
- *     madvise and msync have nothing to do.
+ *   - mlock and friends succeed, and madvise has nothing to do.
  *
  * The *at calls take AT_FDCWD, absolute paths, and paths relative to
  * an open directory, which is resolved to where that directory is at
@@ -35,6 +34,7 @@
 #include "ptregs.h"
 #include "pipe.h"
 #include "vm.h"
+#include "mmap.h"
 #include "errno.h"
 #include "string.h"
 
@@ -1376,8 +1376,10 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
     }
 
     /* --- memory: nothing is ever paged out --- */
-    case __NR_madvise:
     case __NR_msync:
+        return do_msync(a1, a2, a3);
+
+    case __NR_madvise:
     case __NR_mlock:
     case __NR_munlock:
     case __NR_mlockall:

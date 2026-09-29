@@ -1391,7 +1391,9 @@ int fd_open(const char *path, int flags)
         current->files->flags[fd] = (flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
     }
     if (flags & O_TRUNC) {
-        textcache_forget_fd(fd);
+        /* Emptied: its shared pages read as zero now, the rest are
+         * forgotten. */
+        textcache_after_change(fd_get(fd));
     }
     return fd;
 }
@@ -1625,6 +1627,8 @@ s32 fd_read(int fd, void *buf, u32 len)
     if (!f->fs) {
         return f->ops->read(f, buf, len);
     }
+    /* A read sees what a shared mapping has written: textcache.c. */
+    textcache_before_io(f);
     {
         s32 r;
 
@@ -1658,7 +1662,10 @@ s32 fd_write(int fd, const void *buf, u32 len)
     {
         s32 n;
 
+        /* What shared mappings hold goes to the file before the write
+         * lands on top of it, and they read the result after. */
         if (f->fs) {
+            textcache_before_io(f);
             fs_lock();
         }
         n = f->ops->write(f, buf, len);
@@ -1667,14 +1674,121 @@ s32 fd_write(int fd, const void *buf, u32 len)
         }
 
         /* A file that changes is not what textcache.c holds of it any
-         * more. The same after a truncate, an O_TRUNC open, an unlink
-         * and a rename: every way a file's contents or its inode number
-         * can change goes through here or one of those. */
-        if (n > 0) {
-            textcache_forget_fd(fd);
+         * more: its private pages are forgotten and its shared ones read
+         * again. The same after a truncate and an O_TRUNC open; an
+         * unlink and a rename forget too. */
+        if (n > 0 && f->fs) {
+            textcache_after_change(f);
         }
         return n;
     }
+}
+
+/*
+ * Read or write at `off` without moving the file's position -- which
+ * belongs to every descriptor sharing the open file -- or appending
+ * because of O_APPEND: what textcache.c needs to fill a page and write
+ * one back. Under the filesystem lock for the whole of it, so no other
+ * task sees the position in between.
+ */
+static s32 file_pio(struct file *f, u32 off, void *buf, u32 len, int write)
+{
+    u32 pos;
+    int flags;
+    s32 n;
+
+    if (!f || !f->ops || !(write ? (void *)f->ops->write
+                                 : (void *)f->ops->read)) {
+        return -EINVAL;
+    }
+    if (f->fs) {
+        fs_lock();
+    }
+    pos = f->pos;
+    flags = f->flags;
+    f->flags &= ~O_APPEND;
+    f->pos = off;
+    n = write ? f->ops->write(f, buf, len) : f->ops->read(f, buf, len);
+    f->pos = pos;
+    f->flags = flags;
+    if (f->fs) {
+        fs_unlock();
+    }
+    return n;
+}
+
+s32 vfs_file_pread(struct file *f, u32 off, void *buf, u32 len)
+{
+    return file_pio(f, off, buf, len, 0);
+}
+
+s32 vfs_file_pwrite(struct file *f, u32 off, const void *buf, u32 len)
+{
+    return file_pio(f, off, (void *)buf, len, 1);
+}
+
+/*
+ * pread and pwrite: read() and write() at an offset, leaving the
+ * position alone -- Linux's rules for which files may (anything that
+ * can seek; ESPIPE otherwise) and the same coherence with shared
+ * mappings as read() and write() have.
+ */
+s32 fd_pread(int fd, void *buf, u32 len, u32 off)
+{
+    struct file *f = fd_get(fd);
+
+    if (!f) {
+        return -EBADF;
+    }
+    if ((f->flags & O_ACCMODE) == O_WRONLY) {
+        return -EBADF;
+    }
+    if (!f->ops->lseek || !f->ops->read || vfs_is_dir_file(f)) {
+        return vfs_is_dir_file(f) ? -EISDIR : -ESPIPE;
+    }
+    if (f->fs) {
+        textcache_before_io(f);
+    }
+    return file_pio(f, off, buf, len, 0);
+}
+
+s32 fd_pwrite(int fd, const void *buf, u32 len, u32 off)
+{
+    struct file *f = fd_get(fd);
+    s32 n;
+
+    if (!f) {
+        return -EBADF;
+    }
+    if ((f->flags & O_ACCMODE) == O_RDONLY) {
+        return -EBADF;
+    }
+    if (!f->ops->lseek || !f->ops->write) {
+        return -ESPIPE;
+    }
+    if (is_swapfile(fd)) {
+        return -ETXTBSY;
+    }
+    if (f->fs) {
+        textcache_before_io(f);
+    }
+    n = file_pio(f, off, (void *)buf, len, 1);
+    if (n > 0 && f->fs) {
+        textcache_after_change(f);
+    }
+    return n;
+}
+
+/* fsync: this file's shared pages, then everything. */
+int vfs_fsync(int fd)
+{
+    struct file *f = fd_get(fd);
+
+    if (!f) {
+        return -EBADF;
+    }
+    textcache_sync_file(f);
+    return vfs_sync();
 }
 
 s32 fd_lseek(int fd, s32 offset, int whence)
@@ -2117,16 +2231,20 @@ int vfs_ftruncate(int fd, u32 len)
     if (is_swapfile(fd)) {
         return -ETXTBSY;
     }
-    textcache_forget_fd(fd);
-    if (!f->fs) {
-        return f->ops->truncate(f, len);
-    }
+    /* What shared mappings hold goes to the file first, so that what
+     * the truncate keeps is theirs; after, they read the file again. */
+    textcache_before_io(f);
     {
         int r;
 
-        fs_lock();
+        if (f->fs) {
+            fs_lock();
+        }
         r = f->ops->truncate(f, len);
-        fs_unlock();
+        if (f->fs) {
+            fs_unlock();
+        }
+        textcache_after_change(f);
         return r;
     }
 }
