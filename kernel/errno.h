@@ -30,6 +30,7 @@
 #define EAGAIN          11      /* try again                          */
 #define EWOULDBLOCK     EAGAIN  /* the same number, as on Linux       */
 #define ENOLCK          37      /* no locks available                 */
+#define EDEADLK         35      /* the wait would never end           */
 #define ENOMEM          12      /* out of memory                      */
 #define EACCES          13      /* permission denied                  */
 #define EFAULT          14      /* bad address                        */

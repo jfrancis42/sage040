@@ -758,6 +758,36 @@ static int t_symlink(const char *target, const char *linkpath)
     return 0;
 }
 
+/* A FIFO: a node with no data, whose opening vfs.c turns into a pipe. */
+static int t_mknod(const char *path, u32 mode)
+{
+    int dir, existing, n, r;
+    const char *name;
+    u32 len;
+
+    if (!S_ISFIFO(mode)) {
+        return -EPERM;
+    }
+    r = walk_parent(path, &dir, &name, &len, &existing);
+    if (r < 0) {
+        return r;
+    }
+    if (existing >= 0) {
+        return -EEXIST;
+    }
+    n = node_alloc(S_IFIFO | (mode & 07777));
+    if (n < 0) {
+        return n;
+    }
+    r = dent_add(dir, name, len, n);
+    if (r < 0) {
+        nodes[n].used = 0;
+        return r;
+    }
+    nodes[n].nlink = 1;
+    return 0;
+}
+
 static int t_readlink(const char *path, char *out, u32 size)
 {
     int n, r = walk(path, 0, &n);
@@ -1055,6 +1085,7 @@ static struct fs_type tmpfs_type = {
     .symlink = t_symlink,
     .readlink = t_readlink,
     .lstat = t_lstat,
+    .mknod = t_mknod,
 };
 
 struct fs_type *tmpfs_fs(void)

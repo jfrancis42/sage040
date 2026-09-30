@@ -43,6 +43,7 @@ textcache.c
 swap.c
 poll.c
 events.c
+reclock.c
 pipe.c
 uaccess.c
 task.c

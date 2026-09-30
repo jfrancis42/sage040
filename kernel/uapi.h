@@ -546,6 +546,44 @@ struct statfs {
 #define F_SETFD         2
 #define F_GETFL         3
 #define F_SETFL         4       /* only O_NONBLOCK and O_APPEND change */
+#define F_DUPFD_CLOEXEC 1030    /* F_DUPFD, and FD_CLOEXEC on the new one */
+
+/*
+ * Record locks (reclock.c). fcntl's struct flock is 16 bytes; fcntl64's
+ * F_*LK64 and the open-file-description F_OFD_* calls take flock64, 24
+ * bytes on m68k, where a 64-bit member needs only 2-byte alignment.
+ */
+#define __NR_fcntl64    239
+
+#define F_GETLK         5
+#define F_SETLK         6
+#define F_SETLKW        7
+#define F_GETLK64       12
+#define F_SETLK64       13
+#define F_SETLKW64      14
+#define F_OFD_GETLK     36
+#define F_OFD_SETLK     37
+#define F_OFD_SETLKW    38
+
+#define F_RDLCK         0
+#define F_WRLCK         1
+#define F_UNLCK         2
+
+struct flock {
+    s16 l_type;
+    s16 l_whence;
+    s32 l_start;
+    s32 l_len;
+    s32 l_pid;
+};
+
+struct flock64 {
+    s16 l_type;
+    s16 l_whence;
+    s64 l_start;
+    s64 l_len;
+    s32 l_pid;
+};
 #define FD_CLOEXEC      1       /* not given to a program spawn()ed    */
 
 #define TIOCGPGRP       0x540F  /* the terminal's foreground group     */

@@ -202,6 +202,7 @@ static void put_le32(u8 *p, u32 v)
 #define EXT2_FT_UNKNOWN      0
 #define EXT2_FT_REG_FILE     1
 #define EXT2_FT_DIR          2
+#define EXT2_FT_FIFO         5
 #define EXT2_FT_SYMLINK      7
 
 /* ---------------------------------------------------------------- */
@@ -3148,6 +3149,35 @@ static int ext2_link(const char *from, const char *to)
  * Short targets go in the inode (see read_link): no block is
  * allocated, so a symlink normally costs an inode and nothing else.
  */
+/* An inode with no data: all a FIFO is on the disk. The directory
+ * entry carries its type, as e2fsck checks. */
+static int ext2_mknod(const char *path, u32 mode)
+{
+    char nm[NAME_MAX + 1];
+    u32 dir, ino, nl;
+    int last_is_dir, err;
+
+    if (!mounted) {
+        return -ENODEV;
+    }
+    if (!S_ISFIFO(mode)) {
+        return -EPERM;
+    }
+    err = path_walk(cwd_ino(), path, &dir, nm, &last_is_dir);
+    if (err != 0) {
+        return err;
+    }
+    if (last_is_dir || nm[0] == '\0') {
+        return -EEXIST;
+    }
+    nl = name_len_of(nm);
+    if (dir_lookup(dir, nm, nl, &ino, 0) == 0) {
+        return -EEXIST;
+    }
+    return make_inode(dir, nm, nl, (u16)(S_IFIFO | (mode & 07777)),
+                      EXT2_FT_FIFO, &ino);
+}
+
 static int ext2_symlink(const char *target, const char *linkpath)
 {
     char nm[NAME_MAX + 1];
@@ -4596,6 +4626,7 @@ static struct fs_type ext2_fs = {
     ext2_check,
     ext2_label,
     ext2_bmap,
+    ext2_mknod,
     0
 };
 

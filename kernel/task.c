@@ -11,6 +11,7 @@
  * is wrong is far harder to see than a simple one.
  */
 #include "task.h"
+#include "reclock.h"
 #include "vm.h"
 #include "pmm.h"
 #include "wait.h"
@@ -983,6 +984,9 @@ void task_exit(int status)
      * if this was its last holder -- the other threads of the same
      * process are still using it.
      */
+    if (t->files && t->files->refs == 1) {
+        reclock_exit(t->tgid);  /* the process's last thread: its locks */
+    }
     fdtable_put(t->files);
     t->files = 0;
 

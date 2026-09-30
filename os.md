@@ -692,6 +692,43 @@ reports the disk.
 filesystem. They used to be ignored -- every file was created 0644 --
 so a program making a private file with 0600 got one anybody could read.
 
+### FIFOs
+
+`mkfifo` makes a named pipe on the disk or in tmpfs: an inode with no
+data (type FIFO in the ext2 directory entry, which e2fsck checks), and
+opening it JOINS a pipe (`pipe.c`) -- the first open of that inode makes
+the ring, every later one shares it, and it goes when both ends have
+been closed everywhere. So two programs that share nothing but a path
+can talk.
+
+Opening waits for the other end, as POSIX says: a reader until a writer
+has opened, a writer until a reader has. `O_NONBLOCK` lets a reader
+through at once (reading end of file until a writer comes) and makes a
+writer with no reader `ENXIO`; `O_RDWR` is both ends and never waits,
+which is Linux's answer. `mknod` makes a FIFO or an empty file; a device
+node is `EPERM` (see "What it is not").
+
+### Record locks
+
+`fcntl`'s byte-range locks are real (`reclock.c`): `F_GETLK`, `F_SETLK`,
+`F_SETLKW`, their 64-bit forms, and Linux's open-file-description locks,
+`F_OFD_*`. A POSIX lock belongs to the PROCESS -- two descriptors in one
+process never conflict, and closing ANY descriptor for the file drops
+every lock the process has on it, POSIX's famous wart, which SQLite is
+written around. An OFD lock belongs to the open file, as flock()'s
+does: a dup shares it, a second `open` is a different owner even in the
+same process, and it lasts until the last close. Taking a lock over a
+range already held replaces what was there -- splitting and merging --
+which is how a read lock is upgraded and part of one released.
+`F_SETLKW` that would close a circle of processes waiting on each other
+is `EDEADLK`. Locks go when their process exits.
+
+They used to be faked in libc (`patches/32`): every lock "succeeded" and
+`F_GETLK` always said nothing was in the way, which was true only
+because nothing could lock anything. `patches/44` sends them to the
+kernel, translating picolibc's `struct flock` (its `l_type` values are
+one higher than Linux's, its `l_pid` a short).
+
 ### Waiting on everything at once: epoll, eventfd, timerfd, signalfd, inotify
 
 Linux's event descriptors, with Linux's numbers, flags and record
@@ -1398,6 +1435,8 @@ drive it over its serial line.
 | `kernel/sotest.sh` | 126 | shared libraries, `ld.so`, and the sharing of their pages |
 | `kernel/tmpfstest.sh` | 36 | tmpfs at `/tmp` and `/dev/shm`: files, holes, truncate, links, rename and `EXDEV`, the working directory, `shm_open` shared between processes, the sticky bit, and from the host: the disk's `/tmp` hidden, nothing written to it |
 | `kernel/eventtest.sh` | 102 | eventfd, timerfd, signalfd, epoll and inotify, and ppoll/pselect: counts, blocking and waking by another process, timers timed by CLOCK_MONOTONIC, signals checked gone from `sigpending`, level/edge/oneshot, one epoll over all four kinds, masks that let a signal in only during the wait, inotify on the disk and in tmpfs, queue overflow |
+| `kernel/locktest.sh` | 54 | fcntl record locks, POSIX and OFD, on the disk and in tmpfs, seen from a second process: conflicts, F_GETLK naming the holder, splitting, read locks shared, the close-drops-all wart, F_SETLKW waiting, EDEADLK, release at exit, SEEK_END and negative lengths; F_DUPFD's argument |
+| `kernel/fifotest.sh` | 38 | named pipes on the disk and in tmpfs: two processes through a path, an open that waits for the other end (timed), end of file, O_NONBLOCK and ENXIO, O_RDWR, EINTR, unlink while open; and from the host, e2fsck clean and debugfs seeing the FIFO |
 | `kernel/shmaptest.sh` | 21 | `MAP_SHARED` of a file against read() and write(), a forked child, another process, a second mapping and `/proc/self/maps`; msync, munmap and exit writing back; truncate; a mapping outliving its name; and a file written only through a mapping, checked byte for byte from the host |
 | `kernel/tlstest.sh` | 46 | `__thread`, static and dynamic: initial values, a fresh copy per thread, alignment, fork; a start-time library's TLS reached two ways that must agree; `dlopen` of a library with TLS, a dependency and a constructor, its TLS made per thread on first use; refusal and rollback of an initial-exec TLS library; `dlsym` scopes, `dladdr`, `dl_iterate_phdr`, `dlerror` |
 | `kernel/fscktest.sh` | 23 | `fsck`, against seven kinds of damage made on the host, each repaired and then agreed with by e2fsck |
@@ -1465,10 +1504,10 @@ script or data is its header, which is also how `exec` decides. Two
 different questions that a Unix answers with one bit are answered with
 two things here.
 
-**No FIFOs and no device nodes on disk.** `mkfifo` and `mknod` answer
-`EPERM`. The devices are the ones the kernel makes; a FIFO could live in
-the VFS rather than on the disk, and does not yet. Hard links and
-symlinks, which used to be in this paragraph, work -- see "Users".
+**No device nodes on disk.** `mknod` of a character or block device
+answers `EPERM`: the devices are the names the kernel makes under
+`/dev`, not inodes, so a node on the disk would name nothing. FIFOs,
+hard links and symlinks, which used to be in this paragraph, work.
 
 **No `/dev/fd`, and so no process substitution in bash.** `<(...)` needs
 either that or a FIFO.

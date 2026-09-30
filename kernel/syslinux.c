@@ -722,11 +722,14 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         return err < 0 ? err : vfs_link(path, to);
     }
 
-    /* Device nodes and FIFOs still have nowhere to live: making one
-     * needs a node type on disk that nothing here writes yet. */
+    /* FIFOs (vfs_mknod); a device node has nothing to name here. */
     case __NR_mknod:
+        err = fetch_str(path, a1, sizeof(path));
+        return err < 0 ? err : vfs_mknod(path, a2);
+
     case __NR_mknodat:
-        return -EPERM;
+        err = at_path((int)a1, a2, path);
+        return err < 0 ? err : vfs_mknod(path, a3);
 
     case __NR_getrusage: {
         struct rusage ru;

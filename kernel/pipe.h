@@ -15,6 +15,13 @@
 int pipe_create(int fds[2], int flags);
 
 /*
+ * Open the FIFO that is inode `ino` of filesystem `fs` (any pointer
+ * that tells filesystems apart): join its pipe, or make one. Waits for
+ * the other end as POSIX says. Returns a descriptor or -errno.
+ */
+int fifo_open(const void *fs, u32 ino, int flags);
+
+/*
  * socketpair(AF_UNIX, SOCK_STREAM, ...): two connected ends. `type` may
  * carry SOCK_NONBLOCK and SOCK_CLOEXEC.
  */

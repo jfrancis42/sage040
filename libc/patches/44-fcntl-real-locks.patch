@@ -1,0 +1,124 @@
+fcntl: record locks are real now, and F_DUPFD takes its argument.
+
+The kernel has POSIX record locks and Linux's OFD locks
+(kernel/reclock.c), so F_GETLK, F_SETLK and F_SETLKW -- which patch 32
+answered in libc as though nothing could ever conflict -- go to it.
+picolibc's struct flock is not Linux's (l_type is one higher, l_pid a
+short), so each request is rebuilt as Linux's and the answer copied
+back. F_OFD_GETLK, F_OFD_SETLK and F_OFD_SETLKW are declared, under
+_GNU_SOURCE, with Linux's numbers.
+
+F_DUPFD and F_DUPFD_CLOEXEC never fetched their argument, so every one
+returned the lowest free descriptor from 0, whatever was asked.
+
+--- a/libos/linux/fcntl.c	2026-09-29 18:09:29.189901257 -0600
++++ b/libos/linux/fcntl.c	2026-09-29 18:09:29.216730523 -0600
+@@ -44,11 +44,15 @@
+     int     arg = 0;
+ 
+     switch (op) {
++    /* Both take the lowest number to use, which was never fetched: every
++     * F_DUPFD asked for the lowest free descriptor from 0. */
+     case F_DUPFD:
+         op = LINUX_F_DUPFD;
++        arg = 1;
+         break;
+     case F_DUPFD_CLOEXEC:
+         op = LINUX_F_DUPFD_CLOEXEC;
++        arg = 1;
+         break;
+     case F_GETFD:
+         op = LINUX_F_GETFD;
+@@ -74,28 +78,61 @@
+         arg = 2;                /* translate, below */
+         break;
+     /*
+-     * RECORD LOCKS. There is no advisory locking on this system, so no
+-     * lock can ever conflict with another -- and that makes these
+-     * answers correct rather than merely convenient.
++     * RECORD LOCKS, the kernel's own (kernel/reclock.c). picolibc's
++     * struct flock is not Linux's -- its l_type values are one higher
++     * and its l_pid is a short -- so the request is rebuilt as Linux's
++     * struct flock, and the answer copied back.
+      */
++    case F_GETLK:
+     case F_SETLK:
+     case F_SETLKW:
+-        return 0;
+-    case F_GETLK: {
++#ifdef F_OFD_GETLK
++    case F_OFD_GETLK:
++    case F_OFD_SETLK:
++    case F_OFD_SETLKW:
++#endif
++    {
+         struct flock *fl;
++        struct {
++            short l_type, l_whence;
++            long  l_start, l_len;
++            int   l_pid;
++        } k;
++        int ret, kop;
+ 
+         va_start(ap, op);
+         fl = va_arg(ap, struct flock *);
+         va_end(ap);
+-        /*
+-         * F_UNLCK means "nothing would stop you taking this lock".
+-         * SQLite asks exactly this question before it writes, and an
+-         * EINVAL here became "disk I/O error" with no mention of locks
+-         * anywhere in it.
+-         */
+-        if (fl)
+-            fl->l_type = F_UNLCK;
+-        return 0;
++        if (!fl) {
++            errno = EFAULT;
++            return -1;
++        }
++        switch (op) {
++        case F_GETLK:  kop = 5; break;
++        case F_SETLK:  kop = 6; break;
++        case F_SETLKW: kop = 7; break;
++        default:       kop = op; break;      /* F_OFD_*: Linux's numbers */
++        }
++        switch (fl->l_type) {
++        case F_RDLCK: k.l_type = 0; break;
++        case F_WRLCK: k.l_type = 1; break;
++        case F_UNLCK: k.l_type = 2; break;
++        default:      k.l_type = -1; break;  /* EINVAL, from the kernel */
++        }
++        k.l_whence = fl->l_whence;
++        k.l_start = fl->l_start;
++        k.l_len = fl->l_len;
++        k.l_pid = fl->l_pid;
++        ret = syscall(LINUX_SYS_fcntl, fd, kop, &k);
++        if (ret == 0 && (kop == 5 || kop == 36)) {
++            fl->l_type = k.l_type == 0 ? F_RDLCK :
++                         k.l_type == 1 ? F_WRLCK : F_UNLCK;
++            fl->l_whence = k.l_whence;
++            fl->l_start = k.l_start;
++            fl->l_len = k.l_len;
++            fl->l_pid = (short)k.l_pid;
++        }
++        return ret;
+     }
+     default:
+         errno = EINVAL;
+--- a/libc/include/sys/_default_fcntl.h	2026-09-29 18:09:29.191789519 -0600
++++ b/libc/include/sys/_default_fcntl.h	2026-09-29 18:09:29.216833864 -0600
+@@ -144,6 +144,14 @@
+ #define F_DUPFD_CLOEXEC 14 /* As F_DUPFD, but set close-on-exec flag */
+ #endif
+ 
++#if __GNU_VISIBLE
++/* Linux's open-file-description locks: owned by the open file, not the
++ * process. The same numbers as Linux's. */
++#define F_OFD_GETLK  36
++#define F_OFD_SETLK  37
++#define F_OFD_SETLKW 38
++#endif
++
+ /* fcntl(2) flags (l_type field of flock structure) */
+ #define F_RDLCK 1 /* read lock */
+ #define F_WRLCK 2 /* write lock */

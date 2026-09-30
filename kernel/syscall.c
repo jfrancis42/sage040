@@ -38,6 +38,7 @@
 #include "swap.h"
 #include "poll.h"
 #include "events.h"
+#include "reclock.h"
 #include "pipe.h"
 #include "ptregs.h"
 #include "net.h"
@@ -1979,6 +1980,13 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
     }
 
     case __NR_fcntl:
+    case __NR_fcntl64:
+        switch ((int)a2) {
+        case F_GETLK: case F_SETLK: case F_SETLKW:
+        case F_GETLK64: case F_SETLK64: case F_SETLKW64:
+        case F_OFD_GETLK: case F_OFD_SETLK: case F_OFD_SETLKW:
+            return reclock_fcntl((int)a1, (int)a2, a3, nr == __NR_fcntl64);
+        }
         return fd_fcntl((int)a1, (int)a2, a3);
 
     case __NR_dup:

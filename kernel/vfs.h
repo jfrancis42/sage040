@@ -131,6 +131,12 @@ struct fs_type {
      */
     int (*bmap)(struct file *f, u32 off, u32 *lba, struct blockdev **dev);
 
+    /* An inode that is neither a file nor a directory: a FIFO, the one
+     * kind the VFS asks for (it has nothing to put in a device node).
+     * `mode` carries the type bits; the permission bits are final --
+     * the umask is already off. Null: -EPERM. */
+    int (*mknod)(const char *path, u32 mode);
+
     struct fs_type *next;
 };
 
@@ -259,6 +265,7 @@ int  vfs_statfs(struct statfs *s);
 int  vfs_check(int flags, struct fsck_report *r);
 int  vfs_label(struct fslabel *l);
 int  vfs_flock(int fd, int op);
+u32  flock_key(struct file *f);      /* what identifies a file to a lock */
 int  vfs_ftruncate(int fd, u32 len);
 int  vfs_sync(void);
 
@@ -289,6 +296,7 @@ int  vfs_may(const char *path, int want);
 /* chmod and chown in one, by mask. Who may is decided here; see vfs.c. */
 int  vfs_link(const char *from, const char *to);
 int  vfs_symlink(const char *target, const char *linkpath);
+int  vfs_mknod(const char *path, u32 mode);
 int  vfs_readlink(const char *path, char *out, u32 size);
 int  vfs_lstat(const char *path, struct stat *st);
 int  vfs_setattr(const char *path, u32 mask, u32 mode, u32 uid, u32 gid);

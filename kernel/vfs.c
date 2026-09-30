@@ -24,6 +24,8 @@
 #include "swap.h"
 #include "vfs.h"
 #include "events.h"
+#include "reclock.h"
+#include "pipe.h"
 #include "errno.h"
 #include "task.h"
 #include "string.h"
@@ -853,6 +855,7 @@ void file_put(struct file *f)
     }
     flock_release(f);       /* a lock lives exactly as long as this */
     events_file_gone(f);    /* no epoll goes on watching it */
+    reclock_file_gone(f);   /* nor holds an OFD lock */
     if (inotify_watching) {
         inotify_file(f, (f->flags & O_ACCMODE) == O_RDONLY ? IN_CLOSE_NOWRITE
                                                            : IN_CLOSE_WRITE);
@@ -895,7 +898,7 @@ static struct {
 
 static struct waitq flock_wait;
 
-static u32 flock_key(struct file *f)
+u32 flock_key(struct file *f)
 {
     struct stat st;
 
@@ -1472,6 +1475,26 @@ static int fd_open_mode_raw(const char *path, int flags, u32 mode)
             }
             return dir_open(fs, path, flags);
         }
+        /* A FIFO is a name for a pipe: opening it joins that pipe
+         * (pipe.c), once the caller may. */
+        if (exists && S_ISFIFO(st.st_mode)) {
+            int acc = flags & O_ACCMODE, fd;
+            struct file *ff;
+
+            if ((flags & O_CREAT) && (flags & O_EXCL)) {
+                return -EEXIST;
+            }
+            err = vfs_may(path, (acc == O_RDONLY ? R_OK :
+                                 acc == O_WRONLY ? W_OK : R_OK | W_OK));
+            if (err < 0) {
+                return err;
+            }
+            fd = fifo_open(fs, st.st_ino, flags & ~(O_CREAT | O_EXCL | O_TRUNC));
+            if (fd >= 0 && (ff = fd_get(fd)) != 0) {
+                vfs_file_set_path(ff, path);
+            }
+            return fd;
+        }
         if (flags & O_DIRECTORY) {
             return exists ? -ENOTDIR : -ENOENT;
         }
@@ -1564,6 +1587,7 @@ int fd_close(int fd)
     }
     current->files->fd[fd] = 0;
     current->files->flags[fd] = 0;
+    reclock_closed(f, current->tgid);   /* POSIX: ANY close drops them */
     file_put(f);
     return 0;
 }
@@ -1609,6 +1633,14 @@ int fd_fcntl(int fd, int cmd, u32 arg)
     switch (cmd) {
     case F_DUPFD:
         return dup_from(fd, (int)arg);
+    case F_DUPFD_CLOEXEC: {
+        int n = dup_from(fd, (int)arg);
+
+        if (n >= 0) {
+            current->files->flags[n] = FD_CLOEXEC;
+        }
+        return n;
+    }
     case F_GETFD:
         return current->files->flags[fd];
     case F_SETFD:
@@ -1641,6 +1673,7 @@ int fd_dup2(int oldfd, int newfd)
         return newfd;
     }
     if (current->files->fd[newfd]) {
+        reclock_closed(current->files->fd[newfd], current->tgid);
         file_put(current->files->fd[newfd]);
     }
     file_get(f);
@@ -1748,6 +1781,7 @@ void fd_exec(struct task *t)
 
     for (i = 0; i < OPEN_MAX; i++) {
         if (t->files->fd[i] && (t->files->flags[i] & FD_CLOEXEC)) {
+            reclock_closed(t->files->fd[i], t->tgid);
             file_put(t->files->fd[i]);
             t->files->fd[i] = 0;
         }
@@ -2328,6 +2362,58 @@ static int vfs_symlink_raw(const char *target, const char *linkpath)
         fs_unlock();
         return r;
     }
+}
+
+/*
+ * mknod(2): a FIFO, or a plain empty file. A device node is refused:
+ * devices here are names under /dev (resolve_dev), not inodes, so a
+ * device node on the disk would name nothing -- EPERM, as for a caller
+ * without CAP_MKNOD on Linux. The permission bits lose the umask.
+ */
+static int vfs_mknod_raw(const char *path, u32 mode)
+{
+    struct fs_type *fs;
+    char rbuf[PATH_MAX];
+    const char *orig = path;
+    u32 perm = mode & 07777;
+    int err;
+
+    if (current) {
+        perm &= ~current->umask;
+    }
+    switch (mode & S_IFMT) {
+    case 0:
+    case S_IFREG:
+        err = fd_open_mode(orig, O_CREAT | O_EXCL | O_WRONLY, mode & 07777);
+        return err < 0 ? err : fd_close(err);
+    case S_IFIFO:
+        break;
+    case S_IFDIR:
+    case S_IFCHR:
+    case S_IFBLK:
+    case S_IFSOCK:
+        return -EPERM;
+    default:
+        return -EINVAL;
+    }
+    fs = vfs_route(&path, rbuf);
+    if (proc_owns(path) || (fs == mounted_fs && resolve_dev(path))) {
+        return -EEXIST;
+    }
+    if (!fs) {
+        return -ENODEV;
+    }
+    if (!fs->mknod) {
+        return -EPERM;
+    }
+    err = vfs_may_parent(path, W_OK | X_OK);
+    if (err < 0) {
+        return err;
+    }
+    fs_lock();
+    err = fs->mknod(path, S_IFIFO | perm);
+    fs_unlock();
+    return err;
 }
 
 /*
@@ -3349,6 +3435,16 @@ int vfs_link(const char *from, const char *to)
 
     if (r == 0) {
         inotify_path(to, IN_CREATE, IN_ATTRIB);
+    }
+    return r;
+}
+
+int vfs_mknod(const char *path, u32 mode)
+{
+    int r = vfs_mknod_raw(path, mode);
+
+    if (r == 0 && S_ISFIFO(mode)) {
+        inotify_path(path, IN_CREATE, 0);
     }
     return r;
 }

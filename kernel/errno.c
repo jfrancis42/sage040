@@ -28,6 +28,7 @@ const char *strerror(int err)
     case ECHILD:          return "no child processes";
     case EAGAIN:          return "resource temporarily unavailable";
     case ENOLCK:          return "no locks available";
+    case EDEADLK:         return "resource deadlock avoided";
     case ESRCH:           return "no such process";
     case ENOMEM:          return "cannot allocate memory";
     case EACCES:          return "permission denied";

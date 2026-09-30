@@ -350,8 +350,8 @@ dup3(int oldfd, int newfd, int flags)
 
 /* ---- FIFOs and device nodes, at a directory ------------------------ */
 
-/* FAT can hold neither, and the kernel says so (EPERM); these are
- * complete all the same. */
+/* A FIFO the kernel makes on ext2 or tmpfs; a device node it refuses
+ * (EPERM), since devices are names under /dev, not inodes. */
 int
 mknodat(int dirfd, const char *path, mode_t mode, dev_t dev)
 {

@@ -3849,6 +3849,7 @@ static struct fs_type fat16_type = {
     fat_check,
     fat_label_get,
     fat_bmap,
+    0,                          /* mknod: FAT has no FIFOs */
     0
 };
 

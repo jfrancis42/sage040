@@ -92,6 +92,8 @@ libc/test/tlstest.dyn
 libc/test/shmaptest
 libc/test/tmpfstest
 libc/test/eventtest
+libc/test/locktest
+libc/test/fifotest
 libc/test/*.so
 ldso/ld.so
 system/fsck

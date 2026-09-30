@@ -282,8 +282,14 @@ static void test_owners(void)
     }
     unlink("/owners2.tmp");
     errno = 0;
-    report("mkfifo is EPERM: nor FIFOs",
-           mkfifo("/fifo.tmp", 0644) < 0 && errno == EPERM && !exists("/fifo.tmp"));
+    {
+        struct stat fs;
+
+        report("mkfifo makes a FIFO (fifotest has the rest)",
+               mkfifo("/fifo.tmp", 0644) == 0 && stat("/fifo.tmp", &fs) == 0 &&
+               S_ISFIFO(fs.st_mode));
+        unlink("/fifo.tmp");
+    }
     close(f);
     unlink("/owners.tmp");
 }
@@ -882,8 +888,11 @@ static void test_misc(void)
            fchmodat(AT_FDCWD, "/posixtest", 0755, 0) == 0 &&
            fchownat(AT_FDCWD, "/posixtest", 0, 0, 0) == 0);
     errno = 0;
-    report("mknodat and mkfifoat: EPERM, FAT holds neither",
-           mkfifoat(AT_FDCWD, "/F.TMP", 0644) < 0 && errno == EPERM);
+    report("mkfifoat makes one; mknodat of a device is EPERM",
+           mkfifoat(AT_FDCWD, "/F.TMP", 0644) == 0 &&
+           mknodat(AT_FDCWD, "/D.TMP", S_IFCHR | 0600, 0x0101) < 0 &&
+           errno == EPERM);
+    unlink("/F.TMP");
     report("sysconf: one processor, and memory in pages",
            sysconf(_SC_NPROCESSORS_ONLN) == 1 && sysconf(_SC_PHYS_PAGES) > 1000 &&
            sysconf(_SC_AVPHYS_PAGES) > 0 &&

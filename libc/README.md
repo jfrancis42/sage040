@@ -194,6 +194,13 @@ Two things are deliberately absent.
   (`POLLWRNORM` is `POLLOUT`) for every entry; picolibc's own `poll`
   maps `revents` only for the first N entries, N being how many were
   ready -- harmless for every bit but those two.
+- **Record locks are real** (`patches/44`): `F_GETLK`, `F_SETLK` and
+  `F_SETLKW` go to the kernel, and `F_OFD_GETLK`, `F_OFD_SETLK` and
+  `F_OFD_SETLKW` are declared under `_GNU_SOURCE`. picolibc's `struct
+  flock` is not Linux's, so each request is rebuilt. They were faked in
+  libc before (`patches/32`), which answered as though nothing could
+  ever hold a lock. The same patch makes `F_DUPFD` and `F_DUPFD_CLOEXEC`
+  pass their argument, which they never did.
 - **`pread` and `pwrite` exist** now (Linux/m68k's `pread64` and
   `pwrite64`). picolibc declared them and never provided them, so a
   program using them failed to link, and one whose configure tested

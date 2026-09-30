@@ -38,6 +38,11 @@ struct pipe {
     int  writers;
     struct waitq rq;            /* waiting for something to read      */
     struct waitq wq;            /* waiting for room to write          */
+    /* A FIFO's: which inode it is, and how many opens each end has
+     * ever had -- what a blocked open waits to see change. */
+    const void *fifo_fs;
+    u32  fifo_ino;
+    u32  r_opens, w_opens;
 };
 
 static struct pipe pipes[PIPE_MAX];
@@ -170,7 +175,8 @@ static int pipe_fstat(struct file *f, struct stat *st)
     st->st_blocks = 0;
     /* One number for both ends, as a pipe is one inode on Linux: what
      * makes /proc/<pid>/fd show "pipe:[N]" twice for the same pipe. */
-    st->st_ino = 0x40000000UL | (u32)(p - pipes + 1);
+    st->st_ino = p->fifo_ino ? p->fifo_ino
+                             : 0x40000000UL | (u32)(p - pipes + 1);
     return 0;
 }
 
@@ -254,8 +260,132 @@ static void ring_put(struct pipe *p, int reader)
     wake_everyone(p);
     if (p->readers == 0 && p->writers == 0) {
         pmm_free((u32)p->buf);
-        p->used = 0;
+        p->used = 0;            /* a FIFO's ring goes too: fifo_find */
     }
+}
+
+/* ---------------------------------------------------------------- */
+/* FIFOs                                                             */
+/* ---------------------------------------------------------------- */
+
+/*
+ * A named pipe is an inode on a filesystem whose opening is a pipe: the
+ * first open makes a ring, every later open of the same inode joins it,
+ * and it goes when both ends have been closed everywhere. So two
+ * programs that know nothing of each other but a path can talk.
+ *
+ * Opening WAITS for the other end, as POSIX says: a reader until some
+ * writer has opened it, a writer until some reader has. With O_NONBLOCK
+ * a reader does not wait (and reads end of file until a writer comes),
+ * and a writer with no reader is ENXIO. O_RDWR is both ends at once and
+ * never waits -- Linux's answer; POSIX leaves it undefined.
+ */
+static struct waitq fifo_wait;
+
+static struct pipe *fifo_find(const void *fs, u32 ino)
+{
+    int i;
+
+    for (i = 0; i < PIPE_MAX; i++) {
+        if (pipes[i].used && pipes[i].fifo_ino == ino &&
+            pipes[i].fifo_fs == fs) {
+            return &pipes[i];
+        }
+    }
+    return 0;
+}
+
+static int fifo_close(struct file *f)
+{
+    struct pipe *p = f->priv;
+    int acc = f->flags & O_ACCMODE;
+
+    if (acc == O_RDWR) {
+        p->writers--;           /* the reader's put frees it if it can */
+    }
+    ring_put(p, acc != O_WRONLY);
+    return 0;
+}
+
+static int fifo_poll(struct file *f)
+{
+    struct pipe *p = f->priv;
+
+    if ((f->flags & O_ACCMODE) == O_RDWR) {
+        return (p->count ? POLLIN : 0) | (p->count < PIPE_SIZE ? POLLOUT : 0);
+    }
+    return pipe_poll(f);
+}
+
+static const struct file_ops fifo_ops = {
+    pipe_read,
+    pipe_write,
+    0,                          /* not seekable */
+    pipe_ioctl,
+    fifo_close,
+    pipe_fstat,
+    fifo_poll,
+    0,                          /* truncate: nothing to truncate */
+    0,                          /* mmap: not memory to map */
+};
+
+int fifo_open(const void *fs, u32 ino, int flags)
+{
+    struct pipe *p = fifo_find(fs, ino);
+    int acc = flags & O_ACCMODE, reads, writes, fd;
+    u32 seen;
+
+    if (!p) {
+        p = ring_alloc();
+        if (!p) {
+            return -ENFILE;
+        }
+        p->readers = p->writers = 0;
+        p->fifo_fs = fs;
+        p->fifo_ino = ino;
+    }
+    reads = acc == O_RDONLY || acc == O_RDWR;
+    writes = acc == O_WRONLY || acc == O_RDWR;
+    if (acc == O_WRONLY && p->readers == 0 && (flags & O_NONBLOCK)) {
+        if (p->writers == 0) {
+            pmm_free((u32)p->buf);
+            p->used = 0;
+        }
+        return -ENXIO;
+    }
+    p->readers += reads;
+    p->writers += writes;
+    p->r_opens += reads;
+    p->w_opens += writes;
+    wake_everyone(p);
+    wake_all(&fifo_wait);
+
+    /* Wait for the other end, unless this is both or may not wait. */
+    if (acc != O_RDWR && !(acc == O_RDONLY && (flags & O_NONBLOCK))) {
+        seen = reads ? p->w_opens : p->r_opens;
+        while ((reads ? p->writers : p->readers) == 0 &&
+               (reads ? p->w_opens : p->r_opens) == seen) {
+            if (signal_pending(current)) {
+                if (reads) {
+                    ring_put(p, 1);
+                } else {
+                    ring_put(p, 0);
+                }
+                return -EINTR;
+            }
+            sleep_on(&fifo_wait);
+        }
+    }
+
+    fd = fd_install(&fifo_ops, p, flags);
+    if (fd < 0) {
+        if (acc == O_RDWR) {
+            p->writers--;
+        }
+        ring_put(p, acc != O_WRONLY);
+        return fd;
+    }
+    return fd;
 }
 
 int pipe_create(int fds[2], int flags)
