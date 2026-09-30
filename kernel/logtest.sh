@@ -23,6 +23,7 @@ set -u
 cd "$(dirname "$0")"
 
 . ../machine.conf
+. ./shells.sh
 
 SAGE_QEMU=${SAGE_QEMU:-$HOME/m68k/sage040-qemu}
 QEMU=${QEMU:-$SAGE_QEMU/bin/qemu-system-m68k}
@@ -66,9 +67,10 @@ printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
 fsimg mkfs SAGE040
 fsimg put kernel.rom /KERNEL.ROM
 fsimg mkdir /bin; fsimg mkdir /etc
-for p in klogd dmesg sh; do
+for p in klogd dmesg; do
     fsimg put -m 755 "../system/$p" /bin/$p
 done
+put_shells
 # The machine's own /etc/rc, which is what starts klogd at boot.
 fsimg put -m 755 ../system/rc /etc/rc
 

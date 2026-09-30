@@ -27,6 +27,7 @@
 set -u
 cd "$(dirname "$0")"
 . ../machine.conf
+. ./shells.sh
 SAGE_QEMU=${SAGE_QEMU:-$HOME/m68k/sage040-qemu}
 QEMU=${QEMU:-$SAGE_QEMU/bin/qemu-system-m68k}
 [ -x "$QEMU" ] || QEMU=qemu-system-m68k
@@ -48,9 +49,10 @@ printf 'label: dos\nunit: sectors\nstart=2048, type=83\n' | sfdisk -q "$DISK" >/
 fsimg mkfs SAGE040 >/dev/null
 fsimg put kernel.rom /KERNEL.ROM
 fsimg mkdir /bin
-for p in sh ifconfig ping route arp; do
+for p in ifconfig ping route arp; do
     fsimg put -m 755 "../system/$p" "/bin/$p"
 done
+put_shells
 
 mkfifo "$FIFO"
 "$QEMU" -M sage040 -cpu m68040 -m "$RAM_MB" -kernel ../bootrom/bootrom.elf \

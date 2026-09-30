@@ -23,6 +23,7 @@
 set -u
 cd "$(dirname "$0")"
 . ../machine.conf
+. ./shells.sh
 
 QEMU=${QEMU:-$HOME/m68k/sage040-qemu/bin/qemu-system-m68k}
 [ -x "$QEMU" ] || QEMU=qemu-system-m68k
@@ -50,8 +51,7 @@ fsimg put kernel.rom /KERNEL.ROM
 fsimg mkdir /bin; fsimg mkdir /lib; fsimg mkdir /etc; fsimg mkdir /s
 fsimg put ../ldso/ld.so /lib/ld.so
 fsimg put "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" /lib/libc.so
-fsimg put -m 755 ../system/sh /bin/sh
-fsimg put -m 755 ../ports/bash/bash /bin/bash
+put_shells bash
 fsimg put -m 644 ../system/passwd /etc/passwd
 for p in printf echo touch cat; do
     fsimg put -m 755 "../ports/sbase/bin/$p" /bin/$p

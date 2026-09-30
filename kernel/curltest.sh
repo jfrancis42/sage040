@@ -64,6 +64,7 @@
 set -u
 cd "$(dirname "$0")"
 . ../machine.conf
+. ./shells.sh
 QEMU=${QEMU:-$HOME/m68k/sage040-qemu/bin/qemu-system-m68k}
 [ -x "$QEMU" ] || QEMU=qemu-system-m68k
 S=${SAGE_SCRATCH:-/tmp/scratch}; mkdir -p "$S"
@@ -151,7 +152,7 @@ printf 'label: dos\nunit: sectors\nstart=2048, type=83\n' | sfdisk -q "$DISK" >/
 fsimg mkfs SAGE040 >/dev/null
 fsimg put kernel.rom /KERNEL.ROM
 fsimg mkdir /bin; fsimg mkdir /lib; fsimg mkdir /etc; fsimg mkdir /ST
-fsimg put -m 755 ../system/sh /bin/sh
+put_shells
 fsimg put -m 755 ../system/ifconfig /bin/ifconfig
 fsimg put ../ldso/ld.so /lib/ld.so
 fsimg put "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" /lib/libc.so

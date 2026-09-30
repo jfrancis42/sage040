@@ -28,6 +28,7 @@
 set -u
 cd "$(dirname "$0")"
 . ../machine.conf
+. ./shells.sh
 
 QEMU=${QEMU:-$HOME/m68k/sage040-qemu/bin/qemu-system-m68k}
 [ -x "$QEMU" ] || QEMU=qemu-system-m68k
@@ -180,9 +181,7 @@ fsimg put ../ldso/ld.so /lib/ld.so
 fsimg put "$SAGE_LIBC/lib/libc.so" /lib/libc.so
 # The layout `make install` makes: bash is /bin/sh, which MakeMaker's
 # Makefiles run their recipes with, and the system shell is /bin/msh.
-fsimg put -m 755 ../system/sh /bin/msh
-fsimg put -m 755 ../ports/bash/bash /bin/bash
-fsimg symlink bash /bin/sh
+put_shells bash
 fsimg put -m 644 ../system/passwd /etc/passwd
 for p in echo cat ls rm mkdir cp true chmod touch mv test; do
     fsimg put -m 755 "../ports/sbase/bin/$p" /bin/$p

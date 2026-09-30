@@ -31,6 +31,7 @@ set -u
 
 cd "$(dirname "$0")"
 . ../machine.conf
+. ./shells.sh
 
 SAGE_QEMU=${SAGE_QEMU:-$HOME/m68k/sage040-qemu}
 QEMU=${QEMU:-$SAGE_QEMU/bin/qemu-system-m68k}
@@ -86,9 +87,10 @@ fsimg put kernel.rom /KERNEL.ROM
 fsimg mkdir /bin; fsimg mkdir /lib; fsimg mkdir /etc
 fsimg mkdir /root; fsimg mkdir /home; fsimg mkdir /home/jfrancis
 fsimg mkdir /var; fsimg mkdir /var/log
-for p in sh who w id env klogd ifconfig; do
+for p in who w id env klogd ifconfig; do
     fsimg put -m 755 "../system/$p" /bin/$p
 done
+put_shells
 fsimg put -m 755 ../auth/login /bin/login
 fsimg put -m 4755 ../auth/sudo /bin/sudo
 fsimg put -m 4755 ../auth/su   /bin/su

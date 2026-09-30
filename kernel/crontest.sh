@@ -23,6 +23,7 @@ set -u
 cd "$(dirname "$0")"
 
 . ../machine.conf
+. ./shells.sh
 
 SAGE_QEMU=${SAGE_QEMU:-$HOME/m68k/sage040-qemu}
 QEMU=${QEMU:-$SAGE_QEMU/bin/qemu-system-m68k}
@@ -76,7 +77,7 @@ for p in cron echo date cat; do
         fsimg put -m 755 "../ports/sbase/bin/$p" /bin/$p
 done
 fsimg put -m 755 ../system/klogd /bin/klogd
-fsimg put -m 755 ../system/sh /bin/sh
+put_shells
 
 # The crontab: one job every minute, and one at a minute that will not
 # come round while this runs (the control).

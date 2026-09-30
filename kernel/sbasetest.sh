@@ -27,6 +27,7 @@ set -u
 
 cd "$(dirname "$0")"
 . ../machine.conf
+. ./shells.sh
 
 SAGE_QEMU=${SAGE_QEMU:-$HOME/m68k/sage040-qemu}
 QEMU=${QEMU:-$SAGE_QEMU/bin/qemu-system-m68k}
@@ -87,7 +88,7 @@ printf 'label: dos\nunit: sectors\nstart=%s, type=83\n' "$PART_LBA" \
 fsimg mkfs SAGE040
 fsimg put kernel.rom /KERNEL.ROM
 fsimg mkdir /bin; fsimg mkdir /lib; fsimg mkdir /ST; fsimg mkdir /tmp
-fsimg put -m 755 ../system/sh /bin/sh
+put_shells
 fsimg put -m 755 ../ports/sbase/bin/* /bin/
 fsimg mkdir /share; fsimg mkdir /share/misc
 fsimg put -m 755 ../ports/sbase/share/misc/bc.library /share/misc/

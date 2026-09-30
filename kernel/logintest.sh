@@ -22,6 +22,7 @@
 set -u
 cd "$(dirname "$0")"
 . ../machine.conf
+. ./shells.sh
 QEMU=${QEMU:-$HOME/m68k/sage040-qemu/bin/qemu-system-m68k}
 S=${SAGE_SCRATCH:-/tmp/scratch}; mkdir -p "$S"
 DISK="$S/hd-login.img"; OFF=$((2048*512))
@@ -45,7 +46,7 @@ printf 'label: dos\nunit: sectors\nstart=2048, type=83\n' | sfdisk -q "$DISK" >/
 fsimg mkfs SAGE040 >/dev/null
 fsimg put kernel.rom /KERNEL.ROM
 fsimg mkdir /bin; fsimg mkdir /etc; fsimg mkdir /lib; fsimg mkdir /home; fsimg mkdir /root
-fsimg put -m 755 ../system/sh /bin/sh
+put_shells
 for p in id env; do fsimg put -m 755 ../system/$p /bin/$p; done
 for p in cat ls echo whoami touch rm mkdir chmod kill; do
   fsimg put -m 755 ../ports/sbase/bin/$p /bin/$p 2>/dev/null

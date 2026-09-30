@@ -20,6 +20,7 @@
 set -u
 cd "$(dirname "$0")"
 . ../machine.conf
+. ./shells.sh
 
 QEMU=${QEMU:-$HOME/m68k/sage040-qemu/bin/qemu-system-m68k}
 [ -x "$QEMU" ] || QEMU=qemu-system-m68k
@@ -52,7 +53,7 @@ fsimg mkdir /bin; fsimg mkdir /lib
 # it. See the LN=0 guard below.
 fsimg put ../ldso/ld.so /lib/ld.so
 fsimg put "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" /lib/libc.so
-fsimg put -m 755 ../system/sh /bin/sh
+put_shells
 # OPTIONAL ones go round the strict helper on purpose: `exit` inside a
 # shell function exits the SCRIPT, so `fsimg ... || true` cannot catch
 # it -- the suite died silently after "preparing" because sbase has no

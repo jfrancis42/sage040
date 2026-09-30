@@ -31,6 +31,7 @@ set -u
 cd "$(dirname "$0")"
 
 . ../machine.conf
+. ./shells.sh
 
 SAGE_QEMU=${SAGE_QEMU:-$HOME/m68k/sage040-qemu}
 QEMU=${QEMU:-$SAGE_QEMU/bin/qemu-system-m68k}
@@ -206,9 +207,10 @@ fsimg put kernel.rom /KERNEL.ROM
 fsimg mkdir /bin; fsimg mkdir /lib
 fsimg put ../ldso/ld.so /lib/ld.so
 fsimg put "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" /lib/libc.so
-for p in ../system/sh ../ports/sbase/bin/echo; do
+for p in ../ports/sbase/bin/echo; do
     [ -x "$p" ] && fsimg put "$p" "/bin/$(basename "$p")"
 done
+put_shells
 
 echo "    the interpreter and the standard library ($(du -sh "$PYSTAGE" | cut -f1))"
 fsimg mkdir /usr; fsimg mkdir /usr/local; fsimg mkdir /usr/local/bin; fsimg mkdir /usr/local/lib

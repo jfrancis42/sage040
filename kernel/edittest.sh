@@ -27,6 +27,7 @@ cd "$(dirname "$0")"
 
 # How big the machine is. One place, shared with the Makefiles.
 . ../machine.conf
+. ./shells.sh
 
 M68K_PREFIX=${M68K_PREFIX:-$HOME/m68k/install}
 SAGE_QEMU=${SAGE_QEMU:-$HOME/m68k/sage040-qemu}
@@ -116,7 +117,7 @@ fsimg put -m 755 ../apps/napper /napper
     echo "echo after-the-long-line"
 } > "$SCRATCH/wide.tmp"
 fsimg mkdir /bin
-fsimg put -m 755 ../system/sh /bin/sh
+put_shells
 fsimg put "$SCRATCH/long.tmp" /LONG.SH
 fsimg put "$SCRATCH/wide.tmp" /WIDE.SH
 
