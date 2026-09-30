@@ -53,6 +53,7 @@ apps/fpsptest
 apps/faulttest
 apps/hello
 apps/fbtest
+apps/lineprobe
 apps/faulter
 apps/spin
 apps/fetch

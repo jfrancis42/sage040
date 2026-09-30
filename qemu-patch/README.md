@@ -44,6 +44,35 @@ Upstream compiles it unconditionally, so a board that uses only the sysbus
 variant fails to link unless the whole PCI subsystem is pulled in. This board
 has no PCI bus and should not carry one.
 
+It also adds the 2D engine's **Line Draw** command (`sm501_2d_line`).
+Upstream models BitBlt and Rectangle Fill only and logs every other
+command as unimplemented; the real chip draws Bresenham lines itself,
+and the machine's kernel driver uses that rather than drawing lines with
+the CPU. The registers are the SM501/SM502 databook's (the Lynx
+databooks, whose engine this is, add that the vector length is
+`Dmax + 1` and that the clip rectangle's bottom is top plus height):
+K1 and K2 in the source register, the start in destination, length and
+error term in dimension, and major axis, step signs and draw-last-pixel
+in control bits 26, 25, 24 and 21. Coordinates are the engine's 12-bit
+counters and wrap. The 2D clip registers are honoured, in both senses
+(bit 13 enables, bit 12 selects writing inside or outside), and so is
+the ROP, with the foreground colour as the pen — the only operand a
+solid line has.
+
+The databooks give the terms but not the stepping rule. The one used —
+plot, step the major axis, and step the minor axis too when the error
+term is not negative (then add K2, else K1) — is the one the documented
+error term is built for: its "minus one when x runs forward" makes a
+line drawn from either end the same pixels, and only this rule does
+that with it. `kernel/linetest.sh` checks lines by properties that hold
+whatever the rule: the same pixels from both ends, both end points, one
+pixel per major step, every pixel within half a pixel of the true line,
+and clipping that keeps exactly the on-screen part. Pixels that would
+land outside video memory are dropped and reported (`-d guest_errors`),
+which silicon would not do; Short Stroke (command 6) is not modelled.
+The rectangle fill still ignores the ROP and the clip rectangle, as
+upstream's does.
+
 **`hw/input/pckbd.c`, `hw/input/Kconfig`** — the same problem and the same
 fix, for the keyboard controller. `pckbd.c` provides both `i8042` (an
 `ISADevice`) and `i8042-mmio` (a sysbus device, used by the MIPS Jazz
@@ -194,7 +223,7 @@ developed and tested on, which it currently is not, and change nothing
 unless asked for.
 
 The `sm501.c` guard, the `pckbd.c` guard and the IACK callback are all the
-kind of change upstream would plausibly take. The first two are build
+kind of change upstream would plausibly take, and so is Line Draw. The first two are build
 fixes of the same shape — a file providing both a bus-attached and a
 sysbus device, compiled unconditionally — and the third adds a facility
 whose absence upstream explicitly documents. The machine and the MFP model are

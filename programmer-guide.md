@@ -624,16 +624,23 @@ Same access rules: little-endian, 32-bit only. Registers are at offsets from
 
 | Off | Register |
 |---|---|
+| `0x00` | source, `(x << 16) | y`; for a line, `(K1 << 16) | K2` |
 | `0x04` | destination, `(x << 16) | y` |
-| `0x08` | dimension, `(width << 16) | height` |
+| `0x08` | dimension, `(width << 16) | height`; for a line, `(length << 16) | ET` |
 | `0x0C` | control — **writing bit 31 starts the operation** |
 | `0x10` | pitch, `(dst << 16) | src`, in pixels |
 | `0x14` | foreground colour |
 | `0x1C` | stretch — bits 21–20 are the pixel format (0 = 8bpp) |
+| `0x2C` | clip top-left, `(top << 16) | left`; bit 13 enables clipping |
+| `0x30` | clip bottom-right, `(bottom << 16) | right`, both exclusive |
 | `0x44` | destination base, a byte offset into video memory |
 
 Command number goes in bits 20–16 of control: **0 = BitBlt, 1 = Rectangle
-Fill**. Clearing a 640×480 8bpp buffer:
+Fill, 7 = Line Draw**. The low byte of control is a raster operation and
+the chip applies it to every command: bit 15 selects a two-operand ROP2,
+and ROP2 `0xC` is "the pen" (the foreground colour). **A control word
+with a zero low byte is ROP3 `0x00`, BLACKNESS**, which QEMU's fill
+ignores and silicon would not. Clearing a 640×480 8bpp buffer:
 
 ```c
 SM501_WR(SM501_2D_DST_BASE, fb_offset);
@@ -642,7 +649,8 @@ SM501_WR(SM501_2D_DIMENSION, (640UL << 16) | 480);
 SM501_WR(SM501_2D_PITCH, (640UL << 16) | 640);
 SM501_WR(SM501_2D_FOREGROUND, colour);
 SM501_WR(SM501_2D_STRETCH, SM501_2D_FMT_8BPP);          /* XY addressing */
-SM501_WR(SM501_2D_CONTROL, SM501_2D_START | SM501_2D_CMD_RECTFILL);
+SM501_WR(SM501_2D_CONTROL, SM501_2D_START | SM501_2D_CMD_RECTFILL |
+                           SM501_2D_ROP2 | SM501_2D_ROP2_COPYPEN);
 ```
 
 Seven register writes instead of 76,800 CPU stores, and the clear is
@@ -656,6 +664,48 @@ Bits 19–16 of the stretch register must be zero; anything else selects linear
 rather than XY addressing, which is not modelled. The operation is synchronous
 from the guest's point of view — by the time the control write returns, the
 fill has happened.
+
+#### Lines
+
+**Line Draw** (command 7) is Bresenham in the engine. It is not given the
+end point but the terms, as the SM501/SM502 and Lynx databooks define them,
+with `dmaj` the longer of `|dx|`, `|dy|` and `dmin` the shorter:
+
+| Register | Holds |
+|---|---|
+| source `0x00` | bits 29–16 **K1** = `2*dmin`; bits 13–0 **K2** = `2*(dmin-dmaj)` (14-bit two's complement) |
+| destination `0x04` | the start point, `(x << 16) | y`, 12-bit coordinates |
+| dimension `0x08` | bits 28–16 the **length** = `dmaj + 1` (the end point counts); bits 13–0 the error term **ET** = `2*dmin - dmaj`, one less when start x ≤ end x |
+| control `0x0C` | bit 26 major axis is Y; bit 25 x steps negative; bit 24 y steps negative; bit 21 draw the last pixel |
+
+The "one less when x runs forward" is what makes a line the same pixels
+whichever end it is drawn from. Coordinates are 12-bit counters that
+**wrap**: a line that runs off the left edge continues at x = 4095 and so
+into the pixels of the rows below — so clip. With the clip rectangle set
+to the screen (`0x2C` = bit 13, `0x30` = `(480 << 16) | 640`), a start
+coordinate such as -5 works: it is 4091, outside the rectangle, and the
+counter walks on round to 0. The kernel's driver refuses coordinates
+outside -2048..2047, where the wrapped part could reach the screen.
+
+```c
+/* (x0,y0)-(x1,y1), already clipped to the engine's range */
+u32 ctl = SM501_2D_START | SM501_2D_CMD_LINE | SM501_2D_LAST_PIXEL |
+          SM501_2D_ROP2 | SM501_2D_ROP2_COPYPEN;
+int dx = x1 - x0, dy = y1 - y0, dmaj, dmin;
+if (dx < 0) { dx = -dx; ctl |= SM501_2D_STEP_X_NEG; }
+if (dy < 0) { dy = -dy; ctl |= SM501_2D_STEP_Y_NEG; }
+if (dy > dx) { ctl |= SM501_2D_MAJOR_Y; dmaj = dy; dmin = dx; }
+else         { dmaj = dx; dmin = dy; }
+SM501_WR(SM501_2D_SOURCE, ((u32)(2 * dmin) << 16) | ((u32)(2 * (dmin - dmaj)) & 0x3fff));
+SM501_WR(SM501_2D_DEST, (((u32)x0 & 0xfff) << 16) | ((u32)y0 & 0xfff));
+SM501_WR(SM501_2D_DIMENSION, ((u32)(dmaj + 1) << 16) |
+         ((u32)(2 * dmin - dmaj - (x0 <= x1)) & 0x3fff));
+SM501_WR(SM501_2D_CONTROL, ctl);
+```
+
+Upstream QEMU implements only BitBlt and Rectangle Fill; `qemu-patch`
+adds Line Draw (see its README). Short Stroke (command 6) is not
+modelled.
 
 ---
 

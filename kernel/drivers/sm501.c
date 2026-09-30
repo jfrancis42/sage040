@@ -23,11 +23,10 @@
  * pointed at -- a single register write, so the change happens between
  * one frame and the next rather than halfway down one.
  *
- * clear() and filled rect() go to the 2D engine; line() and point() are
- * done by the CPU. That is not laziness: the engine has a rectangle fill
- * and a blit, and no line. At a period-correct clock the CPU cannot
- * clear 640x480 and still hold a frame rate -- 37 fps against the
- * engine's 50 -- while a dozen short lines cost nothing either way.
+ * clear(), filled rect() and line() go to the 2D engine; point() alone
+ * is the CPU's. The engine's Line Draw is Bresenham in hardware, clipped
+ * to the screen by its clip rectangle. (QEMU's model of this chip had
+ * no line draw; qemu-patch adds it, as the databook describes it.)
  */
 #include "dev.h"
 #include "errno.h"
@@ -78,7 +77,11 @@ static int blit_fill(struct fbdev *f, u32 x, u32 y, u32 w, u32 h,
     SM501_WR(SM501_2D_PITCH, (f->width << 16) | f->width);
     SM501_WR(SM501_2D_FOREGROUND, colour);
     SM501_WR(SM501_2D_STRETCH, SM501_2D_FMT_8BPP);  /* XY addressing */
-    SM501_WR(SM501_2D_CONTROL, SM501_2D_START | SM501_2D_CMD_RECTFILL);
+    /* ROP2 copy-pen: the fill colour, whatever was there. The ROP field
+     * is honoured by the chip for every command; a zero there is ROP3
+     * BLACKNESS, which QEMU's fill ignores and real silicon would not. */
+    SM501_WR(SM501_2D_CONTROL, SM501_2D_START | SM501_2D_CMD_RECTFILL |
+                               SM501_2D_ROP2 | SM501_2D_ROP2_COPYPEN);
 
     /*
      * Wait before returning. The caller's next act is very likely a CPU
@@ -103,48 +106,69 @@ static int sm501_point(struct fbdev *f, int x, int y, u32 colour)
 }
 
 /*
- * Bresenham straight into video memory.
+ * A line, drawn by the 2D engine's Line Draw command.
  *
- * fb.c has a generic version built on point(), and this exists because
- * that one costs an indirect call per pixel. The clipping is the same
- * test, done inline.
+ * The engine is given the Bresenham terms, not the end point: K1 and K2
+ * in the Source register, the start in Destination, the length (the
+ * major axis's extent plus one, the end point counting) and the initial
+ * error term in Dimension, and the octant as three bits of Control. The
+ * error term is one less when x runs forward, which is what makes the
+ * line the same pixels whichever end it is drawn from.
+ *
+ * Clipping is the engine's too: the clip rectangle is the screen, so a
+ * line may start or run off it. Its coordinates are 12-bit counters that
+ * wrap, which is what makes a start at x = -5 work -- it is 4091, which
+ * the clip rectangle excludes, and the counter walks on round to 0 --
+ * but only while the wrapped part stays clear of the screen. Hence the
+ * limit: every coordinate in [-2048, 2047].
  */
+#define LINE_MIN     (-2048)
+#define LINE_MAX     2047
+
 static int sm501_line(struct fbdev *f, int x0, int y0, int x1, int y1,
                       u32 colour)
 {
-    int dx = x1 - x0, dy = y1 - y0;
-    int sx = dx < 0 ? -1 : 1;
-    int sy = dy < 0 ? -1 : 1;
-    int err, e2;
-    int guard = 0;
-    int limit = (int)(f->width + f->height) * 2;
-    u8 c = (u8)colour;
+    int dx = x1 - x0, dy = y1 - y0, dmaj, dmin;
+    u32 ctl = SM501_2D_START | SM501_2D_CMD_LINE | SM501_2D_LAST_PIXEL |
+              SM501_2D_ROP2 | SM501_2D_ROP2_COPYPEN;
+    int et;
 
-    if (dx < 0) dx = -dx;
-    if (dy < 0) dy = -dy;
-    err = dx - dy;
-
-    for (;;) {
-        if (x0 >= 0 && y0 >= 0 &&
-            (u32)x0 < f->width && (u32)y0 < f->height) {
-            MMIO8(SM501_VRAM + back + (u32)y0 * f->pitch + (u32)x0) = c;
-        }
-        if (x0 == x1 && y0 == y1) {
-            return 0;
-        }
-        if (++guard > limit) {
-            return -EINVAL;
-        }
-        e2 = err * 2;
-        if (e2 > -dy) {
-            err -= dy;
-            x0 += sx;
-        }
-        if (e2 < dx) {
-            err += dx;
-            y0 += sy;
-        }
+    if (x0 < LINE_MIN || x0 > LINE_MAX || y0 < LINE_MIN || y0 > LINE_MAX ||
+        x1 < LINE_MIN || x1 > LINE_MAX || y1 < LINE_MIN || y1 > LINE_MAX) {
+        return -EINVAL;
     }
+    if (dx < 0) {
+        dx = -dx;
+        ctl |= SM501_2D_STEP_X_NEG;
+    }
+    if (dy < 0) {
+        dy = -dy;
+        ctl |= SM501_2D_STEP_Y_NEG;
+    }
+    if (dy > dx) {
+        ctl |= SM501_2D_MAJOR_Y;
+        dmaj = dy;
+        dmin = dx;
+    } else {
+        dmaj = dx;
+        dmin = dy;
+    }
+    et = 2 * dmin - dmaj - (x0 <= x1 ? 1 : 0);
+
+    SM501_WR(SM501_2D_DST_BASE, back);
+    SM501_WR(SM501_2D_PITCH, (f->width << 16) | f->width);
+    SM501_WR(SM501_2D_STRETCH, SM501_2D_FMT_8BPP);  /* XY addressing */
+    SM501_WR(SM501_2D_CLIP_TL, SM501_2D_CLIP_ENABLE);           /* 0, 0 */
+    SM501_WR(SM501_2D_CLIP_BR, (f->height << 16) | f->width);  /* exclusive */
+    SM501_WR(SM501_2D_FOREGROUND, colour);
+    SM501_WR(SM501_2D_SOURCE, ((u32)(2 * dmin) << 16) |
+                              ((u32)(2 * (dmin - dmaj)) & 0x3fff));
+    SM501_WR(SM501_2D_DEST, (((u32)x0 & 0xfff) << 16) | ((u32)y0 & 0xfff));
+    SM501_WR(SM501_2D_DIMENSION, ((u32)(dmaj + 1) << 16) | ((u32)et & 0x3fff));
+    SM501_WR(SM501_2D_CONTROL, ctl);
+
+    /* As for a fill: the caller may write the buffer next. */
+    return sm501_sync(f);
 }
 
 static int sm501_rect(struct fbdev *f, int x, int y, int w, int h,
@@ -154,9 +178,7 @@ static int sm501_rect(struct fbdev *f, int x, int y, int w, int h,
         return -EINVAL;
     }
     if (!filled) {
-        /* Four lines. The engine has no outline mode, and four fills one
-         * pixel thick would be four times the register traffic for the
-         * same pixels. */
+        /* Four lines. The engine has no outline mode. */
         sm501_line(f, x, y, x + w - 1, y, colour);
         sm501_line(f, x, y + h - 1, x + w - 1, y + h - 1, colour);
         sm501_line(f, x, y, x, y + h - 1, colour);

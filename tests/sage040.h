@@ -309,6 +309,14 @@ u16  mfp_get_sr(void);
 
 #define SM501_2D_CMD_BITBLT   (0UL << 16)
 #define SM501_2D_CMD_RECTFILL (1UL << 16)
+#define SM501_2D_CMD_LINE     (7UL << 16)   /* Bresenham line draw          */
+#define SM501_2D_LAST_PIXEL   (1UL << 21)   /* line: draw the end point too */
+#define SM501_2D_STEP_Y_NEG   (1UL << 24)   /* line: y decreasing           */
+#define SM501_2D_STEP_X_NEG   (1UL << 25)   /* line: x decreasing           */
+#define SM501_2D_MAJOR_Y      (1UL << 26)   /* line: |dy| > |dx|            */
+#define SM501_2D_ROP2         (1UL << 15)   /* two-operand ROP, pen and dst */
+#define SM501_2D_ROP2_COPYPEN 0x0CUL        /* the pen, whatever was there  */
+#define SM501_2D_CLIP_ENABLE  (1UL << 13)   /* in CLIP_TL: clip to the rect */
 #define SM501_2D_START        (1UL << 31)
 #define SM501_2D_RTL          (1UL << 27)   /* right to left, from the far corner */
 #define SM501_2D_FMT_8BPP     (0UL << 20)

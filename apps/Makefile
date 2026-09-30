@@ -22,7 +22,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-PROGS := cube boids wator life attractor fpsptest faulttest fbtest hello fetch httpd spin faulter napper cdtest statfs memtest malloctest sigtest fptest polltest timetest pipetest proctest procfstest socktest vtcheck winsize vcsnap tcptest pagetest limits fsstress fbmap udpwait
+PROGS := cube boids wator life attractor fpsptest faulttest fbtest hello fetch httpd spin faulter napper cdtest statfs memtest malloctest sigtest fptest polltest timetest pipetest proctest procfstest socktest vtcheck winsize vcsnap tcptest pagetest limits fsstress fbmap udpwait lineprobe
 INSTALL_PROGS := cube boids wator life attractor fetch httpd
 INSTALL_DIR := /bin
 

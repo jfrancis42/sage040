@@ -1,6 +1,168 @@
---- a/hw/display/sm501.c	2026-08-27 06:23:31.000000000 -0600
-+++ b/hw/display/sm501.c	2026-09-20 08:41:19.640376516 -0600
-@@ -2164,6 +2164,13 @@
+--- a/hw/display/sm501.c	2026-09-30 06:36:23.503991102 -0600
++++ b/hw/display/sm501.c	2026-09-30 06:36:23.506567718 -0600
+@@ -723,6 +723,148 @@
+     return last_addr >= get_local_mem_size(s);
+ }
+ 
++/*
++ * Sign-extend the low `bits` bits of `v`.
++ */
++static int sm501_sext(uint32_t v, int bits)
++{
++    return (int32_t)(v << (32 - bits)) >> (32 - bits);
++}
++
++/*
++ * Apply a ROP2 or ROP3 code to one pixel. The pen is the foreground
++ * colour: it stands for the source and the pattern alike, as it does for
++ * a solid line. ROP2 codes are truth tables indexed by (S << 1) | D and
++ * ROP3 codes by (P << 2) | (S << 1) | D, which is how the databook's
++ * tables are laid out.
++ */
++static uint32_t sm501_rop(uint32_t control, uint32_t pen, uint32_t dst)
++{
++    int rop = control & 0xFF;
++    uint32_t out = 0;
++    int i;
++
++    if (control & BIT(15)) {                    /* ROP2 */
++        for (i = 0; i < 4; i++) {
++            if (rop & (1 << i)) {
++                out |= ((i & 2) ? pen : ~pen) & ((i & 1) ? dst : ~dst);
++            }
++        }
++    } else {                                    /* ROP3: P = S = pen */
++        for (i = 0; i < 8; i++) {
++            if (rop & (1 << i)) {
++                out |= ((i & 4) ? pen : ~pen) & ((i & 2) ? pen : ~pen) &
++                       ((i & 1) ? dst : ~dst);
++            }
++        }
++    }
++    return out;
++}
++
++/*
++ * Line Draw (command 00111): the engine's Bresenham line, as the SM501/
++ * SM502 databook and the Lynx databooks (same engine) define it.
++ *
++ *   2D Source       29:16 K1 = 2 * min(|dx|, |dy|)
++ *                   13:0  K2 = 2 * (min(|dx|, |dy|) - max(|dx|, |dy|))
++ *   2D Destination  the start point, X in 27:16 and Y in 11:0
++ *   2D Dimension    28:16 vector length = Dmax + 1 (the endpoint counts)
++ *                   13:0  error term ET = 2 * min - max, and one less
++ *                         when start X <= end X
++ *   2D Control      26 M: major axis Y; 25 X: step X negative;
++ *                   24 Y: step Y negative; 21 LP: draw the last pixel
++ *
++ * Each pixel is plotted, then the major coordinate steps; the minor one
++ * steps too when the error term is not negative, which then adds K2,
++ * and otherwise K1 is added. The databooks give the terms, not this
++ * rule, but it is the rule the terms are built for: the "- 1" when X
++ * runs forward is what makes a line drawn from either end produce the
++ * same pixels, and only this rule does that with them.
++ *
++ * Coordinates are the engine's 12-bit counters and wrap. Clipping is the
++ * 2D Clip registers': when enabled (TL bit 13), writes outside the
++ * rectangle -- or inside it, with TL bit 12 -- are suppressed. Left and
++ * top are inclusive and right and bottom exclusive (the Lynx databook:
++ * "bottom = top + height"). Pixels that would land outside video memory
++ * are dropped and reported, which real hardware does not do.
++ */
++static void sm501_2d_line(SM501State *s, int bypp, uint32_t dst_base,
++                          unsigned int dst_pitch)
++{
++    uint32_t ctl = s->twoD_control;
++    int k1 = (s->twoD_source >> 16) & 0x3FFF;
++    int k2 = sm501_sext(s->twoD_source & 0x3FFF, 14);
++    int err = sm501_sext(s->twoD_dimension & 0x3FFF, 14);
++    unsigned int len = (s->twoD_dimension >> 16) & 0x1FFF;
++    unsigned int x = (s->twoD_destination >> 16) & 0xFFF;
++    unsigned int y = s->twoD_destination & 0xFFF;
++    int ymajor = !!(ctl & BIT(26));
++    int sx = (ctl & BIT(25)) ? -1 : 1;
++    int sy = (ctl & BIT(24)) ? -1 : 1;
++    int clip = !!(s->twoD_clip_tl & BIT(13));
++    int clip_inside = !!(s->twoD_clip_tl & BIT(12));
++    unsigned int cl = s->twoD_clip_tl & 0xFFF;
++    unsigned int ct = (s->twoD_clip_tl >> 16) & 0xFFFF;
++    unsigned int cr = s->twoD_clip_br & 0x1FFF;
++    unsigned int cb = (s->twoD_clip_br >> 16) & 0xFFFF;
++    unsigned int n = (ctl & BIT(21)) ? len : (len ? len - 1 : 0);
++    unsigned int miny = UINT_MAX, maxy = 0, i;
++    int crt = (s->dc_crt_control & SM501_DC_CRT_CONTROL_SEL) ? 1 : 0;
++    int fb_len = get_width(s, crt) * get_height(s, crt) * get_bpp(s, crt);
++    bool dropped = false;
++
++    for (i = 0; i < n; i++) {
++        bool in = x >= cl && x < cr && y >= ct && y < cb;
++
++        if (!clip || in != clip_inside) {
++            uint64_t off = dst_base +
++                           ((uint64_t)y * dst_pitch + x) * (uint64_t)bypp;
++
++            if (off + bypp <= get_local_mem_size(s)) {
++                uint8_t *d = s->local_mem + off;
++                uint32_t pen = s->twoD_foreground, old;
++
++                old = ldn_he_p(d, bypp);
++                if (bypp == 4) {
++                    pen = cpu_to_le32(pen);
++                } else if (bypp == 2) {
++                    pen = cpu_to_le16(pen);
++                }
++                stn_he_p(d, bypp, sm501_rop(ctl, pen, old));
++                miny = MIN(miny, y);
++                maxy = MAX(maxy, y);
++            } else {
++                dropped = true;
++            }
++        }
++        if (ymajor) {
++            y = (y + sy) & 0xFFF;
++        } else {
++            x = (x + sx) & 0xFFF;
++        }
++        if (err >= 0) {
++            if (ymajor) {
++                x = (x + sx) & 0xFFF;
++            } else {
++                y = (y + sy) & 0xFFF;
++            }
++            err += k2;
++        } else {
++            err += k1;
++        }
++    }
++    if (dropped) {
++        qemu_log_mask(LOG_GUEST_ERROR,
++                      "sm501: line draw went outside vram; enable clipping\n");
++    }
++    if (miny <= maxy && dst_base >= get_fb_addr(s, crt) &&
++        dst_base <= get_fb_addr(s, crt) + fb_len) {
++        memory_region_set_dirty(&s->local_mem_region,
++                                dst_base + miny * dst_pitch * bypp,
++                                (maxy - miny + 1) * dst_pitch * bypp);
++    }
++}
++
+ static void sm501_2d_operation(SM501State *s)
+ {
+     int cmd = (s->twoD_control >> 16) & 0x1F;
+@@ -758,6 +900,12 @@
+         return;
+     }
+ 
++    /* A line is not a rectangle: none of the checks below apply. */
++    if (cmd == 7) {
++        sm501_2d_line(s, bypp, dst_base, dst_pitch);
++        return;
++    }
++
+     if (!width || !height) {
+         qemu_log_mask(LOG_GUEST_ERROR, "sm501: Zero size 2D op.\n");
+         return;
+@@ -2164,6 +2312,13 @@
      .instance_init = sm501_sysbus_init,
  };
  
@@ -14,7 +176,7 @@
  #define TYPE_PCI_SM501 "sm501"
  OBJECT_DECLARE_SIMPLE_TYPE(SM501PCIState, PCI_SM501)
  
-@@ -2251,10 +2258,14 @@
+@@ -2251,10 +2406,14 @@
      },
  };
  
@@ -29,8 +191,8 @@
  }
  
  type_init(sm501_register_types)
---- a/hw/input/Kconfig	2026-08-27 06:23:31.000000000 -0600
-+++ b/hw/input/Kconfig	2026-09-21 10:50:27.791149209 -0600
+--- a/hw/input/Kconfig	2026-09-30 06:36:23.514949495 -0600
++++ b/hw/input/Kconfig	2026-09-30 06:36:23.516494094 -0600
 @@ -4,7 +4,6 @@
  config PCKBD
      bool
@@ -39,8 +201,8 @@
  
  config PL050
      bool
---- a/hw/input/pckbd.c	2026-08-27 06:23:31.000000000 -0600
-+++ b/hw/input/pckbd.c	2026-09-21 10:50:27.791960111 -0600
+--- a/hw/input/pckbd.c	2026-09-30 06:36:23.523110584 -0600
++++ b/hw/input/pckbd.c	2026-09-30 06:36:23.525567921 -0600
 @@ -769,6 +769,15 @@
      .class_init    = i8042_mmio_class_init
  };
@@ -71,8 +233,8 @@
      type_register_static(&i8042_mmio_info);
  }
  
---- a/hw/m68k/Kconfig	2026-08-27 06:23:31.000000000 -0600
-+++ b/hw/m68k/Kconfig	2026-09-21 10:50:27.796342309 -0600
+--- a/hw/m68k/Kconfig	2026-09-30 06:36:23.534192707 -0600
++++ b/hw/m68k/Kconfig	2026-09-30 06:36:23.535727981 -0600
 @@ -46,3 +46,15 @@
      select GOLDFISH_TTY
      select GOLDFISH_RTC
@@ -89,8 +251,8 @@
 +    select SM501            # bitmapped video
 +    select M48T59           # RTC + 8 KB NVRAM
 +    select PCKBD            # 8042 keyboard controller, memory mapped
---- a/hw/m68k/meson.build	2026-08-27 06:23:31.000000000 -0600
-+++ b/hw/m68k/meson.build	2026-09-19 20:27:11.884302502 -0600
+--- a/hw/m68k/meson.build	2026-09-30 06:36:23.542167893 -0600
++++ b/hw/m68k/meson.build	2026-09-30 06:36:23.544893492 -0600
 @@ -5,4 +5,6 @@
  m68k_ss.add(when: 'CONFIG_Q800', if_true: files('q800.c', 'q800-glue.c'))
  m68k_ss.add(when: 'CONFIG_M68K_VIRT', if_true: files('virt.c'))
@@ -98,8 +260,8 @@
 +m68k_ss.add(when: 'CONFIG_SAGE040', if_true: files('sage040.c'))
 +
  hw_arch += {'m68k': m68k_ss}
---- a/hw/misc/Kconfig	2026-08-27 06:23:31.000000000 -0600
-+++ b/hw/misc/Kconfig	2026-09-20 08:30:07.967887845 -0600
+--- a/hw/misc/Kconfig	2026-09-30 06:36:23.551368149 -0600
++++ b/hw/misc/Kconfig	2026-09-30 06:36:23.553398290 -0600
 @@ -258,3 +258,7 @@
      bool
  
@@ -108,15 +270,15 @@
 +config MC68901
 +    bool
 +    depends on M68K
---- a/hw/misc/meson.build	2026-08-27 06:23:32.000000000 -0600
-+++ b/hw/misc/meson.build	2026-09-20 08:30:07.949887732 -0600
+--- a/hw/misc/meson.build	2026-09-30 06:36:23.571424412 -0600
++++ b/hw/misc/meson.build	2026-09-30 06:36:23.573699562 -0600
 @@ -1,3 +1,4 @@
 +system_ss.add(when: 'CONFIG_MC68901', if_true: files('mc68901.c'))
  system_ss.add(when: 'CONFIG_APPLESMC', if_true: files('applesmc.c'))
  system_ss.add(when: 'CONFIG_EDU', if_true: files('edu.c'))
  system_ss.add(when: 'CONFIG_FW_CFG_DMA', if_true: files('vmcoreinfo.c'))
---- a/target/m68k/cpu.c	2026-08-27 06:23:32.000000000 -0600
-+++ b/target/m68k/cpu.c	2026-09-28 20:15:07.416206556 -0600
+--- a/target/m68k/cpu.c	2026-09-30 06:36:23.582619088 -0600
++++ b/target/m68k/cpu.c	2026-09-30 06:36:23.584568551 -0600
 @@ -29,6 +29,7 @@
  #endif
  
@@ -145,8 +307,8 @@
  }
  
  static void m68k_cpu_class_init_cf_core(ObjectClass *c, const void *data)
---- a/target/m68k/cpu.h	2026-08-27 06:23:32.000000000 -0600
-+++ b/target/m68k/cpu.h	2026-09-28 23:30:23.183103893 -0600
+--- a/target/m68k/cpu.h	2026-09-30 06:36:23.591937970 -0600
++++ b/target/m68k/cpu.h	2026-09-30 06:36:23.594065263 -0600
 @@ -149,11 +149,73 @@
      int pending_vector;
      int pending_level;
@@ -231,8 +393,8 @@
  void m68k_switch_sp(CPUM68KState *env);
  
  void do_m68k_semihosting(CPUM68KState *env, int nr);
---- a/target/m68k/fpu_helper.c	2026-08-27 06:23:32.000000000 -0600
-+++ b/target/m68k/fpu_helper.c	2026-09-28 23:52:39.079111503 -0600
+--- a/target/m68k/fpu_helper.c	2026-09-30 06:36:23.598946294 -0600
++++ b/target/m68k/fpu_helper.c	2026-09-30 06:36:23.599568712 -0600
 @@ -22,6 +22,7 @@
  #include "cpu.h"
  #include "exec/helper-proto.h"
@@ -635,8 +797,8 @@
  void HELPER(fconst)(CPUM68KState *env, FPReg *val, uint32_t offset)
  {
      val->d = fpu_rom[offset];
---- a/target/m68k/helper.c	2026-08-27 06:23:32.000000000 -0600
-+++ b/target/m68k/helper.c	2026-09-20 08:45:33.676509022 -0600
+--- a/target/m68k/helper.c	2026-09-30 06:36:23.605112739 -0600
++++ b/target/m68k/helper.c	2026-09-30 06:36:23.605568776 -0600
 @@ -940,6 +940,14 @@
   * the vector when the interrupt is acknowledged by the CPU.  For
   * simplicity we calculate it when the interrupt is signalled.
@@ -652,8 +814,8 @@
  void m68k_set_irq_level(M68kCPU *cpu, int level, uint8_t vector)
  {
      CPUState *cs = CPU(cpu);
---- a/target/m68k/helper.h	2026-08-27 06:23:32.000000000 -0600
-+++ b/target/m68k/helper.h	2026-09-28 23:30:23.182643834 -0600
+--- a/target/m68k/helper.h	2026-09-30 06:36:23.611725392 -0600
++++ b/target/m68k/helper.h	2026-09-30 06:36:23.612568851 -0600
 @@ -59,6 +59,16 @@
  DEF_HELPER_FLAGS_2(set_fpcr, TCG_CALL_NO_RWG, void, env, i32)
  DEF_HELPER_FLAGS_2(ftst, TCG_CALL_NO_RWG, void, env, fp)
@@ -671,8 +833,8 @@
  DEF_HELPER_3(fmovemx_st_predec, i32, env, i32, i32)
  DEF_HELPER_3(fmovemx_st_postinc, i32, env, i32, i32)
  DEF_HELPER_3(fmovemx_ld_postinc, i32, env, i32, i32)
---- a/target/m68k/op_helper.c	2026-08-27 06:23:32.000000000 -0600
-+++ b/target/m68k/op_helper.c	2026-09-28 20:18:26.794360448 -0600
+--- a/target/m68k/op_helper.c	2026-09-30 06:36:23.617890220 -0600
++++ b/target/m68k/op_helper.c	2026-09-30 06:36:23.618568914 -0600
 @@ -405,6 +405,22 @@
          do_stack_frame(env, &sp, 0, oldsr, 0, env->pc);
          break;
@@ -713,8 +875,8 @@
          return true;
      }
      return false;
---- a/target/m68k/translate.c	2026-08-27 06:23:32.000000000 -0600
-+++ b/target/m68k/translate.c	2026-09-28 23:54:21.095748376 -0600
+--- a/target/m68k/translate.c	2026-09-30 06:36:23.623694628 -0600
++++ b/target/m68k/translate.c	2026-09-30 06:36:23.625568989 -0600
 @@ -4834,27 +4834,36 @@
       * 0b010 Floating-Point Status Register
       * 0b001 Floating-Point Instruction Address Register
