@@ -254,6 +254,12 @@ u32  vm_mapped_pages(struct addrspace *as);
 /* Remove one page, giving its memory back. Nothing if it was not mapped. */
 void vm_unmap(struct addrspace *as, u32 va);
 
+/* mremap's two: move the page at `from` to empty `to` (1 moved, 0 a
+ * hole, -1 no memory for tables), and what an owned page may do
+ * (VM_WRITE, 0 or VM_NONE; -1 if not owned). */
+int  vm_move(struct addrspace *as, u32 from, u32 to);
+int  vm_page_prot(struct addrspace *as, u32 va);
+
 /* Does the address space own the page at `va`, accessible or not? */
 int  vm_is_mapped(struct addrspace *as, u32 va);
 

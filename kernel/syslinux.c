@@ -36,6 +36,7 @@
 #include "vm.h"
 #include "mmap.h"
 #include "events.h"
+#include "xfer.h"
 #include "errno.h"
 #include "string.h"
 
@@ -1451,6 +1452,24 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
 
     case __NR_rt_sigreturn:
         return signal_rt_return(regs);
+
+    /* --- bytes between descriptors (xfer.c), memory --- */
+    case __NR_sendfile:
+    case __NR_sendfile64:
+        return sys_sendfile((int)a1, (int)a2, a3, a4, nr == __NR_sendfile64);
+
+    case __NR_splice:
+        return sys_splice((int)a1, a2, (int)a3, a4, a5, a6);
+
+    case __NR_copy_file_range:
+        return sys_copy_file_range((int)a1, a2, (int)a3, a4, a5, a6);
+
+    case __NR_mremap:
+        return do_mremap(a1, a2, a3, a4, a5);
+
+    case __NR_memfd_create:
+        err = fetch_str(path, a1, sizeof(path));
+        return err < 0 ? err : vfs_memfd(path, a2);
 
     /* --- event descriptors (events.c) --- */
     case __NR_eventfd:

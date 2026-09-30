@@ -21,6 +21,10 @@ int pipe_create(int fds[2], int flags);
  */
 int fifo_open(const void *fs, u32 ino, int flags);
 
+/* Is this an end of a pipe or a FIFO? (splice needs one.) */
+struct file;
+int pipe_is(struct file *f);
+
 /*
  * socketpair(AF_UNIX, SOCK_STREAM, ...): two connected ends. `type` may
  * carry SOCK_NONBLOCK and SOCK_CLOEXEC.

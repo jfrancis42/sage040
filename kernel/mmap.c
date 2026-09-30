@@ -456,3 +456,94 @@ int do_mprotect(u32 addr, u32 len, u32 prot)
     }
     return 0;
 }
+
+/*
+ * mremap: a mapping made bigger or smaller, in place or moved.
+ *
+ * Moving is moving the page DESCRIPTORS (vm_move), not the bytes: every
+ * page keeps what it was -- still lazy, still swapped out, still the
+ * file's shared page -- and nothing is copied, which is what makes a
+ * growing realloc of a large block cheap. The pages added by growing are
+ * new anonymous ones with the protection of the last old page.
+ *
+ * THE ONE PLACE THIS IS NOT LINUX: with no table of mappings (see the
+ * head of this file) nothing remembers that a mapping came from a file,
+ * so growing a FILE mapping adds zero pages where Linux would map more
+ * of the file. Shrinking and moving one are exact. Growing an anonymous
+ * mapping -- realloc, the reason mremap exists -- is exact.
+ */
+s32 do_mremap(u32 old, u32 old_len, u32 new_len, u32 flags, u32 new_addr)
+{
+    struct addrspace *as = current ? current->as : 0;
+    u32 va, dst, i;
+    int prot;
+
+    if (!as) {
+        return -ENODEV;
+    }
+    if ((old & PAGE_MASK) || new_len == 0 ||
+        (flags & ~(MREMAP_MAYMOVE | MREMAP_FIXED)) ||
+        ((flags & MREMAP_FIXED) && !(flags & MREMAP_MAYMOVE))) {
+        return -EINVAL;
+    }
+    old_len = PAGE_ALIGN_UP(old_len);
+    new_len = PAGE_ALIGN_UP(new_len);
+    if (old_len == 0 || !range_ok(old, old_len) || new_len > USER_VA_SIZE) {
+        return -EINVAL;
+    }
+    for (va = old; va < old + old_len; va += PAGE_SIZE) {
+        if (!vm_is_mapped(as, va)) {
+            return -EFAULT;
+        }
+    }
+    prot = vm_page_prot(as, old + old_len - PAGE_SIZE);
+
+    if (flags & MREMAP_FIXED) {
+        if ((new_addr & PAGE_MASK) || !range_ok(new_addr, new_len) ||
+            (new_addr < old + old_len && old < new_addr + new_len)) {
+            return -EINVAL;
+        }
+        dst = new_addr;
+        do_munmap(dst, new_len);
+    } else if (new_len <= old_len) {
+        if (new_len < old_len) {
+            do_munmap(old + new_len, old_len - new_len);
+        }
+        return (s32)old;
+    } else if (range_ok(old, new_len) && old + new_len <= USER_BRK_LIMIT &&
+               range_free(as, old + old_len, new_len - old_len)) {
+        dst = old;              /* room right after it: grow in place */
+    } else if (flags & MREMAP_MAYMOVE) {
+        dst = find_free(as, new_len);
+        if (!dst) {
+            return -ENOMEM;
+        }
+    } else {
+        return -ENOMEM;
+    }
+
+    if (new_len > old_len && !enough_memory((new_len - old_len) / PAGE_SIZE)) {
+        return -ENOMEM;
+    }
+    if (dst != old) {
+        u32 keep = old_len < new_len ? old_len : new_len;
+
+        /* dst is free and does not overlap old (find_free found it
+         * empty; MREMAP_FIXED refused an overlap and cleared it), so
+         * the order pages are moved in does not matter. */
+        for (i = 0; i < keep; i += PAGE_SIZE) {
+            if (vm_move(as, old + i, dst + i) < 0) {
+                return -ENOMEM;
+            }
+        }
+        if (old_len > keep) {
+            do_munmap(old + keep, old_len - keep);
+        }
+    }
+    for (va = dst + old_len; va < dst + new_len; va += PAGE_SIZE) {
+        if (vm_map_lazy(as, va, prot < 0 ? VM_WRITE : prot) < 0) {
+            return -ENOMEM;
+        }
+    }
+    return (s32)dst;
+}

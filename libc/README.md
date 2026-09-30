@@ -201,6 +201,11 @@ Two things are deliberately absent.
   libc before (`patches/32`), which answered as though nothing could
   ever hold a lock. The same patch makes `F_DUPFD` and `F_DUPFD_CLOEXEC`
   pass their argument, which they never did.
+- **`sendfile`, `splice`, `copy_file_range`, `mremap` and `memfd_create`
+  exist** (`xfer.c`; `<sys/sendfile.h>`, and the rest declared under
+  `_GNU_SOURCE` by `patches/45`). `off_t` is 64 bits in this library,
+  which is exactly Linux's `loff_t`, so the offsets pass straight
+  through; `sendfile` uses `sendfile64` for the same reason.
 - **`pread` and `pwrite` exist** now (Linux/m68k's `pread64` and
   `pwrite64`). picolibc declared them and never provided them, so a
   program using them failed to link, and one whose configure tested

@@ -697,6 +697,32 @@ reports the disk.
 filesystem. They used to be ignored -- every file was created 0644 --
 so a program making a private file with 0600 got one anybody could read.
 
+### sendfile, splice, copy_file_range, mremap, memfd_create
+
+`sendfile`, `splice` and `copy_file_range` (`xfer.c`) move bytes from
+one descriptor to another with Linux's rules -- splice needs a pipe at
+one end and no offset on it; copy_file_range takes two regular files
+and refuses overlapping ranges of one; sendfile refuses an `O_APPEND`
+output -- through one page of the kernel's memory, a read and a write
+at a time. On Linux they avoid copies; here they save the program a
+buffer and two system calls a chunk. What matters to a port is that
+they exist, because a web server's sendfile or cp's copy_file_range has
+no fallback, or one taken only on `ENOSYS`.
+
+`mremap` moves page DESCRIPTORS, not bytes (`vm_move`): each page keeps
+what it was -- lazy, swapped out, a file's shared page -- and nothing is
+copied, which is what makes a growing realloc cheap. Pages added by
+growing are new anonymous ones. With no table of mappings (see the head
+of `mmap.c`), nothing remembers that a mapping came from a file, so growing a
+FILE mapping adds zero pages where Linux would map more of the file;
+shrinking and moving one are exact.
+
+`memfd_create` is a tmpfs file made under `/dev/shm` and unlinked at
+once -- all a memfd is on Linux, too -- so it reads, writes and maps
+`MAP_SHARED` like any tmpfs file and goes with its last descriptor.
+`/proc` names it `/memfd:NAME (deleted)`. No sealing: `F_ADD_SEALS` is
+`EINVAL`.
+
 ### FIFOs
 
 `mkfifo` makes a named pipe on the disk or in tmpfs: an inode with no
@@ -1443,6 +1469,7 @@ drive it over its serial line.
 | `kernel/locktest.sh` | 54 | fcntl record locks, POSIX and OFD, on the disk and in tmpfs, seen from a second process: conflicts, F_GETLK naming the holder, splitting, read locks shared, the close-drops-all wart, F_SETLKW waiting, EDEADLK, release at exit, SEEK_END and negative lengths; F_DUPFD's argument |
 | `kernel/fifotest.sh` | 38 | named pipes on the disk and in tmpfs: two processes through a path, an open that waits for the other end (timed), end of file, O_NONBLOCK and ENXIO, O_RDWR, EINTR, unlink while open; and from the host, e2fsck clean and debugfs seeing the FIFO |
 | `kernel/devdirtest.sh` | 17 | `/dev` as a directory: every listed device stats as one, a new pty appears in `/dev/pts` under its ptsname, `/dev/fd` and `/dev/std*` are the links Linux has, `/dev/fd/N` of a pipe shares the pipe and of a file reopens it, a working directory in `/dev`; and `/bin/ls /dev` |
+| `kernel/xfertest.sh` | 39 | sendfile (file to file, with an offset, into a pipe five times its size), splice both ways and its refusals, copy_file_range, mremap (moved with its contents, the old address faulting in a second process, shrunk, grown in place, a moved MAP_SHARED mapping still the file), memfd_create; and from the host, the files moved compared byte for byte |
 | `kernel/shmaptest.sh` | 21 | `MAP_SHARED` of a file against read() and write(), a forked child, another process, a second mapping and `/proc/self/maps`; msync, munmap and exit writing back; truncate; a mapping outliving its name; and a file written only through a mapping, checked byte for byte from the host |
 | `kernel/tlstest.sh` | 46 | `__thread`, static and dynamic: initial values, a fresh copy per thread, alignment, fork; a start-time library's TLS reached two ways that must agree; `dlopen` of a library with TLS, a dependency and a constructor, its TLS made per thread on first use; refusal and rollback of an initial-exec TLS library; `dlsym` scopes, `dladdr`, `dl_iterate_phdr`, `dlerror` |
 | `kernel/fscktest.sh` | 23 | `fsck`, against seven kinds of damage made on the host, each repaired and then agreed with by e2fsck |

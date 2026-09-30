@@ -3439,6 +3439,59 @@ int vfs_link(const char *from, const char *to)
     return r;
 }
 
+/*
+ * memfd_create: a file with no name, in memory. It is a tmpfs file made
+ * under /dev/shm and unlinked at once -- which is all a memfd is on
+ * Linux too, a shmem file nobody can open by name -- so it reads,
+ * writes, truncates and maps MAP_SHARED like any tmpfs file, and goes
+ * when its last descriptor does. /proc names it "/memfd:NAME (deleted)",
+ * as Linux does. Sealing is not implemented: MFD_ALLOW_SEALING is
+ * accepted, and F_ADD_SEALS is EINVAL, which is what a program sees on
+ * a Linux file that cannot be sealed.
+ */
+int vfs_memfd(const char *name, u32 flags)
+{
+    static u32 seq;
+    char path[40], label[PATH_MAX];
+    int fd, tries;
+
+    if (flags & ~(u32)(MFD_CLOEXEC | MFD_ALLOW_SEALING)) {
+        return -EINVAL;
+    }
+    if (strlen(name) > 249) {
+        return -EINVAL;                 /* Linux's limit */
+    }
+    for (tries = 0; tries < 1000; tries++) {
+        u32 v = ++seq, n = 0, i;
+        char num[12];
+
+        do {
+            num[n++] = (char)('0' + v % 10);
+            v /= 10;
+        } while (v);
+        strcpy(path, "/dev/shm/.memfd-");
+        i = (u32)strlen(path);
+        while (n) {
+            path[i++] = num[--n];
+        }
+        path[i] = '\0';
+        fd = fd_open_mode(path, O_CREAT | O_EXCL | O_RDWR |
+                          ((flags & MFD_CLOEXEC) ? O_CLOEXEC : 0), 0600);
+        if (fd != -EEXIST) {
+            break;
+        }
+    }
+    if (fd < 0) {
+        return fd;
+    }
+    vfs_unlink(path);
+    strcpy(label, "/memfd:");
+    strcpy(label + 7, name);
+    strcpy(label + 7 + strlen(name), " (deleted)");
+    vfs_file_set_name(fd_get(fd), label);
+    return fd;
+}
+
 int vfs_mknod(const char *path, u32 mode)
 {
     int r = vfs_mknod_raw(path, mode);

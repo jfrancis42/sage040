@@ -16,5 +16,6 @@ s32 do_mmap(u32 addr, u32 len, u32 prot, u32 flags, int fd, u32 offset);
 int do_munmap(u32 addr, u32 len);
 int do_mprotect(u32 addr, u32 len, u32 prot);
 int do_msync(u32 addr, u32 len, u32 flags);
+s32 do_mremap(u32 old, u32 old_len, u32 new_len, u32 flags, u32 new_addr);
 
 #endif /* MMAP_H */

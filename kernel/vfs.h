@@ -297,6 +297,7 @@ int  vfs_may(const char *path, int want);
 int  vfs_link(const char *from, const char *to);
 int  vfs_symlink(const char *target, const char *linkpath);
 int  vfs_mknod(const char *path, u32 mode);
+int  vfs_memfd(const char *name, u32 flags);
 int  vfs_readlink(const char *path, char *out, u32 size);
 int  vfs_lstat(const char *path, struct stat *st);
 int  vfs_setattr(const char *path, u32 mask, u32 mode, u32 uid, u32 gid);

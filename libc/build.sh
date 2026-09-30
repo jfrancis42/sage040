@@ -237,7 +237,8 @@ rm -f "$PREFIX/lib/libdl.a"
 cp "$HERE/picolibc/libc/include/sys/random.h" "$HERE/picolibc/libc/include/sys/sysmacros.h" \
     "$HERE/picolibc/libc/include/sys/epoll.h" "$HERE/picolibc/libc/include/sys/eventfd.h" \
     "$HERE/picolibc/libc/include/sys/timerfd.h" "$HERE/picolibc/libc/include/sys/signalfd.h" \
-    "$HERE/picolibc/libc/include/sys/inotify.h" "$PREFIX/include/sys/"
+    "$HERE/picolibc/libc/include/sys/inotify.h" "$HERE/picolibc/libc/include/sys/sendfile.h" \
+    "$PREFIX/include/sys/"
 
 # A fingerprint of every installed header, for ports/cross.sh's
 # libc_fresh: a change in a header can change the size of a structure

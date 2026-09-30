@@ -2008,6 +2008,29 @@ struct inotify_event {              /* followed by len bytes of name */
     u32 len;
 };
 
+/*
+ * Moving bytes without a user buffer, and memory (xfer.c, mmap.c,
+ * vfs.c). splice's offsets are loff_t, sendfile's a 32-bit off_t and
+ * sendfile64's a loff_t.
+ */
+#define __NR_mremap          163
+#define __NR_sendfile        187
+#define __NR_sendfile64      236
+#define __NR_splice          306
+#define __NR_memfd_create    353
+#define __NR_copy_file_range 376
+
+#define MREMAP_MAYMOVE      1
+#define MREMAP_FIXED        2
+
+#define SPLICE_F_MOVE       1
+#define SPLICE_F_NONBLOCK   2
+#define SPLICE_F_MORE       4
+#define SPLICE_F_GIFT       8
+
+#define MFD_CLOEXEC         1
+#define MFD_ALLOW_SEALING   2
+
 /* flock operations, Linux's (and BSD's) values. */
 #define LOCK_SH         1
 #define LOCK_EX         2

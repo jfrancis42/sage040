@@ -1108,6 +1108,46 @@ int vm_protect(struct addrspace *as, u32 va, int flags)
     return 0;
 }
 
+/*
+ * Move whatever the page at `from` is -- a page, a swap slot, a lazy
+ * promise, PROT_NONE, shared or not -- to `to`, which must be empty.
+ * The descriptor says everything about a page and nothing records where
+ * it was, so moving it IS moving the page: nothing is copied, a shared
+ * mapping stays shared and a swapped page stays swapped. Returns 1 if
+ * there was something to move, 0 for a hole, -1 if no table could be
+ * made for `to`.
+ */
+int vm_move(struct addrspace *as, u32 from, u32 to)
+{
+    u32 to_pa = as_pagetable(as, to, 1);  /* first: making it may sleep */
+    u32 from_pa = as_pagetable(as, from, 0);
+    u32 *src, d;
+
+    if (!to_pa) {
+        return -1;
+    }
+    if (!from_pa) {
+        return 0;
+    }
+    src = table(from_pa);
+    d = src[PAGE_INDEX(from)];
+    if (!desc_owned(d)) {
+        return 0;
+    }
+    table(to_pa)[PAGE_INDEX(to)] = d;
+    src[PAGE_INDEX(from)] = 0;
+    pflusha();                  /* the old address must stop working */
+    return 1;
+}
+
+/* What an owned page may do: VM_WRITE, 0 or VM_NONE; -1 if not owned. */
+int vm_page_prot(struct addrspace *as, u32 va)
+{
+    u32 pt_pa = as_pagetable(as, va, 0);
+
+    return pt_pa ? desc_prot(table(pt_pa)[PAGE_INDEX(va)]) : -1;
+}
+
 void vm_unmap(struct addrspace *as, u32 va)
 {
     u32 pt_pa = as_pagetable(as, va, 0);

@@ -329,6 +329,11 @@ static const struct file_ops fifo_ops = {
     0,                          /* mmap: not memory to map */
 };
 
+int pipe_is(struct file *f)
+{
+    return f && (f->ops == &pipe_ops || f->ops == &fifo_ops);
+}
+
 int fifo_open(const void *fs, u32 ino, int flags)
 {
     struct pipe *p = fifo_find(fs, ino);
