@@ -34,8 +34,8 @@
  */
 
 /*
- * pause, usleep, select, flock, ftruncate, truncate and clock_getres
- * are not in picolibc's libos/linux (1.8.12)
+ * pause, usleep, select, flock, ftruncate, truncate, clock_getres and
+ * clock_nanosleep are not in picolibc's libos/linux (1.8.12)
  * on any architecture. They are here, in the m68k backend, only so that
  * the release underneath stays unmodified; nothing in them is specific
  * to m68k, and they belong beside the other calls in libos/linux.
@@ -174,4 +174,57 @@ int
 cacheflush(void *addr, int scope, int cache, size_t len)
 {
     return syscall(LINUX_SYS_cacheflush, addr, scope, cache, len);
+}
+
+/*
+ * clock_nanosleep, over nanosleep and clock_gettime.
+ *
+ * <time.h> has always declared it and nothing defined it, so a program
+ * that called it compiled, linked -- a shared object may leave symbols
+ * undefined -- and failed only when loaded: Perl's Time::HiRes did,
+ * with "undefined symbol: clock_nanosleep".
+ *
+ * The kernel's timers have a 10 ms tick and no per-clock sleep, so a
+ * relative sleep is nanosleep whichever clock is named, and an absolute
+ * one reads the named clock and sleeps the difference -- again, if a
+ * signal did not end it early, until the clock says the time has come.
+ * As POSIX has it, the result is an error number, not -1 and errno.
+ */
+int
+clock_nanosleep(clockid_t id, int flags, const struct timespec *req,
+                struct timespec *rem)
+{
+    struct timespec now, d;
+    int saved = errno, err = 0;
+
+    if (id != CLOCK_REALTIME && id != CLOCK_MONOTONIC)
+        return EINVAL;
+    if (req->tv_nsec < 0 || req->tv_nsec >= 1000000000L)
+        return EINVAL;
+    if (!(flags & TIMER_ABSTIME)) {
+        if (nanosleep(req, rem) < 0)
+            err = errno;
+        errno = saved;
+        return err;
+    }
+    for (;;) {
+        if (clock_gettime(id, &now) < 0) {
+            err = errno;
+            break;
+        }
+        d.tv_sec = req->tv_sec - now.tv_sec;
+        d.tv_nsec = req->tv_nsec - now.tv_nsec;
+        if (d.tv_nsec < 0) {
+            d.tv_nsec += 1000000000L;
+            d.tv_sec--;
+        }
+        if (d.tv_sec < 0 || (d.tv_sec == 0 && d.tv_nsec == 0))
+            break;
+        if (nanosleep(&d, NULL) < 0) {
+            err = errno;        /* EINTR; rem is not written for ABSTIME */
+            break;
+        }
+    }
+    errno = saved;
+    return err;
 }

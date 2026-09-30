@@ -229,11 +229,17 @@ cp "$HERE/picolibc/libc/include/sys/utsname.h" "$PREFIX/include/sys/"
 cp "$HERE/picolibc/libc/include/stdio_ext.h" "$HERE/picolibc/libc/include/syslog.h" \
    "$HERE/picolibc/libc/include/shadow.h" "$HERE/picolibc/libc/include/dlfcn.h" \
    "$HERE/picolibc/libc/include/link.h" "$PREFIX/include/"
-# -ldl: dlopen and the rest are in libc itself, as in glibc 2.34 and
-# musl, but a great many configure scripts and Makefiles still say -ldl.
-# An empty archive makes that true without meaning anything.
-rm -f "$PREFIX/lib/libdl.a"
-"$BIN/m68k-elf-ar" rcs "$PREFIX/lib/libdl.a"
+# -ldl, -lrt, -lpthread, -lutil, -lcrypt: dlopen, clock_gettime and
+# shm_open, the threads, openpty and forkpty, and crypt are all in libc
+# itself, as in glibc 2.34 and musl, but a great many configure scripts
+# and Makefiles still name the old libraries. An empty archive makes
+# that true without meaning anything. Without librt, Perl's Time::HiRes
+# linked every probe with -lrt, every probe failed, and it decided
+# clockid_t did not exist.
+for l in dl rt pthread util crypt; do
+    rm -f "$PREFIX/lib/lib$l.a"
+    "$BIN/m68k-elf-ar" rcs "$PREFIX/lib/lib$l.a"
+done
 cp "$HERE/picolibc/libc/include/sys/random.h" "$HERE/picolibc/libc/include/sys/sysmacros.h" \
     "$HERE/picolibc/libc/include/sys/epoll.h" "$HERE/picolibc/libc/include/sys/eventfd.h" \
     "$HERE/picolibc/libc/include/sys/timerfd.h" "$HERE/picolibc/libc/include/sys/signalfd.h" \
@@ -333,5 +339,13 @@ if [ -n "$undef" ]; then
     exit 1
 fi
 install -m 644 "$BUILD_PIC/libc.so" "$PREFIX/lib/libc.so"
+
+# EVERY UNCHANGED FILE KEEPS ITS OLD TIME. The install above rewrites
+# every header, and every port that tracks its dependencies -- the
+# native gcc most of all, twenty minutes of it -- then recompiled after
+# any change to the C library, for headers that were byte for byte what
+# they had been. ports/keeptimes.py (see keep_times in ports/cross.sh)
+# gives each file whose content is unchanged its previous mtime back.
+python3 "$HERE/../ports/keeptimes.py" "$PREFIX" "$PREFIX.times"
 
 echo "picolibc $VERSION installed in $PREFIX"

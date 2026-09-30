@@ -581,6 +581,37 @@ static void test_time(void)
         report("CLOCK_MONOTONIC moves across usleep(100 ms)",
                ms >= 90 && ms < 1000);
     }
+
+    /* clock_nanosleep: relative, then absolute, measured on the clock
+     * itself. Declared for years and defined nowhere, which only showed
+     * when Perl's Time::HiRes was loaded. */
+    {
+        struct timespec d = { 0, 150000000L }, until;
+        long ms;
+        int r;
+
+        clock_gettime(CLOCK_MONOTONIC, &a);
+        r = clock_nanosleep(CLOCK_MONOTONIC, 0, &d, 0);
+        clock_gettime(CLOCK_MONOTONIC, &b);
+        ms = (b.tv_sec - a.tv_sec) * 1000 + (b.tv_nsec - a.tv_nsec) / 1000000;
+        report("clock_nanosleep, relative 150 ms", r == 0 && ms >= 140 && ms < 1000);
+
+        until = b;
+        until.tv_nsec += 200000000L;
+        if (until.tv_nsec >= 1000000000L) {
+            until.tv_nsec -= 1000000000L;
+            until.tv_sec++;
+        }
+        r = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &until, 0);
+        clock_gettime(CLOCK_MONOTONIC, &a);
+        report("clock_nanosleep, TIMER_ABSTIME 200 ms on: not woken early",
+               r == 0 && (a.tv_sec > until.tv_sec ||
+                          (a.tv_sec == until.tv_sec && a.tv_nsec >= until.tv_nsec)));
+        ms = (a.tv_sec - b.tv_sec) * 1000 + (a.tv_nsec - b.tv_nsec) / 1000000;
+        report("  and not asleep long after it either", ms < 1000);
+        report("clock_nanosleep refuses a clock it has not got, with EINVAL",
+               clock_nanosleep((clockid_t)99, 0, &d, 0) == EINVAL);
+    }
 }
 
 static void test_tty(void)
