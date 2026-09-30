@@ -97,6 +97,7 @@ libc/test/locktest
 libc/test/fifotest
 libc/test/devdirtest
 libc/test/xfertest
+libc/test/sigcowtest
 libc/test/*.so
 ldso/ld.so
 system/fsck

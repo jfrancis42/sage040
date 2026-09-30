@@ -65,6 +65,15 @@ done
 printf 'the original contents\n' > "$SCRATCH/lk.tmp"
 fsimg put "$SCRATCH/lk.tmp" /one.txt
 fsimg mkdir /adir
+# FAST SYMLINKS MADE BY THE HOST, and the volume marked not clean so the
+# boot-time check runs, with repair. A fast link keeps its target in the
+# block-pointer array: "gcc" read as a block number is past the end of
+# the volume, which the check once "repaired" by emptying the link; and
+# "a" is block 97, inside the inode table, which deleting the link once
+# freed. The host's e2fsck judges both afterwards.
+fsimg symlink gcc /hostlink
+fsimg symlink a /alias
+debugfs -w -R 'ssv state 0' "$DISK?offset=$OFF" >/dev/null 2>&1
 
 mkfifo "$SCRATCH/lk.fifo"
 "$QEMU" -M sage040 -cpu m68040 -m "$RAM_MB" -kernel ../bootrom/bootrom.elf \
@@ -120,6 +129,8 @@ send '/bin/cat /loopa; echo LOOP=$?' 3
 # have to read back.
 send '/bin/ln -s /aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/deep/target /longlink; echo LONGLN=$?'
 send '/bin/readlink /longlink'
+send '/bin/readlink /hostlink'
+send 'rm /alias; echo RMALIAS=$?'
 send 'echo ALL-DONE' 2
 for i in $(seq 1 60); do grep -q 'ALL-DONE' "$LOG" && break; sleep 1; done
 send 'halt' 2
@@ -204,7 +215,14 @@ check "a target too long for the inode is stored in a block" $?
 grep -q '/deep/target' "$CLEAN"
 check "  and reads back whole" $?
 
+grep -qx 'gcc' "$CLEAN"
+check "a fast symlink the host made survives the boot-time check, and reads back" $?
+has 'RMALIAS=0' ; check "  and one can be deleted" $?
+
 echo "=== checks: on the host ==="
+debugfs -R 'stat /hostlink' "$DISK?offset=$OFF" 2>/dev/null |
+    grep -q 'Fast link dest: "gcc"'
+check "the host still reads /hostlink's target, after the machine checked the volume" $?
 # The link count is what the kernel wrote to the inode, read by
 # somebody else. After one name was removed it must be 1 again.
 lc=$(fsimg ls-l / 2>/dev/null | awk '$NF=="two.txt"{print $3}' | tr -d '()')
@@ -219,6 +237,11 @@ out=$(fsimg fsck 2>&1)
 echo "$out" | sed 's/^/  | /' | tail -3
 echo "$out" | grep -qiE 'error|wrong|unattached|deleted inode' && r=1 || r=0
 check "e2fsck finds nothing wrong with the volume" $r
+# By its exit status and silence too (fsimg fsck): "Block bitmap
+# differences: +97", a block freed that is still in use, contains none
+# of the words the check above looks for.
+PART_OFFSET=$OFF ../tools/fsimg.sh "$DISK" fsck >/dev/null 2>&1
+check "  and fsimg fsck agrees: clean, nothing said (no block wrongly freed)" $?
 
 echo
 echo "  passed: $pass"

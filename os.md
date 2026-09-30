@@ -1462,7 +1462,7 @@ drive it over its serial line.
 | `kernel/tcptest.sh` | 24 | TCP's options, loss, keepalives and TIME_WAIT |
 | `kernel/vttest.sh` | 95 | the VT102 console, checked against screenshots |
 | `kernel/devtest.sh` | 41 | interrupts, the filesystem under concurrency, the limits, the NVRAM, `mmap` of the framebuffer |
-| `kernel/libctest.sh` | 255 | picolibc and the POSIX layer added to it |
+| `kernel/libctest.sh` | 258 | picolibc and the POSIX layer added to it; and sigcowtest, a caught SIGCHLD arriving during copy-on-write faults |
 | `kernel/sotest.sh` | 126 | shared libraries, `ld.so`, and the sharing of their pages |
 | `kernel/tmpfstest.sh` | 36 | tmpfs at `/tmp` and `/dev/shm`: files, holes, truncate, links, rename and `EXDEV`, the working directory, `shm_open` shared between processes, the sticky bit, and from the host: the disk's `/tmp` hidden, nothing written to it |
 | `kernel/eventtest.sh` | 102 | eventfd, timerfd, signalfd, epoll and inotify, and ppoll/pselect: counts, blocking and waking by another process, timers timed by CLOCK_MONOTONIC, signals checked gone from `sigpending`, level/edge/oneshot, one epoll over all four kinds, masks that let a signal in only during the wait, inotify on the disk and in tmpfs, queue overflow |
@@ -1490,8 +1490,8 @@ drive it over its serial line.
 | `kernel/crontest.sh` | 8 | something the machine does by itself, later |
 | `kernel/pytest.sh` | 43 | CPython, against the host's Python's answers to the same questions |
 | `kernel/usertest.sh` | 16 | uids and gids, `/etc/passwd` and `/etc/group`, and what an ordinary user is refused |
-| `kernel/logintest.sh` | 11 | logging in: the right password gets that user's shell in that user's home and the wrong one does not, `su`, `sudo`, and the modes on them |
-| `kernel/linktest.sh` | 26 | hard links and symlinks -- one inode with two names, fast targets and slow ones, loops, dangling targets -- agreed with by the host's e2fsck |
+| `kernel/logintest.sh` | 12 | logging in: the right password gets that user's shell in that user's home and the wrong one does not, `su`, `sudo`, and the modes on them; and after a session dies without handing the terminal back, the next login still gets it |
+| `kernel/linktest.sh` | 30 | hard links and symlinks -- one inode with two names, fast targets and slow ones, loops, dangling targets -- agreed with by the host's e2fsck; fast symlinks the host made surviving the boot-time check, and deleted without freeing their "blocks" |
 | `kernel/dftest.sh` | 15 | `df` and `du` against the host's own figures for the same volume, with the shell's built-in as the control |
 | `kernel/sshtest.sh` | 10 | ssh, scp and rsync against the workstation's own OpenSSH, which knows nothing about this project -- so the protocol is either right or it is not |
 | `kernel/pylibtest.sh` | 27 | the libraries CPython is built against, proven by the programs that ship with them, every stream crossing the host boundary both ways |

@@ -639,6 +639,21 @@ int signal_altstack(const stack_t *ss, stack_t *old)
     return 0;
 }
 
+/*
+ * Can a handler be entered from this exception frame? Only if the rte
+ * would simply return through it -- format 0, format 2 (which adds an
+ * address), or format 3, the 68040's floating-point post-instruction
+ * frame, which is the same shape and is what a SIGFPE the FPSP reports
+ * arrives on. Not format 7, the access-fault frame: its rte finishes
+ * the faulting access, and changing its pc would lose that.
+ */
+static int frame_redirectable(const struct pt_regs *regs)
+{
+    unsigned fmt = (unsigned)(regs->format >> 12);
+
+    return fmt == 0 || fmt == 2 || fmt == 3;
+}
+
 static int setup_frame(struct task *t, struct pt_regs *regs, int sig,
                        struct sigaction *act)
 {
@@ -647,19 +662,9 @@ static int setup_frame(struct task *t, struct pt_regs *regs, int sig,
                                  * preempt itself. */
     u32 usp = get_usp();
     u32 fp;
-    unsigned fmt = (unsigned)(regs->format >> 12);
 
-    /*
-     * A frame can be redirected by changing its pc only if it is one
-     * the rte will simply return through: format 0, format 2, which
-     * adds an address, or format 3, the 68040's floating-point
-     * post-instruction frame, which is the same shape -- and is what a
-     * SIGFPE the FPSP reports arrives on. The access-fault frame (7)
-     * re-runs the faulting access, and faults end the program before
-     * reaching here anyway.
-     */
-    if (fmt != 0 && fmt != 2 && fmt != 3) {
-        return -1;
+    if (!frame_redirectable(regs)) {
+        return -1;              /* signal_deliver does not ask */
     }
 
     syscall_outcome(t, regs, act);
@@ -974,6 +979,22 @@ void signal_deliver(struct pt_regs *regs)
 
         if (sig != SIGKILL && sig != SIGSTOP &&
             act->sa_handler != SIG_DFL && act->sa_handler != SIG_IGN) {
+            /*
+             * NOT NOW, from an access-fault frame. A fault that demand
+             * paging or copy-on-write RESOLVED returns to the program
+             * through here with its format 7 frame intact, and a signal
+             * that arrived meanwhile -- the SIGCHLD of a child exiting
+             * while the parent touched a page it had just forked -- used
+             * to be refused a frame and turned into a SIGSEGV: bash
+             * died on every mistyped command, at the machine's real
+             * speed, where the timing is the same every time. The
+             * signal stays pending and is delivered on the next return
+             * to user mode, which is the next system call or tick.
+             */
+            if (!frame_redirectable(regs)) {
+                t->sig_pending |= SIGMASK(sig);
+                return;
+            }
             /* One handler per return to user mode. Anything else still
              * pending is taken on the way back from sigreturn. */
             if (setup_frame(t, regs, sig, act) < 0) {

@@ -69,6 +69,7 @@ fsimg put kernel.rom /KERNEL.ROM
 fsimg put -m 755 ../libc/test/libctest /libctest
 fsimg put -m 755 ../libc/test/posixtest /posixtest
 fsimg put -m 755 ../libc/test/cryptest /cryptest
+fsimg put -m 755 ../libc/test/sigcowtest /sigcowtest
 fsimg mkdir /bin
 
 rm -f "$SCRATCH/in.fifo"
@@ -108,6 +109,11 @@ printf 'mkdir /PTSTART\r' >&3
 printf 'cd /PTSTART\r' >&3
 printf '/posixtest\r' >&3
 wait_for "posixtest: done"
+sleep 0.3
+# The marker split by quotes, so that the echo of the typed line does
+# not already contain it and satisfy wait_for (a substring match).
+printf '/sigcowtest; echo SIGCOW-EX"IT" $?\r' >&3
+wait_for "SIGCOW-EXIT"
 sleep 0.3
 printf 'echo LIBC-FINISHED\r' >&3
 wait_for "LIBC-FINISHED"
@@ -168,6 +174,11 @@ while IFS= read -r line; do
 done < <(sed -n '/^posixtest: the calls/,/^posixtest: done/p' "$SCRATCH/clean.tmp" | grep -E '^  (ok  |FAIL) ')
 grep -qx "posixtest: 0 failed" "$SCRATCH/clean.tmp"
 check "posixtest ran to the end" $?
+
+echo "=== checks: a signal during a resolved page fault (sigcowtest) ==="
+grep -qE '(^|\$ )sigcowtest: 300 children, 300 SIGCHLDs handled, alive$' \
+    "$SCRATCH/clean.tmp" && grep -q '^SIGCOW-EXIT 0' "$SCRATCH/clean.tmp"
+check "SIGCHLD caught while taking copy-on-write faults: the program lives" $?
 grep -qx "posixtest: started in /PTSTART" "$SCRATCH/clean.tmp"
 check "a program starts in the shell's working directory, not the root" $?
 # The time utimensat set, read off the inode by the host's own tools --

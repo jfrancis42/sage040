@@ -38,6 +38,7 @@
 #   fsimg.sh IMG mkdir DIR           make DIR and any parent of it
 #   fsimg.sh IMG rm PATH...          delete files
 #   fsimg.sh IMG rmdir DIR           delete an empty directory
+#   fsimg.sh IMG symlink TARGET LINK make LINK a symbolic link to TARGET
 #   fsimg.sh IMG mv FROM TO          rename
 #   fsimg.sh IMG alloc PATH MB       a file of MB megabytes with every
 #                                    block really allocated (no holes)
@@ -347,6 +348,17 @@ rm)
     args=()
     for p in "$@"; do args+=("rm $(q "$p")"); done
     dbg "${args[@]}" >/dev/null
+    ;;
+symlink)
+    # symlink TARGET LINK: LINK names TARGET, as `ln -s TARGET LINK`.
+    # Replaces a LINK already there, so installing twice is not an error.
+    TGT=${1:?symlink: need a target}
+    LNK=${2:?symlink: need a link path}
+    if fs_exists "$LNK"; then
+        dbg "rm $(q "$LNK")" >/dev/null
+    fi
+    dbg "symlink $(q "$LNK") $(q "$TGT")" >/dev/null
+    fs_exists "$LNK" || die "could not make $LNK"
     ;;
 rmdir)
     D=${1:?rmdir: need a path}

@@ -3111,6 +3111,16 @@ static void run_getty(void)
                     break;
                 }
                 (void)sys_waitpid(pid, &status, 0);
+                /*
+                 * The terminal comes back before the next login. A
+                 * shell that exits normally hands it back itself (bash
+                 * restores the group it started in); one that CRASHES
+                 * cannot, and the terminal was left owned by a group
+                 * with nobody in it -- so the next login, reading from
+                 * outside the foreground, was stopped by SIGTTIN at its
+                 * first read and the console took no more input.
+                 */
+                sys_jobctl(JOBCTL_FG, 0, 0);
             }
         }
     }

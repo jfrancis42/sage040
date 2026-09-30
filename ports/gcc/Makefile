@@ -64,6 +64,10 @@ install: all $(DISK) $(SPECS)
 	        echo "gcc install: no lib/gcc/<target>/<version> directory" >&2; exit 1; \
 	    fi; \
 	    $(ABS_FSIMG) put $(SPECS) /usr/$$vdir/specs
+	@# cc: POSIX's name for the C compiler, and what Makefiles and
+	@# configure scripts try first. gcc's own install makes c++ but
+	@# never cc; a Linux distribution adds it, as a link.
+	@$(ABS_FSIMG) symlink gcc /usr/bin/cc
 	@echo "gcc is on $(DISK) at /usr; plain 'gcc hello.c -o hello' works, no -specs= flag"
 
 # The specs file gcc reads at startup: all of gcc's own, with this

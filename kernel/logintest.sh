@@ -47,7 +47,7 @@ fsimg put kernel.rom /KERNEL.ROM
 fsimg mkdir /bin; fsimg mkdir /etc; fsimg mkdir /lib; fsimg mkdir /home; fsimg mkdir /root
 fsimg put -m 755 ../system/sh /bin/sh
 for p in id env; do fsimg put -m 755 ../system/$p /bin/$p; done
-for p in cat ls echo whoami touch rm mkdir chmod; do
+for p in cat ls echo whoami touch rm mkdir chmod kill; do
   fsimg put -m 755 ../ports/sbase/bin/$p /bin/$p 2>/dev/null
 done
 fsimg put -m 755 ../auth/login   /bin/login
@@ -94,6 +94,17 @@ send 'hunter2' 3
 send 'whoami'
 send 'pwd'
 send 'exit' 2
+# A session that dies WITHOUT handing the terminal back, as a crash
+# does: /bin/kill runs as a FOREGROUND job -- a group of its own, given
+# the terminal -- kills the shell and exits, leaving the terminal owned
+# by a group with nobody in it. (The shell's builtin kill would not do:
+# it never gives the terminal away.) The login that follows has to get
+# the terminal back; it used to be stopped at its first read, and the
+# console took no more input.
+send '/bin/kill -9 $$' 3
+send 'root' 1
+send 'root' 3
+send 'echo RE"LOGGED"' 2
 send 'echo ALL-DONE' 2
 for i in $(seq 1 60); do grep -q 'ALL-DONE' "$LOG" && break; sleep 1; done
 sleep 2
@@ -124,6 +135,8 @@ check "  and sudo cat read the file jfrancis could not" $?
 has 'profile: welcome to sage040'
 check "the login shell ran /etc/profile and ~/.profile" $?
 has 'added tester'                   ; check "useradd created an account" $?
+grep -qx 'RELOGGED' "$CLEAN"
+check "after a session is killed outright, the next login gets the terminal" $?
 has '/home/tester$ whoami'           ; check "  which can then be logged into, in its own home" $?
 
 echo

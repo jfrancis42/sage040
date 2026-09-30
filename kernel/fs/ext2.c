@@ -1734,6 +1734,20 @@ static u32 cwd_ino(void)
  */
 #define SYMLINK_FAST_MAX  (EXT2_N_BLOCKS * 4)   /* 60 bytes */
 
+/*
+ * Is this a fast symlink -- one whose "block pointers" are its target's
+ * bytes? Anything that walks or frees an inode's blocks must ask first:
+ * the check once read "gcc" as block 0x00636367, found it past the end
+ * of the volume and cut it, emptying the link; and freeing a deleted
+ * link's blocks would have freed block 97 for a link to "a". i_blocks
+ * is 0 for a fast link and for nothing else that is a link, which is how
+ * Linux's ext2 tells them apart.
+ */
+static int fast_symlink(const struct einode *ei)
+{
+    return S_ISLNK(ei->mode) && ei->blocks == 0;
+}
+
 static int read_link(u32 ino, char *out, u32 size)
 {
     struct einode ei;
@@ -2385,7 +2399,11 @@ static int inode_release(u32 ino)
         return err;
     }
     was_dir = S_ISDIR(ei.mode) ? 1 : 0;
-    inode_truncate_blocks(&ei, 0);
+    if (fast_symlink(&ei)) {
+        memset(ei.block, 0, sizeof(ei.block));  /* a target, not blocks */
+    } else {
+        inode_truncate_blocks(&ei, 0);
+    }
     ei.size = 0;
     ei.dtime = now_secs();
     ei.links = 0;
@@ -3892,6 +3910,10 @@ static int fsck_inode_blocks(struct einode *ei, struct fsck_report *r,
 {
     int i, dirty = 0;
     static const int level_of[3] = { 1, 2, 3 };
+
+    if (fast_symlink(ei)) {
+        return 0;               /* its "pointers" are its target's bytes */
+    }
 
     for (i = 0; i < EXT2_NDIR_BLOCKS; i++) {
         if (fsck_walk_blocks(ei->block[i], 0, r, count, repair) && repair) {
