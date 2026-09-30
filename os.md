@@ -1321,6 +1321,15 @@ is executable from the file's first four bytes**, because the disk had no
 permission bit — do not "tidy" this by adding `.EXE` or by matching on
 names.
 
+**A file that begins `#!` is run by the program it names**, as on Linux
+(binfmt_script): `#!/usr/bin/perl -w` runs `/usr/bin/perl -w SCRIPT
+ARGS...`. The rest of the line after the interpreter is ONE argument,
+spaces and all; the line is at most 256 bytes; a script may name a
+script, four deep, then ELOOP. The script needs execute permission and
+so does its interpreter, and set-user-id comes from the interpreter,
+never from a script. A file starting `#` without the `!` still fails
+with ENOEXEC, and the shells run it themselves. `kernel/shebangtest.sh`.
+
 `lib/` is what a program written for this system links against: `crt0.s`,
 `ulib.c`, `user.ld`. `system/` is what the system ships, installed into
 `/bin`: `ifconfig`, `ping`, `netstat`, `host`, `ntpdate`, `shutdown`,
@@ -1492,6 +1501,8 @@ drive it over its serial line.
 | `kernel/logtest.sh` | 10 | the kernel's log, klogd, and /var/log/syslog |
 | `kernel/crontest.sh` | 8 | something the machine does by itself, later |
 | `kernel/pytest.sh` | 43 | CPython, against the host's Python's answers to the same questions |
+| `kernel/perltest.sh` | 37 | Perl: 64-bit integers, byte order, the XS modules against the host's digests and zlib, a `#!` script, perldoc, and an XS module built on the machine with CBuilder and with MakeMaker and GNU make |
+| `kernel/shebangtest.sh` | 20 | `#!`: the argv the interpreter gets, nesting and ELOOP, permissions, a set-user-id script ignored against an ELF control, from spawn and from execve |
 | `kernel/usertest.sh` | 16 | uids and gids, `/etc/passwd` and `/etc/group`, and what an ordinary user is refused |
 | `kernel/logintest.sh` | 14 | logging in: the right password gets that user's shell in that user's home and the wrong one does not, `su`, `sudo`, and the modes on them; and after a session dies without handing the terminal back, the next login still gets it |
 | `kernel/linktest.sh` | 30 | hard links and symlinks -- one inode with two names, fast targets and slow ones, loops, dangling targets -- agreed with by the host's e2fsck; fast symlinks the host made surviving the boot-time check, and deleted without freeing their "blocks" |

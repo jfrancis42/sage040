@@ -1,0 +1,10 @@
+--- a/ext/Errno/Errno_pm.PL
++++ b/ext/Errno/Errno_pm.PL
+@@ -116,6 +116,7 @@
+ 	# Some Linuxes have weird errno.hs which generate
+ 	# no #file or #line directives
+ 	($linux_errno_h) = grep { -e $_ } map { "$_/errno.h" }
++	    grep { length } $Config{usrinc},
+ 	    "$sysroot/usr/include", "$sysroot/usr/local/include",
+ 	    split / / => $Config{locincpth};
+     }

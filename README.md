@@ -21,9 +21,9 @@ line are two independent terminals, each with its own login, so you sit
 at whichever you like. It is **multi-user**: the screen, the serial line
 and ssh all ask for a name and a password, hashes live in `/etc/shadow`,
 and every path a system call takes is checked against the file's owner,
-group and mode. **CPython 3.14**
-runs on it -- with TLS, SQLite, compression and readline behind it -- and
-so do GNU bash, sed, grep, less, the one true awk, uEmacs, vi, ssh,
+group and mode. **CPython 3.14** and **Perl 5.44**
+run on it -- Python with TLS, SQLite, compression and readline behind it,
+Perl with its XS modules loaded as shared objects -- and so do GNU bash, GNU make, sed, grep, less, the one true awk, uEmacs, vi, ssh,
 rsync and 98 of suckless's utilities, each built from its own unmodified
 upstream source.
 
@@ -105,10 +105,11 @@ programs are built and installed separately, because each one fetches and
 builds its own source and that takes time you may not want spent:
 
 ```bash
-make world      # the system, every port, and Python: everything
+make world      # the system, every port, Python and Perl: everything
 make ports      # the ports alone: bash, sed, grep, awk, less, sbase,
                 # ncurses, uemacs, vi
 make python     # Python alone -- 45 MB and 2,244 files, minutes to copy
+make perl       # Perl alone -- 58 MB and 1,900 files
 make programs   # system/ and apps/ alone, as `make boot` does
 ```
 
@@ -186,6 +187,8 @@ the POSIX layer added to it.
 | | |
 |---|---|
 | `ports/python` | CPython 3.14.7: big integers, the FPU, threads, sockets, curses, the standard library on the disk |
+| `ports/perl` | Perl 5.44.0: 64-bit integers, XS modules as shared objects, perldoc, and MakeMaker -- an XS module builds on the machine |
+| `ports/make` | GNU make 4.4.1, as `/bin/make` |
 | `ports/bash` | GNU bash 5.3.20 — job control, arrays, `[[ ]]`, arithmetic, here-documents |
 | `ports/ncurses` | ncurses 6.5: the terminfo database at /usr/share/terminfo, and curses |
 | `ports/less` | the pager, over terminfo |
@@ -358,6 +361,8 @@ is a 25 MHz 68040, and one of the suites waits for the wall clock.
 | `make logtest` `make crontest` | the kernel's log; cron |
 | `make awktest` `make sedtest` `make greptest` `make sbasetest` `make bashtest` | the ported programs |
 | `make pytest` | CPython, every answer against the host's Python |
+| `make perltest` | Perl: its modules against the host's answers, and an XS module built on the machine |
+| `make shebangtest` | `#!` scripts, from spawn and from execve |
 | `make uemacstest` `make vitest` | the editors |
 | `make bashsuite` | every one of bash's own 83 tests (hours, not minutes) |
 

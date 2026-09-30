@@ -1,0 +1,27 @@
+--- a/ext/POSIX/POSIX.xs
++++ b/ext/POSIX/POSIX.xs
+@@ -1372,7 +1372,9 @@
+ #include <fcntl.h>
+ 
+ #ifdef HAS_TZNAME
+-#  if !defined(WIN32) && !defined(__CYGWIN__)
++   /* picolibc declares it in <time.h>, as char * const tzname[2]: a
++    * redeclaration without the const does not compile. */
++#  if !defined(WIN32) && !defined(__CYGWIN__) && !defined(__PICOLIBC__)
+ extern char *tzname[];
+ #  endif
+ #else
+@@ -1482,6 +1484,13 @@
+ #define tcsetattr(x,y,z) not_here("tcsetattr")
+ #endif
+ 
++/* termios.h without ctermid(): picolibc. What it would return on Linux,
++ * which names the controlling terminal whatever it is. */
++#if defined(I_TERMIOS) && !defined(HAS_CTERMID) && !defined(L_ctermid)
++#  define L_ctermid 9
++#  define ctermid(s) ((s) ? strcpy((s), "/dev/tty") : (char *)"/dev/tty")
++#endif
++
+ /* Possibly needed prototypes */
+ #ifndef WIN32
+ START_EXTERN_C
