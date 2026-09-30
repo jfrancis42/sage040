@@ -712,6 +712,167 @@ static int build(struct addrspace *as, const char *path,
     return setup_stack(argc, argv, envp, auxv, n, sp, &as->img);
 }
 
+/* --- scripts: #! ---------------------------------------------------- */
+
+/*
+ * A FILE THAT BEGINS "#!" IS RUN BY THE PROGRAM IT NAMES, which is
+ * Linux's binfmt_script and every Unix's before it:
+ *
+ *     #!/usr/bin/perl -w          run as  /usr/bin/perl -w SCRIPT ARGS...
+ *
+ * The interpreter is the first word after the "#!"; everything after
+ * that, to the end of the line and less trailing white space, is ONE
+ * optional argument, spaces and all -- Linux's rule, which is why `#!
+ * /usr/bin/env perl -w` does not do what it looks like. The script's
+ * own argv[0] is replaced by its path, as exec was given it, and the
+ * rest of its arguments follow.
+ *
+ * Until this, exec knew ELF and nothing else, and every script ran only
+ * because a shell caught the ENOEXEC and ran the file ITSELF -- so
+ * `perldoc`, a Perl program starting #!/usr/bin/perl, was read by bash
+ * as a shell script. Anything that execve()s a script directly (make,
+ * env, a Perl or Python program starting another) got ENOEXEC.
+ *
+ * The script needs execute permission, and so does its interpreter,
+ * which may itself be a script -- to SCRIPT_DEPTH levels, then ELOOP.
+ * Set-user-id comes from the FINAL program, never from a script: a
+ * set-user-id script is the classic race (swap the file between the
+ * kernel reading its first line and the interpreter opening it), and
+ * Linux has refused it for decades. A file that does not begin "#!" is
+ * left alone, and fails as before with ENOEXEC if it is not ELF, which
+ * is still what lets a shell run a plain '#' script itself.
+ */
+#define SCRIPT_LINE     256     /* Linux's BINPRM_BUF_SIZE             */
+#define SCRIPT_DEPTH    4       /* Linux's BINPRM_MAX_RECURSION        */
+#define SCRIPT_BYTES    ((EXEC_MAX_ARGS + 1) * 4 + \
+                         SCRIPT_DEPTH * (SCRIPT_LINE + PATH_MAX))
+#define SCRIPT_PAGES    ((SCRIPT_BYTES + PAGE_SIZE - 1) / PAGE_SIZE)
+
+struct script {
+    u32    pa;                  /* the pages, 0 until a script is met  */
+    char **argv;                /* EXEC_MAX_ARGS + 1 slots             */
+    char  *str;                 /* where the next string goes          */
+};
+
+static void script_free(struct script *s)
+{
+    if (s->pa) {
+        pmm_free_pages(s->pa, SCRIPT_PAGES);
+        s->pa = 0;
+    }
+}
+
+static int is_blank(char c)
+{
+    return c == ' ' || c == '\t';
+}
+
+/*
+ * Follow #! from *path until a file that is not a script, rewriting
+ * *path, *argc and *argv as it goes (into s's pages, which the caller
+ * frees once the image is built). 0, or -errno; *path is then the
+ * program to load, and has passed its X_OK check.
+ */
+static int script_resolve(struct script *s, const char **path,
+                          int *argc, char ***argv)
+{
+    char line[SCRIPT_LINE];
+    int depth, fd, i, n, extra;
+
+    for (depth = 0; ; depth++) {
+        char *interp, *arg = 0, *p, *end;
+        int err = vfs_may(*path, X_OK);
+
+        if (err < 0) {
+            return err;
+        }
+        fd = fd_open(*path, O_RDONLY);
+        if (fd < 0) {
+            return fd;
+        }
+        /* One short, so there is always room for the NUL at line[n]. */
+        n = (int)fd_read(fd, line, sizeof(line) - 1);
+        fd_close(fd);
+        if (n < 2 || line[0] != '#' || line[1] != '!') {
+            return n < 0 ? n : 0;       /* not a script: load it */
+        }
+        if (depth == SCRIPT_DEPTH) {
+            return -ELOOP;
+        }
+
+        /* The line: to its newline, or to the end of what was read. */
+        end = line + 2;
+        while (end < line + n && *end != '\n') {
+            end++;
+        }
+        p = line + 2;
+        while (p < end && is_blank(*p)) {
+            p++;
+        }
+        interp = p;
+        while (p < end && !is_blank(*p) && *p != '\0') {
+            p++;
+        }
+        /* A name cut off by the end of the buffer is not a name. */
+        if (p == interp || (p == line + n && n == (int)sizeof(line) - 1)) {
+            return -ENOEXEC;
+        }
+        if (p < end) {
+            *p++ = '\0';
+            while (p < end && is_blank(*p)) {
+                p++;
+            }
+            if (p < end) {
+                char *q = end;
+
+                while (q > p && (is_blank(q[-1]) || q[-1] == '\r')) {
+                    q--;
+                }
+                *q = '\0';
+                arg = p;
+            }
+        } else {
+            *p = '\0';          /* p == end, at most line + n */
+        }
+
+        if (!s->pa) {
+            s->pa = pmm_alloc_pages(SCRIPT_PAGES);
+            if (!s->pa) {
+                return -ENOMEM;
+            }
+            s->argv = (char **)s->pa;
+            s->str = (char *)(s->argv + EXEC_MAX_ARGS + 1);
+        }
+
+        /* interp [arg] path argv[1]...: one or two more than before. */
+        extra = arg ? 2 : 1;
+        if (*argc - 1 + 1 + extra > EXEC_MAX_ARGS) {
+            return -E2BIG;
+        }
+        /*
+         * Shift the old arguments after argv[0] up into place, last
+         * first: on the second level the source and the destination
+         * are the same array.
+         */
+        for (i = *argc - 1; i >= 1; i--) {
+            s->argv[i + extra] = (*argv)[i];
+        }
+        n = *argc < 1 ? 0 : *argc - 1;
+        s->argv[extra] = strcpy(s->str, *path);
+        s->str += strlen(s->str) + 1;
+        if (arg) {
+            s->argv[1] = strcpy(s->str, arg);
+            s->str += strlen(s->str) + 1;
+        }
+        s->argv[0] = strcpy(s->str, interp);
+        s->str += strlen(s->str) + 1;
+        *argc = n + 1 + extra;
+        s->argv[*argc] = 0;
+        *argv = s->argv;
+        *path = s->argv[0];
+    }
+}
+
 /*
  * Load a program and start it as a task.
  *
@@ -719,7 +880,8 @@ static int build(struct addrspace *as, const char *path,
  * and whether to do it is what separates a foreground job from a
  * background one. That separation is the whole of what `&` needed.
  */
-int exec_spawn(const char *path, int argc, char **argv, char **envp)
+static int spawn(struct script *script, const char *path, int argc,
+                 char **argv, char **envp)
 {
     char cmd[JOB_CMD_MAX];
     struct addrspace *as;
@@ -756,11 +918,10 @@ int exec_spawn(const char *path, int argc, char **argv, char **envp)
     {
         struct stat st;
 
-        err = vfs_may(path, X_OK);
-        if (err < 0) {
-            return err;
+        err = script_resolve(script, &path, &argc, &argv);
+        if (err >= 0) {
+            err = vfs_stat(path, &st);
         }
-        err = vfs_stat(path, &st);
         if (err < 0) {
             return err;
         }
@@ -868,12 +1029,21 @@ int exec_spawn(const char *path, int argc, char **argv, char **envp)
     return t->pid;
 }
 
+int exec_spawn(const char *path, int argc, char **argv, char **envp)
+{
+    struct script script = { 0, 0, 0 };
+    int r = spawn(&script, path, argc, argv, envp);
+
+    script_free(&script);       /* the task has its own copy by now */
+    return r;
+}
+
 /* --- replacing a program: execve ------------------------------------- */
 
 extern void fpu_restore(const u32 *area);
 
-int exec_replace(const char *path, int argc, char **argv, char **envp,
-                 struct pt_regs *regs)
+static int replace(struct script *script, const char *path, int argc,
+                   char **argv, char **envp, struct pt_regs *regs)
 {
     struct addrspace *as, *old = current->as;
     u32 entry = 0, sp = 0;
@@ -912,11 +1082,10 @@ int exec_replace(const char *path, int argc, char **argv, char **envp,
     {
         struct stat st;
 
-        err = vfs_may(path, X_OK);
-        if (err < 0) {
-            return err;
+        err = script_resolve(script, &path, &argc, &argv);
+        if (err >= 0) {
+            err = vfs_stat(path, &st);
         }
-        err = vfs_stat(path, &st);
         if (err < 0) {
             return err;
         }
@@ -1011,4 +1180,14 @@ int exec_replace(const char *path, int argc, char **argv, char **envp,
     __asm__ volatile ("move.l %0,%%usp" : : "a"(sp));
     current->syscall_nr = -1;           /* never "restart" an exec */
     return 0;
+}
+
+int exec_replace(const char *path, int argc, char **argv, char **envp,
+                 struct pt_regs *regs)
+{
+    struct script script = { 0, 0, 0 };
+    int r = replace(&script, path, argc, argv, envp, regs);
+
+    script_free(&script);
+    return r;
 }
