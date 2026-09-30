@@ -122,6 +122,33 @@ libc_fresh() {
     return 1
 }
 
+# KEEPING THE TIMES OF WHAT DID NOT CHANGE.
+#
+# Nearly every build.sh republishes its output on every run -- `rm -rf
+# "$OUT"` and then a `make install` or a `cp` -- and both stamp every
+# file with the time of the copy, changed or not. Every consumer that
+# tracks its dependencies then thinks itself out of date: curl
+# recompiled all 203 of its objects because openssl's headers were
+# "new", and the native gcc recompiled all of itself, twenty minutes,
+# because gmp.h was -- in a `make` in which nothing had changed at all.
+#
+# So on a successful exit, each file in the output whose CONTENT is what
+# it was last time gets last time's mtime back (keeptimes.py). The
+# record is kept BESIDE the output, as $OUT.times, because the scripts
+# delete the output; libc_fresh deletes the two together, which is
+# right, since after a libc change nothing in there can be trusted.
+# The output is $OUT, or $BUILD/sage040 for the scripts that build in
+# place and never name it.
+KEEPTIMES=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/keeptimes.py
+keep_times() {
+    local st=$? out=${OUT:-${BUILD:-}/sage040}
+    if [ "$st" -eq 0 ] && [ -n "${BUILD:-}" ] && [ -d "$out" ]; then
+        python3 "$KEEPTIMES" "$out" "$out.times"
+    fi
+    return "$st"
+}
+trap keep_times EXIT
+
 
 # ---------------------------------------------------------------------
 # THE GCC SOURCE, AND THE SECOND CROSS COMPILER BUILT FROM IT

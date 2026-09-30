@@ -60,17 +60,31 @@ SQL_FLAGS="-DSQLITE_OMIT_LOAD_EXTENSION=1 \
 -DSQLITE_MAX_MMAP_SIZE=0 \
 -DHAVE_USLEEP=1 -DHAVE_FDATASYNC=1 -DHAVE_LOCALTIME_R=1 -DHAVE_STRERROR_R=1"
 
-# shellcheck disable=SC2086
-"$CROSS_CC" $CROSS_CFLAGS $CROSS_CPPFLAGS $SQL_FLAGS \
-    -c "$SRC/sqlite3.c" -o "$BUILD/sqlite3.o" 2> "$BUILD/build.log"
-"$CROSS_BIN/m68k-elf-ar" rcs "$BUILD/libsqlite3.a" "$BUILD/sqlite3.o"
-"$CROSS_BIN/m68k-elf-ranlib" "$BUILD/libsqlite3.a"
+# ONLY WHEN SOMETHING CHANGED. There is no Makefile to say so, and the
+# amalgamation is nine megabytes of C: compiling it on every run was
+# most of a minute of every `make` of the whole system. What it depends
+# on is the source, this script, and the flags -- the flags are written
+# down beside the result, and libc_fresh above empties the directory
+# when the C library's headers change.
+stamp="$CROSS_CC $CROSS_CFLAGS $CROSS_CPPFLAGS $SQL_FLAGS $DYN_LDFLAGS $DYN_LIBS"
+if [ ! -f "$BUILD/sqlite3" ] || [ "$(cat "$BUILD/.flags" 2>/dev/null)" != "$stamp" ] \
+   || [ "$SRC/sqlite3.c" -nt "$BUILD/sqlite3" ] || [ "$SRC/shell.c" -nt "$BUILD/sqlite3" ] \
+   || [ "$0" -nt "$BUILD/sqlite3" ]; then
+    rm -f "$BUILD/sqlite3" "$BUILD/.flags"
+    # shellcheck disable=SC2086
+    "$CROSS_CC" $CROSS_CFLAGS $CROSS_CPPFLAGS $SQL_FLAGS \
+        -c "$SRC/sqlite3.c" -o "$BUILD/sqlite3.o" 2> "$BUILD/build.log"
+    rm -f "$BUILD/libsqlite3.a"
+    "$CROSS_BIN/m68k-elf-ar" rcs "$BUILD/libsqlite3.a" "$BUILD/sqlite3.o"
+    "$CROSS_BIN/m68k-elf-ranlib" "$BUILD/libsqlite3.a"
 
-# The shell, against /lib/libc.so.
-# shellcheck disable=SC2086
-"$CROSS_CC" $CROSS_CFLAGS $CROSS_CPPFLAGS $SQL_FLAGS -I"$SRC" \
-    $DYN_LDFLAGS "$SRC/shell.c" "$BUILD/libsqlite3.a" $DYN_LIBS \
-    -o "$BUILD/sqlite3" 2>> "$BUILD/build.log"
+    # The shell, against /lib/libc.so.
+    # shellcheck disable=SC2086
+    "$CROSS_CC" $CROSS_CFLAGS $CROSS_CPPFLAGS $SQL_FLAGS -I"$SRC" \
+        $DYN_LDFLAGS "$SRC/shell.c" "$BUILD/libsqlite3.a" $DYN_LIBS \
+        -o "$BUILD/sqlite3" 2>> "$BUILD/build.log"
+    echo "$stamp" > "$BUILD/.flags"
+fi
 
 OUT=$BUILD/sage040
 mkdir -p "$OUT/lib" "$OUT/include" "$OUT/bin"

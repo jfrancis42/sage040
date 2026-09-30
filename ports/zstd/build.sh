@@ -49,9 +49,17 @@ mkdir -p "$BUILD"
 # zstd's Makefiles build in the source tree. Copy what is needed so a
 # host build of zstd in the same tree cannot be confused with this one,
 # and so `make clean` here never touches the pristine source.
-rm -rf "$BUILD/src"
-mkdir -p "$BUILD/src"
-cp -a "$SRC/lib" "$SRC/programs" "$BUILD/src/"
+#
+# ONCE per source tree, not on every run: the objects live inside the
+# copy (src/lib/obj), so recopying threw them away and every `make` of
+# the whole system recompiled zstd, twice over (its own build and
+# curl's).
+if [ "$(cat "$BUILD/src/.from" 2>/dev/null)" != "$SRC" ]; then
+    rm -rf "$BUILD/src"
+    mkdir -p "$BUILD/src"
+    cp -a "$SRC/lib" "$SRC/programs" "$BUILD/src/"
+    echo "$SRC" > "$BUILD/src/.from"
+fi
 
 MAKEVARS=(
     CC="$CROSS_CC"
