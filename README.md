@@ -189,7 +189,7 @@ the POSIX layer added to it.
 | `ports/python` | CPython 3.14.7: big integers, the FPU, threads, sockets, curses, the standard library on the disk |
 | `ports/perl` | Perl 5.44.0: 64-bit integers, XS modules as shared objects, perldoc, and MakeMaker -- an XS module builds on the machine |
 | `ports/make` | GNU make 4.4.1, as `/bin/make` |
-| `ports/bash` | GNU bash 5.3.20 — job control, arrays, `[[ ]]`, arithmetic, here-documents |
+| `ports/bash` | GNU bash 5.3.20 — job control, arrays, `[[ ]]`, arithmetic, here-documents; and `/bin/sh` |
 | `ports/ncurses` | ncurses 6.5: the terminfo database at /usr/share/terminfo, and curses |
 | `ports/less` | the pager, over terminfo |
 | `ports/zlib` | zlib 1.3.1 |
@@ -207,7 +207,7 @@ the POSIX layer added to it.
 | `ports/sed`, `ports/grep` | GNU sed 4.10 and GNU grep 3.12 |
 | `ports/awk` | the one true awk |
 | `ports/uemacs`, `ports/vi` | uEmacs/PK and neatvi |
-| `system/` | the system's own programs: `ifconfig`, `ping`, `netstat`, `route`, `arp`, `host`, `ntpdate`, `fsck`, `swapon`, `nvram`, `irqs`, `stty`, `df`, `id`, `who`, `w`, `uptime`, `sh` |
+| `system/` | the system's own programs: `ifconfig`, `ping`, `netstat`, `route`, `arp`, `host`, `ntpdate`, `fsck`, `swapon`, `nvram`, `irqs`, `stty`, `df`, `id`, `who`, `w`, `uptime`, and `msh`, the system shell (`/bin/sh` is bash) |
 | `apps/` | demonstrations and test programs: the graphics demos below, `httpd`, `fetch`, `fbmap`, `pagetest` |
 
 ### The graphics demos
@@ -363,6 +363,7 @@ is a 25 MHz 68040, and one of the suites waits for the wall clock.
 | `make pytest` | CPython, every answer against the host's Python |
 | `make perltest` | Perl: its modules against the host's answers, and an XS module built on the machine |
 | `make shebangtest` | `#!` scripts, from spawn and from execve |
+| `make shtest` | `/bin/sh` is bash; the system shell is `/bin/msh` |
 | `make uemacstest` `make vitest` | the editors |
 | `make bashsuite` | every one of bash's own 83 tests (hours, not minutes) |
 

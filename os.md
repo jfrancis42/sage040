@@ -603,8 +603,13 @@ above 400 are local, because Linux has nothing to match.
 space copy-on-write, so fork-then-exec copies almost nothing. `spawn` is
 still here, fork and exec in one call: a path and an argument vector,
 and a new task.
-`/bin/sh` is the kernel's own shell built as a program, and it is what
-`sh -c` and `system()` run.
+`/bin/sh` is **bash**, a link that ports/bash installs, and it is what
+`sh -c`, `system()`, `popen()`, make's recipes and every `./configure`
+run -- all of which assume a POSIX shell, which the system's own shell
+is not. Run as `sh`, bash is in its POSIX mode. The kernel's own shell
+built as a program is **`/bin/msh`**. A disk with the system and no ports
+gets `/bin/sh -> msh`, so logins still find a shell; reinstalling the
+programs never replaces bash's link. `kernel/shtest.sh`.
 
 `jobctl` is what `fg`, `bg`, `jobs` and `ps` are built on. `netctl` is what
 `ifconfig`, `ping` and `netstat` are built on — the operations that
@@ -1334,7 +1339,8 @@ with ENOEXEC, and the shells run it themselves. `kernel/shebangtest.sh`.
 `ulib.c`, `user.ld`. `system/` is what the system ships, installed into
 `/bin`: `ifconfig`, `ping`, `netstat`, `host`, `ntpdate`, `shutdown`,
 `env`, `stty`, `resize`, `fsck`, `df`, `id`, `klogd`, `dmesg`,
-`swapon`, `swapoff`, `nvram`, `irqs` and `sh`. `apps/` is everything
+`swapon`, `swapoff`, `nvram`, `irqs` and `msh` (the system shell; `/bin/sh`
+is bash). `apps/` is everything
 else, installed at the root: `cube`, `fbtest`, `fbmap`, `hello`,
 `fetch`, `httpd`, and the test programs.
 
@@ -1502,6 +1508,7 @@ drive it over its serial line.
 | `kernel/crontest.sh` | 8 | something the machine does by itself, later |
 | `kernel/pytest.sh` | 43 | CPython, against the host's Python's answers to the same questions |
 | `kernel/perltest.sh` | 37 | Perl: 64-bit integers, byte order, the XS modules against the host's digests and zlib, a `#!` script, perldoc, and an XS module built on the machine with CBuilder and with MakeMaker and GNU make |
+| `kernel/shtest.sh` | 8 | `/bin/sh` is bash and the system shell `/bin/msh`, as the real install rules lay them out, read on the host; a `#!/bin/sh` continuation line and `system()` on the machine |
 | `kernel/shebangtest.sh` | 20 | `#!`: the argv the interpreter gets, nesting and ELOOP, permissions, a set-user-id script ignored against an ELF control, from spawn and from execve |
 | `kernel/usertest.sh` | 16 | uids and gids, `/etc/passwd` and `/etc/group`, and what an ordinary user is refused |
 | `kernel/logintest.sh` | 14 | logging in: the right password gets that user's shell in that user's home and the wrong one does not, `su`, `sudo`, and the modes on them; and after a session dies without handing the terminal back, the next login still gets it |

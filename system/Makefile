@@ -20,8 +20,30 @@ include $(TOPDIR)/disk.mk
 
 PROGS := ifconfig ping netstat route arp shutdown reboot env stty resize fsck host ntpdate swapon swapoff irqs nvram klogd dmesg df id who w uptime sh
 INSTALL_DIR := /bin
+# sh is built as `sh` and installed as /bin/msh: see install-msh below.
+INSTALL_PROGS := $(filter-out sh,$(PROGS))
 
 include $(TOPDIR)/lib/program.mk
+
+# THE SYSTEM SHELL IS /bin/msh, AND /bin/sh IS BASH'S.
+#
+# /bin/sh is what make runs every recipe with, and every ./configure,
+# system() and popen() -- all of which assume a POSIX shell, and the
+# system's own shell is not one (it ran a Makefile's backslash-newline
+# continuation as a newline). So /bin/sh is a link to bash, which
+# ports/bash's install makes, and this shell keeps a name of its own.
+#
+# A disk with no /bin/sh at all -- the system alone, `make boot`, no
+# ports -- gets /bin/sh -> msh, so logins still find a shell. One that
+# has a /bin/sh keeps it: reinstalling the programs must not put the
+# system shell back over bash's link.
+install: install-msh
+install-msh: sh $(DISK)
+	@$(FSIMG) mkdir /bin
+	$(FSIMG) put -m 755 sh /bin/msh
+	@if ! $(FSIMG) exists /bin/sh; then \
+	    $(FSIMG) symlink msh /bin/sh && echo "/bin/sh -> msh (no bash here yet)"; \
+	 fi
 
 # /etc/rc, and the /var tree klogd logs into.
 #

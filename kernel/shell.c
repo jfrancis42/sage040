@@ -47,7 +47,8 @@ static int opt_xtrace;
 /* What the last command returned, for $? and for scripts. */
 static int last_status;
 
-/* 1 in /bin/sh, 0 in the machine's own shell: see shell_main(). */
+/* 1 as a program (/bin/msh), 0 in the machine's own shell: see
+ * shell_main(). */
 static int shell_is_program;
 static char *argv[MAX_ARGS];
 
@@ -2985,7 +2986,7 @@ static void interactive(void)
             continue;           /* ctrl-C: a fresh prompt, nothing run */
         }
         if (n < 0) {
-            /* End of input on the terminal. /bin/sh ends, as any shell
+            /* End of input on the terminal. /bin/msh ends, as any shell
              * does; the machine's own shell has nowhere to exit to, so
              * it starts a fresh line and carries on. */
             out_putc('\n');
@@ -3054,7 +3055,7 @@ static void shell_defaults(void)
                 passwd_home(0, (u32)sys_getuid(), home, sizeof(home))
                     ? home : "/");
     }
-    env_set("SHELL", "/bin/sh");
+    env_set("SHELL", "/bin/msh");
     env_set("TERM", "vt102");   /* what fbcon.c is, and any serial terminal can be */
 
     /*
@@ -3197,7 +3198,7 @@ int shell_main(int argc, char **args, char **envp)
         env_set("PATH", "/bin:/usr/bin:.");
     }
     if (!env_get("SHELL")) {
-        env_set("SHELL", "/bin/sh");
+        env_set("SHELL", "/bin/msh");
     }
     if (!env_get("TERM")) {
         env_set("TERM", "vt102");

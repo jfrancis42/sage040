@@ -153,14 +153,7 @@ rm -rf "$OUT/share/man"
 "$CROSS_BIN/m68k-elf-strip" "$OUT/bin/perl"
 find "$OUT/lib/perl5" -name '*.so' -exec "$CROSS_BIN/m68k-elf-strip" --strip-unneeded {} +
 
-# THE CONFIG THE MACHINE SEES.
-#
-# sh is bash's, because MakeMaker writes `SHELL = $Config{sh}` into
-# every Makefile it makes and GNU make runs each recipe through it --
-# and /bin/sh here is the system's own shell, which is not POSIX: it
-# took a recipe's backslash-newline continuation as a newline, and ran
-# Mkbootstrap as `perl "\n"`.
-# Config.pm and Config_heavy.pl record how
+# THE CONFIG THE MACHINE SEES. Config.pm and Config_heavy.pl record how
 # Perl was built, and MakeMaker builds an XS module ON the machine from
 # exactly those values -- so they have to name the machine's tools, not
 # this workstation's wrapper and header directory.
@@ -169,8 +162,7 @@ for f in "$arch/Config.pm" "$arch/Config_heavy.pl"; do
     [ -f "$f" ] || continue
     # '#' as the delimiter: with '|' the alternation's \| is a literal.
     sed -i -e "s#m68k-linux-\(gcc\|ar\|nm\|ranlib\|readelf\|objdump\|strip\)#\1#g" \
-           -e "s#$SAGE_LIBC/include#/usr/include#g" \
-           -e "s#^sh='/bin/sh'#sh='/bin/bash'#" "$f"
+           -e "s#$SAGE_LIBC/include#/usr/include#g" "$f"
 done
 if grep -qF "$HOME" "$arch/Config.pm" "$arch/Config_heavy.pl" \
    || grep -q "m68k-linux-" "$arch/Config.pm" "$arch/Config_heavy.pl"; then

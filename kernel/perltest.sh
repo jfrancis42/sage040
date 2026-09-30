@@ -178,8 +178,11 @@ for d in /bin /lib /etc /tmp /T /X1 /X2 /usr /usr/bin /usr/lib /usr/include /usr
 done
 fsimg put ../ldso/ld.so /lib/ld.so
 fsimg put "$SAGE_LIBC/lib/libc.so" /lib/libc.so
-fsimg put -m 755 ../system/sh /bin/sh
+# The layout `make install` makes: bash is /bin/sh, which MakeMaker's
+# Makefiles run their recipes with, and the system shell is /bin/msh.
+fsimg put -m 755 ../system/sh /bin/msh
 fsimg put -m 755 ../ports/bash/bash /bin/bash
+fsimg symlink bash /bin/sh
 fsimg put -m 644 ../system/passwd /etc/passwd
 for p in echo cat ls rm mkdir cp true chmod touch mv test; do
     fsimg put -m 755 "../ports/sbase/bin/$p" /bin/$p

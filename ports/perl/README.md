@@ -37,9 +37,10 @@ and `build.sh` says why for each.
 ## XS modules built on the machine
 
 The installed `Config.pm` describes the machine, not the build host:
-`cc` is `gcc`, `lddlflags` is `-shared`, `usrinc` is `/usr/include`, and
-`sh` is `/bin/bash` -- because MakeMaker writes `SHELL = $Config{sh}` into
-its Makefiles, and the system's `/bin/sh` is not a POSIX shell. With the
+`cc` is `gcc`, `lddlflags` is `-shared`, `usrinc` is `/usr/include`.
+MakeMaker's Makefiles run their recipes with `/bin/sh`, which is bash
+(ports/bash installs the link; the system's own shell is `/bin/msh`,
+and is not POSIX). With the
 native toolchain (`make toolchain`) and GNU make (`ports/make`),
 `perl Makefile.PL && make` builds an XS module on the machine; the suite
 does exactly that.
