@@ -81,12 +81,14 @@ send 'root' 3          # the password
 send 'whoami'
 send 'id'
 send 'cat /root/secret.txt'
+send 'touch /root/um.tmp; mkdir /root/umd'   # modes: the umask, read by the host
 send 'su - jfrancis' 1
 send 'jfrancis' 3
 send 'whoami'
 send 'cat /root/secret.txt'   # must be REFUSED now
 send 'sudo -l' 2
 send 'sudo cat /root/secret.txt' 3   # NOPASSWD: must work
+send '/bin/mkdir -p /tmp/deep/er; echo MKP=$?' 2   # /tmp exists; / is not ours (sbase's, not the builtin)
 send 'exit' 2
 send 'useradd -p hunter2 tester' 3
 send 'su - tester' 1
@@ -129,6 +131,8 @@ has '/home/jfrancis$ whoami'         ; check "su - became jfrancis, in that home
 has '/root/secret.txt: permission denied'
 check "  and jfrancis is REFUSED root's 0600 file -- enforcement, as a user" $?
 has 'without a password'             ; check "sudo -l reports the NOPASSWD rule" $?
+has 'MKP=0'
+check "mkdir -p through an existing directory whose parent is not ours: EEXIST, not EACCES" $?
 # sudo must have actually produced the contents, not just been allowed.
 [ "$(grep -c 'secret-of-root' "$CLEAN")" -ge 2 ]
 check "  and sudo cat read the file jfrancis could not" $?
@@ -138,6 +142,14 @@ has 'added tester'                   ; check "useradd created an account" $?
 grep -qx 'RELOGGED' "$CLEAN"
 check "after a session is killed outright, the next login gets the terminal" $?
 has '/home/tester$ whoami'           ; check "  which can then be logged into, in its own home" $?
+
+# THE UMASK, read off the disk by the host. Every process inherits it
+# from task 0, which was built by hand with a zero umask -- so every
+# file anybody made was writable by everyone. Linux starts init at 022.
+um=$(PART_OFFSET=$((2048*512)) ../tools/fsimg.sh "$DISK" ls-l /root 2>/dev/null |
+     awk '$NF=="um.tmp"{print $2} $NF=="umd"{print $2}' | tr '\n' ' ')
+test "$um" = "100644 40755 " -o "$um" = "40755 100644 "
+check "a new file is 0644 and a directory 0755: the umask is 022 (got ${um:-none})" $?
 
 echo
 echo "  passed: $pass"

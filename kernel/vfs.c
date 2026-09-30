@@ -2077,8 +2077,26 @@ static int vfs_mkdir_mode_raw(const char *path, u32 mode)
         return -ENOSYS;
     }
     {
-        int r = vfs_may_parent(path, W_OK | X_OK);
+        struct stat st;
+        int r = vfs_may_parent(path, X_OK), there;
 
+        /*
+         * EEXIST before EACCES, as Linux answers: whoever may search the
+         * parent learns that the name is taken, whether or not they may
+         * write there. `mkdir -p /tmp/x` relies on it -- it makes /tmp
+         * first and carries on at EEXIST, and a user with no write
+         * permission on / was told EACCES and stopped.
+         */
+        if (r < 0) {
+            return r;
+        }
+        fs_lock();
+        there = (fs->lstat ? fs->lstat(path, &st) : fs->stat(path, &st)) == 0;
+        fs_unlock();
+        if (there) {
+            return -EEXIST;
+        }
+        r = vfs_may_parent(path, W_OK | X_OK);
         if (r < 0) {
             return r;
         }

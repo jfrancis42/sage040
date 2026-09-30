@@ -1198,6 +1198,11 @@ void task_init(void)
      * working directory for every task the machine ever runs. */
     current->cwd_ino = 0;
     strcpy(current->cwd_path, "/");
+    /* And its umask, which everything inherits too. The memset above
+     * made it 0, so every file every program created -- root's and
+     * everybody's -- came out writable by anyone. 022 is what Linux
+     * starts init with. */
+    current->umask = 022;
     current->pgid = current->pid;
     current->sid = current->pid;
     current->tgid = current->pid;

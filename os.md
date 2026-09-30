@@ -694,7 +694,9 @@ with `EXDEV` rather than followed onto the disk; and `statfs`, so `df`,
 reports the disk.
 
 **`open` and `mkdir` honour their mode now**, less the umask, on every
-filesystem. They used to be ignored -- every file was created 0644 --
+filesystem. The umask starts at 022, as Linux starts init: task 0, which
+every process inherits it from, used to be built with 0, so every file
+anybody made was writable by everyone. They used to be ignored -- every file was created 0644 --
 so a program making a private file with 0600 got one anybody could read.
 
 ### sendfile, splice, copy_file_range, mremap, memfd_create
@@ -1490,7 +1492,7 @@ drive it over its serial line.
 | `kernel/crontest.sh` | 8 | something the machine does by itself, later |
 | `kernel/pytest.sh` | 43 | CPython, against the host's Python's answers to the same questions |
 | `kernel/usertest.sh` | 16 | uids and gids, `/etc/passwd` and `/etc/group`, and what an ordinary user is refused |
-| `kernel/logintest.sh` | 12 | logging in: the right password gets that user's shell in that user's home and the wrong one does not, `su`, `sudo`, and the modes on them; and after a session dies without handing the terminal back, the next login still gets it |
+| `kernel/logintest.sh` | 14 | logging in: the right password gets that user's shell in that user's home and the wrong one does not, `su`, `sudo`, and the modes on them; and after a session dies without handing the terminal back, the next login still gets it |
 | `kernel/linktest.sh` | 30 | hard links and symlinks -- one inode with two names, fast targets and slow ones, loops, dangling targets -- agreed with by the host's e2fsck; fast symlinks the host made surviving the boot-time check, and deleted without freeing their "blocks" |
 | `kernel/dftest.sh` | 15 | `df` and `du` against the host's own figures for the same volume, with the shell's built-in as the control |
 | `kernel/sshtest.sh` | 10 | ssh, scp and rsync against the workstation's own OpenSSH, which knows nothing about this project -- so the protocol is either right or it is not |
