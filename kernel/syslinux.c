@@ -427,10 +427,105 @@ static s32 do_rt_sigprocmask(int how, u32 uset, u32 uold, u32 size)
 /* The dispatcher                                                    */
 /* ---------------------------------------------------------------- */
 
+/*
+ * The one call with two paths, in a function of its own and NOT
+ * INLINED: a second PATH_MAX buffer in syscall_linux was in the frame of
+ * every Linux call, 1 KB of a 16 KB kernel stack spent on each whether
+ * it named a path or not -- and devtest's stack check was over its line.
+ */
+static __attribute__((noinline))
+s32 do_renameat(int d1, u32 p1, int d2, u32 p2)
+{
+    char from[PATH_MAX], to[PATH_MAX];
+    int err = at_path(d1, p1, from);
+
+    if (err < 0) {
+        return err;
+    }
+    err = at_path(d2, p2, to);
+    return err < 0 ? err : vfs_rename(from, to);
+}
+
+/* Two-path calls, each out of syscall_linux's frame (see do_renameat). */
+static __attribute__((noinline))
+s32 do_link(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4)
+{
+    char path[PATH_MAX], to[PATH_MAX];
+    int err;
+
+    if (nr == __NR_link) {
+        err = fetch_str(path, a1, sizeof(path));
+        if (err >= 0) {
+            err = fetch_str(to, a2, sizeof(to));
+        }
+    } else {
+        err = at_path((int)a1, a2, path);
+        if (err >= 0) {
+            err = at_path((int)a3, a4, to);
+        }
+    }
+    return err < 0 ? err : vfs_link(path, to);
+}
+
+static __attribute__((noinline))
+s32 do_readlink(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4)
+{
+    char path[PATH_MAX], target[PATH_MAX];
+    int err;
+    u32 want = (nr == __NR_readlink) ? a3 : a4;
+    u32 n;
+
+    if (nr == __NR_readlink) {
+        err = fetch_str(path, a1, sizeof(path));
+    } else {
+        err = at_path((int)a1, a2, path);
+    }
+    if (err < 0) {
+        return err;
+    }
+    err = vfs_readlink(path, target, sizeof(target));
+    if (err < 0) {
+        return err;
+    }
+    /*
+     * readlink does NOT null-terminate, and returns how many bytes
+     * it wrote. A caller that expects a terminator adds its own;
+     * one that gets a terminator it did not ask for gets a path
+     * one byte too long. Truncation is silent, as Linux's is.
+     */
+    n = (u32)strlen(target);
+    if (n > want) {
+        n = want;
+    }
+    err = sys_store((nr == __NR_readlink) ? a2 : a3, target, n);
+    return err < 0 ? err : (int)n;
+}
+
+static __attribute__((noinline))
+s32 do_symlink(u32 nr, u32 a1, u32 a2, u32 a3)
+{
+    char path[PATH_MAX], target[PATH_MAX];
+    int err;
+
+    /* The TARGET is a string, not a path to resolve -- it is
+     * stored as given and may name nothing at all. Only the link's
+     * own location is a path. */
+    err = fetch_str(target, a1, sizeof(target));
+    if (err < 0) {
+        return err;
+    }
+    if (nr == __NR_symlink) {
+        err = fetch_str(path, a2, sizeof(path));
+    } else {
+        err = at_path((int)a2, a3, path);
+    }
+    return err < 0 ? err : vfs_symlink(target, path);
+}
+
 s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
                   struct pt_regs *regs)
 {
-    char path[PATH_MAX], path2[PATH_MAX];
+    char path[PATH_MAX];
     int err;
 
     switch (nr) {
@@ -471,12 +566,7 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         return (a3 & AT_REMOVEDIR) ? vfs_rmdir(path) : vfs_unlink(path);
 
     case __NR_renameat:
-        err = at_path((int)a1, a2, path);
-        if (err < 0) {
-            return err;
-        }
-        err = at_path((int)a3, a4, path2);
-        return err < 0 ? err : vfs_rename(path, path2);
+        return do_renameat((int)a1, a2, (int)a3, a4);
 
     case __NR_faccessat:
         err = at_path((int)a1, a2, path);
@@ -705,22 +795,8 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
      * about symbolic links and so means nothing until there are any.
      */
     case __NR_link:
-    case __NR_linkat: {
-        char to[PATH_MAX];
-
-        if (nr == __NR_link) {
-            err = fetch_str(path, a1, sizeof(path));
-            if (err >= 0) {
-                err = fetch_str(to, a2, sizeof(to));
-            }
-        } else {
-            err = at_path((int)a1, a2, path);
-            if (err >= 0) {
-                err = at_path((int)a3, a4, to);
-            }
-        }
-        return err < 0 ? err : vfs_link(path, to);
-    }
+    case __NR_linkat:
+        return do_link(nr, a1, a2, a3, a4);
 
     /* FIFOs (vfs_mknod); a device node has nothing to name here. */
     case __NR_mknod:
@@ -745,36 +821,8 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
     }
 
     case __NR_readlink:
-    case __NR_readlinkat: {
-        char target[PATH_MAX];
-        u32 want = (nr == __NR_readlink) ? a3 : a4;
-        u32 n;
-
-        if (nr == __NR_readlink) {
-            err = fetch_str(path, a1, sizeof(path));
-        } else {
-            err = at_path((int)a1, a2, path);
-        }
-        if (err < 0) {
-            return err;
-        }
-        err = vfs_readlink(path, target, sizeof(target));
-        if (err < 0) {
-            return err;
-        }
-        /*
-         * readlink does NOT null-terminate, and returns how many bytes
-         * it wrote. A caller that expects a terminator adds its own;
-         * one that gets a terminator it did not ask for gets a path
-         * one byte too long. Truncation is silent, as Linux's is.
-         */
-        n = (u32)strlen(target);
-        if (n > want) {
-            n = want;
-        }
-        err = sys_store((nr == __NR_readlink) ? a2 : a3, target, n);
-        return err < 0 ? err : (int)n;
-    }
+    case __NR_readlinkat:
+        return do_readlink(nr, a1, a2, a3, a4);
 
     case __NR_swapon:
     case __NR_swapoff:
@@ -825,23 +873,8 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
     }
 
     case __NR_symlink:
-    case __NR_symlinkat: {
-        char target[PATH_MAX];
-
-        /* The TARGET is a string, not a path to resolve -- it is
-         * stored as given and may name nothing at all. Only the link's
-         * own location is a path. */
-        err = fetch_str(target, a1, sizeof(target));
-        if (err < 0) {
-            return err;
-        }
-        if (nr == __NR_symlink) {
-            err = fetch_str(path, a2, sizeof(path));
-        } else {
-            err = at_path((int)a2, a3, path);
-        }
-        return err < 0 ? err : vfs_symlink(target, path);
-    }
+    case __NR_symlinkat:
+        return do_symlink(nr, a1, a2, a3);
 
     case __NR_pipe2: {
         int fds[2];

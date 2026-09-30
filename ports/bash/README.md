@@ -41,10 +41,12 @@ The exit status is in bits 8–15 of a wait status, as on Linux. Configure
 defaults to 0 when it cannot run a test program, and with that every `$?`
 in every script is wrong.
 
-Two entries say what the machine genuinely lacks: `bash_cv_dev_fd=absent`
-and `bash_cv_sys_named_pipes=missing`, so process substitution
-(`<(cmd)`) is configured out. FAT cannot hold a FIFO and there is no
-`/dev/fd`.
+Process substitution (`<(cmd)`) is configured in: `bash_cv_dev_fd=
+standard` and `bash_cv_sys_named_pipes=present`, because `/dev/fd` is a
+link to `/proc/self/fd` and ext2 and tmpfs hold FIFOs. Both used to be
+configured out, when neither existed. `build.sh` configures again
+whenever `config.cache` is newer than the build's Makefile, so a changed
+answer is not left sitting in an old build.
 
 ## What it needed from the system
 

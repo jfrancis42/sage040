@@ -128,6 +128,38 @@ int fetch_str(char *dst, u32 p, u32 max)
  * guaranteed to be contiguous in physical memory -- and the filesystem
  * reads or writes straight into it.
  */
+/*
+ * The event descriptors (events.c) move whole records, and one split at
+ * a page of the caller's buffer would be refused as too short. So they
+ * go through a kernel buffer: they are small, and there is no bulk to
+ * copy twice. On the stack, not static: sys_store can fault a page in
+ * and sleep, and another task's read would then overwrite a shared
+ * buffer before this one's was copied out. 512 bytes holds the largest
+ * inotify record there is (16 + a 255-byte name, padded). A function of
+ * its own, NOT INLINED: in rw_user the buffer was in the frame of every
+ * read and write, used or not, and devtest's stack check caught it.
+ */
+static __attribute__((noinline))
+s32 rw_records(int fd, u32 ubuf, u32 len, int writing)
+{
+    u8 bounce[512];
+    u32 n = len < sizeof(bounce) ? len : sizeof(bounce);
+    s32 got;
+    int err;
+
+    if (writing) {
+        if ((err = fetch(bounce, ubuf, n)) < 0) {
+            return err;
+        }
+        return fd_write(fd, bounce, n);
+    }
+    got = fd_read(fd, bounce, n);
+    if (got > 0 && (err = sys_store(ubuf, bounce, (u32)got)) < 0) {
+        return err;
+    }
+    return got;
+}
+
 static s32 rw_user(int fd, u32 ubuf, u32 len, int writing)
 {
     s32 total = 0;
@@ -137,32 +169,8 @@ static s32 rw_user(int fd, u32 ubuf, u32 len, int writing)
                        : fd_read(fd, (void *)ubuf, len);
     }
 
-    /*
-     * The event descriptors (events.c) move whole records, and one split
-     * at a page of the caller's buffer would be refused as too short. So
-     * they go through a kernel buffer: they are small, and there is no
-     * bulk to copy twice. On the stack, not static: sys_store can fault
-     * a page in and sleep, and another task's read would then overwrite
-     * a shared buffer before this one's was copied out. 512 bytes holds
-     * the largest inotify record there is (16 + a 255-byte name, padded).
-     */
     if (events_owns(fd_get(fd))) {
-        u8 bounce[512];
-        u32 n = len < sizeof(bounce) ? len : sizeof(bounce);
-        s32 got;
-        int err;
-
-        if (writing) {
-            if ((err = fetch(bounce, ubuf, n)) < 0) {
-                return err;
-            }
-            return fd_write(fd, bounce, n);
-        }
-        got = fd_read(fd, bounce, n);
-        if (got > 0 && (err = sys_store(ubuf, bounce, (u32)got)) < 0) {
-            return err;
-        }
-        return got;
+        return rw_records(fd, ubuf, len, writing);
     }
 
     while (len > 0) {
@@ -1831,6 +1839,21 @@ static int do_jobctl(int cmd, int arg, u32 p)
     }
 }
 
+/* rename's two paths, out of do_syscall's frame: see do_renameat in
+ * syslinux.c for why. */
+static __attribute__((noinline))
+s32 do_rename(u32 ufrom, u32 uto)
+{
+    char from[PATH_MAX], to[PATH_MAX];
+    int err = fetch_str(from, ufrom, sizeof(from));
+
+    if (err < 0) {
+        return err;
+    }
+    err = fetch_str(to, uto, sizeof(to));
+    return err < 0 ? err : vfs_rename(from, to);
+}
+
 static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
                       u32 a6, struct pt_regs *regs)
 {
@@ -1915,19 +1938,8 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         }
     }
 
-    case __NR_rename: {
-        char from[PATH_MAX], to[PATH_MAX];
-        int err = fetch_str(from, a1, sizeof(from));
-
-        if (err < 0) {
-            return err;
-        }
-        err = fetch_str(to, a2, sizeof(to));
-        if (err < 0) {
-            return err;
-        }
-        return vfs_rename(from, to);
-    }
+    case __NR_rename:
+        return do_rename(a1, a2);
 
     case __NR_stat: {
         char path[PATH_MAX];

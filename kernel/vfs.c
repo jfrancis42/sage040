@@ -1449,7 +1449,7 @@ static int fd_open_mode_raw(const char *path, int flags, u32 mode)
         return fd;
     }
     if (fs == mounted_fs && strncmp(path, DEV_PREFIX, DEV_PREFIX_LEN) == 0) {
-        return -ENXIO;          /* under /dev, but no such device */
+        return -ENOENT;         /* under /dev, no such device: as Linux */
     }
 
     if (!fs) {
@@ -3067,7 +3067,7 @@ static int vfs_setattr_raw(const char *path, u32 mask, u32 mode, u32 uid, u32 gi
         return dev_setattr(cd, mask, mode, uid, gid);
     }
     if (fs == mounted_fs && strncmp(path, DEV_PREFIX, DEV_PREFIX_LEN) == 0) {
-        return -ENXIO;          /* under /dev, but no such device */
+        return -ENOENT;         /* under /dev, no such device: as Linux */
     }
     if (!fs) {
         return -ENODEV;

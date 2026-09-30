@@ -24,10 +24,11 @@ bash_cv_must_reinstall_sighandlers=no
 bash_cv_dup2_broken=no
 # opendir refuses a non-directory (ENOTDIR).
 bash_cv_opendir_not_robust=no
-# There is no /dev/fd and FAT cannot hold a FIFO, so no process
-# substitution for now.
-bash_cv_dev_fd=absent
-bash_cv_sys_named_pipes=missing
+# /dev/fd is a link to /proc/self/fd, as on Linux, and ext2 and tmpfs
+# hold FIFOs: process substitution works the way it does on Linux.
+bash_cv_dev_fd=standard
+bash_cv_dev_stdin=present
+bash_cv_sys_named_pipes=present
 # picolibc has strsignal, not sys_siglist.
 bash_cv_sys_siglist=no
 bash_cv_under_sys_siglist=no

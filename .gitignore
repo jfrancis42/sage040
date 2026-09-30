@@ -94,6 +94,7 @@ libc/test/tmpfstest
 libc/test/eventtest
 libc/test/locktest
 libc/test/fifotest
+libc/test/devdirtest
 libc/test/*.so
 ldso/ld.so
 system/fsck

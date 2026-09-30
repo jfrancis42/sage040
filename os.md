@@ -661,10 +661,15 @@ disk polls.
 | `/dev/klog` | what the kernel has said; a read drains it, and `klogd` copies it into `/var/log/syslog` |
 | `/dev/ptmx` `/dev/pts/N` | pseudo-terminals: open the first to get a master, and the second is the terminal at the other end |
 
-**`ls /dev` does not work.** /dev is a name lookup rather than a
-directory: `resolve_dev()` turns `/dev/<rest>` into a device of that
-name, which is also how `pts/0` is a device whose name contains a
-slash. Making it listable is a VFS change and is on the list.
+**`/dev` is listed from the registry.** The devices are names, not
+inodes: `resolve_dev()` turns `/dev/<rest>` into the device of that name
+(which is how `pts/0` is a device whose name has a slash in it). So
+`/dev` and `/dev/pts` are directories of procfs's tree, listing the
+registry as it stands, and `/dev/fd`, `/dev/stdin`, `/dev/stdout` and
+`/dev/stderr` are links into `/proc/self/fd`, exactly as on Linux --
+which is what bash's `<(...)` opens. Everything else under `/dev` is the
+registry's, and `/dev/shm` is tmpfs. A name there that is no device is
+`ENOENT`. There is no `/dev/tty` (the controlling terminal) yet.
 
 ### /tmp and /dev/shm: tmpfs
 
@@ -1437,6 +1442,7 @@ drive it over its serial line.
 | `kernel/eventtest.sh` | 102 | eventfd, timerfd, signalfd, epoll and inotify, and ppoll/pselect: counts, blocking and waking by another process, timers timed by CLOCK_MONOTONIC, signals checked gone from `sigpending`, level/edge/oneshot, one epoll over all four kinds, masks that let a signal in only during the wait, inotify on the disk and in tmpfs, queue overflow |
 | `kernel/locktest.sh` | 54 | fcntl record locks, POSIX and OFD, on the disk and in tmpfs, seen from a second process: conflicts, F_GETLK naming the holder, splitting, read locks shared, the close-drops-all wart, F_SETLKW waiting, EDEADLK, release at exit, SEEK_END and negative lengths; F_DUPFD's argument |
 | `kernel/fifotest.sh` | 38 | named pipes on the disk and in tmpfs: two processes through a path, an open that waits for the other end (timed), end of file, O_NONBLOCK and ENXIO, O_RDWR, EINTR, unlink while open; and from the host, e2fsck clean and debugfs seeing the FIFO |
+| `kernel/devdirtest.sh` | 17 | `/dev` as a directory: every listed device stats as one, a new pty appears in `/dev/pts` under its ptsname, `/dev/fd` and `/dev/std*` are the links Linux has, `/dev/fd/N` of a pipe shares the pipe and of a file reopens it, a working directory in `/dev`; and `/bin/ls /dev` |
 | `kernel/shmaptest.sh` | 21 | `MAP_SHARED` of a file against read() and write(), a forked child, another process, a second mapping and `/proc/self/maps`; msync, munmap and exit writing back; truncate; a mapping outliving its name; and a file written only through a mapping, checked byte for byte from the host |
 | `kernel/tlstest.sh` | 46 | `__thread`, static and dynamic: initial values, a fresh copy per thread, alignment, fork; a start-time library's TLS reached two ways that must agree; `dlopen` of a library with TLS, a dependency and a constructor, its TLS made per thread on first use; refusal and rollback of an initial-exec TLS library; `dlsym` scopes, `dladdr`, `dl_iterate_phdr`, `dlerror` |
 | `kernel/fscktest.sh` | 23 | `fsck`, against seven kinds of damage made on the host, each repaired and then agreed with by e2fsck |
@@ -1508,9 +1514,6 @@ two things here.
 answers `EPERM`: the devices are the names the kernel makes under
 `/dev`, not inodes, so a node on the disk would name nothing. FIFOs,
 hard links and symlinks, which used to be in this paragraph, work.
-
-**No `/dev/fd`, and so no process substitution in bash.** `<(...)` needs
-either that or a FIFO.
 
 **No `diff`.** sbase has none; GNU diffutils is the obvious port.
 

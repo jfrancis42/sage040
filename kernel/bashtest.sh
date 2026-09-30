@@ -53,11 +53,9 @@ BASH_TESTS=${BASH_TESTS:-"arith array braces case comsub func glob quote strip t
 
 # TESTS THAT ARE EXPECTED TO FAIL, AND WHY.
 #
-# These two fail for reasons this system knows about and has written
+# This one fails for a reason this system knows about and has written
 # down, not because bash is broken:
 #
-#   func  process substitution, <(...), which needs /dev/fd and FIFOs.
-#         Neither exists; see os.md, "What it is not".
 #   glob  wants the `locale` command and a zh_TW.big5 locale, and says
 #         so itself in a warning. There is no locale database here.
 #
@@ -85,7 +83,7 @@ BASH_TESTS=${BASH_TESTS:-"arith array braces case comsub func glob quote strip t
 # A KNOWN test that starts PASSING is a failure, loudly. Closing one of
 # these gaps must force the entry to be removed rather than quietly
 # leaving a test nobody looks at.
-BASH_KNOWN=${BASH_KNOWN:-"func glob type varenv"}
+BASH_KNOWN=${BASH_KNOWN:-"glob type varenv"}
 
 pass=0
 fail=0
@@ -273,7 +271,6 @@ for n in $BASH_TESTS; do
     cmp -s "$WORK/suite/$n.out" "$BASHSRC/tests/$n.right"
     r=$?
     case $n in
-    func)   why="process substitution: no /dev/fd, no FIFOs" ;;
     glob)   why="no locale command and no zh_TW.big5 locale" ;;
     type)   why="NOT DIAGNOSED: function body differs" ;;
     varenv) why="NOT DIAGNOSED: 'expect' lines missing" ;;

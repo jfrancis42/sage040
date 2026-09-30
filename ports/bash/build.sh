@@ -73,7 +73,9 @@ fi
 BASH_CPPFLAGS="$CROSS_CPPFLAGS -DNEED_EXTERN_PC"
 
 libc_fresh "$BUILD" || true   # reconfigured if picolibc's headers changed
-if [ ! -f "$BUILD/Makefile" ]; then
+# A changed config.cache is a changed answer, and configure only asks
+# when there is no Makefile: so a newer cache means configure again.
+if [ ! -f "$BUILD/Makefile" ] || [ "$HERE/config.cache" -nt "$BUILD/Makefile" ]; then
     cp "$HERE/config.cache" "$BUILD/config.cache"
     (cd "$BUILD" && "$SRC/configure" --cache-file=config.cache \
         --host="$HOST_TRIPLET" --build="$(sh "$SRC/support/config.guess")" \

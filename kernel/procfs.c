@@ -44,9 +44,19 @@
  *
  * NOT HERE: /proc/<pid>/task, /proc/sys and the rest of Linux's
  * hundred-odd files; this is the part that software was found to need.
+ *
+ * /dev's DIRECTORIES ARE HERE TOO. The devices themselves are names in
+ * the device registry (dev.c), opened through resolve_dev() in vfs.c --
+ * but a registry cannot be listed, so `ls /dev` showed nothing. So /dev
+ * and /dev/pts are directories of this tree, listing the registry, and
+ * /dev/fd and /dev/stdin, stdout and stderr are links into
+ * /proc/self/fd, exactly as Linux makes them. Everything else under
+ * /dev -- the devices, /dev/pts/N, and /dev/shm (tmpfs) -- is not
+ * procfs's, and proc_lookup() hands it back as "elsewhere".
  */
 #include "procfs.h"
 #include "vfs.h"
+#include "dev.h"
 #include "task.h"
 #include "vm.h"
 #include "pmm.h"
@@ -63,7 +73,7 @@
 /* ---------------------------------------------------------------- */
 
 enum {
-    N_ROOT, N_FILE, N_LINK, N_PID, N_FD
+    N_ROOT, N_FILE, N_LINK, N_PID, N_FD, N_DEVROOT, N_DEVPTS
 };
 
 enum {
@@ -71,7 +81,9 @@ enum {
     F_CPUINFO, F_LOADAVG, F_MEMINFO, F_MOUNTS, F_STAT, F_UPTIME, L_SELF,
     /* /proc/<pid> */
     P_CMDLINE, P_COMM, P_ENVIRON, P_MAPS, P_STAT, P_STATM, P_STATUS,
-    L_CWD, L_EXE, L_ROOT, L_FD
+    L_CWD, L_EXE, L_ROOT, L_FD,
+    /* /dev */
+    L_DEVFD, L_STDIN, L_STDOUT, L_STDERR
 };
 
 struct entry {
@@ -107,6 +119,14 @@ static const struct entry pid_ents[] = {
 };
 #define PID_ENTS    (sizeof(pid_ents) / sizeof(pid_ents[0]))
 
+static const struct entry dev_ents[] = {
+    { "fd",      N_LINK, L_DEVFD,   0777 },
+    { "stderr",  N_LINK, L_STDERR,  0777 },
+    { "stdin",   N_LINK, L_STDIN,   0777 },
+    { "stdout",  N_LINK, L_STDOUT,  0777 },
+};
+#define DEV_ENTS    (sizeof(dev_ents) / sizeof(dev_ents[0]))
+
 /* What /proc/<pid>/fd/<n> is. */
 static const struct entry fd_link = { "", N_LINK, L_FD, 0700 };
 
@@ -118,10 +138,36 @@ struct pnode {
     int fd;                     /* for /proc/<pid>/fd/<fd>              */
 };
 
+/* Is `path` exactly `name`, but for trailing slashes? */
+static int is_exactly(const char *path, const char *name)
+{
+    u32 n = (u32)strlen(name);
+
+    if (strncmp(path, name, n) != 0) {
+        return 0;
+    }
+    for (path += n; *path == '/'; path++) {
+    }
+    return *path == '\0';
+}
+
+/* The part of /dev that is this tree's: see the head of the file. */
+static int under_dev(const char *path)
+{
+    if (strncmp(path, "/dev", 4) != 0 || (path[4] && path[4] != '/')) {
+        return 0;
+    }
+    return is_exactly(path, "/dev") || is_exactly(path, "/dev/pts") ||
+           is_exactly(path, "/dev/stdin") || is_exactly(path, "/dev/stdout") ||
+           is_exactly(path, "/dev/stderr") ||
+           (strncmp(path, "/dev/fd", 7) == 0 &&
+            (path[7] == '\0' || path[7] == '/'));
+}
+
 static int under_proc(const char *path)
 {
-    return strncmp(path, "/proc", 5) == 0 &&
-           (path[5] == '\0' || path[5] == '/');
+    return (strncmp(path, "/proc", 5) == 0 &&
+            (path[5] == '\0' || path[5] == '/')) || under_dev(path);
 }
 
 /*
@@ -208,6 +254,10 @@ static int walk(const char *path, int follow, struct pnode *n, u32 *used)
     n->type = N_ROOT;
     n->pid = -1;
     n->fd = -1;
+    if (path[1] == 'd') {
+        i = 4;                  /* past "/dev" */
+        n->type = N_DEVROOT;
+    }
 
     for (;;) {
         const char *c;
@@ -244,6 +294,17 @@ static int walk(const char *path, int follow, struct pnode *n, u32 *used)
                 break;
             }
             n->e = find(root_ents, ROOT_ENTS, c, len);
+            if (!n->e) {
+                return -ENOENT;
+            }
+            n->type = n->e->type;
+            break;
+        case N_DEVROOT:
+            if (len == 3 && strncmp(c, "pts", 3) == 0) {
+                n->type = N_DEVPTS;
+                break;
+            }
+            n->e = find(dev_ents, DEV_ENTS, c, len);
             if (!n->e) {
                 return -ENOENT;
             }
@@ -300,6 +361,17 @@ static int link_target(const struct pnode *n, char *out, u32 size,
     struct task *t;
 
     *anon = 0;
+    switch (n->e->what) {
+    case L_DEVFD:
+        strcpy(out, "/proc/self/fd");
+        return 0;
+    case L_STDIN:
+    case L_STDOUT:
+    case L_STDERR:
+        strcpy(out, "/proc/self/fd/0");
+        out[14] = (char)('0' + n->e->what - L_STDIN);
+        return 0;
+    }
     if (n->e->what == L_SELF) {
         struct task *me = current;
         char tmp[12];
@@ -499,6 +571,13 @@ int proc_stat(const char *path, struct stat *st)
         st->st_ino = 1 | 0x80000000UL;
         break;
     case N_PID:
+        st->st_mode = S_IFDIR | 0555;
+        st->st_nlink = 2;
+        break;
+    case N_DEVROOT:
+    case N_DEVPTS:
+        /* Searchable and readable by everybody, writable by nobody:
+         * what is in them is the registry. */
         st->st_mode = S_IFDIR | 0555;
         st->st_nlink = 2;
         break;
@@ -1496,12 +1575,63 @@ int proc_open(const char *path, int flags)
  */
 #define POS_NUMBERED   0x10000UL
 
+/*
+ * Entry k (from 0) of /dev after its links -- "pts", "shm", then every
+ * device whose name has no slash -- or of /dev/pts: every "pts/N".
+ * The registry changes as ptys come and go, so a position is a count,
+ * and a listing that races a new pty may show it or not.
+ */
+static int dev_entry(int pts, u32 k, char *name, u8 *type, u32 *next,
+                     u32 pos)
+{
+    struct chardev *d;
+
+    *next = pos + 1;
+    if (!pts && k < 2) {
+        strcpy(name, k ? "shm" : "pts");
+        *type = DT_DIR;
+        return 0;
+    }
+    if (!pts) {
+        k -= 2;
+    }
+    for (d = dev_first_char(); d; d = d->next) {
+        const char *nm = d->name;
+
+        if (pts) {
+            if (strncmp(nm, "pts/", 4) != 0) {
+                continue;
+            }
+            nm += 4;
+        } else {
+            const char *s;
+
+            for (s = nm; *s && *s != '/'; s++) {
+            }
+            if (*s) {
+                continue;       /* under a directory of its own */
+            }
+        }
+        if (k-- == 0) {
+            if (strlen(nm) >= 32) {
+                return -ENOENT;
+            }
+            strcpy(name, nm);
+            *type = DT_CHR;
+            return 0;
+        }
+    }
+    return -ENOENT;
+}
+
 static int dir_entry(const struct pnode *n, u32 pos, char *name, u8 *type,
                      u32 *next)
 {
-    const struct entry *tab = n->type == N_ROOT ? root_ents : pid_ents;
+    const struct entry *tab = n->type == N_ROOT ? root_ents :
+                              n->type == N_DEVROOT ? dev_ents : pid_ents;
     u32 fixed = n->type == N_ROOT ? ROOT_ENTS :
-                n->type == N_PID ? PID_ENTS : 0;
+                n->type == N_PID ? PID_ENTS :
+                n->type == N_DEVROOT ? DEV_ENTS : 0;
 
     if (pos < 2) {
         strcpy(name, pos ? ".." : ".");
@@ -1520,6 +1650,10 @@ static int dir_entry(const struct pnode *n, u32 pos, char *name, u8 *type,
     }
     if (n->type == N_PID) {
         return -ENOENT;
+    }
+    if (n->type == N_DEVROOT || n->type == N_DEVPTS) {
+        return dev_entry(n->type == N_DEVPTS, pos - 2 - fixed, name, type,
+                         next, pos);
     }
     if (pos < POS_NUMBERED) {
         pos = POS_NUMBERED;
@@ -1599,7 +1733,7 @@ s32 proc_getdents64(struct file *f, u8 *buf, u32 len)
         return 0;               /* the process has gone: nothing in it */
     }
     for (;;) {
-        char name[16];
+        char name[32];
         u8 type;
         u32 next, nl, reclen;
         struct linux_dirent64 *d;

@@ -312,7 +312,10 @@ check "the clock was set, and the weekday derived from the date" $?
 contains "$LOG" "SuckOS 0."
 check "uname reported the kernel version" $?
 
-contains "$LOG" "no such device"
+# ENOENT, as Linux answers it: /dev/../nope is /nope, and there is none.
+# (It was ENXIO, "no such device", before /dev became a listed
+# directory.)
+contains "$LOG" "/dev/../nope: no such file or directory"
 check "a path under /dev that is not a device is refused" $?
 
 contains "$LOG" "hello from a program"
