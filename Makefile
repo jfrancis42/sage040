@@ -6,9 +6,12 @@
 # Each subdirectory builds on its own; this is the shortest path to the
 # common things.
 #
-#   make            build the boot ROM and the kernel
-#   make install    put EVERYTHING on the disk: the system, every port,
-#                   Python, the native toolchain, and the kernel source
+#   make            build EVERYTHING: picolibc, the boot ROM, the kernel,
+#                   ld.so, every program, the test programs, the
+#                   bare-metal cube and device tests, and every port
+#   make install    put EVERYTHING on the disk: the kernel, the system,
+#                   every port, Python, the native toolchain, and the
+#                   kernel source
 #   make copy-src   put the kernel's own source on the disk, so the
 #                   machine can rebuild its own kernel
 #   make qemu       build and install the patched emulator itself
@@ -28,14 +31,39 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: pagecheck autoinccheck shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest linetest fpsptest faulttest procfstest tlstest logintest fsimgtest fattest all boot run install src qemu world libc-if-missing toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest qemutest libc cube programs clean distclean
+.PHONY: pagecheck autoinccheck shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest linetest gfxtest fpsptest faulttest procfstest tlstest logintest fsimgtest fattest all boot run install src qemu world libc-if-missing toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest qemutest libc cube programs clean distclean
 
+# EVERY PORT, in the order they need each other: what `ports`, `python`
+# and `toolchain` install, in the order they install it. One list, so
+# that `all` building a port and `install` installing it cannot drift
+# apart.
+PORT_DIRS := sbase awk sed grep bash ncurses less uemacs vi bzip2 gzip xz \
+             zstd sqlite openssl ca-certs brotli nghttp2 libunistring \
+             libidn2 libpsl curl wget lynx readline libffi dropbear rsync \
+             libiconv gettext zlib python binutils gmp mpfr mpc libstdcxx gcc
+
+# EVERYTHING THIS TREE BUILDS, by default. It used to be the ROM, the
+# kernel and three directories of programs -- so ld.so, the libc tests,
+# the bare-metal cube and device tests, and every port were built only
+# when a suite or an install happened to ask, and a tree could look
+# built while half of it was not. Each piece is incremental: a second
+# `make` rebuilds only what changed (a port rebuilds when picolibc's
+# headers do, which is on purpose -- see ports/cross.sh).
+#
+# Not built: boot/, the proof-of-life kernel for stock QEMU's `virt`
+# board, which wants the vasm assembler and is not part of this machine.
 all:
+	$(MAKE) libc-if-missing
 	$(MAKE) -C bootrom
 	$(MAKE) -C kernel
+	$(MAKE) -C ldso
 	$(MAKE) -C system
 	$(MAKE) -C apps
 	$(MAKE) -C auth
+	$(MAKE) -C libc/test
+	$(MAKE) -C tests
+	$(MAKE) -C cube
+	@for p in $(PORT_DIRS); do $(MAKE) -C ports/$$p all || exit 1; done
 
 # The machine as it is meant to run: the ROM loads KERNEL.ROM off the
 # filesystem and jumps to it.
@@ -253,6 +281,7 @@ copy-src src:
 # genuinely does: ports before libc is the same failure again.
 install:
 	$(MAKE) libc-if-missing
+	$(MAKE) -C kernel install
 	$(MAKE) programs
 	$(MAKE) ports
 	$(MAKE) python
@@ -279,7 +308,7 @@ qemu:
 run:
 	$(MAKE) -C kernel run
 
-test: autoinccheck pagecheck fsimgtest tests cryptotest fstest fattest apitest fpsptest faulttest procfstest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest tlstest shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest linetest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest logintest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest qemutest
+test: autoinccheck pagecheck fsimgtest tests cryptotest fstest fattest apitest fpsptest faulttest procfstest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest tlstest shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest linetest gfxtest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest logintest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest qemutest
 
 # Code and data on separate pages, in everything built for the machine
 # (tools/pagecheck.py says why). First, and cheap: what it catches never
@@ -333,6 +362,8 @@ xfertest:
 	cd kernel && ./xfertest.sh
 linetest:
 	cd kernel && ./linetest.sh
+gfxtest:
+	cd kernel && ./gfxtest.sh
 
 cryptotest:
 	cd kernel && ./cryptotest.sh

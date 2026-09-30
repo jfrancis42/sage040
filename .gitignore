@@ -54,6 +54,17 @@ apps/faulttest
 apps/hello
 apps/fbtest
 apps/lineprobe
+apps/plasma
+apps/fire
+apps/mandel
+apps/voxel
+apps/automata
+apps/sandpile
+apps/dla
+apps/stars
+apps/balls
+apps/sorts
+apps/rd
 apps/faulter
 apps/spin
 apps/fetch

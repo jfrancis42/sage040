@@ -205,7 +205,33 @@ the POSIX layer added to it.
 | `ports/awk` | the one true awk |
 | `ports/uemacs`, `ports/vi` | uEmacs/PK and neatvi |
 | `system/` | the system's own programs: `ifconfig`, `ping`, `netstat`, `route`, `arp`, `host`, `ntpdate`, `fsck`, `swapon`, `nvram`, `irqs`, `stty`, `df`, `id`, `who`, `w`, `uptime`, `sh` |
-| `apps/` | demonstrations and test programs: `cube`, `boids`, `wator`, `life`, `attractor`, `httpd`, `fetch`, `fbmap`, `pagetest` |
+| `apps/` | demonstrations and test programs: the graphics demos below, `httpd`, `fetch`, `fbmap`, `pagetest` |
+
+### The graphics demos
+
+All in `/bin`, all on `lib/gfx.h`, all with `-h` for their options, q to
+stop and space to pause. The picture is on the screen whichever
+terminal a demo is started from, and it takes its keys from that
+terminal -- the serial line works as well as the keyboard.
+
+| | |
+|---|---|
+| `cube` | a spinning cube, wireframe, drawn by the SM501's own line engine |
+| `boids` | Craig Reynolds' flock |
+| `wator` | Wa-Tor, sharks and fish |
+| `life` | Conway's Life and every other B/S rule |
+| `attractor` | strange attractors (Clifford, de Jong, Lorenz and five more) as density |
+| `plasma` | plasma, and with `-k tunnel` a tunnel, by palette cycling alone |
+| `fire` | the demo-scene fire |
+| `mandel` | the Mandelbrot set and its Julia sets, to explore; fixed point or `-f` the FPU, timed |
+| `voxel` | a landscape flown over the way Comanche drew one |
+| `automata` | Brian's Brain, the cyclic automaton, Wireworld, Langton's ant and a turmite (`-k`) |
+| `sandpile` | the abelian sandpile |
+| `dla` | diffusion-limited aggregation |
+| `stars` | a starfield |
+| `balls` | balls bouncing off the walls and each other, elastically |
+| `sorts` | seven sorting algorithms, watched |
+| `rd` | reaction-diffusion, Gray-Scott, in five presets |
 
 ---
 
