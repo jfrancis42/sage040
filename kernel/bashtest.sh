@@ -65,26 +65,17 @@ BASH_TESTS=${BASH_TESTS:-"arith array braces case comsub func glob quote strip t
 # real regression further down the list is never reached. That is not
 # hypothetical: it is what was happening.
 #
-# `type` and `varenv` are here for a DIFFERENT reason, and it is not a
-# good one: they fail and nobody knows why yet. They had never run.
-# The shell truncated BASH_TESTS at 64 bytes (ENV_ENTRY, shell.c), so
-# the last two names fell off the end and the guard that counts them
-# could not fail -- it printed "[ OK ] every test asked for ran (9 of
-# 11)" for as long as it existed. Both are fixed; these two now run and
-# fail.
-#
-#   type    a function body comes back differently -- the .right has a
-#           literal control character in it
-#   varenv  three "expect ..." lines are missing from the output
-#
-# They are listed so that `make test` can finish and the other twenty
-# suites after this one are reachable. They are NOT understood: they
-# are open work, not a property of the machine.
+# `type` and `varenv` used to be listed here too, "not diagnosed". Both
+# were the harness, not bash: varenv's own runner (run-varenv) filters
+# out the "expect" lines its test prints, and runsuite.sh ran the
+# .tests files directly, around the runners; type pipes through `cat
+# -v`, which sbase's cat did not have (ports/sbase/patches/04). The
+# suite now runs each test through its run-NAME, as bash's run-all does.
 #
 # A KNOWN test that starts PASSING is a failure, loudly. Closing one of
 # these gaps must force the entry to be removed rather than quietly
 # leaving a test nobody looks at.
-BASH_KNOWN=${BASH_KNOWN:-"glob type varenv"}
+BASH_KNOWN=${BASH_KNOWN:-"glob"}
 
 pass=0
 fail=0
@@ -272,8 +263,6 @@ for n in $BASH_TESTS; do
     r=$?
     case $n in
     glob)   why="no locale command and no zh_TW.big5 locale" ;;
-    type)   why="NOT DIAGNOSED: function body differs" ;;
-    varenv) why="NOT DIAGNOSED: 'expect' lines missing" ;;
     *)    why="expected" ;;
     esac
     check_known "$n" $r "$why"

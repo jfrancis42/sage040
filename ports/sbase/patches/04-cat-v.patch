@@ -1,0 +1,104 @@
+sbase: cat -v, -e and -t, as BSD and GNU cat have them.
+
+bash's own type test pipes through `cat -v` to show a control
+character, and sbase's cat said "usage: cat [-u] [file ...]" -- which
+read as bash getting the function body wrong.
+
+--- a/cat.c
++++ b/cat.c
+@@ -1,14 +1,62 @@
+ /* See LICENSE file for copyright and license details. */
+ #include <fcntl.h>
++#include <stdio.h>
+ #include <string.h>
+ #include <unistd.h>
+ 
+ #include "util.h"
+ 
++static int vflag, eflag, tflag;
++
+ static void
+ usage(void)
+ {
+-	eprintf("usage: %s [-u] [file ...]\n", argv0);
++	eprintf("usage: %s [-etuv] [file ...]\n", argv0);
++}
++
++/* -v: what cannot be printed, made visible, as BSD and GNU cat do --
++ * ^X for a control character, ^? for DEL, M- before a byte with the top
++ * bit set. -e adds $ at each line's end, -t shows a tab as ^I; both
++ * imply -v. */
++static int
++showcat(int fd, const char *name)
++{
++	unsigned char buf[BUFSIZ];
++	ssize_t n, i;
++
++	while ((n = read(fd, buf, sizeof(buf))) > 0) {
++		for (i = 0; i < n; i++) {
++			int c = buf[i];
++
++			if (c == '\n') {
++				if (eflag)
++					putchar('$');
++				putchar('\n');
++				continue;
++			}
++			if (c == '\t' && !tflag) {
++				putchar('\t');
++				continue;
++			}
++			if (c >= 0x80) {
++				fputs("M-", stdout);
++				c &= 0x7f;
++			}
++			if (c < 0x20) {
++				putchar('^');
++				putchar(c + '@');
++			} else if (c == 0x7f) {
++				fputs("^?", stdout);
++			} else {
++				putchar(c);
++			}
++		}
++	}
++	if (n < 0) {
++		weprintf("read %s:", name);
++		return -1;
++	}
++	return fflush(stdout) ? -2 : 0;
+ }
+ 
+ int
+@@ -19,12 +67,21 @@
+ 	ARGBEGIN {
+ 	case 'u':
+ 		break;
++	case 'v':
++		vflag = 1;
++		break;
++	case 'e':
++		eflag = vflag = 1;
++		break;
++	case 't':
++		tflag = vflag = 1;
++		break;
+ 	default:
+ 		usage();
+ 	} ARGEND
+ 
+ 	if (!argc) {
+-		if (concat(0, "<stdin>", 1, "<stdout>") < 0)
++		if ((vflag ? showcat(0, "<stdin>") : concat(0, "<stdin>", 1, "<stdout>")) < 0)
+ 			ret = 1;
+ 	} else {
+ 		for (; *argv; argc--, argv++) {
+@@ -36,7 +93,7 @@
+ 				ret = 1;
+ 				continue;
+ 			}
+-			switch (concat(fd, *argv, 1, "<stdout>")) {
++			switch (vflag ? showcat(fd, *argv) : concat(fd, *argv, 1, "<stdout>")) {
+ 			case -1:
+ 				ret = 1;
+ 				break;

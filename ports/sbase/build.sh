@@ -26,11 +26,23 @@ SRC=$SRCDIR/sbase-${COMMIT:0:7}
 if [ ! -d "$SRC" ]; then
     git clone -q "$URL" "$SRC"
     git -C "$SRC" checkout -q "$COMMIT"
-    for p in "$HERE"/patches/*.patch; do
-        [ -f "$p" ] || continue
-        patch -d "$SRC" -p1 -s < "$p"
-    done
 fi
+
+# The patches, each once, listed in the checkout as they go in -- so a
+# patch added later reaches a checkout made before it. One a checkout
+# from before the list existed already has is recognised by reversing
+# cleanly, and listed.
+applied=$SRC/.sage040-patches
+touch "$applied"
+for p in "$HERE"/patches/*.patch; do
+    [ -f "$p" ] || continue
+    name=$(basename "$p")
+    grep -qxF "$name" "$applied" && continue
+    if ! patch -d "$SRC" -p1 -R -s --dry-run < "$p" >/dev/null 2>&1; then
+        patch -d "$SRC" -p1 -N -s < "$p"
+    fi
+    echo "$name" >> "$applied"
+done
 
 # Everything rebuilt if picolibc's headers changed since the last build.
 #

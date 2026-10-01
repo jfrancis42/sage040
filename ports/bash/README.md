@@ -83,7 +83,8 @@ library and the kernel:
   difference from real bash, not from a table somebody typed.
 - **bash's own test suite**, run by `tests/runsuite.sh` on the guest:
   arith, array, braces, case, comsub, func, glob, quote, strip, type and
-  varenv by default, each output compared with upstream's `.right` file.
+  varenv by default, each through its own `run-NAME` script (where a
+  test's output is filtered) and compared with upstream's `.right` file.
   `BASH_TESTS=all` (or `make bashsuite`) runs all 83, which takes hours —
   one test is minutes of work for a 25 MHz 68040.
 
