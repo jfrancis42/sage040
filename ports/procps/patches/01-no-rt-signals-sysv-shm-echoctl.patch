@@ -1,0 +1,66 @@
+diff -ru a/library/signames.c b/library/signames.c
+--- a/library/signames.c	2026-10-01 14:12:05.067473817 -0600
++++ b/library/signames.c	2026-10-01 14:12:05.109299733 -0600
+@@ -42,6 +42,13 @@
+ #include "misc.h"
+ #include "procps-private.h"
+ 
++/* A C library with no real-time signals at all (picolibc, whose signal
++ * set is 32 bits): say so the way glibc does, with RTMIN == RTMAX. */
++#ifndef SIGRTMIN
++#define SIGRTMIN NSIG
++#define SIGRTMAX NSIG
++#endif
++
+ /* For libraries like musl */
+ #ifndef __SIGRTMIN
+ #define __SIGRTMIN SIGRTMIN
+diff -ru a/src/pmap.c b/src/pmap.c
+--- a/src/pmap.c	2026-10-01 14:12:05.074473834 -0600
++++ b/src/pmap.c	2026-10-01 14:12:05.112388740 -0600
+@@ -28,8 +28,11 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#if __has_include(<sys/shm.h>)
+ #include <sys/ipc.h>
+ #include <sys/shm.h>
++#define HAVE_SYSV_SHM 1
++#endif
+ #include <sys/stat.h>
+ #include <sys/types.h>
+ #include <unistd.h>
+@@ -157,6 +160,12 @@
+ 
+ static unsigned shm_minor = ~0u;
+ 
++#ifndef HAVE_SYSV_SHM
++/* No System V shared memory on this system: no segment to label. */
++static void discover_shm_minor(void)
++{
++}
++#else
+ static void discover_shm_minor(void)
+ {
+ 	void *addr;
+@@ -225,6 +234,7 @@
+ 
+ 	return;
+ }
++#endif
+ 
+ static const char *mapping_name(struct pids_stack *p, unsigned long addr,
+ 				unsigned long len, const char *mapbuf_b,
+diff -ru a/src/top/top.c b/src/top/top.c
+--- a/src/top/top.c	2026-10-01 14:12:05.080473849 -0600
++++ b/src/top/top.c	2026-10-01 14:12:05.114473932 -0600
+@@ -4525,6 +4525,9 @@
+ 
+    // first, a consistent canonical mode for interactive line input
+    tmptty = Tty_original;
++#ifndef ECHOCTL
++#define ECHOCTL 0               /* a C library without it: nothing to set */
++#endif
+    tmptty.c_lflag |= (ECHO | ECHOCTL | ECHOE | ICANON | ISIG);
+    tmptty.c_lflag &= ~NOFLSH;
+    tmptty.c_oflag &= ~TAB3;

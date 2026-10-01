@@ -40,6 +40,7 @@
         btst    #5,(%sp)                | S bit of the saved SR
         bne.s   8f
         movem.l %d0-%d7/%a0-%a6,-(%sp)
+        move.l  kstack_limit,%a5        | the stack limit: see task.c
         move.l  %sp,-(%sp)              | -> struct pt_regs
         jsr     task_ret_to_user
         addq.l  #4,%sp
@@ -51,6 +52,7 @@
 | as above -- which is where the signal is delivered.
         .macro  REPORT sig
         movem.l %d0-%d7/%a0-%a6,-(%sp)
+        move.l  kstack_limit,%a5        | the stack limit: see task.c
         pea     \sig
         pea     4(%sp)                  | -> struct pt_regs
         jsr     fpsp_report
@@ -246,6 +248,7 @@ real_fline:
         .globl  fpsp_fmt_error
 fpsp_fmt_error:
         addq.l  #1,fpsp_stats+16       | bad_frame
+        move.l  kstack_limit,%a5
         jsr     fpsp_bad_frame
         | does not return
 
@@ -267,16 +270,20 @@ mem_read:
         bne.s   2b
         rts
 1:      move.l  %d1,-(%sp)
+        move.l  %a5,-(%sp)              | the package's, put back after
+        move.l  kstack_limit,%a5        | C runs under the limit: task.c
         move.l  %d0,-(%sp)              | len
         move.l  %a0,-(%sp)              | the program's address
         move.l  %a1,-(%sp)              | where it goes
         jsr     copy_from_user
         lea     12(%sp),%sp
+        move.l  (%sp)+,%a5
         tst.l   %d0
         bne.s   3f
         move.l  (%sp)+,%d1
         rts
-3:      jsr     fpsp_bad_copy
+3:      move.l  kstack_limit,%a5
+        jsr     fpsp_bad_copy
         | does not return
 
         .globl  mem_write
@@ -288,14 +295,18 @@ mem_write:
         bne.s   2b
         rts
 1:      move.l  %d1,-(%sp)
+        move.l  %a5,-(%sp)              | the package's, put back after
+        move.l  kstack_limit,%a5        | C runs under the limit: task.c
         move.l  %d0,-(%sp)              | len
         move.l  %a0,-(%sp)              | from the stack
         move.l  %a1,-(%sp)              | the program's address
         jsr     copy_to_user
         lea     12(%sp),%sp
+        move.l  (%sp)+,%a5
         tst.l   %d0
         bne.s   3f
         move.l  (%sp)+,%d1
         rts
-3:      jsr     fpsp_bad_copy
+3:      move.l  kstack_limit,%a5
+        jsr     fpsp_bad_copy
         | does not return

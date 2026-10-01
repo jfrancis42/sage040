@@ -232,6 +232,8 @@ static void start_drivers(void)
         kputc(':');
         kput2((u32)now.tm_sec);
         kputs(" UTC\n");
+        /* A panic the last boot left in the NVRAM: say it, once. */
+        klog_panic_report();
     }
 
     status("timer");

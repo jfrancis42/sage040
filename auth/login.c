@@ -32,7 +32,11 @@
 #include <sys/wait.h>
 #include <errno.h>
 #include <grp.h>
+#include <signal.h>
 #include <time.h>
+#include <utmp.h>
+#include <sys/time.h>
+#include <sys/stat.h>
 #include "pwdb.h"
 
 extern char *crypt(const char *key, const char *salt);
@@ -88,6 +92,61 @@ static int password_ok(const char *name, const char *pw)
     }
     got = crypt(pw, stored);
     return got && strcmp(got, stored) == 0;
+}
+
+/*
+ * THE RECORD OF A LOGIN, in /var/run/utmp (and /var/log/wtmp, if one is
+ * kept): what who, w, uptime and top count. USER_PROCESS when the
+ * session starts, DEAD_PROCESS when it ends -- which is why login stays
+ * behind as the session's parent rather than becoming its shell. A
+ * session with no terminal has no line to name and is not recorded.
+ */
+/* A utmp field: as much as fits, and NOT necessarily terminated --
+ * the format's own rule, which readers honour with the field's size. */
+static void fill(char *dst, const char *src, size_t size)
+{
+    size_t n = strlen(src);
+
+    memcpy(dst, src, n < size ? n : size);
+}
+
+static void record(short type, pid_t pid, const char *user)
+{
+    struct utmp u;
+    struct timeval tv;
+    const char *line = ttyname(0), *host = getenv("SSH_CLIENT");
+    size_t n, i;
+
+    if (!line) {
+        return;
+    }
+    if (strncmp(line, "/dev/", 5) == 0) {
+        line += 5;
+    }
+    memset(&u, 0, sizeof(u));
+    u.ut_type = type;
+    u.ut_pid = pid;
+    u.ut_session = pid;
+    fill(u.ut_line, line, sizeof(u.ut_line));
+    n = strlen(line);                   /* the id: the line's last four */
+    for (i = 0; i < sizeof(u.ut_id) && i < n; i++) {
+        u.ut_id[i] = line[n > 4 ? n - 4 + i : i];
+    }
+    if (type == USER_PROCESS) {
+        fill(u.ut_user, user, sizeof(u.ut_user));
+        if (host) {                     /* "client-ip port port" */
+            for (i = 0; host[i] && host[i] != ' ' && i < sizeof(u.ut_host) - 1; i++) {
+                u.ut_host[i] = host[i];
+            }
+        }
+    }
+    gettimeofday(&tv, 0);
+    u.ut_tv.tv_sec = (int32_t)tv.tv_sec;
+    u.ut_tv.tv_usec = (int32_t)tv.tv_usec;
+    setutent();
+    pututline(&u);
+    endutent();
+    updwtmp(_PATH_WTMP, &u);
 }
 
 int main(int argc, char **argv)
@@ -167,18 +226,16 @@ int main(int argc, char **argv)
     /*
      * A LOGIN IS A SESSION, with the terminal as its controlling
      * terminal: that is what lets a hangup reach it and /dev/tty find
-     * it. On the console this program is started by the system's
-     * shell, inside the shell's session and as a group leader, which
-     * may not start a session (POSIX) -- so, as a getty-started login
-     * does, it forks, and the child starts the session and takes the
+     * it. It forks, and the CHILD starts the session and takes the
      * terminal while it is still root (TIOCSCTTY's 1: take it even if
-     * an earlier session left it attached). The parent only waits, so
-     * the shell that started it sees the session end.
-     *
-     * Started by an ssh server, it is already a session leader with its
-     * terminal, and nothing needs doing.
+     * another session has it -- the console's shell, or the ssh
+     * server's session that started this). The parent stays root and
+     * waits, so that it can write the session's end into utmp, and so
+     * that the shell or server that started it sees the session end.
+     * (On the console this program is a process group leader, which
+     * may not start a session itself; the fork is what makes it legal.)
      */
-    if (getsid(0) != getpid()) {
+    {
         pid_t child = fork();
 
         if (child < 0) {
@@ -188,16 +245,37 @@ int main(int argc, char **argv)
         if (child > 0) {
             int st = 0;
 
+            signal(SIGINT, SIG_IGN);
+            signal(SIGQUIT, SIG_IGN);
+            signal(SIGHUP, SIG_IGN);    /* the session's, not ours */
+            record(USER_PROCESS, child, e.name);
             while (waitpid(child, &st, 0) < 0 && errno == EINTR) {
+            }
+            record(DEAD_PROCESS, child, e.name);
+            /* The terminal back to root, for whoever logs in next. */
+            if (isatty(0)) {
+                (void)fchown(0, 0, 0);
+                (void)fchmod(0, 0620);
             }
             return WIFEXITED(st) ? WEXITSTATUS(st) : 1;
         }
+        signal(SIGHUP, SIG_DFL);
         if (setsid() < 0) {
             perror("login: setsid");
             return 1;
         }
         if (isatty(0) && ioctl(0, TIOCSCTTY, 1) != 0) {
             perror("login: TIOCSCTTY");
+        }
+        /*
+         * THE TERMINAL BECOMES THE PERSON'S, while this is still root:
+         * a terminal's mode is 0620 and enforced, so without this the
+         * user's own programs could not reopen it (a full-screen editor
+         * opening /dev/tty is the usual case), and anybody else's could.
+         * The parent gives it back to root when the session ends.
+         */
+        if (isatty(0) && (fchown(0, e.uid, e.gid) != 0 || fchmod(0, 0620) != 0)) {
+            perror("login: the terminal");
         }
     }
 

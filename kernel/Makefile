@@ -44,6 +44,7 @@ SUP := ../tests
 CPUFLAGS := -mcpu=68040
 CFLAGS := $(CPUFLAGS) -ffreestanding -nostdlib -nostdinc -O2 \
  -Wall -Wextra -Werror -fno-builtin -fno-stack-protector \
+ -ffixed-a5 -fstack-limit-register=a5 \
  -DSAGE040_NO_TESTLIB \
  -I. -I.. -Idrivers -Inet -I$(SUP)
 LDFLAGS := $(CPUFLAGS) -ffreestanding -nostdlib -T kernel.ld \
@@ -78,14 +79,20 @@ ASMS := $(filter %.s,$(ALLSRC))
 #
 # So is the ABI: every system call number Linux/m68k has must be Linux's
 # number (abicheck.sh, against linux-m68k-syscalls.txt).
+#
+# And after it, that no function's frame is bigger than the red zone
+# the stack limit leaves (task.c, KSTACK_RED; ../tools/framecheck.py).
+KSTACK_RED := $(shell sed -n 's/^\#define KSTACK_RED *(\([0-9]*\) \* 1024).*/\1/p' task.c)
 kernel.elf: $(ASMS) $(SRCS) $(HDRS) kernel.ld layercheck.sh abicheck.sh \
-            linux-m68k-syscalls.txt SOURCES
+            linux-m68k-syscalls.txt SOURCES ../tools/framecheck.py
 	@./layercheck.sh
 	@./abicheck.sh
 	$(CC) $(CFLAGS) $(LDFLAGS) \
 	 -x assembler-with-cpp $(ASMS) \
 	 -x c $(SRCS) -o $@
 	@$(SIZE) $@
+	@python3 ../tools/framecheck.py $@ $$(( $(KSTACK_RED) * 1024 )) \
+	   $(subst -gcc,-objdump,$(CC)) || { rm -f $@; exit 1; }
 
 # The flat image the boot ROM loads: the vector table first, so its first
 # two longwords are the initial SSP and PC, then everything else.

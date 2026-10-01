@@ -9,8 +9,9 @@
  *   nvram -d KEY          delete one
  *   nvram -c              clear them all
  *
- * /dev/nvram is 8176 bytes of battery-backed RAM; the clock is the last
- * sixteen, and the kernel keeps those out of it. The layout here is
+ * /dev/nvram is 7152 bytes of battery-backed RAM: the chip has 8192,
+ * the clock is the last sixteen, and the kilobyte below the clock is the
+ * kernel's, where it keeps a panic for the next boot to report. The layout here is
  * this program's own, and simple on purpose, so that a person with a
  * hex dump can read it:
  *
@@ -24,7 +25,8 @@
  */
 #include "ulib.h"
 
-#define NV_SIZE   8176
+#define NV_SIZE   7152          /* /dev/nvram's size: the kernel keeps
+                                 * the last kilobyte, for a panic */
 #define NV_TEXT   6
 #define NV_MAX    (NV_SIZE - NV_TEXT)
 

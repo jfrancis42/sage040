@@ -147,6 +147,8 @@ int rtc_write(const struct tm *t)
 /* NVRAM                                                             */
 /* ---------------------------------------------------------------- */
 
+int nvram_ok;                   /* the chip answered: see m48t59_init */
+
 u8 nvram_read(u32 offset)
 {
     if (offset >= RTC_NVRAM_SIZE) {
@@ -187,8 +189,9 @@ int rtc_present(void)
 }
 
 /*
- * /dev/nvram: the 8176 bytes below the clock's registers, as a file of
- * that size -- read, write and seek, and nothing past the end. Linux has
+ * /dev/nvram: the first 7152 of the 8176 bytes below the clock's
+ * registers, as a file of that size (the last kilobyte is the kernel's,
+ * for a panic: klog.c) -- read, write and seek, and nothing past the end. Linux has
  * a /dev/nvram too (the PC's CMOS, 114 bytes); a program that uses one
  * uses this the same way. What goes in it is up to the programs:
  * /bin/nvram keeps settings there (see its header for the layout).
@@ -198,12 +201,16 @@ int rtc_present(void)
  * the machine, which is what `shutdown` does without -no-reboot, and not
  * the emulator exiting. On the real part, a battery keeps it.
  */
+/* The part of the NVRAM that is /dev/nvram's: below the kernel's own
+ * kilobyte, where a panic is kept (klog.c, NVRAM_PANIC_BASE). */
+#define NV_USER  NVRAM_PANIC_BASE
+
 static s32 nv_read(struct file *f, void *buf, u32 len)
 {
     u8 *p = buf;
     u32 n = 0;
 
-    while (n < len && f->pos < RTC_NVRAM_SIZE) {
+    while (n < len && f->pos < NV_USER) {
         p[n++] = nvram_read(f->pos++);
     }
     return (s32)n;
@@ -214,10 +221,10 @@ static s32 nv_write(struct file *f, const void *buf, u32 len)
     const u8 *p = buf;
     u32 n = 0;
 
-    if (f->pos >= RTC_NVRAM_SIZE && len > 0) {
+    if (f->pos >= NV_USER && len > 0) {
         return -ENOSPC;
     }
-    while (n < len && f->pos < RTC_NVRAM_SIZE) {
+    while (n < len && f->pos < NV_USER) {
         nvram_write(f->pos++, p[n++]);
     }
     return (s32)n;
@@ -227,9 +234,9 @@ static s32 nv_lseek(struct file *f, s32 off, int whence)
 {
     s32 base = whence == SEEK_SET ? 0 :
                whence == SEEK_CUR ? (s32)f->pos :
-               whence == SEEK_END ? (s32)RTC_NVRAM_SIZE : -1;
+               whence == SEEK_END ? (s32)NV_USER : -1;
 
-    if (base < 0 || base + off < 0 || base + off > (s32)RTC_NVRAM_SIZE) {
+    if (base < 0 || base + off < 0 || base + off > (s32)NV_USER) {
         return -EINVAL;
     }
     f->pos = (u32)(base + off);
@@ -246,7 +253,7 @@ static int nv_fstat(struct file *f, struct stat *st)
 {
     (void)f;
     st->st_mode = S_IFCHR;
-    st->st_size = RTC_NVRAM_SIZE;
+    st->st_size = NV_USER;
     st->st_mtime = 0;
     st->st_blocks = 0;
     return 0;
@@ -264,7 +271,10 @@ static const struct file_ops nv_ops = {
     0,                          /* mmap: not memory to map */
 };
 
-static struct chardev nv_dev = { .name = "nvram", .ops = &nv_ops };
+/* The machine's settings, read at boot: root's alone, as Linux's
+ * /dev/nvram is. */
+static struct chardev nv_dev = { .name = "nvram", .ops = &nv_ops,
+                                 .mode = 0600 };
 
 /* ---------------------------------------------------------------- */
 /* The device the kernel sees                                        */
@@ -312,6 +322,7 @@ int m48t59_init(void)
     if (!rtc_present()) {
         return -ENODEV;
     }
+    nvram_ok = 1;
     dev_register_char(&nv_dev);
     return dev_register_rtc(&m48t59_dev);
 }

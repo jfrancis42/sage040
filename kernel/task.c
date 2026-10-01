@@ -93,6 +93,51 @@ static volatile int need_resched;
  */
 #define KSTACK_PAINT    0x5ac3a55aUL
 
+/*
+ * THE STACK LIMIT, in a5. The kernel is built -ffixed-a5
+ * -fstack-limit-register=a5, so every function that makes a frame
+ * starts with `cmp.l %sp,%a5; traphi`: a stack pointer below a5 is a
+ * TRAPcc, which start.s's _trapcc_entry turns into a report naming the
+ * task (kstack_overflow, trap.c) -- where running into the guard page
+ * is a fault taken while pushing a fault frame, which no 68040 can
+ * report: QEMU dies with "DOUBLE MMU FAULT" and nothing from the
+ * kernel at all.
+ *
+ * The limit is KSTACK_RED above the guard, and the red zone has to
+ * hold the largest frame any one function makes (the check comes after
+ * the frame is allocated) and the trap's own frame and registers. It is
+ * checked against the compiler's figures by tools/framecheck.py.
+ *
+ * Every way into the kernel loads a5 from kstack_limit (start.s,
+ * mfp.c, fpspglue.s), because what a5 held was the program's; the
+ * scheduler sets it, with interrupts masked, as it switches stacks.
+ * 0 is no limit: the boot stack and a task with no stack of its own.
+ */
+#define KSTACK_RED      (8 * 1024)
+
+u32 kstack_limit;
+
+/* Context switches since boot: /proc/stat's ctxt, which vmstat shows. */
+static u32 ctxt_switches;
+
+u32 task_ctxt_switches(void)
+{
+    return ctxt_switches;
+}
+
+static u32 limit_of(const struct task *t)
+{
+    return t->kstack ? t->kstack + (u32)PAGE_SIZE + KSTACK_RED : 0;
+}
+
+/* The bounds of the current task's kernel stack, for the report. */
+void task_kstack_bounds(u32 *lo, u32 *hi)
+{
+    *lo = current && current->kstack ? current->kstack + (u32)PAGE_SIZE : 0;
+    *hi = current && current->kstack ?
+          current->kstack + KSTACK_TOTAL * (u32)PAGE_SIZE : 0;
+}
+
 static u32  kstack_max;
 static char kstack_max_name[TASK_NAME_MAX];
 
@@ -287,19 +332,26 @@ static void build_stack(struct task *t, u32 top, u32 entry, u32 usp,
     w[0] = 0;                                    /* format 0, vector 0 */
 
     /* d0-d7/a0-a6, which task_entry pops. Zero: a program has no right
-     * to expect anything in a register it has not set. */
+     * to expect anything in a register it has not set. A KERNEL task's
+     * a5 is its stack limit (see KSTACK_RED), which it keeps for the
+     * whole of its life. */
     sp -= 60;
     memset((void *)sp, 0, 60);
+    if (!user_mode) {
+        ((u32 *)sp)[13] = limit_of(t);          /* a5 */
+    }
 
     /* The return address switch_context will rts to. */
     sp -= 4;
     *(u32 *)sp = (u32)task_entry;
 
-    /* USP, then the callee-saved registers. */
+    /* USP, then the callee-saved registers: d2-d7/a2-a6, of which a5
+     * is the limit task_entry_hook runs under. */
     sp -= 4;
     *(u32 *)sp = usp;
     sp -= 44;
     memset((void *)sp, 0, 44);
+    ((u32 *)sp)[9] = limit_of(t);               /* a5 */
 
     t->ksp = sp;
 }
@@ -840,7 +892,21 @@ void schedule(void)
     fpu_save(prev->fpu);
     fpu_restore(next->fpu);
 
-    switch_context(&prev->ksp, next->ksp);
+    /*
+     * The limit and the stack change together, with interrupts masked:
+     * an interrupt between the two would check one task's stack
+     * against the other's limit, and panic over nothing. Each task
+     * comes back here with its own saved mask; a new one leaves through
+     * task_entry's RTE, which sets its own.
+     */
+    ctxt_switches++;
+    {
+        u16 sr = irq_save();
+
+        kstack_limit = limit_of(next);
+        switch_context(&prev->ksp, next->ksp);
+        irq_restore(sr);
+    }
 
     /*
      * Reached when somebody schedules back to `prev`, which by then is

@@ -63,6 +63,7 @@ struct __kernel_siginfo {
         (_t)->si_addr = (_f)->si_addr;     \
         (_t)->si_status = (_f)->si_status; \
         (_t)->si_band = (_f)->si_band;     \
+        (_t)->si_value.sival_ptr = (_f)->si_value.sival_ptr; \
     } while (0)
 
 #endif /* _LINUX_SIGINFO_STRUCT_H_ */

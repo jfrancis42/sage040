@@ -1,0 +1,17 @@
+<fcntl.h> gives the file mode constants, as POSIX has it.
+
+POSIX: "The <fcntl.h> header shall define the symbolic constants for
+file modes for use as values of mode_t as described in <sys/stat.h>"
+-- S_IRUSR and the rest, which open(path, O_CREAT, S_IRUSR | S_IWUSR)
+needs and which a program reasonably expects from the header that
+declares open(). glibc and musl both provide them there; picolibc did
+not, and procps-ng's watch stopped on S_IRUSR undeclared. The whole of
+<sys/stat.h> comes with them, as on glibc.
+
+--- a/libc/include/fcntl.h
++++ b/libc/include/fcntl.h
+@@ -31,3 +31,4 @@
+ SUCH DAMAGE.
+  */
+ #include <sys/fcntl.h>
++#include <sys/stat.h>

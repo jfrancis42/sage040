@@ -861,6 +861,7 @@ void tty_reset_fd(int fd)
 static void register_tty(struct tty *t)
 {
     t->dev.name = t->name;
+    t->dev.mode = 0620;         /* a terminal: its user's; login gives it */
     t->dev.ops = &tty_ops;
     t->dev.priv = t;
     t->dev.next = 0;

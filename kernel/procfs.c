@@ -67,6 +67,7 @@
 #include "ptrace.h"
 #include "ctty.h"
 #include "textcache.h"
+#include "drivers.h"
 #include "errno.h"
 #include "string.h"
 
@@ -80,7 +81,8 @@ enum {
 
 enum {
     /* /proc */
-    F_CPUINFO, F_LOADAVG, F_MEMINFO, F_MOUNTS, F_STAT, F_UPTIME, L_SELF,
+    F_CPUINFO, F_LOADAVG, F_MEMINFO, F_MOUNTS, F_STAT, F_UPTIME, F_VMSTAT,
+    L_SELF,
     /* /proc/<pid> */
     P_CMDLINE, P_COMM, P_ENVIRON, P_MAPS, P_MEM, P_STAT, P_STATM, P_STATUS,
     L_CWD, L_EXE, L_ROOT, L_FD,
@@ -103,6 +105,7 @@ static const struct entry root_ents[] = {
     { "self",    N_LINK, L_SELF,    0777 },
     { "stat",    N_FILE, F_STAT,    0444 },
     { "uptime",  N_FILE, F_UPTIME,  0444 },
+    { "vmstat",  N_FILE, F_VMSTAT,  0444 },
 };
 #define ROOT_ENTS   (sizeof(root_ents) / sizeof(root_ents[0]))
 
@@ -863,6 +866,39 @@ static void gen_meminfo(struct pbuf *b)
 }
 
 /*
+ * Linux's /proc/vmstat, the counters it has here: one "name value" per
+ * line, in pages or events. vmstat(8) cannot start without the file;
+ * what it shows from it is swap traffic (pswpin/pswpout) and faults.
+ * Disk traffic (pgpgin/pgpgout) is not counted, and says 0.
+ */
+static void vm_line(struct pbuf *b, const char *name, u32 v)
+{
+    puts_(b, name);
+    putc_(b, ' ');
+    putu(b, v, 0);
+    putc_(b, '\n');
+}
+
+static void gen_vmstat(struct pbuf *b)
+{
+    struct vm_stats v;
+    struct swapstats sw;
+    struct tc_stats tc;
+
+    vm_stats(&v);
+    swap_stats(&sw);
+    textcache_stats(&tc);
+    vm_line(b, "nr_free_pages", pmm_available());
+    vm_line(b, "nr_file_pages", tc.cached);
+    vm_line(b, "pgpgin", 0);
+    vm_line(b, "pgpgout", 0);
+    vm_line(b, "pswpin", sw.pageins);
+    vm_line(b, "pswpout", sw.pageouts);
+    vm_line(b, "pgfault", v.faults_zero + v.faults_cow + v.faults_swapin);
+    vm_line(b, "pgmajfault", v.faults_swapin);
+}
+
+/*
  * Every volume, from the root filesystem's own table (vfs_mount_list),
  * then the things that are not volumes. A volume whose type is ext2
  * with a journal is ext3 to Linux; it says ext2 here because that is
@@ -914,6 +950,27 @@ static void gen_stat(struct pbuf *b)
     putu(b, (u32)task_last_pid(), 0);
     puts_(b, "\nprocs_running ");
     putu(b, (u32)task_nr_active(), 0);
+    /* Nothing here waits uninterruptibly: a sleep is always a sleep a
+     * signal can end. */
+    puts_(b, "\nprocs_blocked 0\nctxt ");
+    putu(b, task_ctxt_switches(), 0);
+    /* intr: the total, then each line; Linux's are the IRQ numbers,
+     * these are the MC68901's sixteen channels. */
+    {
+        u32 c[16], total = 0;
+        int i;
+
+        mfp_counts(c);
+        for (i = 0; i < 16; i++) {
+            total += c[i];
+        }
+        puts_(b, "\nintr ");
+        putu(b, total, 0);
+        for (i = 0; i < 16; i++) {
+            putc_(b, ' ');
+            putu(b, c[i], 0);
+        }
+    }
     putc_(b, '\n');
 }
 
@@ -1571,6 +1628,7 @@ static void generate(const struct pnode *n, struct pbuf *b)
     case F_CPUINFO: gen_cpuinfo(b); return;
     case F_LOADAVG: gen_loadavg(b); return;
     case F_MEMINFO: gen_meminfo(b); return;
+    case F_VMSTAT:  gen_vmstat(b);  return;
     case F_MOUNTS:  gen_mounts(b);  return;
     case F_STAT:    gen_stat(b);    return;
     case F_UPTIME:  gen_uptime(b);  return;

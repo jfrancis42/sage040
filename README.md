@@ -378,6 +378,11 @@ is a 25 MHz 68040, and one of the suites waits for the wall clock.
 | `make journal` | give an existing disk ext3's journal, in place (refuses a disk in use or not clean) |
 | `make linuxfstest` | the disk handed back and forth with Linux's own ext3 driver (needs sudo) |
 | `make sesstest` | sessions and controlling terminals: `/dev/tty`, `TIOCSCTTY`, hangups |
+| `make stacktest` | a kernel stack overflow is reported (task, function, return addresses), not a double fault |
+| `make panictest` | a panic is kept in the NVRAM and reported by the next boot |
+| `make fuzztest` | random system calls with hostile arguments; the machine, its memory and its disk come through |
+| `make procpstest` | procps-ng (ps, top, free, pgrep, pkill, vmstat, ...), login records in utmp, and who may signal whom |
+| `make devmodetest` | device modes enforced; a terminal belongs to whoever is logged in on it |
 | `make mounttest` | more than one volume: `mount`, `umount`, partitions, read-only, a journal replayed off the root |
 | `make uemacstest` `make vitest` | the editors |
 | `make bashsuite` | every one of bash's own 83 tests (hours, not minutes) |

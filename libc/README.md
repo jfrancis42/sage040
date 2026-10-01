@@ -141,6 +141,17 @@ Two things are deliberately absent.
 - **`CLOCK_MONOTONIC` needs `_GNU_SOURCE`.** picolibc only claims
   `_POSIX_MONOTONIC_CLOCK` for RTEMS, so under plain POSIX the constant
   is hidden where glibc shows it.
+- **utmp is glibc's**: `getutent`, `getutid`, `getutline`, `pututline`,
+  `setutent`, `endutent`, `utmpname`, `updwtmp`, on `/var/run/utmp`,
+  which login(1) writes. A record is 382 bytes (m68k aligns an int to
+  two bytes).
+- **`sigqueue` works**, and `sigwaitinfo`/`sigtimedwait` and a
+  `SA_SIGINFO` handler see `si_value`, `si_pid` and `si_uid`.
+- **`<fcntl.h>` gives the `S_I*` mode constants** (patches/55), and
+  **`<arpa/inet.h>` gives what `<netinet/in.h>` has** -- `INET6_ADDRSTRLEN`,
+  `struct in_addr` -- as glibc's do; `IN6_IS_ADDR_*` exist.
+- **No real-time signals.** picolibc's signal set is 32 bits, so there is
+  no `SIGRTMIN`; a program that wants one has to do without.
 - **`statvfs` and `fstatvfs` work**, on the kernel's `statfs64`, for
   whichever volume the path is on; `ST_RDONLY` for a read-only mount.
 - **`ioctl()` knows only `TIOCGWINSZ`, `TIOCSWINSZ`, `TIOCLINUX` and

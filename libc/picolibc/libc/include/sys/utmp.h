@@ -87,4 +87,21 @@ struct utmp {
 #define ut_name ut_user
 #define ut_time ut_tv.tv_sec
 
+#define _PATH_UTMP      "/var/run/utmp"
+#define _PATH_WTMP      "/var/log/wtmp"
+#define UTMP_FILE       _PATH_UTMP
+#define UTMP_FILENAME   _PATH_UTMP
+#define WTMP_FILE       _PATH_WTMP
+#define WTMP_FILENAME   _PATH_WTMP
+
+/* glibc's interface to it: libos/linux/machine/m68k/utmp.c */
+int utmpname(const char *file);
+void setutent(void);
+void endutent(void);
+struct utmp *getutent(void);
+struct utmp *getutid(const struct utmp *ut);
+struct utmp *getutline(const struct utmp *ut);
+struct utmp *pututline(const struct utmp *ut);
+void updwtmp(const char *file, const struct utmp *ut);
+
 #endif /* _SYS_UTMP_H_ */

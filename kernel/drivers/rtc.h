@@ -35,5 +35,10 @@ int  rtc_write(const struct tm *t);
 
 u8   nvram_read(u32 offset);
 void nvram_write(u32 offset, u8 value);
+extern int nvram_ok;            /* the chip is there and answers       */
+
+/* The last kilobyte of the NVRAM is the kernel's: a panic's record
+ * (klog.c). /dev/nvram is the part below it. */
+#define NVRAM_PANIC_BASE  (RTC_NVRAM_SIZE - 1024)
 
 #endif /* DRIVER_RTC_H */

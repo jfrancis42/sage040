@@ -35,6 +35,17 @@ struct task;
 int  signal_send(struct task *t, int sig);
 int  signal_kill(int pid, int sig);
 
+/*
+ * From a PROGRAM (kill, tkill, tgkill, sigqueue): the permission check
+ * Linux makes -- root, or the sender's real or effective uid is the
+ * target's real or saved one, or SIGCONT within one session -- and the
+ * sender recorded for the target's handler. `code` is SI_USER, SI_TKILL
+ * or what sigqueue was given; `value` is sigqueue's.
+ */
+struct task;
+int  signal_may(const struct task *t, int sig);
+int  signal_send_user(struct task *t, int sig, s32 code, u32 value);
+
 /* To every user task in process group `pgid`. -ESRCH if there are none;
  * signal 0 only asks whether there are. */
 int  signal_group(int pgid, int sig);

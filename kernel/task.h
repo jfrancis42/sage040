@@ -153,6 +153,18 @@ struct task {
      * a mask crosses the system call boundary unconverted.
      */
     volatile u32 sig_pending;
+    /* Who sent each pending signal, for a SA_SIGINFO handler and for
+     * sigwaitinfo: si_code, the sender's pid and uid, and sigqueue's
+     * value. Written as the signal BECOMES pending -- a second one
+     * while it already is changes nothing, as on Linux for the
+     * standard signals. `set` 0: nothing known, SI_USER is reported. */
+    struct sigsrc {
+        s32 code;
+        s32 pid;
+        u32 uid;
+        u32 value;
+        int set;
+    } sig_src[32];              /* NSIG */
     u32   sig_blocked;
     struct sigaction sigact[NSIG];  /* [0] unused; SIG_DFL when zero   */
 
@@ -365,6 +377,9 @@ int task_can_sleep(void);
 /* The kernel stack's size, the most of it any task has used, and which
  * task that was. See task.c. */
 void task_kstack_stats(u32 *size, u32 *max_used, char *name, u32 namelen);
+void task_kstack_bounds(u32 *lo, u32 *hi);
+u32  task_ctxt_switches(void);
+extern u32 kstack_limit;          /* see KSTACK_RED in task.c */
 
 void task_init(void);
 

@@ -390,6 +390,8 @@ const char *vfs_dev_name(void)
  * whatever chown had been told; the inode and number were nothing at
  * all. See dev.h.
  */
+static int perm_ok(const struct stat *st, int want);
+
 static void dev_stat(const struct chardev *cd, struct stat *st)
 {
     struct timeval tv;
@@ -1507,6 +1509,24 @@ static int fd_open_mode_raw(const char *path, int flags, u32 mode)
      * has been looked at. (/dev/shm is not a device: tmpfs.) */
     if (fs == mounted_fs) {
         cd = resolve_dev(path);
+    }
+    /*
+     * A DEVICE'S MODE IS A RULE, as a file's is: checked against the
+     * opener like any other permission (perm_ok). It used to be recorded
+     * and shown by ls and never consulted, so any user could open anyone
+     * else's terminal. /dev/tty is checked as itself -- 0666, it names
+     * the opener's own terminal -- not as the terminal it leads to.
+     */
+    if (cd) {
+        struct stat dst;
+        int acc = flags & O_ACCMODE;
+
+        dev_stat(cd, &dst);
+        err = perm_ok(&dst, acc == O_RDONLY ? R_OK :
+                            acc == O_WRONLY ? W_OK : R_OK | W_OK);
+        if (err < 0) {
+            return err;
+        }
     }
     if (cd) {
         int fd = fd_install(cd->ops, cd->priv, flags);

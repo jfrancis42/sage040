@@ -994,8 +994,11 @@ It also carries **8176 bytes of battery-backed NVRAM**, the only storage
 on this machine that survives a power cycle without going through the
 disk. `nvram_read()` and `nvram_write()` in `drivers/rtc.h` reach it, and
 `rtc_present()` uses a byte of it as the chip's presence test — a dead bus
-reads as zeroes, and zeroes are a legal-looking BCD midnight. Nothing else
-uses it yet; boot settings are the obvious tenant.
+reads as zeroes, and zeroes are a legal-looking BCD midnight. `/dev/nvram`
+is the first 7152 bytes (`/bin/nvram` keeps settings there); the last
+kilobyte is the kernel's: a panic writes the end of the kernel's log into
+it, and the next boot prints that and clears it (`klog.c`,
+`klog_panic_save` and `klog_panic_report`; `kernel/panictest.sh`).
 
 ## Testing it
 

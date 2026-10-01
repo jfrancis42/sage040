@@ -1118,6 +1118,13 @@ struct fsck_report {
                                  * and before anything is written home,
                                  * JSTOP_UNCOMMITTED just before the
                                  * commit block */
+#define KSTAT_STACK_PROBE 7     /* kstat(KSTAT_STACK_PROBE, kb, 0): a
+                                 * test knob -- the kernel recurses until
+                                 * it has used `kb` KB of this task's
+                                 * kernel stack, then returns. Enough of
+                                 * them runs it out: the report the
+                                 * stack limit makes (task.c) is what is
+                                 * being tested. Root only. */
 #define JSTOP_COMMITTED    1
 #define JSTOP_UNCOMMITTED  2
 #define JSTOP_SYNC_ONLY    0x100   /* | either: count only commits sync(2)
@@ -1739,6 +1746,8 @@ struct sigcontext {
 #define __NR_rt_sigprocmask 175
 #define __NR_rt_sigpending 176
 #define __NR_rt_sigtimedwait 177
+#define __NR_rt_sigqueueinfo 178
+#define __NR_rt_tgsigqueueinfo 331
 #define __NR_rt_sigsuspend 179
 #define __NR_sigaltstack   186
 #define __NR_vfork         190
@@ -1940,6 +1949,8 @@ struct siginfo {
 
 #define SI_USER     0
 #define SI_KERNEL   0x80
+#define SI_QUEUE    (-1)
+#define SI_TKILL    (-6)
 
 /* si_code for a signal raised by a fault in the program -- Linux's. */
 #define ILL_ILLOPC  1               /* SIGILL: illegal opcode         */

@@ -86,7 +86,47 @@ static int is_ignored(const struct task *t, int sig)
     return h == SIG_IGN || (h == SIG_DFL && default_action(sig) == SIG_IGNORE);
 }
 
+static int send_src(struct task *t, int sig, const struct sigsrc *src);
+
 int signal_send(struct task *t, int sig)
+{
+    return send_src(t, sig, 0);
+}
+
+int signal_may(const struct task *t, int sig)
+{
+    if (!current || current->euid == 0) {
+        return 1;
+    }
+    if (current->uid == t->uid || current->uid == t->suid ||
+        current->euid == t->uid || current->euid == t->suid) {
+        return 1;
+    }
+    return sig == SIGCONT && t->sid == current->sid;
+}
+
+int signal_send_user(struct task *t, int sig, s32 code, u32 value)
+{
+    struct sigsrc src;
+
+    if (!t || t->state == TASK_UNUSED || t->state == TASK_ZOMBIE || !t->as) {
+        return -ESRCH;
+    }
+    if (!signal_may(t, sig)) {
+        return -EPERM;
+    }
+    if (sig == 0) {
+        return 0;
+    }
+    src.code = code;
+    src.pid = current ? current->tgid : 0;
+    src.uid = current ? current->uid : 0;
+    src.value = value;
+    src.set = 1;
+    return send_src(t, sig, &src);
+}
+
+static int send_src(struct task *t, int sig, const struct sigsrc *src)
 {
     u32 bit;
     u16 sr;
@@ -153,6 +193,14 @@ int signal_send(struct task *t, int sig)
         return 0;
     }
 
+    if (!(t->sig_pending & bit) && sig < (int)(sizeof(t->sig_src) /
+                                               sizeof(t->sig_src[0]))) {
+        if (src) {
+            t->sig_src[sig] = *src;
+        } else {
+            t->sig_src[sig].set = 0;
+        }
+    }
     t->sig_pending |= bit;
 
     /* A signalfd reads blocked signals, so whoever waits on one has to
@@ -190,6 +238,29 @@ int signal_group(int pgid, int sig)
     return found ? 0 : -ESRCH;
 }
 
+/*
+ * kill(2) to a group, or to everybody: each task the caller may signal
+ * gets it. 0 if any did, -EPERM if there were tasks and the caller could
+ * signal none of them, -ESRCH if there were none.
+ */
+static int kill_many(int pgid, int all, int sig)
+{
+    struct task *t;
+    int i, found = 0, sent = 0;
+
+    for (i = 0; (t = task_nth(i)) != 0; i++) {
+        if (!t->as || t->state == TASK_ZOMBIE ||
+            (all ? t == current : t->pgid != pgid)) {
+            continue;
+        }
+        found = 1;
+        if (signal_send_user(t, sig, SI_USER, 0) == 0) {
+            sent = 1;
+        }
+    }
+    return sent ? 0 : found ? -EPERM : -ESRCH;
+}
+
 int signal_kill(int pid, int sig)
 {
     struct task *t;
@@ -199,27 +270,20 @@ int signal_kill(int pid, int sig)
     }
     /*
      * Linux's forms: 0 is the caller's own group, -N is group N, and -1
-     * is every task the caller may signal -- here, every user task but
-     * itself.
+     * is every task the caller may signal but itself.
+     *
+     * WHO MAY SIGNAL WHOM was never checked: any user could kill any
+     * process, root's included, and `kill -1` from a nobody would have
+     * ended the machine's every program. signal_may is Linux's rule.
      */
     if (pid == 0) {
-        return signal_group(current->pgid, sig);
+        return kill_many(current->pgid, 0, sig);
     }
     if (pid == -1) {
-        int i, found = 0;
-
-        for (i = 0; (t = task_nth(i)) != 0; i++) {
-            if (t != current && t->as && t->state != TASK_ZOMBIE) {
-                found = 1;
-                if (sig) {
-                    signal_send(t, sig);
-                }
-            }
-        }
-        return found ? 0 : -ESRCH;
+        return kill_many(0, 1, sig);
     }
     if (pid < 0) {
-        return signal_group(-pid, sig);
+        return kill_many(-pid, 0, sig);
     }
 
     t = task_find(pid);
@@ -235,6 +299,9 @@ int signal_kill(int pid, int sig)
      * SIGKILL is the exception, because it ends the process rather than
      * being handled by it: every thread gets it.
      */
+    if (t && t->as && t->state != TASK_ZOMBIE && !signal_may(t, sig)) {
+        return -EPERM;
+    }
     if (t && sig == SIGKILL && t->tgid == t->pid) {
         struct task *o;
         int i;
@@ -255,7 +322,7 @@ int signal_kill(int pid, int sig)
         return (t && t->state != TASK_UNUSED && t->state != TASK_ZOMBIE)
                ? 0 : -ESRCH;
     }
-    return signal_send(t, sig);
+    return signal_send_user(t, sig, SI_USER, 0);
 }
 
 int signal_pending(struct task *t)
@@ -785,6 +852,16 @@ static int setup_rt_frame(struct task *t, struct pt_regs *regs, int sig,
 
     f.info.si_signo = sig;
     f.info.si_code = SI_USER;
+    if (sig < (int)(sizeof(t->sig_src) / sizeof(t->sig_src[0])) &&
+        t->sig_src[sig].set) {
+        const struct sigsrc *src = &t->sig_src[sig];
+
+        f.info.si_code = src->code;
+        f.info._sifields._kill.si_pid = src->pid;
+        f.info._sifields._kill.si_uid = src->uid;
+        f.info._sifields._pad[2] = (int)src->value;   /* _rt.si_value */
+        t->sig_src[sig].set = 0;
+    }
     {
         struct fault_wb wb;
         int code = t->fault_code;

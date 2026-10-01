@@ -15,6 +15,12 @@
 # kernel says something, so it costs nothing to leave running.
 klogd -q &
 
+# Who is logged in: nobody, yet. login(1) records each session in
+# /var/run/utmp and marks it ended when it is; a session alive when the
+# machine stopped never got that far, so the file starts empty at every
+# boot, as /run does on Linux. (who, w, uptime and top read it.)
+rm /var/run/utmp 2> /dev/null
+
 # The time zone: Denver. The clock keeps UTC, as a machine's clock
 # should, and TZ is how a program turns that into a local time -- a
 # POSIX TZ string carries its own daylight-saving rules, which is why

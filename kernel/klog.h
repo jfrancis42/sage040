@@ -17,6 +17,8 @@
 void klog_init(void);           /* registers /dev/klog               */
 void klog_putc(char c);         /* from console.c, any context       */
 void klog_write(const char *buf, u32 len);
+void klog_panic_save(u32 when);    /* from panic(): see klog.c */
+int  klog_panic_report(void);      /* at boot                  */
 u32  klog_pending(void);        /* bytes a reader has not taken      */
 u32  klog_lost(void);           /* bytes overwritten before a read   */
 

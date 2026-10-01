@@ -320,10 +320,24 @@ static int do_uname(struct utsname *u)
     return 0;
 }
 
+/*
+ * Setting the clock is root's, as it is CAP_SYS_TIME's on Linux. It was
+ * anybody's: the system call fuzzer's nobody set the date to 2046, and
+ * the next thing to notice was e2fsck calling every superblock written
+ * since "in the future".
+ */
+static int may_set_time(void)
+{
+    return current && current->euid == 0;
+}
+
 static int do_stime(const time_t *t)
 {
     struct timeval tv;
 
+    if (!may_set_time()) {
+        return -EPERM;
+    }
     if (!t) {
         return -EINVAL;
     }
@@ -998,6 +1012,13 @@ int do_sigtimedwait(u32 uset, u32 uinfo, u32 uts, u32 size, int wide)
         memset(&si, 0, sizeof(si));
         si.si_signo = sig;
         si.si_code = SI_USER;
+        if (current->sig_src[sig].set) {    /* who sent it: signal.c */
+            si.si_code = current->sig_src[sig].code;
+            si._sifields._kill.si_pid = current->sig_src[sig].pid;
+            si._sifields._kill.si_uid = current->sig_src[sig].uid;
+            si._sifields._pad[2] = (int)current->sig_src[sig].value;
+            current->sig_src[sig].set = 0;
+        }
         if ((r = sys_store(uinfo, &si, sizeof(si))) < 0) {
             return r;
         }
@@ -1948,6 +1969,32 @@ static int do_jobctl(int cmd, int arg, u32 p)
     }
 }
 
+/*
+ * KSTAT_STACK_PROBE: recurse until `bytes` of the kernel stack are in
+ * use, a kilobyte a level. Each level's frame is written all the way
+ * down, so nothing here relies on the stack limit's check for what a
+ * real overflow would do; and the volatile sum keeps the compiler from
+ * turning the recursion into a loop.
+ */
+static __attribute__((noinline)) u32 stack_probe_level(u32 bytes, u32 depth)
+{
+    volatile u8 frame[1024];
+    u32 i, here = (u32)&frame[0];
+
+    for (i = 0; i < sizeof(frame); i += 64) {
+        frame[i] = (u8)depth;
+    }
+    if (bytes > 1024) {
+        here = stack_probe_level(bytes - 1024, depth + 1);
+    }
+    return here + frame[depth % sizeof(frame) & ~63u];
+}
+
+static __attribute__((noinline)) u32 stack_probe(u32 bytes)
+{
+    return stack_probe_level(bytes, 0) ? 0 : 0;
+}
+
 /* FSCTL_LABEL: the name of the volume the path at upath is on (0: the
  * root's), stored at ubuf. Its own function, and not inlined, to keep a
  * path buffer off the dispatcher's frame. */
@@ -2349,6 +2396,12 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
             ext2_journal_stats(&js);
             return sys_store(a3, &js, a2 < sizeof(js) ? a2 : sizeof(js));
         }
+        if (a1 == KSTAT_STACK_PROBE) {
+            if (current->euid != 0) {
+                return -EPERM;
+            }
+            return (s32)stack_probe(a2 * 1024);
+        }
         if (a1 == KSTAT_JOURNAL_STOP) {
             if (current->euid != 0) {
                 return -EPERM;
@@ -2416,6 +2469,9 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         struct timeval tv;
         int err;
 
+        if (!may_set_time()) {
+            return -EPERM;
+        }
         if (!a1) {
             return 0;               /* a timezone alone: nothing to do */
         }

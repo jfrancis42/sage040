@@ -90,6 +90,21 @@ extern const struct in6_addr in6addr_loopback;
 #define IN6ADDR_ANY_INIT      { { { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 } } }
 #define IN6ADDR_LOOPBACK_INIT { { { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1 } } }
 
+/* The address tests, as glibc spells them. This machine is big-endian,
+ * so the words compare as written. */
+#define __IN6_W(a, i)  (((const uint32_t *)(const void *)(a))[i])
+#define IN6_IS_ADDR_UNSPECIFIED(a) \
+    (__IN6_W(a, 0) == 0 && __IN6_W(a, 1) == 0 && __IN6_W(a, 2) == 0 && __IN6_W(a, 3) == 0)
+#define IN6_IS_ADDR_LOOPBACK(a) \
+    (__IN6_W(a, 0) == 0 && __IN6_W(a, 1) == 0 && __IN6_W(a, 2) == 0 && __IN6_W(a, 3) == 1)
+#define IN6_IS_ADDR_V4MAPPED(a) \
+    (__IN6_W(a, 0) == 0 && __IN6_W(a, 1) == 0 && __IN6_W(a, 2) == 0x0000ffffU)
+#define IN6_IS_ADDR_V4COMPAT(a) \
+    (__IN6_W(a, 0) == 0 && __IN6_W(a, 1) == 0 && __IN6_W(a, 2) == 0 && __IN6_W(a, 3) > 1)
+#define IN6_IS_ADDR_MULTICAST(a) (((const uint8_t *)(const void *)(a))[0] == 0xff)
+#define IN6_IS_ADDR_LINKLOCAL(a) ((__IN6_W(a, 0) & 0xffc00000U) == 0xfe800000U)
+#define IN6_IS_ADDR_SITELOCAL(a) ((__IN6_W(a, 0) & 0xffc00000U) == 0xfec00000U)
+
 struct sockaddr_in6 {
     sa_family_t     sin6_family;
     in_port_t       sin6_port;

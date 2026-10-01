@@ -40,6 +40,7 @@ SECTIONS {
     .vectors 0x00000000 : { KEEP(*(.vectors)) } > RAM
     .text 0x00000400 : {
         *(.text .text.*)
+        _etext_marker = .;      /* where return addresses stop: trap.c */
     } > RAM
     .rodata : { *(.rodata .rodata.*) } > RAM
     /* Writable sections start on a page of their own: under QEMU a

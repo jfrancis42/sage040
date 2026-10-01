@@ -331,7 +331,39 @@ A task is a kernel stack and an address space. `struct task` holds a pid, a
 state, the saved kernel stack pointer, the address space, its descriptors,
 signal masks, its session and process group, its nice value and the
 job-control bookkeeping. There are 64 of them, statically allocated, and a
-kernel stack is four pages with a guard page below it.
+kernel stack is eight pages (32 KB) with a guard page below it.
+
+**A panic is kept for the next boot.** `panic()` writes the end of the
+kernel's log -- the panic line and whatever came before it: a register
+dump, a stack overflow's report -- into the last kilobyte of the clock's
+battery-backed NVRAM, and the next boot prints it under "the last boot
+ended in a panic" and clears it, so a crash on real hardware or on a
+headless emulator nobody was watching leaves its evidence (`klog.c`;
+`kernel/panictest.sh` resets the machine through QEMU's monitor, which
+keeps the chip's RAM). A double fault cannot be kept: the CPU stops
+before the kernel can do anything.
+
+**A kernel stack that runs out is reported, not just stopped.** The guard
+page alone cannot report anything: a stack that reaches it faults while
+pushing the fault's own frame, which on a 68040 is a double fault -- the
+CPU halts, and QEMU exits with "DOUBLE MMU FAULT" and nothing from the
+kernel. So the kernel is built `-ffixed-a5 -fstack-limit-register=a5`:
+every function's prologue compares the stack pointer with a5 and executes
+`traphi` below it, and a5 holds the current task's limit, 8 KB above the
+guard (`KSTACK_RED`, task.c). Every way into the kernel loads a5 from
+`kstack_limit`, which the scheduler changes with the stack, interrupts
+masked. A TRAPcc from supervisor mode goes to `_trapcc_entry` (start.s),
+which moves to an emergency stack before any C runs -- C on the old stack
+would trap again -- and `kstack_overflow()` prints the task, the function,
+how deep the stack got, and the return addresses on it (words just after a
+`jsr` or `bsr`, a run of one recursion written once with its count), for
+`m68k-elf-addr2line` to name; then it panics. The red zone has to hold the
+largest single frame, because the check comes after the frame is made:
+`tools/framecheck.py` reads every prologue out of the linked kernel after
+each build and fails it if one does not fit with a kilobyte over (the
+largest is the shell's `run_list`, 4.3 KB). `kernel/stacktest.sh` makes the
+kernel recurse until it overflows (`kstat KSTAT_STACK_PROBE`, root only) and
+checks the report against the host's addr2line.
 
 ```
 TASK_UNUSED   free slot
@@ -547,6 +579,19 @@ and `fg`, for instance), restarted after a handler with `SA_RESTART`,
 and otherwise returns `-EINTR`. `pause` and `sigsuspend` always return
 `-EINTR` after a handler. Restarting puts the call number back in d0 and
 steps the pc back over the trap.
+
+**Who may signal whom is checked**, by Linux's rule: root, or the
+sender's real or effective uid is the target's real or saved one, or a
+SIGCONT within one session. kill, tkill, tgkill and sigqueue all go
+through it (`signal_may`), and `kill(-1, ...)` reaches only the processes
+the caller may signal. It was not checked at all until 2026-10-01: any
+user could kill any process, root's included. **A handler is told who
+sent a signal** -- `si_code` SI_USER, SI_TKILL or SI_QUEUE, the sender's
+pid and uid, and `sigqueue`'s value in `si_value` -- from one record kept
+per pending signal (`sig_src` in `struct task`), the standard signals'
+rule: a second while one is pending changes nothing. `sigwaitinfo`
+returns the same. `rt_sigqueueinfo` refuses a program's claim, to anyone
+but itself, that a signal came from kill(2) or the kernel.
 
 **A program's own faults are signals it can catch.** An access fault
 the kernel cannot resolve, an illegal instruction, divide by zero, CHK,
@@ -769,12 +814,28 @@ disk polls.
 | `/dev/fbcon` `/dev/vcsa` | the framebuffer console, and its character buffer |
 | `/dev/fb0` | the framebuffer, by ioctl or `mmap` |
 | `/dev/kbd0` | the keyboard |
-| `/dev/hda` | the disk |
-| `/dev/nvram` | the M48T59's 8176 bytes of battery-backed RAM; `/bin/nvram` keeps settings there |
+| `/dev/nvram` | 7152 of the M48T59's 8176 bytes of battery-backed RAM; `/bin/nvram` keeps settings there. The last kilobyte is the kernel's, for a panic |
 | `/dev/null` `/dev/zero` `/dev/full` | as everywhere else |
 | `/dev/random` `/dev/urandom` | the generator below; `urandom` never waits, `random` waits until the pool is ready |
 | `/dev/klog` | what the kernel has said; a read drains it, and `klogd` copies it into `/var/log/syslog` |
 | `/dev/ptmx` `/dev/pts/N` | pseudo-terminals: open the first to get a master, and the second is the terminal at the other end |
+| `/dev/tty` | the opener's controlling terminal, whichever it is; ENXIO for a process with none |
+
+The disk and its partitions (`hda`, `hda1`...) are block devices, named
+by `mount` but not nodes in `/dev`.
+
+**A device's mode is enforced**, by the same check a file's is
+(`perm_ok`): the registry's owner, group and mode, which `ls -l` shows
+and `chmod`/`chown` change. Most devices are 0666. The terminals --
+`console`, `tty1`, `ttyS0`, `fbcon`, and each `pts/N` -- are 0620 and
+belong to whoever is logged in on them: `login` gives the terminal to the
+person and takes it back to root when the session ends, so nobody can
+open somebody else's. `nvram` and `vcsa` (the screen's contents) are 0600,
+root's; `klog` is 0644, readable for `dmesg`. `/dev/tty` is checked as
+itself, 0666, not as the terminal it leads to. Until 2026-10-01 the modes
+were recorded and never consulted. `fb0` and `kbd0` stay 0666: the screen
+and keyboard belong to a one-seat machine's whoever, which is a choice
+rather than a rule (`kernel/devmodetest.sh`).
 
 **`/dev` is listed from the registry.** The devices are names, not
 inodes: `resolve_dev()` turns `/dev/<rest>` into the device of that name
@@ -784,7 +845,7 @@ registry as it stands, and `/dev/fd`, `/dev/stdin`, `/dev/stdout` and
 `/dev/stderr` are links into `/proc/self/fd`, exactly as on Linux --
 which is what bash's `<(...)` opens. Everything else under `/dev` is the
 registry's, and `/dev/shm` is tmpfs. A name there that is no device is
-`ENOENT`. There is no `/dev/tty` (the controlling terminal) yet.
+`ENOENT`.
 
 **Every file says which filesystem it is on, and every device which
 device it is.** `struct stat` carries `st_dev` and `st_rdev`: the disk
@@ -960,7 +1021,8 @@ except `/proc/<pid>/mem`.
 | `/proc/cpuinfo` | Linux/m68k's layout: CPU, MMU and FPU 68040. No clock figures, because none is measured |
 | `/proc/meminfo` | MemTotal, MemFree, MemAvailable, Cached, SwapTotal, SwapFree: Linux's exact line shape, which `free` splits on |
 | `/proc/loadavg` `/proc/uptime` | the load average, running/total tasks and last pid; uptime and idle time |
-| `/proc/stat` | `cpu` and `cpu0` (user, system and idle ticks), `btime`, `processes`, `procs_running` |
+| `/proc/stat` | `cpu` and `cpu0` (user, system and idle ticks), `btime`, `processes`, `procs_running`, `procs_blocked`, `ctxt` (context switches) and `intr` (the MC68901's sixteen channels, after their total) |
+| `/proc/vmstat` | `nr_free_pages`, `nr_file_pages`, `pswpin`/`pswpout`, `pgfault`/`pgmajfault`; `pgpgin`/`pgpgout` are 0, the disk traffic not being counted. vmstat(8) will not start without the file |
 | `/proc/mounts` | the root volume, `/dev` and `/proc` |
 | `/proc/self` | a link to the caller's own directory |
 | `/proc/<pid>/` | `cmdline` `environ` `comm` `stat` `statm` `status` `maps`, and the links `exe` `cwd` `root` `fd/<N>` |
@@ -1380,6 +1442,17 @@ It then `chdir`s to the home directory from `/etc/passwd`, sets `HOME`,
 named there with a leading `-` on `argv[0]` -- which is how a shell is
 told it is a login shell and so reads `~/.profile`.
 
+**A login is recorded in `/var/run/utmp`** (and appended to
+`/var/log/wtmp` if that file exists), which is what procps's `w`,
+`uptime` and `top` count. `login` forks: the child starts the session --
+`setsid`, the terminal as its controlling terminal -- and becomes the
+person; the parent stays root, writes the USER_PROCESS record, waits, and
+marks it DEAD_PROCESS when the session ends. `/etc/rc` clears the file at
+boot, since a session alive at a power cut never got its end written. The
+C library has glibc's `getutent`, `pututline` and the rest (they were
+declared nowhere before). A record is 382 bytes: m68k aligns an int to
+two, so there is no padding after `ut_type`.
+
 The shell spawns `login` again when a session ends, so the console
 returns to a prompt rather than to a root shell. **If `/bin/login` is
 missing or will not exec**, the shell says so and falls back to the
@@ -1400,6 +1473,12 @@ together, by writing a new copy and renaming it over the old one, so an
 interrupted edit leaves the previous file rather than half of a new one.
 
 ### What is enforced
+
+**Setting the clock and the host's name are root's**, as they are
+CAP_SYS_TIME's and CAP_SYS_ADMIN's on Linux. Both were anybody's until the
+system call fuzzer (`kernel/fuzztest.sh`) ran as a nobody and set the date
+to 2046 -- found because e2fsck then called every superblock written since
+"in the future". The fuzzer's checks between rounds now include both.
 
 Every path a system call takes is checked (`perm_ok`, `walk_ok` in
 `kernel/vfs.c`):
@@ -1750,6 +1829,8 @@ drive it over its serial line.
 | `kernel/apitest.sh` | 376 | the system call surface a ported program expects |
 | `kernel/faulttest.sh` | 15 | a program's faults as signals it catches and survives: SIGSEGV repaired by mprotect and retried, SEGV_ACCERR and si_addr, SIGILL stepped over, SIGFPE, SIGTRAP, a blocked fault still fatal; writing its own code or a string literal is SIGSEGV |
 | `kernel/procfstest.sh` | 73 | `/proc` against what a program knows for itself -- getpid, argv, environ, its own inode, sysinfo, where `main` and a local are -- and read by sbase's `cat`, `ls` and `readlink`; refusals, another user's process, stopped and zombie states, standing in `/proc` |
+| `kernel/procpstest.sh` | 19 | procps-ng on the machine: ps, top, free, pgrep, pkill, pidof, pmap, pwdx, vmstat, uptime, w and kill, checked against the pid the shell reported, the machine's memory, the shell's directory and a console login recorded in utmp (counted once, marked ended at logout); and sigqtest -- sigqueue's value and the sender's pid reaching a handler and sigwaitinfo, a nobody refused every way of signalling root's process |
+| `kernel/devmodetest.sh` | 13 | device modes enforced: as a user logged in on the console, the console is theirs and opens, ttyS0, nvram and vcsa are refused, klog only reads, null and /dev/tty open; as root afterwards the console is root's again and every open succeeds |
 | `kernel/fpsptest.sh` | 17 | the 68040's missing FPU instructions: 59 results from Motorola's FPSP (`fpsp-trap=on`) and from QEMU, each against the host's libm; two at once; F-line as SIGILL; enabled divide by zero, operand error, signalling NaN and BSUN each a SIGFPE with its si_code; FMOVEM's control-register order |
 | `kernel/edittest.sh` | 41 | the line editor, history, job control, command lists, scripts, shutdown |
 | `kernel/vmtest.sh` | 18 | what a program cannot touch |
@@ -1782,7 +1863,7 @@ drive it over its serial line.
 | `kernel/sedtest.sh` | 21 | sed, against the same sed built for the host |
 | `kernel/greptest.sh` | 37 | grep's own 329 pattern cases, and its options against the host's grep |
 | `kernel/sbasetest.sh` | 77 | the utilities, against the host's own, and what only the disk can say |
-| `kernel/bashtest.sh` | 13 + 4 known | the shell language against the host's bash, and part of bash's own suite. Four of bash's tests are expected to fail and are reported `[KNOWN]` with the reason -- `func` and `glob` want `/dev/fd` and a locale, which this system has not got; `type` and `varenv` are not diagnosed yet. One that starts PASSING is a loud failure |
+| `kernel/bashtest.sh` | 16 + 1 known | the shell language against the host's bash, and part of bash's own suite, each test through its own `run-NAME` as bash's `run-all` does. `glob` is expected to fail and is reported `[KNOWN]`: it wants a locale this system has not got. `type` and `varenv` used to be listed too, undiagnosed; both were the harness -- the runners were bypassed, and sbase's `cat` had no `-v`. One that starts PASSING is a loud failure |
 | `kernel/threadtest.sh` | 52 | threads: clone, futexes, and the pthread layer, with the lock's own negative control |
 | `kernel/ptytest.sh` | 34 | pseudo-terminals, and that the pairs are given back |
 | `kernel/curstest.sh` | 28 | terminfo and curses, with the database renamed away as the control |
@@ -1803,6 +1884,9 @@ drive it over its serial line.
 | `kernel/linktest.sh` | 30 | hard links and symlinks -- one inode with two names, fast targets and slow ones, loops, dangling targets -- agreed with by the host's e2fsck; fast symlinks the host made surviving the boot-time check, and deleted without freeing their "blocks" |
 | `kernel/dftest.sh` | 15 | `df` and `du` against the host's own figures for the same volume, with the shell's built-in as the control |
 | `kernel/sesstest.sh` | 14 | sessions and controlling terminals: a new session has none, a leader opening a pty gets it (tcgetsid, the front, `/dev/tty`, `tty_nr`), a job inherits it and another session cannot use it, `O_NOCTTY`, `TIOCSCTTY` refused to a user and taken by root, the master closing hanging up leader and job, the leader exiting hanging up its job, `TIOCNOTTY`, `setsid` |
+| `kernel/stacktest.sh` | 10 | a kernel stack that runs out: 4 and 16 KB come back and the high-water mark sees them, 64 KB is reported -- the task, the function (resolved by the host's addr2line), how deep, its return addresses out to the system call -- and panics in the red zone, never a double fault |
+| `kernel/panictest.sh` | 6 | a panic kept across a reset: a real one (a stack overflow) reported by the next boot with its report and return addresses, once only, and a `/bin/nvram` setting beside it surviving |
+| `kernel/fuzztest.sh` | 5 | 40 rounds of 3000 random system calls with hostile arguments (null, kernel and vector-table addresses, a buffer's last byte, lengths of 0 and 0xffffffff, descriptors live and dead), from a nobody in a chroot with the disk-delay knob on: no panic, fault or stack overflow, pages and tasks back where they were, the clock and host name untouched, the console answering, and the volume clean by the host's e2fsck |
 | `kernel/bootjtest.sh` | 7 | the boot ROM on a volume whose journal still needs replaying: a KERNEL.ROM renamed into place and the machine stopped after the commit, the host's home-blocks view still naming the old inode, the ROM loading the new one through the log, and the kernel replaying it clean |
 | `kernel/mounttest.sh` | 98 | more than one volume: mount and umount, refusals (no such device, unknown type, a file, `/tmp`, `/`, the root's own partition by either name, not root), crossing into a volume and out by `..`, its own `st_dev`, `statvfs` and fsid, `EXDEV` both ways, `EBUSY` for an open file, a working directory and another process in it, and a volume mounted on it, a read-only volume refusing every kind of write; from the host, all three volumes clean after `halt`, the read-only one bit for bit unchanged, Linux reading what was written, and a journal on a volume that is not the root replayed by `mount` |
 | `kernel/sshtest.sh` | 14 | ssh, scp and rsync against the workstation's own OpenSSH, which knows nothing about this project -- so the protocol is either right or it is not; `ssh -t` on a pty; a dropped connection hanging up the command; no TIOCSCTTY complaints from the server |

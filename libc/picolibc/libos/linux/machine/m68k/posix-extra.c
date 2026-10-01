@@ -83,6 +83,30 @@ tgkill(pid_t tgid, pid_t tid, int sig)
     return syscall(LINUX_SYS_tgkill, tgid, tid, _signal_to_linux(sig));
 }
 
+/*
+ * sigqueue: a signal with a value, which a SA_SIGINFO handler reads in
+ * si_value and sigwaitinfo returns; si_code is SI_QUEUE. Declared by
+ * <signal.h> all along and never defined. The kernel's call takes
+ * Linux's siginfo, with the value where Linux's _rt member keeps it.
+ */
+int
+sigqueue(pid_t pid, int sig, const union sigval value)
+{
+    struct __kernel_siginfo k;
+
+    if (sig < 0 || sig >= NSIG) {
+        errno = EINVAL;
+        return -1;
+    }
+    memset(&k, 0, sizeof(k));
+    k.si_signo = _signal_to_linux(sig);
+    k.si_code = -1;                     /* SI_QUEUE */
+    k.si_pid = getpid();
+    k.si_uid = getuid();
+    k.si_value.sival_ptr = value.sival_ptr;
+    return syscall(LINUX_SYS_rt_sigqueueinfo, pid, k.si_signo, &k);
+}
+
 /* Linux's execution domain; see <sys/personality.h>. */
 int
 personality(unsigned long persona)
@@ -414,6 +438,7 @@ sigtimedwait(const sigset_t *set, siginfo_t *info,
         } else {
             info->si_pid = ksi.si_pid;
             info->si_uid = ksi.si_uid;
+            info->si_value.sival_ptr = ksi.si_value.sival_ptr;  /* sigqueue's */
         }
     }
     return (int)r;

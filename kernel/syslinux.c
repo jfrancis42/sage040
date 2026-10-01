@@ -787,6 +787,10 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         extern char hostname[];
         char name[HOST_NAME_MAX + 1];
 
+        /* Root's, as on Linux (CAP_SYS_ADMIN); it was anybody's. */
+        if (current->euid != 0) {
+            return -EPERM;
+        }
         if (a2 > HOST_NAME_MAX) {
             return -EINVAL;
         }
@@ -1473,7 +1477,39 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         if (nr == __NR_tgkill && t->tgid != (int)a1) {
             return -ESRCH;
         }
-        return sig ? signal_send(t, sig) : 0;
+        return signal_send_user(t, sig, SI_TKILL, 0);
+    }
+
+    /*
+     * sigqueue: a signal with a value, for a SA_SIGINFO handler (or
+     * sigwaitinfo) to read in si_value. Linux's restriction: a program
+     * may not claim to be the kernel or kill(2) -- a non-negative
+     * si_code, or SI_TKILL -- to anybody but itself.
+     */
+    case __NR_rt_sigqueueinfo:
+    case __NR_rt_tgsigqueueinfo: {
+        int tgid = (int)a1;
+        int sig = (int)(nr == __NR_rt_sigqueueinfo ? a2 : a3);
+        u32 uinfo = nr == __NR_rt_sigqueueinfo ? a3 : a4;
+        struct task *t = task_find(nr == __NR_rt_sigqueueinfo ? tgid : (int)a2);
+        struct siginfo si;
+
+        if (sig < 0 || sig >= NSIG) {
+            return -EINVAL;
+        }
+        err = fetch(&si, uinfo, sizeof(si));
+        if (err < 0) {
+            return err;
+        }
+        if (!t || (nr == __NR_rt_tgsigqueueinfo && t->tgid != tgid)) {
+            return -ESRCH;
+        }
+        if ((si.si_code >= 0 || si.si_code == SI_TKILL) &&
+            t->tgid != current->tgid) {
+            return -EPERM;
+        }
+        return signal_send_user(t, sig, si.si_code,
+                                (u32)si._sifields._pad[2]);
     }
 
     /*

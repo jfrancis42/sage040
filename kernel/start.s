@@ -66,6 +66,7 @@ halt:
         .type   _exc_common,@function
 _exc_common:
         movem.l %d0-%d7/%a0-%a6,-(%sp)  | 15 registers, 60 bytes
+        move.l  kstack_limit,%a5        | the stack limit: see task.c
         lea     60(%sp),%a0             | -> the exception frame
         move.l  %a0,-(%sp)
         move.l  %sp,%a0
@@ -120,6 +121,7 @@ _exc_common:
 | the final movem restores it with everything else.
 _trap0_entry:
         movem.l %d0-%d7/%a0-%a6,-(%sp)  | 15 registers, 60 bytes: pt_regs
+        move.l  kstack_limit,%a5        | the stack limit: see task.c
         lea     (%sp),%a1               | a1 is saved; it may be used
         move.l  %a1,-(%sp)              | struct pt_regs *
         move.l  %a0,-(%sp)
@@ -133,6 +135,34 @@ _trap0_entry:
         lea     32(%sp),%sp
         movem.l (%sp)+,%d0-%d7/%a0-%a6
         rte
+
+|
+| TRAPcc (vector 7): from a program, an ordinary exception. From the
+| KERNEL it is the stack limit -- every function's prologue compares
+| the stack pointer with a5 and traps below it (task.c, KSTACK_RED) --
+| so this cannot call C on the stack it is on: the C would trap again,
+| and again, down into the guard page. The registers go on the stack
+| (there is room: that is what the red zone is for), then everything
+| moves to a stack of its own, with no limit, for the report.
+|
+        .globl  _trapcc_entry
+        .type   _trapcc_entry,@function
+_trapcc_entry:
+        btst    #5,(%sp)                | S bit of the saved SR
+        beq     _exc_common             | a program's: the ordinary way
+        movem.l %d0-%d7/%a0-%a6,-(%sp)  | pt_regs, for the report
+        move.l  %sp,%a0
+        lea     _emergency_stack_top,%sp
+        sub.l   %a5,%a5                 | no limit here
+        move.l  %a0,-(%sp)
+        jsr     kstack_overflow         | does not return
+        bra     halt
+
+        .bss
+        .balign 4
+        .space  8192
+_emergency_stack_top:
+        .text
 
 |
 | Vector table.  Entry 0 is the initial SSP and entry 1 the initial PC,

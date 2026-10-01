@@ -137,6 +137,7 @@ __asm__(
  */
 "_mfp_stub:                                 \n"
 "       movem.l %d0-%d7/%a0-%a6,-(%sp)      \n"   /* 60 bytes           */
+"       move.l  kstack_limit,%a5            \n"   /* see task.c         */
 "       moveq   #0,%d0                      \n"
 "       move.w  66(%sp),%d0                 \n"   /* format/vector word */
 "       andi.l  #0xfff,%d0                  \n"   /* vector offset      */

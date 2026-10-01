@@ -54,6 +54,7 @@ srcs_os_linux_machine = [
   'syslog.c',
   'crypt.c',
   'shadow.c',
+  'utmp.c',
 ]
 
 src_os_linux_machine = files(srcs_os_linux_machine)

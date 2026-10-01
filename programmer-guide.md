@@ -1077,7 +1077,8 @@ machine runs **64 tasks** (`fork` says `EAGAIN` when the table is full,
 `ENOMEM` when memory is), holds **128 filesystem files** open at once
 across all of them, 64 sockets and 32 TCP connections.
 
-**`/dev/nvram`** is 8176 bytes that survive a reset: `open`, `read`,
+**`/dev/nvram`** is 7152 bytes that survive a reset (the chip's last
+kilobyte below the clock is the kernel's, for a panic): `open`, `read`,
 `write`, `lseek`, nothing past the end (`ENOSPC`). `/bin/nvram` keeps
 `KEY=VALUE` settings there -- `nvram net.ip=10.0.0.5`, `nvram net.ip`,
 `nvram -d KEY` -- and `ifconfig nvram` configures the interface from
@@ -1806,8 +1807,7 @@ devices      /dev/console /dev/tty  the terminal (sources + sinks)
              /dev/fbcon   the text console, output only
              /dev/vcsa    what is on it, readable
              /dev/fb0     the framebuffer
-             /dev/hda     the disk
-             /dev/nvram   8176 bytes that survive a reset
+             /dev/nvram   7152 bytes that survive a reset
              /dev/null /dev/zero /dev/full /dev/random /dev/urandom
 ```
 

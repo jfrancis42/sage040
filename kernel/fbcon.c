@@ -1392,6 +1392,7 @@ int fbcon_init(void)
     terminal_reset();
 
     fbcon_dev.name = "fbcon";
+    fbcon_dev.mode = 0620;      /* the screen as a terminal: see tty.c */
     fbcon_dev.ops = &fbcon_ops;
     fbcon_dev.priv = fb;
     fbcon_dev.next = 0;
@@ -1402,6 +1403,7 @@ int fbcon_init(void)
     }
 
     vcsa_dev.name = "vcsa";
+    vcsa_dev.mode = 0600;       /* what is on the screen: root's, as Linux */
     vcsa_dev.ops = &vcsa_ops;
     vcsa_dev.priv = fb;
     vcsa_dev.next = 0;

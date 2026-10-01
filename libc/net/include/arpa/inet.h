@@ -92,4 +92,10 @@ const char *inet_ntop(int af, const void *src, char *dst, unsigned int size);
 
 _END_STD_C
 
+/* What POSIX has <arpa/inet.h> provide besides the functions --
+ * in_addr_t, struct in_addr, INET_ADDRSTRLEN and INET6_ADDRSTRLEN -- is
+ * all <netinet/in.h>'s, as it is on glibc. Last, because that header
+ * includes this one for htonl. */
+#include <netinet/in.h>
+
 #endif /* __ARPA_INET_H__ */

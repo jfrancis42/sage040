@@ -141,7 +141,10 @@ static const struct file_ops serial_ops = {
     0,                          /* mmap: not memory to map */
 };
 
-static struct chardev serial_dev = { .name = "ttyS0", .ops = &serial_ops };
+/* 0620, a terminal's mode: the person logged in on it owns it (login
+ * gives it them), and nobody else may open it. */
+static struct chardev serial_dev = { .name = "ttyS0", .ops = &serial_ops,
+                                     .mode = 0620 };
 
 /* ---------------------------------------------------------------- */
 

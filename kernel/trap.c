@@ -35,8 +35,12 @@
 #include "uapi.h"
 #include "wb040.h"
 #include "string.h"
+#include "ptregs.h"
+#include "klog.h"
+#include "timer.h"
 
 #define VEC_TRAP0   32          /* vectors 32..47 are TRAP #0..#15 */
+#define VEC_TRAPCC  7           /* TRAPcc, TRAPV, CHK2: the stack limit */
 
 /*
  * The exception frame, read a word at a time.
@@ -391,19 +395,112 @@ int exception_handler(const u32 *regs, u16 *frame)
 
 struct pt_regs *irq_regs;
 
+/*
+ * A KERNEL STACK RAN OUT: a function's prologue found the stack pointer
+ * below the limit in a5 (task.c, KSTACK_RED). Reached from start.s on a
+ * stack of its own, with the registers as they were at the trap.
+ *
+ * What it says is what finding the culprit needs: which task, where
+ * (the trapping prologue's address is in the format-2 frame), how deep,
+ * and the return addresses still on the stack, nearest first -- words
+ * just after a jsr or bsr in the kernel's text, which is all a stack
+ * without frame pointers can offer. Some are stale, left by calls that
+ * have since returned (a deep call of earlier leaves its words below
+ * the frames that are live now); the live path is among them, in order.
+ * `m68k-elf-addr2line -f -e kernel/kernel.elf` on them names it.
+ */
+/* Could `a` be a return address: inside the kernel's text, and just
+ * after a jsr or a bsr? Stack words that merely fall in the text's range
+ * -- a counter, a small constant -- are not, and are left out. */
+static int looks_like_return(u32 a)
+{
+    extern char _start[], _etext_marker[];
+    const u16 *w;
+
+    if (a < (u32)_start + 6 || a >= (u32)_etext_marker || (a & 1)) {
+        return 0;
+    }
+    w = (const u16 *)a;
+    return (w[-1] & 0xfff8) == 0x4e90 ||       /* jsr (An)          */
+           (w[-1] & 0xff00) == 0x6100 ||       /* bsr.s             */
+           w[-2] == 0x4eba || w[-2] == 0x6100 || /* jsr/bsr.w d16(pc) */
+           (w[-2] & 0xfff8) == 0x4ea8 ||       /* jsr d16(An)       */
+           w[-3] == 0x4eb9 || w[-3] == 0x61ff;  /* jsr abs.l, bsr.l  */
+}
+
+void kstack_overflow(struct pt_regs *r)
+{
+    u32 lo, hi, sp = (u32)r + sizeof(*r) + 4;  /* + the format-2 address */
+    u32 *p;
+    int n = 0;
+
+    __asm__ volatile ("move.w #0x2700,%sr");
+    task_kstack_bounds(&lo, &hi);
+    kputs("\n*** kernel stack overflow: ");
+    kputs(current ? current->name : "?");
+    kputs(" (pid ");
+    kputdec(current ? (u32)current->pid : 0);
+    kputs(")\n    in the function at ");
+    kputhex32(*(u32 *)((u32)r + sizeof(*r)));   /* the TRAPcc's address */
+    kputs(", sp ");
+    kputhex32(sp);
+    kputs(", ");
+    kputdec(hi - sp);
+    kputs(" of ");
+    kputdec(hi - lo);
+    kputs(" bytes used\n    return addresses, nearest first"
+          " (a run of one is written once, with its count):");
+    {
+        u32 last = 0, reps = 0;
+
+        for (p = (u32 *)sp; (u32)p <= hi && n < 24; p++) {
+            u32 v = (u32)p < hi ? *p : 0;
+
+            if ((u32)p < hi && !looks_like_return(v)) {
+                continue;
+            }
+            if (v == last && v) {
+                reps++;
+                continue;
+            }
+            if (last) {
+                kputs(n % 4 == 0 ? "\n      " : "  ");
+                kputhex32(last);
+                if (reps > 1) {
+                    kputc('x');
+                    kputdec(reps);
+                }
+                n++;
+            }
+            last = v;
+            reps = 1;
+        }
+    }
+    kputc('\n');
+    panic("kernel stack overflow");
+}
+
 void panic(const char *msg)
 {
+    struct timeval tv;
+
+    __asm__ volatile ("move.w #0x2700,%sr");
     kputs("\n*** panic: ");
     kputs(msg);
-    kputs("\n*** halted.\n");
+    kputs("\n");
+    /* Kept in the NVRAM for the next boot to report (klog.c). */
+    clock_get(&tv);
+    klog_panic_save((u32)tv.tv_sec);
+    kputs("*** halted.\n");
     halt();
 }
 
 void trap_init(void)
 {
-    extern void _trap0_entry(void);
+    extern void _trap0_entry(void), _trapcc_entry(void);
     u32 *vectors = (u32 *)_vectors;
 
     vectors[VEC_TRAP0] = (u32)_trap0_entry;
+    vectors[VEC_TRAPCC] = (u32)_trapcc_entry;
     fpsp_install(vectors);
 }

@@ -36,6 +36,8 @@
 #include "signal.h"
 #include "uaccess.h"
 #include "string.h"
+#include "drivers/rtc.h"
+#include "console.h"
 
 #define KLOG_SIZE 8192          /* a power of two: the mask below */
 
@@ -71,6 +73,83 @@ void klog_write(const char *buf, u32 len)
     if (readers.head) {
         wake_all(&readers);
     }
+}
+
+/*
+ * A PANIC, KEPT ACROSS A REBOOT. When the kernel panics, the last of what
+ * it said -- the panic itself, and whatever it printed on the way there:
+ * a register dump, a stack overflow's report -- goes into the last
+ * kilobyte of the clock's battery-backed NVRAM; the next boot prints it
+ * and clears it. A crash on real hardware, or on a headless QEMU nobody
+ * was watching, then leaves its evidence.
+ *
+ *   0  "PANC"    magic
+ *   4  length    two bytes, big-endian: the text
+ *   6  time      four bytes, big-endian: seconds since 1970, when
+ *  10  text
+ *
+ * Called from panic() with interrupts masked; touches nothing but the
+ * ring and the chip.
+ */
+#define PANIC_TEXT_MAX  (1024 - 10)
+
+void klog_panic_save(u32 when)
+{
+    u32 n = head < PANIC_TEXT_MAX ? head : PANIC_TEXT_MAX, i;
+    u32 base = NVRAM_PANIC_BASE;
+
+    if (!nvram_ok) {
+        return;
+    }
+    if (n > KLOG_SIZE) {
+        n = KLOG_SIZE;
+    }
+    for (i = 0; i < n; i++) {
+        nvram_write(base + 10 + i, (u8)ring[(head - n + i) & (KLOG_SIZE - 1)]);
+    }
+    nvram_write(base + 4, (u8)(n >> 8));
+    nvram_write(base + 5, (u8)n);
+    for (i = 0; i < 4; i++) {
+        nvram_write(base + 6 + i, (u8)(when >> (24 - 8 * i)));
+    }
+    /* The magic last: a record half written by a panic within a panic
+     * is not one. */
+    nvram_write(base, 'P');
+    nvram_write(base + 1, 'A');
+    nvram_write(base + 2, 'N');
+    nvram_write(base + 3, 'C');
+}
+
+/* At boot: a record left by the last panic, printed and cleared. The
+ * printing goes through the console, so it is in the log as well, and
+ * klogd puts it in /var/log/syslog. Returns 1 if there was one. */
+int klog_panic_report(void)
+{
+    u32 base = NVRAM_PANIC_BASE, n, when = 0, i;
+    char line[2];
+
+    if (!nvram_ok || nvram_read(base) != 'P' || nvram_read(base + 1) != 'A' ||
+        nvram_read(base + 2) != 'N' || nvram_read(base + 3) != 'C') {
+        return 0;
+    }
+    n = ((u32)nvram_read(base + 4) << 8) | nvram_read(base + 5);
+    if (n > PANIC_TEXT_MAX) {
+        n = PANIC_TEXT_MAX;
+    }
+    for (i = 0; i < 4; i++) {
+        when = (when << 8) | nvram_read(base + 6 + i);
+    }
+    kputs("\n*** the last boot ended in a panic (at ");
+    kputdec(when);
+    kputs(" seconds since 1970); what it said last:\n");
+    line[1] = '\0';
+    for (i = 0; i < n; i++) {
+        line[0] = (char)nvram_read(base + 10 + i);
+        kputs(line);
+    }
+    kputs("\n*** end of the panic record\n\n");
+    nvram_write(base, 0);       /* reported: not again */
+    return 1;
 }
 
 u32 klog_lost(void)
@@ -164,7 +243,10 @@ static const struct file_ops klog_ops = {
     0,                          /* mmap                              */
 };
 
-static struct chardev klog_dev = { .name = "klog", .ops = &klog_ops };
+/* Anybody may read the kernel's log (dmesg), as on Linux without
+ * dmesg_restrict; nobody but root may write into it. */
+static struct chardev klog_dev = { .name = "klog", .ops = &klog_ops,
+                                   .mode = 0644 };
 
 void klog_init(void)
 {

@@ -43,6 +43,7 @@ SIZE=${SIZE:-size}
 CPUFLAGS="-mcpu=68040"
 CFLAGS="$CPUFLAGS -ffreestanding -nostdlib -nostdinc -O2
  -Wall -Wextra -Werror -fno-builtin -fno-stack-protector
+ -ffixed-a5 -fstack-limit-register=a5
  -DSAGE040_NO_TESTLIB
  -I. -I.. -Idrivers -Inet -I../tests"
 LDFLAGS="$CPUFLAGS -ffreestanding -nostdlib -T kernel.ld
