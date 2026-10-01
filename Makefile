@@ -31,7 +31,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: pagecheck autoinccheck shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest linetest gfxtest fpsptest faulttest procfstest tlstest logintest fsimgtest fattest all boot run install src qemu world libc-if-missing toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest qemutest libc cube programs clean distclean perl shebangtest shtest difftest perltest
+.PHONY: pagecheck autoinccheck shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest linetest gfxtest fpsptest faulttest procfstest tlstest logintest fsimgtest fattest all boot run install src qemu world libc-if-missing toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest qemutest libc cube programs clean distclean perl shebangtest shtest difftest gittest perltest
 
 # EVERY PORT, in the order they need each other: what `ports`, `python`, `perl`
 # and `toolchain` install, in the order they install it. One list, so
@@ -40,7 +40,7 @@ include $(TOPDIR)/disk.mk
 PORT_DIRS := sbase make diffutils patch awk sed grep bash ncurses less uemacs vi bzip2 gzip xz \
              zstd sqlite openssl ca-certs brotli nghttp2 libunistring \
              libidn2 libpsl curl wget lynx readline libffi dropbear rsync \
-             libiconv gettext zlib python perl binutils gmp mpfr mpc libstdcxx gcc
+             libiconv gettext zlib git python perl binutils gmp mpfr mpc libstdcxx gcc
 
 # EVERYTHING THIS TREE BUILDS, by default. It used to be the ROM, the
 # kernel and three directories of programs -- so ld.so, the libc tests,
@@ -191,6 +191,7 @@ ports:
 	$(MAKE) -C ports/rsync install
 	$(MAKE) -C ports/libiconv install
 	$(MAKE) -C ports/gettext install
+	$(MAKE) -C ports/git install
 	@echo
 	@echo "Python is not in the list above -- it is 45 MB and 2,244 files,"
 	@echo "and copying it takes minutes. 'make python' installs it, and"
@@ -318,7 +319,7 @@ qemu:
 run:
 	$(MAKE) -C kernel run
 
-test: autoinccheck pagecheck fsimgtest tests cryptotest fstest fattest apitest fpsptest faulttest procfstest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest tlstest shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest linetest gfxtest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest logintest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest shebangtest shtest difftest perltest qemutest
+test: autoinccheck pagecheck fsimgtest tests cryptotest fstest fattest apitest fpsptest faulttest procfstest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest tlstest shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest linetest gfxtest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest logintest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest shebangtest shtest difftest gittest perltest qemutest
 
 # Code and data on separate pages, in everything built for the machine
 # (tools/pagecheck.py says why). First, and cheap: what it catches never
@@ -583,6 +584,10 @@ ttytest:
 # vacuously, and this tree does not do vacuous passes.
 nativetest:
 	cd kernel && ./nativetest.sh
+
+# git: repositories crossed with the host's git, and a clone over HTTP.
+gittest:
+	cd kernel && ./gittest.sh
 
 # diff and patch, crossed over with the host's.
 difftest:

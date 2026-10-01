@@ -1522,6 +1522,7 @@ drive it over its serial line.
 | `kernel/crontest.sh` | 8 | something the machine does by itself, later |
 | `kernel/pytest.sh` | 43 | CPython, against the host's Python's answers to the same questions |
 | `kernel/perltest.sh` | 37 | Perl: 64-bit integers, byte order, the XS modules against the host's digests and zlib, a `#!` script, perldoc, and an XS module built on the machine with CBuilder and with MakeMaker and GNU make |
+| `kernel/gittest.sh` | 16 | git: a repository made on the machine passes the host's `git fsck --full --strict` with the history and author it was given, one made on the host is read, checked out and fscked on the machine; diff, a three-way merge, gc into a pack, `git submodule` (a `#!/bin/sh` script), a local clone through upload-pack, and a clone over HTTP through git-remote-http |
 | `kernel/difftest.sh` | 16 | GNU diff and patch: the machine's diff applied by the host's patch and the host's by the machine's, exit statuses, `diff -r`, binary files, `diff3 -m`, `cmp`, `sdiff`, `patch -R`, `--dry-run`, `-p1`, and a hunk found at an offset |
 | `kernel/shtest.sh` | 8 | `/bin/sh` is bash and the system shell `/bin/msh`, as the real install rules lay them out, read on the host; a `#!/bin/sh` continuation line and `system()` on the machine |
 | `kernel/shebangtest.sh` | 20 | `#!`: the argv the interpreter gets, nesting and ELOOP, permissions, a set-user-id script ignored against an ELF control, from spawn and from execve |

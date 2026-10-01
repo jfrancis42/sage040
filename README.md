@@ -191,6 +191,7 @@ the POSIX layer added to it.
 | `ports/make` | GNU make 4.4.1, as `/bin/make` |
 | `ports/diffutils` | GNU diffutils 3.12: `diff`, `cmp`, `diff3`, `sdiff` |
 | `ports/patch` | GNU patch 2.8 |
+| `ports/git` | git 2.56.0: https through curl, the Perl commands, `git-shell` |
 | `ports/bash` | GNU bash 5.3.20 — job control, arrays, `[[ ]]`, arithmetic, here-documents; and `/bin/sh` |
 | `ports/ncurses` | ncurses 6.5: the terminfo database at /usr/share/terminfo, and curses |
 | `ports/less` | the pager, over terminfo |
@@ -367,6 +368,7 @@ is a 25 MHz 68040, and one of the suites waits for the wall clock.
 | `make shebangtest` | `#!` scripts, from spawn and from execve |
 | `make shtest` | `/bin/sh` is bash; the system shell is `/bin/msh` |
 | `make difftest` | diff and patch, each crossed with the host's |
+| `make gittest` | git: repositories crossed with the host's git, a clone over HTTP |
 | `make uemacstest` `make vitest` | the editors |
 | `make bashsuite` | every one of bash's own 83 tests (hours, not minutes) |
 
