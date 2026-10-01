@@ -17,6 +17,7 @@
  * the sigreturn call, which puts the saved context back.
  */
 #include "signal.h"
+#include "ptrace.h"
 #include "sysint.h"
 #include "poll.h"
 #include "task.h"
@@ -120,6 +121,9 @@ int signal_send(struct task *t, int sig)
      * SIGKILL resumes a stopped task too, or it would sit pending in a
      * task that is never going to run to act on it.
      */
+    if (sig == SIGKILL && t->state == TASK_TRACED) {
+        t->state = TASK_READY;          /* only SIGKILL beats the tracer */
+    }
     if (sig == SIGCONT || sig == SIGKILL) {
         t->sig_pending &= ~STOP_SIGNALS;
         if (t->state == TASK_STOPPED) {
@@ -976,6 +980,26 @@ void signal_deliver(struct pt_regs *regs)
         struct sigaction *act = &t->sigact[sig];
 
         t->sig_pending &= ~SIGMASK(sig);
+
+        /*
+         * A TRACED task stops here for its tracer, which says what is to
+         * be acted on in its place -- the same signal, another, or none
+         * (ptrace.c). Not from a frame a handler cannot be started on:
+         * the signal is left for later, as below, and the tracer told of
+         * it then, once.
+         */
+        if (t->tracer && sig != SIGKILL) {
+            if (act->sa_handler != SIG_DFL && act->sa_handler != SIG_IGN &&
+                !frame_redirectable(regs)) {
+                t->sig_pending |= SIGMASK(sig);
+                return;
+            }
+            sig = ptrace_signal(sig, regs);
+            if (!sig) {
+                continue;
+            }
+            act = &t->sigact[sig];
+        }
 
         if (sig != SIGKILL && sig != SIGSTOP &&
             act->sa_handler != SIG_DFL && act->sa_handler != SIG_IGN) {

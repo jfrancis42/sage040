@@ -17,6 +17,7 @@
  * this is where the work goes.
  */
 #include "syscall.h"
+#include "ptrace.h"
 #include "sysint.h"
 #include "vfs.h"
 #include "exec.h"
@@ -1634,7 +1635,8 @@ static int info_state(int state)
     case TASK_READY:
     case TASK_RUNNING: return JOB_S_RUNNING;
     case TASK_BLOCKED: return JOB_S_BLOCKED;
-    case TASK_STOPPED: return JOB_S_STOPPED;
+    case TASK_STOPPED:
+    case TASK_TRACED:  return JOB_S_STOPPED;
     case TASK_ZOMBIE:  return JOB_S_DONE;
     default:           return JOB_S_NEW;
     }
@@ -2100,6 +2102,8 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
 
     case __NR_fork: {
         struct task *t = task_fork(regs);
+
+        ptrace_fork(t, 0, 0, regs);
 
         /* Linux's two answers: EAGAIN when the task table is full,
          * ENOMEM when memory is. */
@@ -2585,8 +2589,32 @@ void syscall_dispatch(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
      * these registers for sigreturn to restore -- and what it restores
      * has to include what this call returned.
      */
+    /*
+     * A TRACED call stops for its tracer first, which may change the
+     * call or its arguments -- or, with ORIG_D0 = -1, skip it and leave
+     * a result of its own in d0 -- so after the stop they are read
+     * again from the registers it may have changed (ptrace.c).
+     */
+    if (current->tracer && pt_user_mode(regs)) {
+        int stop = ptrace_syscall_enter(regs);
+
+        if (stop == PTRACE_SYSCALL_SKIP) {
+            ptrace_syscall_exit(regs);
+            task_ret_to_user(regs);
+            current->syscall_nr = -1;
+            return;
+        }
+        if (stop == PTRACE_SYSCALL_STOPPED) {
+            nr = (u32)current->ptrace_orig_d0;
+            a1 = regs->d[1], a2 = regs->d[2], a3 = regs->d[3];
+            a4 = regs->d[4], a5 = regs->d[5], a6 = regs->a[0];
+        }
+    }
     current->syscall_nr = (int)nr;
     regs->d[0] = (u32)do_syscall(nr, a1, a2, a3, a4, a5, a6, regs);
+    if (current->tracer && pt_user_mode(regs)) {
+        ptrace_syscall_exit(regs);
+    }
 
     /*
      * Signals, then a possible switch -- and neither if this call came

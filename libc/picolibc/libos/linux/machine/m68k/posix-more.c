@@ -165,6 +165,30 @@ getrusage(int who, struct rusage *usage)
     return ret;
 }
 
+/*
+ * A wait status from the kernel's numbering of signals into picolibc's
+ * (SIGSTOP is 19 to Linux and 17 here). Everything else in the word is
+ * kept: the core-dump bit of a killed child, and -- for a stop reported
+ * to a ptrace tracer -- 0x80 beside the signal for a system call stop
+ * (PTRACE_O_TRACESYSGOOD) and the event in bits 16-23. waitpid and
+ * wait4 both go through here; picolibc's own waitpid translated only
+ * the signal that killed a child, so a stopped one came back with
+ * Linux's number.
+ */
+int
+_wstatus_from_linux(int k)
+{
+    if ((k & 0xff) == 0x7f) {                       /* stopped */
+        int sig = (k >> 8) & 0x7f;
+
+        return (k & ~0x7f00) | (_signal_from_linux(sig) << 8);
+    }
+    if ((k & 0x7f) != 0 && (k & 0xffff) != 0xffff) {  /* killed */
+        return (k & ~0x7f) | _signal_from_linux(k & 0x7f);
+    }
+    return k;                                       /* exited, continued */
+}
+
 pid_t
 wait4(pid_t pid, int *wstatus, int options, struct rusage *rusage)
 {
@@ -181,10 +205,7 @@ wait4(pid_t pid, int *wstatus, int options, struct rusage *rusage)
         koptions |= LINUX_WCONTINUED;
     ret = syscall(LINUX_SYS_wait4, pid, &kstatus, koptions, rusage ? &k : NULL);
     if (ret > 0) {
-        if (WIFSIGNALED(kstatus))
-            kstatus = __W_EXITCODE(0, _signal_from_linux(WTERMSIG(kstatus)));
-        else if (WIFSTOPPED(kstatus))
-            kstatus = __W_EXITCODE(_signal_from_linux(WSTOPSIG(kstatus)), 0x7f);
+        kstatus = _wstatus_from_linux(kstatus);
         if (wstatus)
             *wstatus = kstatus;
         if (rusage)

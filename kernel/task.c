@@ -11,6 +11,7 @@
  * is wrong is far harder to see than a simple one.
  */
 #include "task.h"
+#include "ptrace.h"
 #include "reclock.h"
 #include "vm.h"
 #include "pmm.h"
@@ -634,6 +635,11 @@ void task_group_kill(struct task *t)
 
 /* --- the table ------------------------------------------------------- */
 
+struct task *task_slot(int i)
+{
+    return i >= 0 && i < TASK_MAX ? &tasks[i] : 0;
+}
+
 struct task *task_find(int pid)
 {
     int i;
@@ -968,11 +974,20 @@ void task_ret_to_user(struct pt_regs *regs)
 }
 
 /* Called from task_entry, once, as a new task starts. */
-void task_entry_hook(void)
+void task_entry_hook(struct pt_regs *regs)
 {
-    /* Nothing yet. It exists because a new task arrives in the kernel
-     * having never been through a system call, and that is exactly the
-     * moment anything per-task and lazily set up would want. */
+    /*
+     * A new PROGRAM leaves the kernel the way every return to user mode
+     * does, through task_ret_to_user, before its first instruction --
+     * as Linux's ret_from_fork does. Otherwise a signal sent between the
+     * fork and the first run waited for the child's first system call
+     * or tick: a traced fork's child, which starts with a SIGSTOP for
+     * its tracer (ptrace.c), ran its own code before stopping, and one
+     * that only called _exit never stopped at all.
+     */
+    if (pt_user_mode(regs)) {
+        task_ret_to_user(regs);
+    }
 }
 
 /* --- ending ---------------------------------------------------------- */
@@ -1046,6 +1061,9 @@ void task_exit(int status)
      */
     t->state = TASK_ZOMBIE;
 
+    /* Its tracees go free, and a tracer of its own is told (ptrace.c). */
+    ptrace_exiting(t);
+
     /* Anything waiting for a child to finish wants to know -- by the
      * wait queue, and by SIGCHLD, which is discarded unless the parent
      * has a handler for it. */
@@ -1084,7 +1102,9 @@ void task_reap(struct task *t)
 /* Is `t` one of the children a waitpid(pid) is asking about? */
 static int wait_matches(struct task *t, int pid)
 {
-    if (t->state == TASK_UNUSED || t->parent != current) {
+    /* A tracer waits for its tracees as a parent does for children. */
+    if (t->state == TASK_UNUSED ||
+        (t->parent != current && t->tracer != current)) {
         return 0;
     }
     /* A thread is not a child. Its parent is nobody, so this cannot
@@ -1117,6 +1137,26 @@ int task_wait(int pid, int *status, int options)
                 continue;
             }
             children++;
+
+            /* A stop for its tracer, if this is the tracer asking. */
+            if (ptrace_wait_status(t, current, status ? status : &(int){0})) {
+                return t->pid;
+            }
+
+            /* A tracee's exit, to a tracer that is not its parent: told,
+             * once, and left for the parent to reap. */
+            if (t->state == TASK_ZOMBIE && t->parent != current) {
+                if (t->ptrace_exit_told) {
+                    children--;         /* nothing more for this one */
+                    continue;
+                }
+                t->ptrace_exit_told = 1;
+                if (status) {
+                    *status = t->signalled ? t->signalled
+                                           : (t->exit_status & 0xff) << 8;
+                }
+                return t->pid;
+            }
 
             /* Linux's status words: the exit code in the second byte,
              * or the signal in the low seven bits, or 0x7f and the

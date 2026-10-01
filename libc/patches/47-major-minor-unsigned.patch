@@ -1,0 +1,18 @@
+major() and minor() as unsigned int, which is what glibc's return and
+what every program that prints one with %u assumes. picolibc's dev_t
+is 64 bits and the macros returned it whole: each took two %u slots
+in a printf, and sbase's ls showed every device as "0, <major>".
+
+--- a/libc/include/sys/stat.h	2026-09-30 22:14:54.359390777 -0600
++++ b/libc/include/sys/stat.h	2026-09-30 22:14:54.359795398 -0600
+@@ -103,8 +103,8 @@
+ 
+ #if __BSD_VISIBLE
+ #define _major_dev_shift ((sizeof(dev_t) >> 1) << 3)
+-#define major(d)         ((d) >> _major_dev_shift)
+-#define minor(d)         ((d) & (((dev_t)1 << _major_dev_shift) - 1))
++#define major(d)         ((unsigned int)((d) >> _major_dev_shift))
++#define minor(d)         ((unsigned int)((d) & (((dev_t)1 << _major_dev_shift) - 1)))
+ #define __make_dev(a, i) ((dev_t)(a) << _major_dev_shift | (i))
+ #define makedev(a, i)    __make_dev(a, i)
+ #endif

@@ -34,8 +34,8 @@
  */
 
 /*
- * pause, getpgid, usleep, select, flock, ftruncate, truncate, clock_getres
- * and clock_nanosleep are not in picolibc's libos/linux (1.8.12)
+ * pause, getpgid, usleep, select, flock, ftruncate, truncate, clock_getres,
+ * clock_nanosleep, ptrace and sysinfo are not in picolibc's libos/linux (1.8.12)
  * on any architecture. They are here, in the m68k backend, only so that
  * the release underneath stays unmodified; nothing in them is specific
  * to m68k, and they belong beside the other calls in libos/linux.
@@ -43,10 +43,18 @@
 
 #include "../../local-linux.h"
 #include "../../local-time.h"
+#include "../../local-sigaction.h"
+#include "linux/linux-siginfo-struct.h"
 #include <sys/select.h>
 #include <sys/file.h>
 #include <time.h>
 #include <asm/cachectl.h>
+#include <stdarg.h>
+#include <string.h>
+#include <signal.h>
+#include <errno.h>
+#include <sys/ptrace.h>
+#include <sys/sysinfo.h>
 
 int
 pause(void)
@@ -235,4 +243,115 @@ clock_nanosleep(clockid_t id, int flags, const struct timespec *req,
     }
     errno = saved;
     return err;
+}
+
+/*
+ * ptrace, as glibc has it. The system call stores a PEEK request's
+ * word through its fourth argument; the library function returns it,
+ * with errno 0 so that a caller can tell a word of -1 from a failure.
+ */
+/* Does this signal's siginfo carry an address (a fault) rather than a
+ * sender? The kernel's union holds one or the other. */
+static int fault_signal(int sig)
+{
+    return sig == SIGSEGV || sig == SIGBUS || sig == SIGILL ||
+           sig == SIGFPE || sig == SIGTRAP;
+}
+
+/*
+ * ptrace, as glibc has it. The system call stores a PEEK request's
+ * word through its fourth argument; the library function returns it,
+ * with errno 0 so that a caller can tell a word of -1 from a failure.
+ *
+ * And SIGNALS IN THIS LIBRARY'S NUMBERS, both ways: the signal a
+ * resuming request delivers is translated for the kernel, and a
+ * siginfo is translated in both its number and its layout --
+ * picolibc's siginfo_t is not Linux's (si_code and si_errno are the
+ * other way round, and it has room for an address and a sender at
+ * once).
+ */
+long
+ptrace(int request, ...)
+{
+    va_list ap;
+    long pid, word;
+    void *addr, *data;
+    int peek = request == PTRACE_PEEKTEXT || request == PTRACE_PEEKDATA ||
+               request == PTRACE_PEEKUSER;
+    struct __kernel_siginfo ksi;
+    siginfo_t *usi = NULL;
+    long r;
+
+    va_start(ap, request);
+    pid = va_arg(ap, long);
+    addr = va_arg(ap, void *);
+    data = va_arg(ap, void *);
+    va_end(ap);
+    if (peek) {
+        data = &word;
+    }
+    if ((request == PTRACE_CONT || request == PTRACE_SYSCALL ||
+         request == PTRACE_SINGLESTEP || request == PTRACE_DETACH) && data) {
+        data = (void *)(long)_signal_to_linux((int)(long)data);
+    }
+    if (request == PTRACE_GETSIGINFO || request == PTRACE_SETSIGINFO) {
+        usi = data;
+        memset(&ksi, 0, sizeof(ksi));
+        if (request == PTRACE_SETSIGINFO && usi) {
+            ksi.si_signo = _signal_to_linux(usi->si_signo);
+            ksi.si_errno = usi->si_errno;
+            ksi.si_code = usi->si_code;
+            if (fault_signal(usi->si_signo)) {
+                ksi.si_addr = usi->si_addr;
+            } else {
+                ksi.si_pid = usi->si_pid;
+                ksi.si_uid = usi->si_uid;
+            }
+        }
+        data = &ksi;
+    }
+    r = syscall(LINUX_SYS_ptrace, request, pid, addr, data);
+    if (r >= 0 && peek) {
+        errno = 0;
+        return word;
+    }
+    if (r >= 0 && request == PTRACE_GETSIGINFO && usi) {
+        memset(usi, 0, sizeof(*usi));
+        usi->si_signo = _signal_from_linux(ksi.si_signo);
+        usi->si_errno = ksi.si_errno;
+        usi->si_code = ksi.si_code;
+        if (fault_signal(usi->si_signo)) {
+            usi->si_addr = ksi.si_addr;
+        } else {
+            usi->si_pid = ksi.si_pid;
+            usi->si_uid = ksi.si_uid;
+        }
+    }
+    return r;
+}
+
+int
+sysinfo(struct sysinfo *info)
+{
+    return syscall(LINUX_SYS_sysinfo, info);
+}
+
+/* One processor; and memory, in pages, as sysinfo has it. */
+int get_nprocs(void) { return 1; }
+int get_nprocs_conf(void) { return 1; }
+
+long
+get_phys_pages(void)
+{
+    struct sysinfo si;
+
+    return sysinfo(&si) < 0 ? -1 : (long)((unsigned long long)si.totalram * si.mem_unit / 4096);
+}
+
+long
+get_avphys_pages(void)
+{
+    struct sysinfo si;
+
+    return sysinfo(&si) < 0 ? -1 : (long)((unsigned long long)si.freeram * si.mem_unit / 4096);
 }

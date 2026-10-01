@@ -51,6 +51,7 @@ task.c
 loadavg.c
 wait.c
 signal.c
+ptrace.c
 futex.c
 random.c
 crypto.c

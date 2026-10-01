@@ -244,6 +244,8 @@ cp "$HERE/picolibc/libc/include/sys/random.h" "$HERE/picolibc/libc/include/sys/s
     "$HERE/picolibc/libc/include/sys/epoll.h" "$HERE/picolibc/libc/include/sys/eventfd.h" \
     "$HERE/picolibc/libc/include/sys/timerfd.h" "$HERE/picolibc/libc/include/sys/signalfd.h" \
     "$HERE/picolibc/libc/include/sys/inotify.h" "$HERE/picolibc/libc/include/sys/sendfile.h" \
+    "$HERE/picolibc/libc/include/sys/ptrace.h" "$HERE/picolibc/libc/include/sys/user.h" \
+    "$HERE/picolibc/libc/include/sys/sysinfo.h" \
     "$PREFIX/include/sys/"
 
 # A fingerprint of every installed header, for ports/cross.sh's

@@ -29,6 +29,7 @@
  * an afternoon to find.
  */
 #include "exec.h"
+#include "ptrace.h"
 #include "vfs.h"
 #include "task.h"
 #include "tty.h"
@@ -1179,6 +1180,7 @@ static int replace(struct script *script, const char *path, int argc,
     regs->format = 0;
     __asm__ volatile ("move.l %0,%%usp" : : "a"(sp));
     current->syscall_nr = -1;           /* never "restart" an exec */
+    ptrace_exec(regs);                  /* a tracer hears of it    */
     return 0;
 }
 

@@ -832,6 +832,7 @@ struct mmap_arg_struct {
  * for the stream case. That is not economy: it is what lets a program
  * be pointed at a socket instead of a file without knowing.
  */
+#define __NR_ptrace     26
 #define __NR_kill       37
 #define __NR_waitpid     7
 #define __NR_getpid     20

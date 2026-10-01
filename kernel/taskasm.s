@@ -106,6 +106,8 @@ fpu_restore:
         .globl  task_entry
         .type   task_entry,@function
 task_entry:
-        jsr     task_entry_hook         | bookkeeping, before it runs
+        move.l  %sp,-(%sp)              | the registers and frame above
+        jsr     task_entry_hook         | are a struct pt_regs
+        addq.l  #4,%sp
         movem.l (%sp)+,%d0-%d7/%a0-%a6
         rte

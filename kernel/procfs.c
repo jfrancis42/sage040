@@ -756,6 +756,7 @@ static char state_letter(struct task *t)
     case TASK_RUNNING:
     case TASK_READY:   return 'R';
     case TASK_STOPPED: return 'T';
+    case TASK_TRACED:  return 't';      /* stopped for its tracer */
     case TASK_ZOMBIE:  return 'Z';
     default:           return 'S';
     }
@@ -1079,7 +1080,8 @@ static void four(struct pbuf *b, u32 r, u32 e, u32 s)
 static void gen_status(struct pbuf *b, struct task *t)
 {
     static const char *const names[] = {
-        "R (running)", "S (sleeping)", "T (stopped)", "Z (zombie)"
+        "R (running)", "S (sleeping)", "T (stopped)", "Z (zombie)",
+        "t (tracing stop)"
     };
     struct sizes sz;
     u32 m[4];
@@ -1095,7 +1097,7 @@ static void gen_status(struct pbuf *b, struct task *t)
     putx(b, t->umask, 4);
     putc_(b, '\n');
     kv(b, "State:");
-    puts_(b, names[s == 'R' ? 0 : s == 'S' ? 1 : s == 'T' ? 2 : 3]);
+    puts_(b, names[s == 'R' ? 0 : s == 'S' ? 1 : s == 'T' ? 2 : s == 't' ? 4 : 3]);
     putc_(b, '\n');
     kv(b, "Tgid:");
     putu(b, (u32)t->tgid, 0);
@@ -1107,7 +1109,8 @@ static void gen_status(struct pbuf *b, struct task *t)
     putu(b, t->parent ? (u32)t->parent->tgid : 0, 0);
     putc_(b, '\n');
     kv(b, "TracerPid:");
-    puts_(b, "0\n");
+    putu(b, t->tracer ? (u32)t->tracer->tgid : 0, 0);
+    putc_(b, '\n');
     kv(b, "Uid:");
     four(b, t->uid, t->euid, t->suid);
     kv(b, "Gid:");

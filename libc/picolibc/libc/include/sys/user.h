@@ -34,28 +34,49 @@
  */
 
 /*
- * sys/sysmacros.h -- picolibc 1.8.12 has none. major(), minor() and
- * makedev() in picolibc's own encoding of a dev_t -- the one its stat()
- * fills in and <sys/stat.h> already decodes under __BSD_VISIBLE: the
- * major number in the upper half, the minor in the lower. (Converting
- * to the kernel's encoding is the system call wrappers' business.)
+ * sys/user.h -- picolibc 1.8.12 has none. Linux/m68k's register
+ * layouts, as PTRACE_GETREGS and PTRACE_GETFPREGS hand them over, with
+ * glibc's names. PTRACE_PEEKUSER's offsets are into struct
+ * user_regs_struct: d1 is 0, sr 17 * 4, the pc 18 * 4.
  */
-#ifndef _SYS_SYSMACROS_H_
-#define _SYS_SYSMACROS_H_
+#ifndef _SYS_USER_H_
+#define _SYS_USER_H_
 
-#include <sys/types.h>
+struct user_m68kfp_struct {
+    int fpregs[24];             /* fp0-fp7, twelve bytes each       */
+    int fpcntl[3];              /* fpcr, fpsr, fpiar                */
+};
 
-#ifndef _major_dev_shift
-#define _major_dev_shift ((sizeof(dev_t) >> 1) << 3)
-#endif
-/* unsigned int, as glibc's are: a printf with %u of a 64-bit dev_t
- * took two arguments' worth (libc/patches/47 does <sys/stat.h>'s). */
-#ifndef major
-#define major(d) ((unsigned int)((d) >> _major_dev_shift))
-#endif
-#ifndef minor
-#define minor(d) ((unsigned int)((d) & (((dev_t)1 << _major_dev_shift) - 1)))
-#endif
-#define makedev(ma, mi) ((dev_t)(ma) << _major_dev_shift | (dev_t)(mi))
+struct user_regs_struct {
+    long d1, d2, d3, d4, d5, d6, d7;
+    long a0, a1, a2, a3, a4, a5, a6;
+    long d0;
+    long usp;
+    long orig_d0;
+    short stkadj;
+    short sr;
+    long pc;
+    short fmtvec;
+    short __fill;
+};
 
-#endif /* _SYS_SYSMACROS_H_ */
+struct user {
+    struct user_regs_struct regs;
+    int u_fpvalid;
+    struct user_m68kfp_struct m68kfp;
+    int u_tsize, u_dsize, u_ssize;
+    unsigned long start_code, start_stack;
+    long int signal;
+    int reserved;
+    struct user_regs_struct *u_ar0;
+    struct user_m68kfp_struct *u_fpstate;
+    unsigned long magic;
+    char u_comm[32];
+};
+
+#define NBPG            4096
+#define UPAGES          1
+#define HOST_TEXT_START_ADDR    (u.start_code)
+#define HOST_STACK_END_ADDR     (u.start_stack + u.u_ssize * NBPG)
+
+#endif /* _SYS_USER_H_ */

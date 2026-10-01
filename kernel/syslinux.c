@@ -23,6 +23,7 @@
  * the time of the call (at_path).
  */
 #include "swap.h"
+#include "ptrace.h"
 #include "sysint.h"
 #include "syscall.h"
 #include "vfs.h"
@@ -1263,8 +1264,13 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
      * vfork is fork: the child gets a copy rather than borrowing the
      * parent's memory, which is always a correct implementation of it.
      */
+    case __NR_ptrace:
+        return sys_ptrace((int)a1, (int)a2, a3, a4);
+
     case __NR_vfork: {
         struct task *t = task_fork(regs);
+
+        ptrace_fork(t, 0, 1, regs);
 
         return t ? t->pid : (task_count() >= TASK_MAX ? -EAGAIN : -ENOMEM);
     }
@@ -1281,6 +1287,7 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         int err = 0;
 
         t = task_clone(regs, a1, a2, a3, a4, a5, &err);
+        ptrace_fork(t, a1, 0, regs);
         return t ? t->pid : err;
     }
 

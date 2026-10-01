@@ -67,7 +67,9 @@ enum task_state {
     TASK_RUNNING,               /* has it                              */
     TASK_BLOCKED,               /* waiting for something               */
     TASK_STOPPED,               /* ctrl-Z; will not run until continued */
-    TASK_ZOMBIE                 /* finished, waiting to be reaped      */
+    TASK_ZOMBIE,                /* finished, waiting to be reaped      */
+    TASK_TRACED                 /* stopped for its tracer, which alone
+                                 * (or SIGKILL) resumes it: ptrace.c   */
 };
 
 struct task {
@@ -291,6 +293,25 @@ struct task {
     u32   it_real_at, it_real_interval;
     u32   it_virt, it_virt_interval;
     u32   it_prof, it_prof_interval;
+
+    /*
+     * PTRACE (ptrace.c). A tracer is a second parent for the purposes
+     * of waitpid: it is told of every stop, and nothing but it (or
+     * SIGKILL) starts the task again. The registers of a stopped tracee
+     * are on its own kernel stack, where it stopped; ptrace_regs says
+     * where, and is null whenever it is not stopped for its tracer.
+     */
+    struct task *tracer;
+    int   ptrace;               /* PT_SYSCALL, PT_STEP: what to stop at */
+    u32   ptrace_opts;          /* PTRACE_O_*                          */
+    int   ptrace_status;        /* this stop, as waitpid reports it    */
+    int   ptrace_reported;      /* ... and it has been                 */
+    int   ptrace_sig;           /* what the tracer resumed it with     */
+    u32   ptrace_msg;           /* PTRACE_GETEVENTMSG                  */
+    s32   ptrace_orig_d0;       /* the call number, at a syscall stop  */
+    int   ptrace_exit_told;     /* its exit, to a tracer not its parent */
+    struct pt_regs *ptrace_regs;
+    struct siginfo ptrace_si;   /* the signal of a signal-delivery stop */
 };
 
 struct addrspace;
@@ -389,6 +410,9 @@ void task_reap(struct task *t);
 
 int  task_count(void);
 int  task_last_pid(void);
+/* Slot i of the task table, 0 <= i < TASK_MAX, used or not: for a walk
+ * of every task (ptrace.c), which has no other way to find its tracees. */
+struct task *task_slot(int i);
 /* Ticks since boot spent in user mode, in the kernel, and idle. */
 void task_cpu_ticks(u32 out[3]);
 

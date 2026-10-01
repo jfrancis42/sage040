@@ -34,28 +34,41 @@
  */
 
 /*
- * sys/sysmacros.h -- picolibc 1.8.12 has none. major(), minor() and
- * makedev() in picolibc's own encoding of a dev_t -- the one its stat()
- * fills in and <sys/stat.h> already decodes under __BSD_VISIBLE: the
- * major number in the upper half, the minor in the lower. (Converting
- * to the kernel's encoding is the system call wrappers' business.)
+ * sys/sysinfo.h -- picolibc 1.8.12 has none. Linux's struct sysinfo,
+ * which is what the kernel's sysinfo(2) fills in (kernel/uapi.h).
  */
-#ifndef _SYS_SYSMACROS_H_
-#define _SYS_SYSMACROS_H_
+#ifndef _SYS_SYSINFO_H_
+#define _SYS_SYSINFO_H_
 
-#include <sys/types.h>
+#include <sys/cdefs.h>
 
-#ifndef _major_dev_shift
-#define _major_dev_shift ((sizeof(dev_t) >> 1) << 3)
-#endif
-/* unsigned int, as glibc's are: a printf with %u of a 64-bit dev_t
- * took two arguments' worth (libc/patches/47 does <sys/stat.h>'s). */
-#ifndef major
-#define major(d) ((unsigned int)((d) >> _major_dev_shift))
-#endif
-#ifndef minor
-#define minor(d) ((unsigned int)((d) & (((dev_t)1 << _major_dev_shift) - 1)))
-#endif
-#define makedev(ma, mi) ((dev_t)(ma) << _major_dev_shift | (dev_t)(mi))
+_BEGIN_STD_C
 
-#endif /* _SYS_SYSMACROS_H_ */
+#define SI_LOAD_SHIFT 16
+
+struct sysinfo {
+    long uptime;                /* seconds since boot              */
+    unsigned long loads[3];     /* 1, 5 and 15 minutes, << 16      */
+    unsigned long totalram;     /* in units of mem_unit            */
+    unsigned long freeram;
+    unsigned long sharedram;
+    unsigned long bufferram;
+    unsigned long totalswap;
+    unsigned long freeswap;
+    unsigned short procs;
+    unsigned short pad;
+    unsigned long totalhigh;
+    unsigned long freehigh;
+    unsigned int mem_unit;
+    char _f[8];
+};
+
+int sysinfo(struct sysinfo *__info);
+int get_nprocs(void);
+int get_nprocs_conf(void);
+long get_phys_pages(void);
+long get_avphys_pages(void);
+
+_END_STD_C
+
+#endif /* _SYS_SYSINFO_H_ */

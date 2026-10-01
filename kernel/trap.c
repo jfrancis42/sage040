@@ -311,7 +311,10 @@ int exception_handler(const u32 *regs, u16 *frame)
          * instruction, or carries on after one that had completed, as
          * the frame's own PC says.
          */
-        if (catches(t, sig) && !(vec == 2 && fmt == 7 &&
+        /* Or a TRACED program, whatever it catches: the tracer is told
+         * of the signal first, at a signal-delivery stop, and a
+         * debugger's breakpoints and steps are SIGTRAPs (ptrace.c). */
+        if ((catches(t, sig) || t->tracer) && !(vec == 2 && fmt == 7 &&
                                  wb040_push_fault(frame))) {
             memset(&t->pending_wb, 0, sizeof(t->pending_wb));
             if (vec == 2 && fmt == 7) {

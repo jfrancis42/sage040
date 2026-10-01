@@ -1,0 +1,29 @@
+waitpid translated the signal that KILLED a child into picolibc's
+numbering and not the one that STOPPED it, so WSTOPSIG(st) == SIGSTOP
+was never true: Linux's SIGSTOP is 19 and picolibc's 17. It now goes
+through the backend's _wstatus_from_linux, as wait4 does, which also
+keeps a ptrace stop's 0x80 and event bits.
+
+--- a/libos/linux/waitpid.c	2026-09-30 22:28:17.504520494 -0600
++++ b/libos/linux/waitpid.c	2026-09-30 22:28:17.520368701 -0600
+@@ -36,6 +36,10 @@
+ #include "local-sigaction.h"
+ #include <sys/wait.h>
+ 
++/* The machine backend's (posix-more.c): every signal in a wait status,
++ * stopped as well as killed, into this library's numbers. */
++int _wstatus_from_linux(int k);
++
+ pid_t
+ waitpid(pid_t pid, int *wstatus, int options)
+ {
+@@ -51,8 +55,7 @@
+         koptions |= LINUX_WCONTINUED;
+     ret = syscall(LINUX_SYS_wait4, pid, &kstatus, koptions, NULL);
+     if (ret != (pid_t)-1) {
+-        if (WIFSIGNALED(kstatus))
+-            kstatus = __W_EXITCODE(0, _signal_from_linux(WTERMSIG(kstatus)));
++        kstatus = _wstatus_from_linux(kstatus);
+         if (wstatus)
+             *wstatus = kstatus;
+     }
