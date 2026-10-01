@@ -1333,6 +1333,22 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         task_exit((int)a1 & 0xff);
         return 0;               /* not reached */
 
+    /*
+     * personality(): Linux's execution domain and its flags. There is
+     * one domain here, PER_LINUX (0), and of the flags only
+     * ADDR_NO_RANDOMIZE means anything -- and it is always true,
+     * because nothing here is randomized. So the value is kept,
+     * inherited and reported, which is what a debugger asking for
+     * ADDR_NO_RANDOMIZE needs to see; 0xffffffff only asks.
+     */
+    case __NR_personality: {
+        u32 old = current->personality;
+
+        if (a1 != 0xffffffffu)
+            current->personality = a1;
+        return (s32)old;
+    }
+
     /* A signal to ONE thread, rather than to the process. */
     case __NR_tkill:
     case __NR_tgkill: {
@@ -1503,6 +1519,19 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
 
     case __NR_timerfd_create:
         return sys_timerfd_create((int)a1, (int)a2);
+
+    case __NR_timer_create:
+        return sys_timer_create((int)a1, a2, a3);
+    case __NR_timer_settime:
+    case __NR_timer_settime64:
+        return sys_timer_settime(a1, (int)a2, a3, a4, nr == __NR_timer_settime64);
+    case __NR_timer_gettime:
+    case __NR_timer_gettime64:
+        return sys_timer_gettime(a1, a2, nr == __NR_timer_gettime64);
+    case __NR_timer_getoverrun:
+        return sys_timer_getoverrun(a1);
+    case __NR_timer_delete:
+        return sys_timer_delete(a1);
 
     case __NR_timerfd_settime:
     case __NR_timerfd_settime64:

@@ -38,6 +38,7 @@
 #include <sys/time.h>
 #include <sys/statvfs.h>
 #include <sys/file.h>
+#include <sys/personality.h>
 #include <sys/ioctl.h>
 
 /* POSIX has programs declare it themselves; picolibc declares it nowhere. */
@@ -529,6 +530,85 @@ static void test_signals(void)
     waitpid(pid, &st, 0);
     report("a child killed by SIGTERM: WTERMSIG says SIGTERM",
            WIFSIGNALED(st) && WTERMSIG(st) == SIGTERM);
+
+    /*
+     * sigwait and sigtimedwait: a blocked signal TAKEN, not delivered --
+     * SIGUSR1 still has on_sig installed, and it must not run. The
+     * numbers cross both ways (SIGUSR1 is 30 here and 10 in the kernel),
+     * so a wrong translation either waits for the wrong signal and
+     * times out, or returns a number that is not SIGUSR1.
+     */
+    {
+        struct timespec ts = { 0, 100000000 };      /* 100 ms */
+        siginfo_t si;
+        int sig = 0, r;
+
+        sigemptyset(&set);
+        sigaddset(&set, SIGUSR1);
+        sigaddset(&set, SIGUSR2);
+        sigprocmask(SIG_BLOCK, &set, &old);
+        got_sig = 0;
+        raise(SIGUSR1);
+        r = sigwait(&set, &sig);
+        report("sigwait takes a blocked SIGUSR1, and its handler does not run",
+               r == 0 && sig == SIGUSR1 && got_sig == 0);
+        errno = 0;
+        r = sigtimedwait(&set, &si, &ts);
+        report("sigtimedwait with nothing pending: -1 EAGAIN at the timeout",
+               r == -1 && errno == EAGAIN);
+        pid = fork();
+        if (pid == 0) {
+            usleep(200000);
+            kill(getppid(), SIGUSR2);
+            _exit(0);
+        }
+        memset(&si, 0, sizeof(si));
+        r = sigwaitinfo(&set, &si);
+        waitpid(pid, &st, 0);
+        report("sigwaitinfo sleeps until another process sends SIGUSR2",
+               r == SIGUSR2 && si.si_signo == SIGUSR2);
+        sigprocmask(SIG_SETMASK, &old, 0);
+    }
+    /*
+     * sigsuspend SLEEPS: with SIGUSR1 blocked, another process sends one
+     * 200 ms later, and the call returns -1 EINTR only then, with the
+     * handler run. It used to pass the kernel no mask size and return
+     * EINVAL at once (libc/patches/52), so every waiting loop spun.
+     */
+    {
+        struct timespec t0, t1;
+        sigset_t none;
+        long ms;
+        int r, e;
+
+        sigemptyset(&set);
+        sigaddset(&set, SIGUSR1);
+        sigprocmask(SIG_BLOCK, &set, &old);
+        got_sig = 0;
+        pid = fork();
+        if (pid == 0) {
+            usleep(200000);
+            kill(getppid(), SIGUSR1);
+            _exit(0);
+        }
+        sigemptyset(&none);
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        r = sigsuspend(&none);
+        e = errno;
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        waitpid(pid, &st, 0);
+        sigprocmask(SIG_SETMASK, &old, 0);
+        ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+        report("sigsuspend sleeps until the signal (~200 ms), then EINTR, handler run",
+               r == -1 && e == EINTR && got_sig == SIGUSR1 && ms >= 150);
+    }
+    report("personality: PER_LINUX, and ADDR_NO_RANDOMIZE kept once set",
+           personality(0xffffffff) == 0 &&
+           personality(ADDR_NO_RANDOMIZE) == 0 &&
+           personality(0xffffffff) == ADDR_NO_RANDOMIZE);
+    got_sig = 0;
+    report("tgkill: SIGUSR1 to this thread, in picolibc's number",
+           tgkill(getpid(), getpid(), SIGUSR1) == 0 && got_sig == SIGUSR1);
 }
 
 /* --- time and the terminal ----------------------------------------- */

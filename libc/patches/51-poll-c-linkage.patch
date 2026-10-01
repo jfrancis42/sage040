@@ -1,0 +1,24 @@
+<poll.h> declares poll() and ppoll() without C linkage, so a C++
+program that includes it asks the linker for _Z4pollP6pollfdji -- a
+mangled name nothing defines -- and fails to link. gdb's event loop is
+the first C++ caller here. Every other header that declares functions
+has the _BEGIN_STD_C/_END_STD_C pair already.
+
+--- a/libc/include/poll.h
++++ b/libc/include/poll.h
+@@ -39,6 +39,8 @@
+ #include <sys/cdefs.h>
+ #include <sys/_types.h>             /* __size_t, for nfds_t */
+ 
++_BEGIN_STD_C
++
+ struct pollfd {
+     int   fd;
+     short events;
+@@ -80,4 +82,6 @@
+ int ppoll(struct pollfd *, nfds_t, const struct timespec *, const sigset_t *);
+ #endif
+ 
++_END_STD_C
++
+ #endif /* _POLL_H_ */

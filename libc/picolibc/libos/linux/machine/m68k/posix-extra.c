@@ -54,6 +54,7 @@
 #include <signal.h>
 #include <errno.h>
 #include <sys/ptrace.h>
+#include <sys/personality.h>
 #include <sys/sysinfo.h>
 
 int
@@ -68,6 +69,25 @@ pid_t
 getpgid(pid_t pid)
 {
     return syscall(LINUX_SYS_getpgid, pid);
+}
+
+/* glibc's since 2.30. The signal number is this library's, so it is
+ * translated -- syscall(__NR_tgkill, ...) would hand it over raw. */
+int
+tgkill(pid_t tgid, pid_t tid, int sig)
+{
+    if (sig < 0 || sig >= NSIG) {
+        errno = EINVAL;
+        return -1;
+    }
+    return syscall(LINUX_SYS_tgkill, tgid, tid, _signal_to_linux(sig));
+}
+
+/* Linux's execution domain; see <sys/personality.h>. */
+int
+personality(unsigned long persona)
+{
+    return syscall(LINUX_SYS_personality, persona);
 }
 
 int
@@ -328,6 +348,72 @@ ptrace(int request, ...)
         }
     }
     return r;
+}
+
+/*
+ * sigtimedwait and the two built on it. The set, the signal taken and
+ * the siginfo all cross in Linux's numbering and layout, as ptrace's
+ * do above.
+ */
+int
+sigtimedwait(const sigset_t *set, siginfo_t *info,
+             const struct timespec *timeout)
+{
+    __kernel_sigset_t k;
+    struct __kernel_timespec kts;
+    struct __kernel_siginfo ksi;
+    long r;
+
+    memset(&k, 0, sizeof(k));
+    _sigmask_to_linux(&k, set);
+    if (timeout) {
+        kts.tv_sec = timeout->tv_sec;
+        kts.tv_nsec = timeout->tv_nsec;
+    }
+    memset(&ksi, 0, sizeof(ksi));
+    /* 177, not the _time64 call: picolibc's m68k __kernel_timespec is
+     * two 32-bit fields, and the 64-bit call read 100 ms as 100,000,000
+     * seconds. */
+    r = syscall(LINUX_SYS_rt_sigtimedwait, &k, info ? &ksi : NULL,
+                timeout ? &kts : NULL, __KERNEL_NSIG_BYTES);
+    if (r < 0)
+        return r;
+    r = _signal_from_linux((int)r);
+    if (info) {
+        memset(info, 0, sizeof(*info));
+        info->si_signo = (int)r;
+        info->si_errno = ksi.si_errno;
+        info->si_code = ksi.si_code;
+        if (fault_signal((int)r)) {
+            info->si_addr = ksi.si_addr;
+        } else {
+            info->si_pid = ksi.si_pid;
+            info->si_uid = ksi.si_uid;
+        }
+    }
+    return (int)r;
+}
+
+int
+sigwaitinfo(const sigset_t *set, siginfo_t *info)
+{
+    return sigtimedwait(set, info, NULL);
+}
+
+/* POSIX's: the error is the return value, and an interruption is not
+ * one -- it waits again. */
+int
+sigwait(const sigset_t *set, int *sig)
+{
+    int r;
+
+    do {
+        r = sigtimedwait(set, NULL, NULL);
+    } while (r < 0 && errno == EINTR);
+    if (r < 0)
+        return errno;
+    *sig = r;
+    return 0;
 }
 
 int

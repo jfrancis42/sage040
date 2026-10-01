@@ -1,0 +1,19 @@
+sigsuspend passes the size of the mask, as rt_sigsuspend requires.
+
+Linux's rt_sigsuspend takes the mask AND its size, and refuses any size
+but sizeof(sigset_t) with EINVAL. picolibc passed the mask alone, so
+the size was whatever the second argument register held, and every
+sigsuspend returned -1 at once instead of sleeping. A caller that waits
+in a loop -- waitpid with WNOHANG, then sigsuspend until SIGCHLD, as
+gdbserver does -- spun at full speed instead of waiting, and on this
+kernel that starved the very process it was waiting for.
+
+--- a/libos/linux/sigsuspend.c
++++ b/libos/linux/sigsuspend.c
+@@ -44,5 +44,5 @@
+     for (sig = 1; sig < _NSIG; sig++)      /* 0 is no signal, in no set */
+         if (sigismember(mask, sig))
+             __kernel_sigset_set_mask(&kmask, _signal_to_linux(sig));
+-    return syscall(LINUX_SYS_rt_sigsuspend, &kmask);
++    return syscall(LINUX_SYS_rt_sigsuspend, &kmask, sizeof(kmask));
+ }

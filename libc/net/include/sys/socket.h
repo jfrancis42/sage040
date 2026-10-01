@@ -93,6 +93,24 @@ struct cmsghdr {
     int    cmsg_type;
 };
 
+/* Walking a msghdr's control data, Linux's way. The kernel carries no
+ * control messages -- no SCM_RIGHTS, no SCM_CREDENTIALS -- so these are
+ * here for programs that build one, which then see it refused. */
+#define CMSG_ALIGN(len)  (((len) + sizeof(size_t) - 1) & ~(sizeof(size_t) - 1))
+#define CMSG_DATA(c)     ((unsigned char *)((struct cmsghdr *)(c) + 1))
+#define CMSG_SPACE(len)  (CMSG_ALIGN(len) + CMSG_ALIGN(sizeof(struct cmsghdr)))
+#define CMSG_LEN(len)    (CMSG_ALIGN(sizeof(struct cmsghdr)) + (len))
+#define CMSG_FIRSTHDR(m) ((size_t)(m)->msg_controllen >= sizeof(struct cmsghdr) \
+                          ? (struct cmsghdr *)(m)->msg_control : (struct cmsghdr *)0)
+#define CMSG_NXTHDR(m, c) \
+    (((c)->cmsg_len < sizeof(struct cmsghdr) || \
+      (unsigned char *)(c) + CMSG_ALIGN((c)->cmsg_len) + sizeof(struct cmsghdr) > \
+      (unsigned char *)(m)->msg_control + (m)->msg_controllen) \
+     ? (struct cmsghdr *)0 \
+     : (struct cmsghdr *)((unsigned char *)(c) + CMSG_ALIGN((c)->cmsg_len)))
+#define SCM_RIGHTS       1
+#define SCM_CREDENTIALS  2
+
 struct linger {
     int l_onoff;
     int l_linger;

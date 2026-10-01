@@ -1,0 +1,28 @@
+gdbserver on m68k, asked for its target description.
+
+m68k's gdbserver describes its registers only through the regformats
+table (reg-m68k.dat): no XML file and no features. It still advertises
+qXfer:features:read -- every gdbserver does -- and when GDB asked for
+target.xml it failed an internal assertion and exited, so no remote
+session could start. With neither form of description it now answers
+that there is none, and GDB uses m68k's default register set.
+
+diff -ru a/gdbserver/server.cc b/gdbserver/server.cc
+--- a/gdbserver/server.cc	2026-10-01 08:35:31.232787391 -0600
++++ b/gdbserver/server.cc	2026-10-01 08:35:31.279338746 -0600
+@@ -1132,6 +1132,15 @@
+ 
+   if (strcmp (annex, "target.xml") == 0)
+     {
++      /* A target with neither -- m68k's register set is only the
++	 regformats table -- has no description to give.  Say so, and
++	 GDB uses the architecture's default registers, as it would
++	 with a stub that never offered one.  */
++      if (desc->xmltarget == NULL
++	  && (desc->features.empty ()
++	      || tdesc_architecture_name (desc) == nullptr))
++	return NULL;
++
+       const char *ret = tdesc_get_features_xml (desc);
+ 
+       if (*ret == '@')

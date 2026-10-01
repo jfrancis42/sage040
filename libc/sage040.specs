@@ -38,8 +38,11 @@
 #            shared case, `gcc -shared` made a PROGRAM (a start file,
 #            text at 0x10000000, an interpreter), and that is what
 #            Perl's MakeMaker would have built every XS module as.
-# endfile    empty. crtend.o belongs to a hosted GCC runtime this
-#            system does not have; the .fini_array walk is in exit().
+#            Then crtbegin-eh.o, in both: it starts .eh_frame and
+#            registers it, which is how a C++ throw finds its way up
+#            the stack (crtbegin-eh.s says why it has to be first).
+# endfile    crtend-eh.o, the zero word that ends .eh_frame. The rest
+#            of crtend.o's job, the .fini_array walk, is in exit().
 # lib        picolibc's libc, and liblinux -- the system call layer --
 #            in a group with it, because the two call each other and
 #            a single pass cannot resolve that. A dynamic program
@@ -55,10 +58,10 @@
 #            and SysV hashes, which are what ld.so reads.
 
 *startfile:
-%{shared:;static:crt0%O%s;:crt0-dyn%O%s}
+%{shared:;static:crt0%O%s crtbegin-eh%O%s;:crt0-dyn%O%s crtbegin-eh%O%s}
 
 *endfile:
-
+%{shared:;:crtend-eh%O%s}
 
 *lib:
 %{shared:-lc;static:--start-group -lc -llinux --end-group;:-lc}

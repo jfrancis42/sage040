@@ -64,6 +64,7 @@
 #include "timer.h"
 #include "loadavg.h"
 #include "swap.h"
+#include "ptrace.h"
 #include "textcache.h"
 #include "errno.h"
 #include "string.h"
@@ -73,14 +74,14 @@
 /* ---------------------------------------------------------------- */
 
 enum {
-    N_ROOT, N_FILE, N_LINK, N_PID, N_FD, N_DEVROOT, N_DEVPTS
+    N_ROOT, N_FILE, N_LINK, N_PID, N_FD, N_DEVROOT, N_DEVPTS, N_TASK
 };
 
 enum {
     /* /proc */
     F_CPUINFO, F_LOADAVG, F_MEMINFO, F_MOUNTS, F_STAT, F_UPTIME, L_SELF,
     /* /proc/<pid> */
-    P_CMDLINE, P_COMM, P_ENVIRON, P_MAPS, P_STAT, P_STATM, P_STATUS,
+    P_CMDLINE, P_COMM, P_ENVIRON, P_MAPS, P_MEM, P_STAT, P_STATM, P_STATUS,
     L_CWD, L_EXE, L_ROOT, L_FD,
     /* /dev */
     L_DEVFD, L_STDIN, L_STDOUT, L_STDERR
@@ -112,10 +113,12 @@ static const struct entry pid_ents[] = {
     { "exe",     N_LINK, L_EXE,     0777 },
     { "fd",      N_FD,   0,         0500 },
     { "maps",    N_FILE, P_MAPS,    0444 },
+    { "mem",     N_FILE, P_MEM,     0600 },
     { "root",    N_LINK, L_ROOT,    0777 },
     { "stat",    N_FILE, P_STAT,    0444 },
     { "statm",   N_FILE, P_STATM,   0444 },
     { "status",  N_FILE, P_STATUS,  0444 },
+    { "task",    N_TASK, 0,         0555 },     /* last: see dir_entry */
 };
 #define PID_ENTS    (sizeof(pid_ents) / sizeof(pid_ents[0]))
 
@@ -136,6 +139,7 @@ struct pnode {
     const struct entry *e;      /* for N_FILE and N_LINK                */
     int pid;                    /* for everything under /proc/<pid>     */
     int fd;                     /* for /proc/<pid>/fd/<fd>              */
+    int in_task;                /* /proc/<pid>/task/<tid>: no task/ in it */
 };
 
 /* Is `path` exactly `name`, but for trailing slashes? */
@@ -312,11 +316,28 @@ static int walk(const char *path, int follow, struct pnode *n, u32 *used)
             break;
         case N_PID:
             n->e = find(pid_ents, PID_ENTS, c, len);
-            if (!n->e) {
+            if (!n->e || (n->e->type == N_TASK && n->in_task)) {
                 return -ENOENT;
             }
             n->type = n->e->type;
             break;
+        case N_TASK: {
+            /* /proc/<pid>/task/<tid>: a thread of that process, with a
+             * directory of its own -- the same files, about the thread.
+             * gdb opens task/<tid>/mem for each thread it debugs. */
+            struct task *leader = task_find(n->pid), *t;
+
+            num = number(c, len);
+            t = num > 0 ? task_find(num) : 0;
+            if (!t || !leader || t->tgid != leader->tgid) {
+                return -ENOENT;
+            }
+            n->type = N_PID;
+            n->pid = num;
+            n->in_task = 1;
+            n->e = 0;
+            break;
+        }
         case N_FD:
             /* Into another user's descriptors: the directory is 0500
              * and theirs, and this is that check made for root too --
@@ -584,6 +605,10 @@ int proc_stat(const char *path, struct stat *st)
         break;
     case N_FD:
         st->st_mode = S_IFDIR | 0500;
+        st->st_nlink = 2;
+        break;
+    case N_TASK:
+        st->st_mode = S_IFDIR | 0555;
         st->st_nlink = 2;
         break;
     case N_FILE:
@@ -1335,6 +1360,7 @@ static struct proc_file {
     int dir;
     char path[PROC_NAME_MAX];
     struct pbuf b;
+    int mem_pid;                /* /proc/PID/mem only: whose memory     */
 } pfiles[PROC_OPEN_MAX];
 
 static void pbuf_free(struct pbuf *b)
@@ -1449,6 +1475,61 @@ static const struct file_ops proc_dir_ops = {
     0,
 };
 
+/*
+ * /proc/PID/mem: the process's memory, the file offset being the
+ * address. What a debugger reads and writes in place of a word at a time
+ * through PEEKDATA and POKEDATA -- gdbserver has nothing else. A range
+ * that runs into an unmapped page stops short there; one that starts in
+ * one is EIO, as on Linux. A process that has gone reads as end of file.
+ */
+static struct task *mem_task(struct file *f)
+{
+    struct proc_file *pf = f->priv;
+    struct task *t = task_find(pf->mem_pid);
+
+    return (t && t->as && t->state != TASK_ZOMBIE) ? t : 0;
+}
+
+static s32 pm_rw(struct file *f, void *buf, u32 len, int write)
+{
+    struct task *t = mem_task(f);
+    s32 n;
+
+    if (!t) {
+        return write ? -EIO : 0;
+    }
+    if (len == 0) {
+        return 0;
+    }
+    n = tracee_access(t, f->pos, buf, len, write);
+    if (n > 0) {
+        f->pos += (u32)n;
+    }
+    return n;
+}
+
+static s32 pm_read(struct file *f, void *buf, u32 len)
+{
+    return pm_rw(f, buf, len, 0);
+}
+
+static s32 pm_write(struct file *f, const void *buf, u32 len)
+{
+    return pm_rw(f, (void *)buf, len, 1);
+}
+
+static const struct file_ops proc_mem_ops = {
+    pm_read,
+    pm_write,
+    pf_lseek,
+    0,
+    pf_close,
+    pf_fstat,
+    0,
+    0,                          /* truncate: not a file of bytes */
+    0,
+};
+
 int proc_is_dir_file(struct file *f)
 {
     return f && f->ops == &proc_dir_ops;
@@ -1504,6 +1585,48 @@ static void generate(const struct pnode *n, struct pbuf *b)
     }
 }
 
+/* /proc/PID/mem: open for reading, writing or both -- by the process
+ * itself, its tracer, or someone who may inspect it. */
+static int mem_open(struct pnode *n, const char *path, int flags)
+{
+    struct task *t = task_find(n->pid);
+    struct proc_file *pf = 0;
+    int i, fd;
+
+    if (!t || !t->as || t->state == TASK_ZOMBIE) {
+        return -ENOENT;
+    }
+    if (t != current && t->tracer != current && !may_inspect(t)) {
+        return -EACCES;
+    }
+    if ((flags & O_TRUNC) || (flags & O_DIRECTORY)) {
+        return (flags & O_DIRECTORY) ? -ENOTDIR : -EACCES;
+    }
+    if (strlen(path) >= PROC_NAME_MAX) {
+        return -ENAMETOOLONG;
+    }
+    for (i = 0; i < PROC_OPEN_MAX; i++) {
+        if (!pfiles[i].used) {
+            pf = &pfiles[i];
+            break;
+        }
+    }
+    if (!pf) {
+        return -ENFILE;
+    }
+    memset(pf, 0, sizeof(*pf));
+    pf->used = 1;
+    pf->mem_pid = n->pid;
+    strcpy(pf->path, path);
+    fd = fd_install(&proc_mem_ops, pf, flags);
+    if (fd < 0) {
+        pf->used = 0;
+        return fd;
+    }
+    vfs_file_set_path(fd_get(fd), path);
+    return fd;
+}
+
 int proc_open(const char *path, int flags)
 {
     struct pnode n;
@@ -1518,6 +1641,9 @@ int proc_open(const char *path, int flags)
         return -ELOOP;          /* O_NOFOLLOW on a link, as Linux says */
     }
     dir = (n.type != N_FILE);
+    if (n.type == N_FILE && n.e->what == P_MEM) {
+        return mem_open(&n, path, flags);
+    }
     if ((flags & O_ACCMODE) != O_RDONLY || (flags & O_TRUNC)) {
         return dir ? -EISDIR : -EACCES;
     }
@@ -1634,7 +1760,7 @@ static int dir_entry(const struct pnode *n, u32 pos, char *name, u8 *type,
     const struct entry *tab = n->type == N_ROOT ? root_ents :
                               n->type == N_DEVROOT ? dev_ents : pid_ents;
     u32 fixed = n->type == N_ROOT ? ROOT_ENTS :
-                n->type == N_PID ? PID_ENTS :
+                n->type == N_PID ? PID_ENTS - (n->in_task ? 1 : 0) :
                 n->type == N_DEVROOT ? DEV_ENTS : 0;
 
     if (pos < 2) {
@@ -1662,18 +1788,24 @@ static int dir_entry(const struct pnode *n, u32 pos, char *name, u8 *type,
     if (pos < POS_NUMBERED) {
         pos = POS_NUMBERED;
     }
-    if (n->type == N_ROOT) {
+    if (n->type == N_ROOT || n->type == N_TASK) {
         /* The lowest thread-group leader at or above pos: one entry per
-         * process, as Linux lists them. */
+         * process, as Linux lists them. In task/, the lowest thread of
+         * this one's group. */
+        struct task *leader = n->type == N_TASK ? task_find(n->pid) : 0;
         int best = -1, i;
 
+        if (n->type == N_TASK && !leader) {
+            return -ENOENT;
+        }
         for (i = 0; ; i++) {
             struct task *t = task_nth(i);
 
             if (!t) {
                 break;
             }
-            if (t->pid == t->tgid && (u32)t->pid >= pos - POS_NUMBERED &&
+            if ((leader ? t->tgid == leader->tgid : t->pid == t->tgid) &&
+                (u32)t->pid >= pos - POS_NUMBERED &&
                 (best < 0 || t->pid < best)) {
                 best = t->pid;
             }

@@ -809,10 +809,103 @@ static void inotifies(void)
     close(in);
 }
 
+/* --- POSIX timers --------------------------------------------------- */
+
+static volatile int alarms, usr2s;
+
+static void on_alarm(int sig)
+{
+    (void)sig;
+    alarms++;
+}
+
+static void on_usr2(int sig)
+{
+    (void)sig;
+    usr2s++;
+}
+
+static void posix_timers(void)
+{
+    timer_t t, t2;
+    struct itimerspec its, cur;
+    struct sigevent ev;
+    struct timespec now;
+    sigset_t m;
+    int ov;
+
+    /* No sigevent at all: SIGALRM, POSIX's default. */
+    signal(SIGALRM, on_alarm);
+    memset(&its, 0, sizeof(its));
+    its.it_value.tv_nsec = 100000000L;
+    check("timer_create(NULL) and a 100 ms one-shot",
+          timer_create(CLOCK_MONOTONIC, NULL, &t) == 0 &&
+          timer_settime(t, 0, &its, NULL) == 0);
+    ms_sleep(400);
+    check("  delivers SIGALRM, once", alarms == 1);
+    check("  and is disarmed after: gettime reads zero",
+          timer_gettime(t, &cur) == 0 && cur.it_value.tv_sec == 0 &&
+          cur.it_value.tv_nsec == 0);
+
+    /* A chosen signal, an interval, and overruns while it is blocked. */
+    memset(&ev, 0, sizeof(ev));
+    ev.sigev_notify = SIGEV_SIGNAL;
+    ev.sigev_signo = SIGUSR2;
+    signal(SIGUSR2, on_usr2);
+    sigemptyset(&m);
+    sigaddset(&m, SIGUSR2);
+    sigprocmask(SIG_BLOCK, &m, NULL);
+    its.it_value.tv_nsec = 50000000L;
+    its.it_interval.tv_nsec = 50000000L;
+    check("a 50 ms interval timer with SIGUSR2",
+          timer_create(CLOCK_MONOTONIC, &ev, &t2) == 0 &&
+          timer_settime(t2, 0, &its, NULL) == 0);
+    ms_sleep(400);
+    sigprocmask(SIG_UNBLOCK, &m, NULL);         /* the one pending: taken */
+    ov = timer_getoverrun(t2);
+    check("  blocked for 400 ms: one signal, and the rest as overruns",
+          usr2s == 1 && ov >= 4 && ov <= 9);
+    check("  timer_gettime: armed, and the interval as it was set",
+          timer_gettime(t2, &cur) == 0 && cur.it_interval.tv_nsec == 50000000L &&
+          (cur.it_value.tv_sec || cur.it_value.tv_nsec));
+    check("timer_delete, and the id is no use after it",
+          timer_delete(t2) == 0 && timer_gettime(t2, &cur) == -1 && errno == EINVAL);
+
+    /* SIGEV_NONE: nothing delivered, but it runs down all the same. */
+    ev.sigev_notify = SIGEV_NONE;
+    its.it_value.tv_sec = 5;
+    its.it_value.tv_nsec = 0;
+    its.it_interval.tv_nsec = 0;
+    check("SIGEV_NONE: armed for 5 s, and it runs down",
+          timer_create(CLOCK_REALTIME, &ev, &t2) == 0 &&
+          timer_settime(t2, 0, &its, NULL) == 0 &&
+          (ms_sleep(300), timer_gettime(t2, &cur)) == 0 &&
+          cur.it_value.tv_sec == 4 && cur.it_value.tv_nsec > 500000000L);
+    timer_delete(t2);
+
+    /* An absolute deadline on the monotonic clock. */
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    its.it_value = now;
+    its.it_value.tv_nsec += 200000000L;
+    if (its.it_value.tv_nsec >= 1000000000L) {
+        its.it_value.tv_nsec -= 1000000000L;
+        its.it_value.tv_sec++;
+    }
+    alarms = 0;
+    check("TIMER_ABSTIME: 200 ms from now, on CLOCK_MONOTONIC",
+          timer_settime(t, TIMER_ABSTIME, &its, NULL) == 0);
+    ms_sleep(100);
+    check("  not before", alarms == 0);
+    ms_sleep(300);
+    check("  but by then", alarms == 1);
+    timer_delete(t);
+}
+
 int main(void)
 {
     eventfds();
     timerfds();
+    posix_timers();
     signalfds();
     epolls();
     inotifies();

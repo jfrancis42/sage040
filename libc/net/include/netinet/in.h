@@ -75,10 +75,20 @@ struct sockaddr_in {
 struct in6_addr {
     union {
         uint8_t  s6_addr[16];
+        uint16_t s6_addr16[8];
         uint32_t s6_addr32[4];
     } in6_u;
 };
-#define s6_addr in6_u.s6_addr
+#define s6_addr   in6_u.s6_addr
+#define s6_addr16 in6_u.s6_addr16
+#define s6_addr32 in6_u.s6_addr32
+
+/* The wildcard and loopback addresses, which code that handles both
+ * families names whether or not it will ever be given an AF_INET6. */
+extern const struct in6_addr in6addr_any;
+extern const struct in6_addr in6addr_loopback;
+#define IN6ADDR_ANY_INIT      { { { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 } } }
+#define IN6ADDR_LOOPBACK_INIT { { { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1 } } }
 
 struct sockaddr_in6 {
     sa_family_t     sin6_family;

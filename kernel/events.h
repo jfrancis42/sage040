@@ -16,6 +16,15 @@ struct pt_regs;
 s32 sys_eventfd2(u32 initval, int flags);
 s32 sys_timerfd_create(int clockid, int flags);
 s32 sys_timerfd_settime(int fd, int flags, u32 unew, u32 uold, int wide);
+
+/* POSIX timers: timer_create and the rest, timerfds that signal. */
+s32  sys_timer_create(int clockid, u32 usev, u32 uid);
+s32  sys_timer_settime(u32 id, int flags, u32 unew, u32 uold, int wide);
+s32  sys_timer_gettime(u32 id, u32 ucur, int wide);
+s32  sys_timer_getoverrun(u32 id);
+s32  sys_timer_delete(u32 id);
+void posix_timer_tick(void);            /* task_timeouts, every tick */
+void posix_timer_exit(int tgid);        /* exec and exit             */
 s32 sys_timerfd_gettime(int fd, u32 ucur, int wide);
 s32 sys_signalfd4(int fd, u32 umask, u32 size, int flags);
 s32 sys_epoll_create1(int flags);

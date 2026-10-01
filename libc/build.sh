@@ -228,7 +228,9 @@ cp -r "$HERE/net/include/." "$PREFIX/include/"
 cp "$HERE/picolibc/libc/include/sys/utsname.h" "$PREFIX/include/sys/"
 cp "$HERE/picolibc/libc/include/stdio_ext.h" "$HERE/picolibc/libc/include/syslog.h" \
    "$HERE/picolibc/libc/include/shadow.h" "$HERE/picolibc/libc/include/dlfcn.h" \
-   "$HERE/picolibc/libc/include/link.h" "$PREFIX/include/"
+   "$HERE/picolibc/libc/include/link.h" "$HERE/picolibc/libc/include/features.h" \
+   "$HERE/picolibc/libc/include/elf.h" \
+   "$PREFIX/include/"
 # -ldl, -lrt, -lpthread, -lutil, -lcrypt: dlopen, clock_gettime and
 # shm_open, the threads, openpty and forkpty, and crypt are all in libc
 # itself, as in glibc 2.34 and musl, but a great many configure scripts
@@ -245,7 +247,9 @@ cp "$HERE/picolibc/libc/include/sys/random.h" "$HERE/picolibc/libc/include/sys/s
     "$HERE/picolibc/libc/include/sys/timerfd.h" "$HERE/picolibc/libc/include/sys/signalfd.h" \
     "$HERE/picolibc/libc/include/sys/inotify.h" "$HERE/picolibc/libc/include/sys/sendfile.h" \
     "$HERE/picolibc/libc/include/sys/ptrace.h" "$HERE/picolibc/libc/include/sys/user.h" \
-    "$HERE/picolibc/libc/include/sys/sysinfo.h" \
+    "$HERE/picolibc/libc/include/sys/sysinfo.h" "$HERE/picolibc/libc/include/sys/reg.h" \
+    "$HERE/picolibc/libc/include/sys/procfs.h" "$HERE/picolibc/libc/include/sys/vfs.h" \
+    "$HERE/picolibc/libc/include/sys/utmp.h" "$HERE/picolibc/libc/include/sys/personality.h" \
     "$PREFIX/include/sys/"
 
 # A fingerprint of every installed header, for ports/cross.sh's

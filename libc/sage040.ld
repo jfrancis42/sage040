@@ -36,6 +36,9 @@ SECTIONS {
         *(.text .text.*)
     } > USER :text
     .rodata : { *(.rodata .rodata.*) } > USER :text
+    /* The unwind tables a C++ throw walks (crtbegin-eh.s registers
+     * them). Discarded until gdb, the first program here to throw. */
+    .eh_frame : { KEEP(*(.eh_frame)) } > USER :text
     /* Writable sections start on a page of their own: under QEMU a
      * store to a page it has translated code from throws the
      * translation away. See lib/user.ld -- and see there too for why
@@ -130,5 +133,5 @@ SECTIONS {
         __bss_end = .;
     } > USER :data
     _end = .;
-    /DISCARD/ : { *(.eh_frame) *(.comment) *(.note*) }
+    /DISCARD/ : { *(.comment) *(.note*) }
 }

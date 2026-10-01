@@ -18,7 +18,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
 #include <sys/ptrace.h>
+#include <sys/stat.h>
 #include <sys/user.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -239,6 +241,83 @@ static void t_memory(void)
     check("PEEKDATA of a process nobody traces is ESRCH", w == -1 && errno == ESRCH);
 }
 
+/*
+ * /proc/PID/mem: the same memory as PEEK and POKE, a range at a time,
+ * the offset being the address. What gdbserver uses and nothing else.
+ */
+static void t_procmem(void)
+{
+    char path[32];
+    long w = 0, got = 0;
+    unsigned short trap = 0x4e4f, orig = 0, back = 0;
+    pid_t pid;
+    int st = 0, fd;
+
+    shared_word = 0x11223344;       /* t_memory zeroed the parent's copy */
+    pid = traced_child(body_word);
+    waitpid(pid, &st, 0);
+    snprintf(path, sizeof(path), "/proc/%d/mem", (int)pid);
+    fd = open(path, O_RDWR);
+    check("/proc/PID/mem opens for reading and writing, by the tracer", fd >= 0);
+    check("  pread at a variable's address reads the child's value",
+          pread(fd, &w, 4, (off_t)(long)&shared_word) == 4 && w == 0x11223344);
+    w = 0x55667788;
+    check("  pwrite changes it, as PEEKDATA then sees",
+          pwrite(fd, &w, 4, (off_t)(long)&shared_word) == 4 &&
+          ptrace(PTRACE_PEEKDATA, pid, (void *)&shared_word, 0) == 0x55667788);
+    errno = 0;
+    check("  read-only text is written too, and read back as written",
+          pread(fd, &orig, 2, (off_t)(long)target) == 2 &&
+          pwrite(fd, &trap, 2, (off_t)(long)target) == 2 &&
+          pread(fd, &back, 2, (off_t)(long)target) == 2 && back == 0x4e4f &&
+          pwrite(fd, &orig, 2, (off_t)(long)target) == 2);
+    errno = 0;
+    check("  an unmapped address is EIO",
+          pread(fd, &got, 4, (off_t)0x1000) == -1 && errno == EIO);
+    close(fd);
+    /* task/<tid>/: each thread's own directory, which is where gdb
+     * opens mem -- task/<lwp>/mem, never the process's. */
+    {
+        DIR *d;
+        struct dirent *e;
+        int listed = 0, others = 0;
+        struct stat sb;
+
+        snprintf(path, sizeof(path), "/proc/%d/task", (int)pid);
+        d = opendir(path);
+        while (d && (e = readdir(d))) {
+            if (e->d_name[0] == '.') {
+                continue;
+            }
+            if (atoi(e->d_name) == (int)pid) {
+                listed = 1;
+            } else {
+                others++;
+            }
+        }
+        if (d) {
+            closedir(d);
+        }
+        check("/proc/PID/task lists the one thread, by its tid", listed && !others);
+        snprintf(path, sizeof(path), "/proc/%d/task/%d/mem", (int)pid, (int)pid);
+        fd = open(path, O_RDONLY);
+        w = 0;
+        check("  task/TID/mem reads the same memory",
+              fd >= 0 && pread(fd, &w, 4, (off_t)(long)&shared_word) == 4 &&
+              w == 0x55667788);
+        if (fd >= 0) {
+            close(fd);
+        }
+        snprintf(path, sizeof(path), "/proc/%d/task/%d/task", (int)pid, (int)pid);
+        check("  and a thread's directory has no task/ of its own",
+              stat(path, &sb) == -1 && errno == ENOENT);
+    }
+    ptrace(PTRACE_CONT, pid, 0, 0);
+    waitpid(pid, &st, 0);
+    check("  and the child ran on with what was written",
+          WIFEXITED(st) && WEXITSTATUS(st) == 7);
+}
+
 static void t_breakpoint(void)
 {
     pid_t pid = traced_child(body_breakpoint);
@@ -428,6 +507,7 @@ int main(void)
     t_exec();
     t_syscalls();
     t_memory();
+    t_procmem();
     t_breakpoint();
     t_step();
     t_signals();

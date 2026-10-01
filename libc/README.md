@@ -196,6 +196,34 @@ Two things are deliberately absent.
   (`POLLWRNORM` is `POLLOUT`) for every entry; picolibc's own `poll`
   maps `revents` only for the first N entries, N being how many were
   ready -- harmless for every bit but those two.
+- **POSIX timers exist** (`timer_create` and the rest, `events.c`),
+  translating the clock, `SIGEV_*`, `TIMER_ABSTIME` and the signal.
+- **`ptrace` exists** (`<sys/ptrace.h>`, `<sys/user.h>`;
+  `posix-extra.c`) and translates signal numbers both ways, including
+  inside a `siginfo`. `wait` translates a stopped status's signal too
+  (`patches/48`), which it never did: a stopped child used to report
+  Linux's SIGSTOP, 19, which is picolibc's SIGCONT. Ptrace stops keep
+  their `0x80` and event bits.
+- **Also added**: `getpgid`, `clock_nanosleep`, `sysinfo`,
+  `get_nprocs`, `<features.h>`, `<net/if.h>` with `if_nametoindex` and
+  friends, and empty `librt`, `libpthread`, `libutil` and `libcrypt`
+  archives so a `-lrt` in someone's Makefile links. `kill(pid, 0)` sends
+  nothing (signal 0 used to be translated to something), and the
+  signal-mask loops start at 1 (`patches/49`).
+- **For gdb**: `sigwait`, `sigwaitinfo` and `sigtimedwait` (set,
+  signal and siginfo all translated; the 32-bit-timespec call, 177,
+  because that is what picolibc's m68k `__kernel_timespec` is), `tgkill`
+  (`patches/50` declares it), `personality` and `<sys/personality.h>`;
+  `<sys/reg.h>` and `<sys/procfs.h>` (the m68k register sets as glibc
+  names them), `<sys/vfs.h>`, `<elf.h>` (musl's, MIT), `in6addr_any`
+  and `in6addr_loopback`, `s6_addr16/32`, the `CMSG_*` macros (the
+  kernel carries no control messages), and a `<sys/utmp.h>` -- picolibc
+  installs a `<utmp.h>` that includes it and never provided it, so
+  nothing including `<utmp.h>` compiled. `<poll.h>` had no C linkage
+  guards and a C++ caller could not link `poll` (`patches/51`).
+- **C++ exceptions**: `crtbegin-eh.s` and `crtend-eh.s`, linked by the
+  specs around every program, register its unwind tables
+  (toolchain.md says why nothing could throw before).
 - **Record locks are real** (`patches/44`): `F_GETLK`, `F_SETLK` and
   `F_SETLKW` go to the kernel, and `F_OFD_GETLK`, `F_OFD_SETLK` and
   `F_OFD_SETLKW` are declared under `_GNU_SOURCE`. picolibc's `struct

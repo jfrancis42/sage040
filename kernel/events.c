@@ -470,34 +470,22 @@ static int store_itimer(u32 u, int wide, struct timerfd *t)
     }
 }
 
-s32 sys_timerfd_settime(int fd, int flags, u32 unew, u32 uold, int wide)
+/*
+ * Arm `t` from a validated pair: the arithmetic timerfd_settime and
+ * timer_settime share. A zero value disarms; an absolute one is reckoned
+ * on the timer's clock.
+ */
+static void tfd_arm(struct timerfd *t, int absolute, struct tpair *pp)
 {
-    struct timerfd *t = timerfd_of(fd);
-    struct tpair p;
+    struct tpair p = *pp;
     u32 now = timer_jiffies(), delay;
-    int err;
-
-    if (!fd_get(fd)) {
-        return -EBADF;
-    }
-    if (!t || (flags & ~(TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET))) {
-        return -EINVAL;
-    }
-    if ((err = fetch_itimer(unew, wide, &p)) < 0) {
-        return err;
-    }
-    if (p.interval.neg || p.value.neg) {
-        return -EINVAL;
-    }
-    if (uold && (err = store_itimer(uold, wide, t)) < 0) {
-        return err;
-    }
+    int flags = absolute ? TFD_TIMER_ABSTIME : 0;
 
     t->fired = 0;
     if (!p.value.sec_hi && !p.value.sec && !p.value.nsec) {
         t->armed = 0;           /* a zero value disarms */
         poll_wake();
-        return 0;
+        return;
     }
     if (flags & TFD_TIMER_ABSTIME) {
         if (t->clock == CLOCK_REALTIME) {
@@ -535,6 +523,31 @@ s32 sys_timerfd_settime(int fd, int flags, u32 unew, u32 uold, int wide)
     t->next = now + delay;
     t->armed = 1;
     poll_wake();                /* a poller must learn the new deadline */
+}
+
+
+s32 sys_timerfd_settime(int fd, int flags, u32 unew, u32 uold, int wide)
+{
+    struct timerfd *t = timerfd_of(fd);
+    struct tpair p;
+    int err;
+
+    if (!fd_get(fd)) {
+        return -EBADF;
+    }
+    if (!t || (flags & ~(TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET))) {
+        return -EINVAL;
+    }
+    if ((err = fetch_itimer(unew, wide, &p)) < 0) {
+        return err;
+    }
+    if (p.interval.neg || p.value.neg) {
+        return -EINVAL;
+    }
+    if (uold && (err = store_itimer(uold, wide, t)) < 0) {
+        return err;
+    }
+    tfd_arm(t, (flags & TFD_TIMER_ABSTIME) != 0, &p);
     return 0;
 }
 
@@ -1478,6 +1491,196 @@ void events_file_gone(struct file *f)
             if (epolls[e].items[i].used && epolls[e].items[i].file == f) {
                 epolls[e].items[i].used = 0;
             }
+        }
+    }
+}
+
+/* ================================================================ */
+/* POSIX timers: timer_create and the rest                          */
+/* ================================================================ */
+
+/*
+ * A timerfd that signals instead of being read: its arithmetic is the
+ * timerfd's above (tfd_arm, tfd_catch_up, store_itimer), and what it
+ * adds is an owner -- the PROCESS, as on Linux, by its tgid -- and what
+ * to do when it expires: SIGEV_SIGNAL, the signal of its choice (by
+ * default SIGALRM), or SIGEV_NONE, nothing, for a timer only read.
+ *
+ * The tick looks at the armed ones (posix_timer_tick, from
+ * task_timeouts). An expiry while the last signal is still pending is
+ * an OVERRUN, as POSIX has it: one signal, and timer_getoverrun says
+ * how many more there would have been. A timer belongs to the process
+ * that made it: not inherited by a fork, and gone at its exec and its
+ * exit (posix_timer_exit).
+ */
+#define PTIMER_MAX      32              /* in the whole machine */
+#define LINUX_SIGEV_SIGNAL  0
+#define LINUX_SIGEV_NONE    1
+#define LINUX_SIGEV_THREAD_ID 4
+
+struct ptimer {
+    struct timerfd tf;
+    int owner;                  /* the tgid that made it, 0 when free */
+    int notify;
+    int sig;
+    int overrun;                /* expiries since the signal went      */
+    u64 told;                   /* tf.fired as of the last signal       */
+};
+
+static struct ptimer ptimers[PTIMER_MAX];
+
+/* Linux/m68k's struct sigevent: 64 bytes, of which these three count. */
+struct ksigevent {
+    u32 sigev_value;
+    int sigev_signo;
+    int sigev_notify;
+    int sigev_tid;
+    int _pad[12];
+};
+
+static struct ptimer *ptimer_of(u32 id)
+{
+    struct ptimer *p;
+
+    if (id >= PTIMER_MAX) {
+        return 0;
+    }
+    p = &ptimers[id];
+    return p->owner && current && p->owner == current->tgid ? p : 0;
+}
+
+s32 sys_timer_create(int clockid, u32 usev, u32 uid)
+{
+    struct ksigevent ev;
+    u32 i;
+    int err;
+
+    if (clockid != CLOCK_REALTIME && clockid != CLOCK_MONOTONIC &&
+        clockid != CLOCK_BOOTTIME) {
+        return -EINVAL;
+    }
+    memset(&ev, 0, sizeof(ev));
+    ev.sigev_signo = SIGALRM;   /* a null sevp: SIGALRM, as POSIX says */
+    ev.sigev_notify = LINUX_SIGEV_SIGNAL;
+    if (usev && (err = fetch(&ev, usev, sizeof(ev))) < 0) {
+        return err;
+    }
+    if (ev.sigev_notify != LINUX_SIGEV_SIGNAL && ev.sigev_notify != LINUX_SIGEV_NONE &&
+        ev.sigev_notify != LINUX_SIGEV_THREAD_ID) {
+        return -EINVAL;         /* SIGEV_THREAD is the C library's, not ours */
+    }
+    if (ev.sigev_notify != LINUX_SIGEV_NONE &&
+        (ev.sigev_signo <= 0 || ev.sigev_signo >= NSIG)) {
+        return -EINVAL;
+    }
+    for (i = 0; i < PTIMER_MAX && ptimers[i].owner; i++) {
+    }
+    if (i == PTIMER_MAX) {
+        return -EAGAIN;
+    }
+    if ((err = sys_store(uid, &i, sizeof(i))) < 0) {
+        return err;
+    }
+    memset(&ptimers[i], 0, sizeof(ptimers[i]));
+    ptimers[i].owner = current->tgid;
+    ptimers[i].tf.used = 1;
+    ptimers[i].tf.clock = clockid;
+    ptimers[i].notify = ev.sigev_notify;
+    ptimers[i].sig = ev.sigev_signo;
+    return 0;
+}
+
+s32 sys_timer_settime(u32 id, int flags, u32 unew, u32 uold, int wide)
+{
+    struct ptimer *p = ptimer_of(id);
+    struct tpair pair;
+    int err;
+
+    if (!p || (flags & ~TFD_TIMER_ABSTIME)) {   /* TIMER_ABSTIME is 1 too */
+        return -EINVAL;
+    }
+    if ((err = fetch_itimer(unew, wide, &pair)) < 0) {
+        return err;
+    }
+    if (pair.interval.neg || pair.value.neg) {
+        return -EINVAL;
+    }
+    if (uold && (err = store_itimer(uold, wide, &p->tf)) < 0) {
+        return err;
+    }
+    tfd_arm(&p->tf, (flags & TFD_TIMER_ABSTIME) != 0, &pair);
+    p->told = 0;
+    p->overrun = 0;
+    return 0;
+}
+
+s32 sys_timer_gettime(u32 id, u32 ucur, int wide)
+{
+    struct ptimer *p = ptimer_of(id);
+
+    return p ? store_itimer(ucur, wide, &p->tf) : -EINVAL;
+}
+
+s32 sys_timer_getoverrun(u32 id)
+{
+    struct ptimer *p = ptimer_of(id);
+
+    return p ? p->overrun : -EINVAL;
+}
+
+s32 sys_timer_delete(u32 id)
+{
+    struct ptimer *p = ptimer_of(id);
+
+    if (!p) {
+        return -EINVAL;
+    }
+    memset(p, 0, sizeof(*p));
+    return 0;
+}
+
+/* A process's timers go with its exec or its exit. */
+void posix_timer_exit(int tgid)
+{
+    u32 i;
+
+    for (i = 0; i < PTIMER_MAX; i++) {
+        if (ptimers[i].owner == tgid) {
+            memset(&ptimers[i], 0, sizeof(ptimers[i]));
+        }
+    }
+}
+
+/* Every tick: the armed timers that have expired, signalled. */
+void posix_timer_tick(void)
+{
+    u32 i;
+
+    for (i = 0; i < PTIMER_MAX; i++) {
+        struct ptimer *p = &ptimers[i];
+        struct task *t;
+        u32 n;
+
+        if (!p->owner || !p->tf.armed ||
+            (s32)(timer_jiffies() - p->tf.next) < 0) {
+            continue;
+        }
+        tfd_catch_up(&p->tf);
+        n = (u32)(p->tf.fired - p->told);
+        p->told = p->tf.fired;
+        if (!n || p->notify == LINUX_SIGEV_NONE) {
+            continue;
+        }
+        t = task_find(p->owner);
+        if (!t) {
+            memset(p, 0, sizeof(*p));
+            continue;
+        }
+        if (t->sig_pending & SIGMASK(p->sig)) {
+            p->overrun += (int)n;       /* the last one is still pending */
+        } else {
+            p->overrun = (int)n - 1;
+            signal_send(t, p->sig);
         }
     }
 }

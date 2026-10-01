@@ -583,6 +583,96 @@ The terminal has one foreground pid. A background job that reads gets
 nothing rather than stealing the user's keystrokes, which is what makes `&`
 safe.
 
+**A blocked signal can be TAKEN rather than delivered**:
+`rt_sigtimedwait` (177, and 421 with a 64-bit timespec) returns the
+lowest pending signal of a set and clears it, sleeping until one comes
+or the timeout, and libc's `sigwait`, `sigwaitinfo` and `sigtimedwait`
+are built on it. A blocked signal wakes no sleeper, so the wait is
+poll's: raising one calls `poll_wake()`, as it does for signalfd.
+`tgkill` in libc sends to one thread with the signal number translated
+-- `syscall(__NR_tgkill, ...)` would hand the kernel picolibc's
+number. `personality` (136) keeps and reports Linux's execution-domain
+word; `ADDR_NO_RANDOMIZE` is true whatever it says, since nothing here
+is randomized.
+
+### Tracing: ptrace
+
+`ptrace(2)` is Linux/m68k's, request for request and number for number
+(`ptrace.c`), so a tracer built for Linux drives it unchanged -- which
+is the point: `strace` is the stock 7.2 source and nothing in it knows
+this is not Linux. The requests are TRACEME, ATTACH, DETACH, PEEK and
+POKE of text, data and the user area, CONT, SYSCALL, SINGLESTEP, KILL,
+GETREGS/SETREGS, GETFPREGS/SETFPREGS, SETOPTIONS, GETEVENTMSG and
+GET/SETSIGINFO; the options are TRACESYSGOOD, the fork, vfork, clone,
+exec and exit events, and EXITKILL.
+
+A traced task stops in four places, each where Linux stops it: on the
+way into and out of a system call (`syscall_dispatch`), when a signal is
+about to be delivered (`signal_deliver`), at the end of `exec`, and as
+it begins to exit. The tracer learns of a stop through `wait`, as a
+stopped status -- `SIGTRAP|0x80` for a system call under TRACESYSGOOD,
+the event number in bits 16-23 for the others -- and a tracee is
+`t (tracing stop)` in `/proc/PID/stat`, with its tracer's pid in
+`TracerPid`.
+
+The register file is the one `PEEKUSER` describes: d1-d5, d6, d7,
+a0-a6, d0, the user stack pointer, `orig_d0`, SR and PC, in that order.
+A tracer that sets `orig_d0` to -1 at a system call's entry skips the
+call, as Linux's does. Single-stepping sets the 68040's T1 bit for one
+instruction. **Poking text** makes the page private first, as
+copy-on-write would, and flushes the caches afterwards -- a breakpoint
+written into a page the program shares with every other process
+running it would otherwise be a breakpoint in all of them.
+
+**strace is built against musl**, not picolibc (`ports/musl`). It
+decodes by Linux's numbers -- signals, clocks, `AT_*` flags, the
+`siginfo` layout -- and picolibc numbers several of those its own way,
+so every one would need translating twice. musl is Linux's numbers all
+the way down. It is static; `ports/musl/sage040-crt1.c` turns this
+kernel's start-up stack into the contiguous argc/argv/envp/auxv block
+musl expects. Two things it needed from the kernel: `readv`/`writev`
+(musl's stdio writes nothing else), and Linux's `utsname` layout, six
+fields of 65 bytes.
+
+**The signal trampoline is always the kernel's.** Linux/m68k ignores
+`sa_restorer` and musl relies on that: its restorer is a placeholder,
+and a kernel that honoured it returned from every handler into nothing.
+The trampoline is written to the user stack, so the caches are flushed
+after it.
+
+`kernel/ptracetest.sh` drives each request from a small tracer;
+`kernel/stracetest.sh` checks strace's account of a known list of calls,
+`-f`, `-c`, `-e` and `-p`.
+
+**gdb runs on the machine** (`ports/gdb`, 17.1, native gdb and
+gdbserver), over the same ptrace -- built as a Linux host, so that it
+gets linux-nat. Four things it needed:
+
+- **C++ exceptions**, which had never worked here: nothing registered a
+  program's unwind tables (toolchain.md, `libc/crtbegin-eh.s`). gdb
+  throws as ordinary control flow and died at its first.
+- **The OS ABI.** Nothing built here carries an ELF ABI note, and gdb's
+  m68k sniffer called such a file SVR4, whose breakpoints do not step
+  the pc back over the trap: every breakpoint was missed and the
+  program resumed mid-instruction. And this gcc returns a pointer in
+  `%d0` and passes a structure's return address in `%a0`, where Linux
+  says `%a0` and `%a1`. `ports/gdb/patches/02`.
+- **`/proc/<pid>/mem`**, without which gdbserver cannot insert a
+  breakpoint at all, and **`/proc/<pid>/task/<tid>/`**, where native
+  gdb opens it. Native gdb falls back to PEEK and POKE when mem cannot
+  be written -- but it decides that by writing `/proc/self/mem`, so once
+  `mem` existed and `task/` did not, every breakpoint failed.
+- **gdbserver's target description**: m68k's has none, and gdbserver
+  asserted when asked for it (`patches/03`).
+
+gdb starts a program with `$SHELL -c exec PROG`, and **the console's
+`SHELL` is `/bin/msh`**, which is not a POSIX shell and has no `exec`:
+`run` answers "exec: command not found". Under bash, or with
+`SHELL=/bin/sh`, it works. `kernel/gdbtest.sh` checks a breakpoint,
+`bt`, values, `list`, `finish` (an int and a pointer), `next`, a signal
+stopped and passed on, the exit status, `kill`, attaching with `-p`,
+and gdbserver driven over loopback.
+
 ---
 
 ## System calls
@@ -795,6 +885,12 @@ loop, nginx -- has what it looks for:
 | `epoll` | a set of descriptors: level-triggered, `EPOLLET`, `EPOLLONESHOT`, nesting, `epoll_pwait` |
 | `inotify` | watches on files and directories: create, delete, modify, attrib, open, close, access, rename (with a cookie), delete-self, move-self, overflow |
 
+**POSIX timers** -- `timer_create`, `timer_settime`, `timer_gettime`,
+`timer_getoverrun`, `timer_delete` -- are the same timers delivering a
+signal instead of a readable descriptor: `SIGEV_SIGNAL` or `SIGEV_NONE`,
+on either clock, absolute or relative, with an overrun count. Thirty-two
+at once, machine-wide; a process's go with it at exec and exit.
+
 `ppoll` and `pselect` come with them, because `epoll_pwait` needed the
 same thing: a signal mask for the length of a wait, which lets a signal
 in only while waiting.
@@ -836,7 +932,8 @@ across `exec` reads Linux's numbers.
 
 Linux's `/proc`, the part ported software reads (`procfs.c`), made out
 of the kernel's own tables the moment a file is opened -- a snapshot,
-so a reader taking it in small pieces sees one moment -- and read-only.
+so a reader taking it in small pieces sees one moment -- and read-only,
+except `/proc/<pid>/mem`.
 
 | | |
 |---|---|
@@ -847,6 +944,8 @@ so a reader taking it in small pieces sees one moment -- and read-only.
 | `/proc/mounts` | the root volume, `/dev` and `/proc` |
 | `/proc/self` | a link to the caller's own directory |
 | `/proc/<pid>/` | `cmdline` `environ` `comm` `stat` `statm` `status` `maps`, and the links `exe` `cwd` `root` `fd/<N>` |
+| `/proc/<pid>/task/<tid>/` | one directory per thread of the process, with the same files about that thread (and no `task/` of its own): how gdb lists a process's threads, and where it opens `mem` |
+| `/proc/<pid>/mem` | the process's memory, the file offset being the address, read AND written: what a debugger uses (gdbserver uses nothing else). The process itself, its tracer, or its own user and root; a write to text makes that page private first, as a POKE does |
 
 The formats are Linux's field for field -- `stat` is all fifty-two --
 because the only reason to have `/proc` is that programs written for
@@ -862,8 +961,8 @@ by (a path made absolute, or `pipe:[N]`, `socket:[N]`); a rename after
 the open is not followed, where Linux's is.
 
 **A process's links, its `fd/` and its `environ` are its own user's and
-root's**; everything else is readable by all. Nothing in `/proc` can be
-written, created, removed or renamed.
+root's**; everything else is readable by all. Nothing in `/proc` but
+`mem` can be written, and nothing created, removed or renamed.
 
 **The working directory can be in `/proc`**, as sbase's `ls`, `find` and
 `du` need -- they change into every directory they list. It is kept as a
@@ -1493,10 +1592,10 @@ drive it over its serial line.
 | `kernel/tcptest.sh` | 24 | TCP's options, loss, keepalives and TIME_WAIT |
 | `kernel/vttest.sh` | 95 | the VT102 console, checked against screenshots |
 | `kernel/devtest.sh` | 41 | interrupts, the filesystem under concurrency, the limits, the NVRAM, `mmap` of the framebuffer |
-| `kernel/libctest.sh` | 258 | picolibc and the POSIX layer added to it; and sigcowtest, a caught SIGCHLD arriving during copy-on-write faults |
+| `kernel/libctest.sh` | 269 | picolibc and the POSIX layer added to it -- `sigsuspend` really sleeping, `sigwait`, `sigtimedwait`'s timeout, `sigwaitinfo` woken by another process, `personality`, `tgkill` among the latest; and sigcowtest, a caught SIGCHLD arriving during copy-on-write faults |
 | `kernel/sotest.sh` | 126 | shared libraries, `ld.so`, and the sharing of their pages |
 | `kernel/tmpfstest.sh` | 36 | tmpfs at `/tmp` and `/dev/shm`: files, holes, truncate, links, rename and `EXDEV`, the working directory, `shm_open` shared between processes, the sticky bit, and from the host: the disk's `/tmp` hidden, nothing written to it |
-| `kernel/eventtest.sh` | 102 | eventfd, timerfd, signalfd, epoll and inotify, and ppoll/pselect: counts, blocking and waking by another process, timers timed by CLOCK_MONOTONIC, signals checked gone from `sigpending`, level/edge/oneshot, one epoll over all four kinds, masks that let a signal in only during the wait, inotify on the disk and in tmpfs, queue overflow |
+| `kernel/eventtest.sh` | 113 | eventfd, timerfd, signalfd, epoll and inotify, ppoll/pselect, and POSIX timers (`timer_create` and the rest): counts, blocking and waking by another process, timers timed by CLOCK_MONOTONIC, signals checked gone from `sigpending`, level/edge/oneshot, one epoll over all four kinds, masks that let a signal in only during the wait, inotify on the disk and in tmpfs, queue overflow |
 | `kernel/locktest.sh` | 54 | fcntl record locks, POSIX and OFD, on the disk and in tmpfs, seen from a second process: conflicts, F_GETLK naming the holder, splitting, read locks shared, the close-drops-all wart, F_SETLKW waiting, EDEADLK, release at exit, SEEK_END and negative lengths; F_DUPFD's argument |
 | `kernel/fifotest.sh` | 38 | named pipes on the disk and in tmpfs: two processes through a path, an open that waits for the other end (timed), end of file, O_NONBLOCK and ENXIO, O_RDWR, EINTR, unlink while open; and from the host, e2fsck clean and debugfs seeing the FIFO |
 | `kernel/devdirtest.sh` | 26 | `/dev` as a directory: every listed device stats as one, a new pty appears in `/dev/pts` under its ptsname, `/dev/fd` and `/dev/std*` are the links Linux has, `/dev/fd/N` of a pipe shares the pipe and of a file reopens it, a working directory in `/dev`; every device an inode of its own and Linux's number, the terminal not the same file as `/dev/null`, `lstat` of a device, five filesystems told apart by `st_dev`; `cd /dev` at the console, and `/bin/ls -l` there |
@@ -1524,6 +1623,9 @@ drive it over its serial line.
 | `kernel/perltest.sh` | 37 | Perl: 64-bit integers, byte order, the XS modules against the host's digests and zlib, a `#!` script, perldoc, and an XS module built on the machine with CBuilder and with MakeMaker and GNU make |
 | `kernel/gittest.sh` | 16 | git: a repository made on the machine passes the host's `git fsck --full --strict` with the history and author it was given, one made on the host is read, checked out and fscked on the machine; diff, a three-way merge, gc into a pack, `git submodule` (a `#!/bin/sh` script), a local clone through upload-pack, and a clone over HTTP through git-remote-http |
 | `kernel/difftest.sh` | 16 | GNU diff and patch: the machine's diff applied by the host's patch and the host's by the machine's, exit statuses, `diff -r`, binary files, `diff3 -m`, `cmp`, `sdiff`, `patch -R`, `--dry-run`, `-p1`, and a hunk found at an offset |
+| `kernel/ptracetest.sh` | 42 | ptrace from a small tracer: TRACEME and the exec stop, syscall stops with TRACESYSGOOD and their numbers and results, PEEK/POKE of data and of read-only text (the tracer's copy untouched), `/proc/<pid>/mem` and `task/<tid>/` read and written, a breakpoint hit with TRAP_BRKPT, SINGLESTEP, signal stops suppressed or delivered, GETFPREGS, ATTACH/DETACH and `/proc`'s view of a tracee, TRACEFORK, KILL |
+| `kernel/stracetest.sh` | 15 | strace (built against musl): its account of a known list of calls -- strings out of the tracee's memory, errors decoded, a pid that has to be the tracee's own, the exit as `= ?` -- `-f` through a fork, `-c`, `-e trace=`, and `-p` attaching to a running process that runs on after |
+| `kernel/gdbtest.sh` | 23 | C++ exceptions, static and dynamic; then native gdb: a breakpoint and the pc stepped back over it, `bt` through three frames, values, a string, a struct, `list`, `finish` returning an int and a pointer, `next`, `tbreak`, a signal stopped and passed on, the exit status, `kill`, `-p` attach and detach, and gdbserver driven over loopback |
 | `kernel/shtest.sh` | 8 | `/bin/sh` is bash and the system shell `/bin/msh`, as the real install rules lay them out, read on the host; a `#!/bin/sh` continuation line and `system()` on the machine |
 | `kernel/shebangtest.sh` | 20 | `#!`: the argv the interpreter gets, nesting and ELOOP, permissions, a set-user-id script ignored against an ELF control, from spawn and from execve |
 | `kernel/usertest.sh` | 16 | uids and gids, `/etc/passwd` and `/etc/group`, and what an ordinary user is refused |
@@ -1579,8 +1681,6 @@ two things here.
 answers `EPERM`: the devices are the names the kernel makes under
 `/dev`, not inodes, so a node on the disk would name nothing. FIFOs,
 hard links and symlinks, which used to be in this paragraph, work.
-
-**No `diff`.** sbase has none; GNU diffutils is the obvious port.
 
 **A built-in can be shadowed by a program on purpose.** `df` is the
 case: the built-in takes no arguments and prints one fixed report,

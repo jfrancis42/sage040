@@ -112,34 +112,15 @@ open_flags_to_linux(int flags)
 /* ---- the machine ------------------------------------------------ */
 
 /*
- * The kernel's uname has this system's own shape (the one lib/ulib
- * uses), like its stat and getdents, with the host name last. It is
- * widened here to POSIX's.
+ * The kernel's uname is Linux's, new_utsname, six 65-byte fields -- the
+ * same struct as <sys/utsname.h>. It used to be this system's own shape
+ * and was widened here; now there is nothing to do.
  */
 int
 uname(struct utsname *u)
 {
-    struct {
-        char sysname[16];
-        char release[16];
-        char machine[16];
-        char version[32];
-        char nodename[65];
-        char pad[3];
-    } k;
-    int ret = syscall(LINUX_SYS_uname, &k);
-
-    if (ret < 0)
-        return ret;
-    /* The kernel's fields need not end in a NUL; POSIX's must. */
-    memset(u, 0, sizeof(*u));
-    memcpy(u->sysname, k.sysname, sizeof(k.sysname));
-    memcpy(u->nodename, k.nodename, sizeof(k.nodename));
-    u->nodename[sizeof(u->nodename) - 1] = '\0';
-    memcpy(u->release, k.release, sizeof(k.release));
-    memcpy(u->version, k.version, sizeof(k.version));
-    memcpy(u->machine, k.machine, sizeof(k.machine));
-    return 0;
+    /* The kernel's struct is Linux's new_utsname, which is this one. */
+    return syscall(LINUX_SYS_uname, u);
 }
 
 int

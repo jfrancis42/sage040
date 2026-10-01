@@ -202,6 +202,7 @@ struct task {
     u32   root_ino;             /* chroot: where "/" is, 0 the real one */
     char  cwd_path[PATH_MAX];
     u32   umask;                /* kept and reported; FAT has no modes  */
+    u32   personality;          /* personality(2): kept, inherited; 0 is PER_LINUX */
 
     /*
      * WHO THE TASK BELONGS TO.
@@ -311,6 +312,8 @@ struct task {
     s32   ptrace_orig_d0;       /* the call number, at a syscall stop  */
     int   ptrace_exit_told;     /* its exit, to a tracer not its parent */
     struct pt_regs *ptrace_regs;
+    struct pt_regs *user_regs;  /* the last way in from user mode: where
+                                 * an exiting tracee's registers are */
     struct siginfo ptrace_si;   /* the signal of a signal-delivery stop */
 };
 

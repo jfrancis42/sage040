@@ -192,6 +192,8 @@ the POSIX layer added to it.
 | `ports/diffutils` | GNU diffutils 3.12: `diff`, `cmp`, `diff3`, `sdiff` |
 | `ports/patch` | GNU patch 2.8 |
 | `ports/git` | git 2.56.0: https through curl, the Perl commands, `git-shell` |
+| `ports/gdb` | gdb 17.1 and gdbserver, native, over the kernel's ptrace |
+| `ports/strace` | strace 7.2, built against musl (`ports/musl`, `ports/linux-headers`); over the kernel's ptrace |
 | `ports/bash` | GNU bash 5.3.20 — job control, arrays, `[[ ]]`, arithmetic, here-documents; and `/bin/sh` |
 | `ports/ncurses` | ncurses 6.5: the terminfo database at /usr/share/terminfo, and curses |
 | `ports/less` | the pager, over terminfo |
@@ -369,6 +371,8 @@ is a 25 MHz 68040, and one of the suites waits for the wall clock.
 | `make shtest` | `/bin/sh` is bash; the system shell is `/bin/msh` |
 | `make difftest` | diff and patch, each crossed with the host's |
 | `make gittest` | git: repositories crossed with the host's git, a clone over HTTP |
+| `make ptracetest` `make stracetest` | ptrace from a small tracer; strace's account of known calls |
+| `make gdbtest` | gdb and gdbserver on the machine, and C++ exceptions |
 | `make uemacstest` `make vitest` | the editors |
 | `make bashsuite` | every one of bash's own 83 tests (hours, not minutes) |
 

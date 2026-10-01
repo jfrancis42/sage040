@@ -155,7 +155,7 @@ check "readlink /proc/self/exe names readlink itself" $?
 [ "$(cat "$WORK/fd1.out")" = "/ST/fd1.out" ]
 check "readlink /proc/self/fd/1 under a redirection is that file" $?
 
-want_self="cmdline comm cwd environ exe fd maps root stat statm status"
+want_self="cmdline comm cwd environ exe fd maps mem root stat statm status task"
 [ "$(tr '\n' ' ' < "$WORK/self.out" | sed 's/ $//')" = "$want_self" ]
 check "ls /proc/self lists what a process has" $?
 

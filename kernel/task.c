@@ -12,6 +12,7 @@
  */
 #include "task.h"
 #include "ptrace.h"
+#include "events.h"
 #include "reclock.h"
 #include "vm.h"
 #include "pmm.h"
@@ -210,6 +211,7 @@ void task_cwd_inherit(struct task *t, struct task *from)
     t->root_ino = from->root_ino;
     memcpy(t->cwd_path, from->cwd_path, sizeof(t->cwd_path));
     t->umask = from->umask;     /* inherited the same way, and as often */
+    t->personality = from->personality;
 }
 
 /*
@@ -888,6 +890,9 @@ void task_timeouts(void)
         }
 
         /* ITIMER_REAL: wall time, whether the task is running or not. */
+        if (i == 0) {
+            posix_timer_tick();         /* and timer_create's, once */
+        }
         if (t->it_real_at && t->state != TASK_UNUSED &&
             t->state != TASK_ZOMBIE && (s32)(now - t->it_real_at) >= 0) {
             if (t->it_real_interval) {
@@ -997,6 +1002,8 @@ void task_exit(int status)
     struct task *t = current;
     int i;
 
+    /* Before anything is taken apart: a tracer asked to see it go. */
+    ptrace_exit_event(t->signalled ? t->signalled : (status & 0xff) << 8);
     t->exit_status = status;
     t->exiting = 1;
 
@@ -1063,6 +1070,9 @@ void task_exit(int status)
 
     /* Its tracees go free, and a tracer of its own is told (ptrace.c). */
     ptrace_exiting(t);
+    if (t->pid == t->tgid) {
+        posix_timer_exit(t->tgid);      /* the process's timers too */
+    }
 
     /* Anything waiting for a child to finish wants to know -- by the
      * wait queue, and by SIGCHLD, which is discarded unless the parent

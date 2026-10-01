@@ -1,0 +1,17 @@
+tgkill, as glibc has declared it since 2.30: a signal to one thread of
+one process. Code that does this with syscall(__NR_tgkill, ...) passes
+this library's signal number to a kernel that reads Linux's, and the two
+disagree -- SIGSTOP here is SIGCHLD there. gdb stops a thread that way.
+
+--- a/libc/include/signal.h
++++ b/libc/include/signal.h
+@@ -366,6 +366,9 @@
+ #if __POSIX_VISIBLE >= 199309L
+ int sigqueue(__pid_t, int, const union sigval) __picolibc_export;
+ #endif
++#if __GNU_VISIBLE
++int tgkill(__pid_t, __pid_t, int) __picolibc_export;
++#endif
+ #if __POSIX_VISIBLE
+ int sigsuspend(const sigset_t *) __picolibc_export;
+ #endif

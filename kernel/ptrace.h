@@ -90,6 +90,10 @@ void ptrace_exec(struct pt_regs *regs);
 void ptrace_fork(struct task *child, u32 clone_flags, int vfork,
                  struct pt_regs *regs);
 void ptrace_exiting(struct task *t);               /* tracer or tracee       */
+void ptrace_exit_event(int status);                /* as task_exit begins    */
+
+/* LEN bytes of T's memory at ADDR, read or written (/proc/PID/mem). */
+s32  tracee_access(struct task *t, u32 addr, u8 *buf, u32 len, int write);
 
 /* For waitpid: a trace stop not yet reported to `tracer`, as a status
  * word; 0 if none. */

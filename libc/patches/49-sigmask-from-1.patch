@@ -1,0 +1,41 @@
+The signal-mask conversions start at signal 1, not 0. Signal 0 is no
+signal and in no set; the loops looked it up anyway, which was harmless
+while the translation table sent 0 to SIGINT -- and that mapping was
+itself a bug: kill(pid, 0), the check that pid exists, sent SIGINT to
+it. With 0 mapping to 0 (the m68k backend's linux-signal.h), the loop
+asked for bit -1 of the kernel's mask and wrote past it: bash crashed
+the first time it waited for a background job.
+
+--- a/libos/linux/_sigmask_to_linux.c	2026-09-30 23:51:54.170370806 -0600
++++ b/libos/linux/_sigmask_to_linux.c	2026-09-30 23:51:54.170822371 -0600
+@@ -42,7 +42,7 @@
+     int sig;
+ 
+     memset(kset, 0, sizeof(*kset));
+-    for (sig = 0; sig < _NSIG; sig++)
++    for (sig = 1; sig < _NSIG; sig++)      /* 0 is no signal, in no set */
+         if (sigismember(set, sig))
+             __kernel_sigset_set_mask(kset, _signal_to_linux(sig));
+ }
+--- a/libos/linux/_sigmask_from_linux.c	2026-09-30 23:51:54.172467162 -0600
++++ b/libos/linux/_sigmask_from_linux.c	2026-09-30 23:51:54.172822374 -0600
+@@ -41,7 +41,7 @@
+     int sig;
+ 
+     sigemptyset(set);
+-    for (sig = 0; sig < _NSIG; sig++)
++    for (sig = 1; sig < _NSIG; sig++)      /* 0 is no signal, in no set */
+         if (__kernel_sigset_get_mask(kset, _signal_to_linux(sig)))
+             sigaddset(set, sig);
+ }
+--- a/libos/linux/sigsuspend.c	2026-09-30 23:52:22.925185990 -0600
++++ b/libos/linux/sigsuspend.c	2026-09-30 23:52:22.925865468 -0600
+@@ -41,7 +41,7 @@
+     __kernel_sigset_t kmask = {};
+     int               sig;
+ 
+-    for (sig = 0; sig < _NSIG; sig++)
++    for (sig = 1; sig < _NSIG; sig++)      /* 0 is no signal, in no set */
+         if (sigismember(mask, sig))
+             __kernel_sigset_set_mask(&kmask, _signal_to_linux(sig));
+     return syscall(LINUX_SYS_rt_sigsuspend, &kmask);

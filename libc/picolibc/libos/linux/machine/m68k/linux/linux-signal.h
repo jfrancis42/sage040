@@ -119,7 +119,7 @@ enum __picolibc_signal {
 
 #ifdef SIGNAL_LINUX_TO_PICOLIBC
 static const enum __picolibc_signal __signal_linux_to_picolibc[] = {
-    [0] = __PICOLIBC_SIGINT,
+    [0] = (enum __picolibc_signal)0,    /* no signal is no signal */
     [__LINUX_SIGHUP] = __PICOLIBC_SIGHUP,
     [__LINUX_SIGINT] = __PICOLIBC_SIGINT,
     [__LINUX_SIGQUIT] = __PICOLIBC_SIGQUIT,
@@ -155,8 +155,12 @@ static const enum __picolibc_signal __signal_linux_to_picolibc[] = {
 #endif
 
 #ifdef SIGNAL_PICOLIBC_TO_LINUX
+/* [0] is 0, the null signal: kill(pid, 0) asks whether pid exists and
+ * sends nothing. It was SIGINT, like the table's other empty slots, so
+ * every such check interrupted the process it asked about -- found by
+ * strace, which printed kill(7, SIGINT) for a program's kill(getpid(), 0). */
 static const enum __linux_signal __signal_picolibc_to_linux[] = {
-    [0] = __LINUX_SIGINT,        [SIGHUP] = __LINUX_SIGHUP,     [SIGINT] = __LINUX_SIGINT,
+    [0] = (enum __linux_signal)0, [SIGHUP] = __LINUX_SIGHUP,     [SIGINT] = __LINUX_SIGINT,
     [SIGQUIT] = __LINUX_SIGQUIT, [SIGILL] = __LINUX_SIGILL,     [SIGTRAP] = __LINUX_SIGTRAP,
     [SIGIOT] = __LINUX_SIGIOT,   [7] = __LINUX_SIGINT,          [SIGFPE] = __LINUX_SIGFPE,
     [SIGKILL] = __LINUX_SIGKILL, [SIGBUS] = __LINUX_SIGBUS,     [SIGSEGV] = __LINUX_SIGSEGV,

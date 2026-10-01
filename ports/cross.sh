@@ -66,7 +66,7 @@ SAGE_SPECS=$TOP/libc/sage040.specs
 SPECS_CFLAGS="-specs=$SAGE_SPECS -B$TOP/libc/ -B$SAGE_LIBC/lib/ -L$SAGE_LIBC/lib"
 
 # The start files have to exist as OBJECTS for a spec to name one.
-for _crt in crt0 crt0-dyn; do
+for _crt in crt0 crt0-dyn crtbegin-eh crtend-eh; do
     if [ ! -f "$TOP/libc/$_crt.o" ] ||        [ "$TOP/libc/$_crt.s" -nt "$TOP/libc/$_crt.o" ]; then
         "$CROSS_CC" -mcpu=68040 -c "$TOP/libc/$_crt.s" -o "$TOP/libc/$_crt.o"
     fi

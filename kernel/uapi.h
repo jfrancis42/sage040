@@ -565,6 +565,7 @@ struct statfs {
 #define __NR_getppid        64
 #define __NR_getpgrp        65
 #define __NR_getpgid       132
+#define __NR_personality   136
 
 #define PIPE_SIZE       4096
 #define PIPE_BUF        4096
@@ -833,6 +834,8 @@ struct mmap_arg_struct {
  * be pointed at a socket instead of a file without knowing.
  */
 #define __NR_ptrace     26
+#define __NR_readv     145
+#define __NR_writev    146
 #define __NR_kill       37
 #define __NR_waitpid     7
 #define __NR_getpid     20
@@ -1400,14 +1403,22 @@ struct sysinfo {
     u8  _f[8];
 };
 
-/* What uname() fills in. */
+/*
+ * What uname() fills in: LINUX'S struct new_utsname, six fields of 65
+ * bytes, because the call is Linux's (122) and a structure behind a
+ * Linux number has to be Linux's. It was this system's own -- sysname,
+ * release and machine in 16 bytes each -- which picolibc's uname()
+ * translated and nothing else could: a program with a C library of its
+ * own (strace, on musl) read the machine as an empty string.
+ */
+#define UTS_LEN 65
 struct utsname {
-    char sysname[16];
-    char release[16];
-    char machine[16];
-    char version[32];
-    char nodename[65];          /* the host name: sethostname() */
-    char pad[3];
+    char sysname[UTS_LEN];
+    char nodename[UTS_LEN];     /* the host name: sethostname() */
+    char release[UTS_LEN];
+    char version[UTS_LEN];
+    char machine[UTS_LEN];
+    char domainname[UTS_LEN];
 };
 
 #define HOST_NAME_MAX   64
@@ -1662,6 +1673,7 @@ struct sigcontext {
 #define __NR_rt_sigaction  174
 #define __NR_rt_sigprocmask 175
 #define __NR_rt_sigpending 176
+#define __NR_rt_sigtimedwait 177
 #define __NR_rt_sigsuspend 179
 #define __NR_sigaltstack   186
 #define __NR_vfork         190
@@ -1936,8 +1948,16 @@ struct ucontext {
 #define __NR_inotify_init1     328
 #define __NR_timerfd_gettime64 410
 #define __NR_timerfd_settime64 411
+#define __NR_timer_create      254
+#define __NR_timer_settime     255
+#define __NR_timer_gettime     256
+#define __NR_timer_getoverrun  257
+#define __NR_timer_delete      258
+#define __NR_timer_gettime64   408
+#define __NR_timer_settime64   409
 #define __NR_pselect6_time64   413
 #define __NR_ppoll_time64      414
+#define __NR_rt_sigtimedwait_time64 421
 #define __NR_epoll_pwait2      441
 
 #define EFD_SEMAPHORE       1

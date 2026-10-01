@@ -223,6 +223,25 @@ void ptrace_fork(struct task *child, u32 clone_flags, int vfork,
     event_stop(event, (u32)child->pid, regs);
 }
 
+/*
+ * PTRACE_EVENT_EXIT: a tracee that asked for it stops as it begins to
+ * exit, its registers still there to read and its wait status the
+ * event's message -- which is how strace prints `exit_group(0) = ?`
+ * rather than leaving the call unfinished.
+ */
+void ptrace_exit_event(int status)
+{
+    struct task *t = current;
+
+    /* Not for SIGKILL: nothing may keep a killed task from dying, and
+     * a tracer that never answers would. */
+    if (!t->tracer || !(t->ptrace_opts & PTRACE_O_TRACEEXIT) || !t->user_regs ||
+        t->signalled == SIGKILL) {
+        return;
+    }
+    event_stop(PTRACE_EVENT_EXIT, (u32)status, t->user_regs);
+}
+
 /* A task is going: its tracees go free, and its tracer hears. */
 void ptrace_exiting(struct task *t)
 {
@@ -320,6 +339,28 @@ static int tracee_word(struct task *t, u32 addr, u32 *val, int write)
         *val = ((u32)b[0] << 24) | ((u32)b[1] << 16) | ((u32)b[2] << 8) | b[3];
     }
     return 0;
+}
+
+/*
+ * Another task's memory, LEN bytes at ADDR, for /proc/PID/mem: the
+ * same byte-at-a-time path PEEKDATA and POKEDATA take, so a write to
+ * text makes the page private first. Returns the bytes moved -- fewer
+ * than asked where the range runs into an unmapped page -- or -EIO if
+ * not even the first could be.
+ */
+s32 tracee_access(struct task *t, u32 addr, u8 *buf, u32 len, int write)
+{
+    u32 i;
+
+    for (i = 0; i < len; i++) {
+        if (tracee_byte(t, addr + i, &buf[i], write) < 0) {
+            break;
+        }
+    }
+    if (write && i) {
+        cache_flush_all();      /* it may have been an instruction */
+    }
+    return i ? (s32)i : -EIO;
 }
 
 /* --- the tracee's registers -------------------------------------------- */

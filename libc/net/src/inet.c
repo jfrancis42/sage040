@@ -42,6 +42,9 @@
 #include <string.h>
 #include <stdio.h>
 
+const struct in6_addr in6addr_any = IN6ADDR_ANY_INIT;
+const struct in6_addr in6addr_loopback = IN6ADDR_LOOPBACK_INIT;
+
 /* inet_aton's classic grammar: a, a.b, a.b.c or a.b.c.d, each part
  * decimal, octal (0...) or hex (0x...). */
 int inet_aton(const char *cp, struct in_addr *inp)

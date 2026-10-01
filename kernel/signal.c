@@ -18,6 +18,7 @@
  */
 #include "signal.h"
 #include "ptrace.h"
+#include "cache.h"
 #include "sysint.h"
 #include "poll.h"
 #include "task.h"
@@ -580,11 +581,17 @@ static void put_retcode(void *where, u32 nr)
 
 static void block_for_handler(struct task *t, int sig, struct sigaction *act);
 
+/*
+ * ALWAYS THE TRAMPOLINE, as for the rt frame, and as Linux/m68k does for
+ * both: sa_restorer is accepted and ignored. musl relies on exactly
+ * that -- it sets SA_RESTORER with an empty placeholder -- and honouring
+ * it sent strace's SIGTERM handler "back" into an rts that popped
+ * garbage: pc=0xf. The trampoline makes the same sigreturn call any
+ * restorer here would.
+ */
 static u32 return_address(const struct sigaction *act, u32 retcode_uva)
 {
-    if ((act->sa_flags & SA_RESTORER) && act->sa_restorer) {
-        return (u32)act->sa_restorer;
-    }
+    (void)act;
     return retcode_uva;
 }
 
@@ -710,6 +717,10 @@ static int setup_frame(struct task *t, struct pt_regs *regs, int sig,
     if (copy_to_user(fp, &f, sizeof(f)) < 0) {
         return -1;              /* the stack is not usable */
     }
+    /* The trampoline is code written as data: out of the data cache and
+     * out of the instruction cache before the handler returns into it.
+     * QEMU has no cache to show this; the 68040 does. */
+    cache_flush_all();
 
     set_usp(fp);
     regs->pc = (u32)act->sa_handler;
@@ -810,6 +821,7 @@ static int setup_rt_frame(struct task *t, struct pt_regs *regs, int sig,
     if (copy_to_user(fp, &f, sizeof(f)) < 0) {
         return -1;
     }
+    cache_flush_all();          /* the trampoline: see setup_frame */
 
     set_usp(fp);
     regs->pc = (u32)act->sa_handler;
@@ -975,6 +987,7 @@ void signal_deliver(struct pt_regs *regs)
     if (!t || !t->as) {
         return;
     }
+    t->user_regs = regs;
 
     while (!handled && (sig = next_signal(t)) != 0) {
         struct sigaction *act = &t->sigact[sig];

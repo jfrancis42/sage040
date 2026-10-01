@@ -141,6 +141,11 @@ libc/test/threadtest
 system/klogd
 system/dmesg
 libc/test/ptytest
+libc/test/ptracetest
+libc/test/stracee
+libc/test/gdbee
+libc/test/ehtest
+libc/test/ehtest.static
 system/reboot
 system/which
 system/who

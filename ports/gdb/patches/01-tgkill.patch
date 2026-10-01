@@ -1,0 +1,58 @@
+Sending a signal to one thread, with a C library that is not glibc.
+
+gdb stops and wakes threads with syscall(__NR_tkill, lwpid, signo). The
+signal number is the C library's, and syscall() passes it to the kernel
+unchanged -- which is only right if the two number signals alike.
+picolibc does not (its SIGSTOP is Linux's SIGCHLD), so with picolibc
+the call goes through tgkill(), which translates.
+
+<asm/ptrace.h> is included only for PTRACE_GET_THREAD_AREA, which this
+kernel does not have; the include is made conditional on the header.
+
+diff -ru a/gdb/linux-nat.c b/gdb/linux-nat.c
+--- a/gdb/linux-nat.c	2026-10-01 00:49:27.923347205 -0600
++++ b/gdb/linux-nat.c	2026-10-01 00:49:27.958918017 -0600
+@@ -1838,7 +1838,13 @@
+   int ret;
+ 
+   errno = 0;
++#ifdef __PICOLIBC__
++  /* This C library numbers signals its own way, and syscall () would
++     hand the kernel this one's number for Linux's; tgkill translates.  */
++  ret = tgkill (linux_proc_get_tgid (lwpid), lwpid, signo);
++#else
+   ret = syscall (__NR_tkill, lwpid, signo);
++#endif
+   if (errno == ENOSYS)
+     {
+       /* If tkill fails, then we are not using nptl threads, a
+diff -ru a/gdbserver/linux-low.cc b/gdbserver/linux-low.cc
+--- a/gdbserver/linux-low.cc	2026-10-01 00:49:27.926672532 -0600
++++ b/gdbserver/linux-low.cc	2026-10-01 00:49:27.963792012 -0600
+@@ -3674,7 +3674,13 @@
+   int ret;
+ 
+   errno = 0;
++#ifdef __PICOLIBC__
++  /* This C library numbers signals its own way, and syscall () would
++     hand the kernel this one's number for Linux's; tgkill translates.  */
++  ret = tgkill (linux_proc_get_tgid (lwpid), lwpid, signo);
++#else
+   ret = syscall (__NR_tkill, lwpid, signo);
++#endif
+   if (errno == ENOSYS)
+     {
+       /* If tkill fails, then we are not using nptl threads, a
+diff -ru a/gdbserver/linux-m68k-low.cc b/gdbserver/linux-m68k-low.cc
+--- a/gdbserver/linux-m68k-low.cc	2026-10-01 00:49:27.929865991 -0600
++++ b/gdbserver/linux-m68k-low.cc	2026-10-01 00:49:27.965019790 -0600
+@@ -202,7 +202,9 @@
+   return false;
+ }
+ 
++#if __has_include(<asm/ptrace.h>)
+ #include <asm/ptrace.h>
++#endif
+ 
+ #ifdef PTRACE_GET_THREAD_AREA
+ /* Fetch the thread-local storage pointer for libthread_db.  */

@@ -9,7 +9,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-PROGS := libctest inettest posixtest cryptest threadtest ptytest tlstest shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest sigcowtest ptracetest
+PROGS := libctest inettest posixtest cryptest threadtest ptytest tlstest shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest sigcowtest ptracetest stracee gdbee
 
 include $(TOPDIR)/libc/libc.mk
 
@@ -69,3 +69,16 @@ clean: clean-so
 clean-so:
 	rm -f libsot.so libsot2.so libsot3.so sotest libctest.dyn cryptest cryptest.c \
 	    tlstest.dyn $(TLS_LIBS)
+
+# gdbee is debugged by kernel/gdbtest.sh: with the debug information,
+# and without the optimiser moving its variables out of reach. A later
+# -O wins, so this one overrides libc.mk's -O2.
+gdbee: CFLAGS += -g -O0
+
+# ehtest: C++ exceptions, dynamic and static (libc/crtbegin-eh.s).
+# Not in PROGS: it is C++, built by cxx.sh rather than libc.mk's rule.
+ehtest: ehtest.cc cxx.sh $(TOPDIR)/libc/crtbegin-eh.s $(TOPDIR)/libc/crtend-eh.s
+	./cxx.sh $< -o $@ -lstdc++
+
+ehtest.static: ehtest.cc cxx.sh $(TOPDIR)/libc/crtbegin-eh.s $(TOPDIR)/libc/crtend-eh.s
+	./cxx.sh -static $< -o $@ -lstdc++

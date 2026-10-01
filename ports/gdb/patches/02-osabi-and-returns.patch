@@ -1,0 +1,49 @@
+The programs this gdb debugs, as a Linux/m68k system's.
+
+Every program on this system is built by gcc's m68k-elf configuration
+against a C library whose system calls are Linux/m68k's, and none
+carries an ELF OS ABI note. gdb's m68k sniffer calls a note-less ELF
+"SVR4", and the SVR4 ABI does not step the pc back over a breakpoint's
+trap: every breakpoint was reported at the address after it, gdb did
+not recognise it as its own, and resumed in the middle of an
+instruction (SIGILL). With picolibc -- that is, in the gdb that runs ON
+this system -- a note-less ELF is left to the configured default,
+GNU/Linux.
+
+And that compiler's return conventions are not quite Linux's: a pointer
+comes back in %d0 alone (not %a0), and a structure's return address is
+passed in %a0 (not %a1). Without this `finish` from a function
+returning a pointer printed whatever %a0 held.
+
+diff -ru a/gdb/m68k-linux-tdep.c b/gdb/m68k-linux-tdep.c
+--- a/gdb/m68k-linux-tdep.c	2026-10-01 08:28:35.412880346 -0600
++++ b/gdb/m68k-linux-tdep.c	2026-10-01 08:28:35.457772252 -0600
+@@ -400,6 +400,14 @@
+   m68k_svr4_init_abi (info, gdbarch);
+   tdep->struct_value_regnum = M68K_A1_REGNUM;
+   tdep->struct_return = reg_struct_return;
++#ifdef __PICOLIBC__
++  /* This gdb runs on a system whose programs come from gcc's m68k-elf
++     configuration, which returns a pointer in %d0 alone and passes a
++     structure's return address in %a0 -- gdb's "embedded" ABI for those
++     two, Linux's for everything else.  */
++  tdep->pointer_result_regnum = M68K_D0_REGNUM;
++  tdep->struct_value_regnum = M68K_A0_REGNUM;
++#endif
+ 
+   set_gdbarch_decr_pc_after_break (gdbarch, 2);
+ 
+diff -ru a/gdb/m68k-tdep.c b/gdb/m68k-tdep.c
+--- a/gdb/m68k-tdep.c	2026-10-01 08:28:35.412799782 -0600
++++ b/gdb/m68k-tdep.c	2026-10-01 08:28:35.457685276 -0600
+@@ -1358,8 +1358,10 @@
+       for (asection *sect : gdb_bfd_sections (abfd))
+ 	generic_elf_osabi_sniff_abi_tag_sections (abfd, sect, &osabi);
+ 
++#ifndef __PICOLIBC__
+       if (osabi == GDB_OSABI_UNKNOWN)
+ 	osabi = GDB_OSABI_SVR4;
++#endif
+     }
+ 
+   return osabi;

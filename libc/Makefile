@@ -57,9 +57,15 @@ crt0.o: crt0.s
 crt0-dyn.o: crt0-dyn.s
 	$(CC) -mcpu=68040 -c $< -o $@
 
+crtbegin-eh.o: crtbegin-eh.s
+	$(CC) -mcpu=68040 -c $< -o $@
+
+crtend-eh.o: crtend-eh.s
+	$(CC) -mcpu=68040 -c $< -o $@
+
 install: install-usr
 
-install-usr: all crt0.o crt0-dyn.o $(DISK)
+install-usr: all crt0.o crt0-dyn.o crtbegin-eh.o crtend-eh.o $(DISK)
 	@$(FSIMG) mkdir /usr/include
 	@$(FSIMG) mkdir /usr/lib
 	$(FSIMG) put -r $(SAGE_LIBC)/include /usr/include
@@ -68,10 +74,10 @@ install-usr: all crt0.o crt0-dyn.o $(DISK)
 	    $(FSIMG) put $(SAGE_LIBC)/lib/$$f /usr/lib/$$f; \
 	 done
 	$(FSIMG) put $(shell $(CC) -mcpu=68040 -print-libgcc-file-name) /usr/lib/libgcc.a
-	@for f in crt0.o crt0-dyn.o sage040.ld; do \
+	@for f in crt0.o crt0-dyn.o crtbegin-eh.o crtend-eh.o sage040.ld; do \
 	    $(FSIMG) put $$f /usr/lib/$$f; \
 	 done
 	@echo "the C library is on $(DISK) at /usr"
 
 clean:
-	rm -f crt0.o crt0-dyn.o
+	rm -f crt0.o crt0-dyn.o crtbegin-eh.o crtend-eh.o

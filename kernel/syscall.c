@@ -217,6 +217,46 @@ static s32 rw_user(int fd, u32 ubuf, u32 len, int writing)
 
 /* The same, at an offset: a page of the user's buffer at a time, each
  * at the offset that page's bytes belong at. */
+/*
+ * readv and writev: each buffer in turn through rw_user, stopping at the
+ * first that comes up short, as POSIX has it -- a scattered write is not
+ * atomic here, and need not be anywhere but a pipe. musl's stdio writes
+ * everything this way, and picolibc's emulated it with a loop of writes,
+ * which is why the kernel had gone without.
+ */
+#define IOV_MAX_K   1024
+
+static s32 rwv_user(int fd, u32 uiov, int cnt, int writing)
+{
+    s32 total = 0;
+    int i;
+
+    if (cnt < 0 || cnt > IOV_MAX_K) {
+        return -EINVAL;
+    }
+    for (i = 0; i < cnt; i++) {
+        u32 iov[2];             /* base, length */
+        s32 got;
+        int err = fetch(iov, uiov + (u32)i * 8, sizeof(iov));
+
+        if (err < 0) {
+            return total > 0 ? total : err;
+        }
+        if (iov[1] == 0) {
+            continue;
+        }
+        got = rw_user(fd, iov[0], iov[1], writing);
+        if (got < 0) {
+            return total > 0 ? total : got;
+        }
+        total += got;
+        if ((u32)got < iov[1]) {
+            break;
+        }
+    }
+    return total;
+}
+
 static s32 prw_user(int fd, u32 ubuf, u32 len, u32 off, int writing)
 {
     s32 total = 0;
@@ -896,6 +936,72 @@ int do_pselect6(u32 nfds, u32 uin, u32 uout, u32 uex, u32 uts, u32 usig,
     r = select_sets(nfds, uin, uout, uex, ms, &left);
     signal_temp_done(pushed, old, r == -ERESTARTNOHAND || r == -EINTR);
     return r;
+}
+
+/*
+ * rt_sigtimedwait: take one of a set of pending signals, waiting for
+ * one if none is, or until the timeout. The caller has blocked them --
+ * that is what makes them wait here rather than be delivered -- so a
+ * blocked signal wakes nobody (signal.c) and the wait is poll's: the
+ * raise calls poll_wake(), as it does for signalfd, which takes signals
+ * the same way. Returns the signal number, -EAGAIN at the timeout, or
+ * -EINTR for some other, unblocked, signal.
+ */
+static __attribute__((noinline))
+int do_sigtimedwait(u32 uset, u32 uinfo, u32 uts, u32 size, int wide)
+{
+    u32 set[2], deadline = 0, ready;
+    s32 ms = -1;
+    int sig, r;
+    u16 sr;
+
+    if (size != SIGSET_BYTES) {
+        return -EINVAL;
+    }
+    if ((r = fetch(set, uset, sizeof(set))) < 0) {
+        return r;
+    }
+    set[0] &= ~SIG_UNBLOCKABLE;
+    if (uts && (r = ts_to_ms(uts, wide, &ms)) < 0) {
+        return r;
+    }
+    if (ms > 0) {
+        deadline = timer_jiffies() + ((u32)ms + 1000 / HZ - 1) / (1000 / HZ);
+    }
+    for (;;) {
+        sr = irq_save();
+        ready = current->sig_pending & set[0];
+        if (ready) {
+            for (sig = 1; !(ready & SIGMASK(sig)); sig++) {
+            }
+            current->sig_pending &= ~SIGMASK(sig);
+            irq_restore(sr);
+            break;
+        }
+        irq_restore(sr);
+        if (ms == 0 || (deadline && (s32)(timer_jiffies() - deadline) >= 0)) {
+            return -EAGAIN;
+        }
+        if (signal_pending(current)) {
+            return -EINTR;
+        }
+        poll_scan_begin();
+        if (deadline) {
+            poll_deadline(deadline);
+        }
+        poll_sleep(100);
+    }
+    if (uinfo) {
+        struct siginfo si;
+
+        memset(&si, 0, sizeof(si));
+        si.si_signo = sig;
+        si.si_code = SI_USER;
+        if ((r = sys_store(uinfo, &si, sizeof(si))) < 0) {
+            return r;
+        }
+    }
+    return sig;
 }
 
 /* --- sockets ---------------------------------------------------------- */
@@ -1880,6 +1986,12 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
     case __NR_write:
         return rw_user((int)a1, a2, a3, 1);
 
+    case __NR_readv:
+        return rwv_user((int)a1, a2, (int)a3, 0);
+
+    case __NR_writev:
+        return rwv_user((int)a1, a2, (int)a3, 1);
+
     case __NR_lseek:
         return fd_lseek((int)a1, (s32)a2, (int)a3);
 
@@ -2461,6 +2573,10 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
     case __NR_ppoll_time64:
         return do_ppoll(a1, a2, a3, a4, a5, nr == __NR_ppoll_time64);
 
+    case __NR_rt_sigtimedwait:
+    case __NR_rt_sigtimedwait_time64:
+        return do_sigtimedwait(a1, a2, a3, a4, nr == __NR_rt_sigtimedwait_time64);
+
     case __NR_pselect6:
     case __NR_pselect6_time64:
         return do_pselect6(a1, a2, a3, a4, a5, a6, nr == __NR_pselect6_time64);
@@ -2595,6 +2711,9 @@ void syscall_dispatch(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
      * a result of its own in d0 -- so after the stop they are read
      * again from the registers it may have changed (ptrace.c).
      */
+    if (pt_user_mode(regs)) {
+        current->user_regs = regs;
+    }
     if (current->tracer && pt_user_mode(regs)) {
         int stop = ptrace_syscall_enter(regs);
 

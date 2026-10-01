@@ -172,6 +172,104 @@ timerfd_gettime(int fd, struct itimerspec *cur)
     return r;
 }
 
+/* --- POSIX timers ----------------------------------------------------- */
+
+/*
+ * timer_create and the rest, over the kernel's (events.c there), in
+ * this library's numbers: picolibc's clocks, its TIMER_ABSTIME (4,
+ * Linux's 1), its SIGEV_ values (SIGEV_SIGNAL is 2, Linux's 0) and its
+ * signal numbers all differ from the kernel's. SIGEV_THREAD -- a
+ * function called on a new thread -- is a C library's to provide, and
+ * this one does not.
+ */
+struct k_sigevent {
+    int sigev_value;
+    int sigev_signo;
+    int sigev_notify;
+    int sigev_tid;
+    int _pad[12];
+};
+
+static int
+kclock(clockid_t clockid)
+{
+    switch (clockid) {
+    case CLOCK_REALTIME:  return 0;
+    case CLOCK_MONOTONIC: return 1;
+    case CLOCK_BOOTTIME:  return 7;
+    default:              return -1;
+    }
+}
+
+int
+timer_create(clockid_t clockid, struct sigevent *evp, timer_t *timerid)
+{
+    struct k_sigevent k;
+    int id = 0, r;
+
+    memset(&k, 0, sizeof(k));
+    if (evp) {
+        switch (evp->sigev_notify) {
+        case SIGEV_SIGNAL: k.sigev_notify = 0; break;
+        case SIGEV_NONE:   k.sigev_notify = 1; break;
+        default:
+            errno = EINVAL;
+            return -1;
+        }
+        k.sigev_signo = evp->sigev_notify == SIGEV_SIGNAL ?
+                        _signal_to_linux(evp->sigev_signo) : 0;
+        k.sigev_value = evp->sigev_value.sival_int;
+    }
+    r = syscall(LINUX_SYS_timer_create, kclock(clockid), evp ? &k : NULL, &id);
+    if (r == 0) {
+        *timerid = (timer_t)id;
+    }
+    return r;
+}
+
+int
+timer_settime(timer_t timerid, int flags, const struct itimerspec *new,
+              struct itimerspec *old)
+{
+    struct k_itimerspec64 kn, ko;
+    int r;
+
+    ts_out(&kn.it_interval, &new->it_interval);
+    ts_out(&kn.it_value, &new->it_value);
+    r = syscall(LINUX_SYS_timer_settime64, (int)timerid,
+                (flags & TIMER_ABSTIME) ? 1 : 0, &kn, old ? &ko : NULL);
+    if (r == 0 && old) {
+        ts_in(&old->it_interval, &ko.it_interval);
+        ts_in(&old->it_value, &ko.it_value);
+    }
+    return r;
+}
+
+int
+timer_gettime(timer_t timerid, struct itimerspec *cur)
+{
+    struct k_itimerspec64 k;
+    int r = syscall(LINUX_SYS_timer_gettime64, (int)timerid, &k);
+
+    if (r == 0) {
+        ts_in(&cur->it_interval, &k.it_interval);
+        ts_in(&cur->it_value, &k.it_value);
+    }
+    return r;
+}
+
+int
+timer_getoverrun(timer_t timerid)
+{
+    return syscall(LINUX_SYS_timer_getoverrun, (int)timerid);
+}
+
+int
+timer_delete(timer_t timerid)
+{
+    return syscall(LINUX_SYS_timer_delete, (int)timerid);
+}
+
 /* --- signalfd --------------------------------------------------------- */
 
 /*

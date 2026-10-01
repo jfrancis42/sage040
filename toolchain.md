@@ -350,6 +350,33 @@ than a build inconvenience: `libc/net/include/*.h` had no
 `htons` and friends and the link failed on symbols that existed. Every
 one of the seven has the guards now.
 
+**`<poll.h>` had no guards either** (`libc/patches/51`), the last
+picolibc header that declares functions without them; gdb's event loop
+was the first C++ caller of `poll` and asked the linker for
+`_Z4pollP6pollfdji`.
+
+**C++ exceptions need the unwind tables REGISTERED.** libgcc for
+`m68k-elf` finds a program's `.eh_frame` only by being told where it
+is, through `__register_frame_info` -- which on a stock system
+`crtbegin.o` calls at start, and which nothing here called, because the
+specs link picolibc's crt0 and not crtbegin. So every C++ throw on the
+machine, in every C++ program ever built here, ended in libgcc's own
+assertion: a `trap #7` in `uw_init_context_1`, reported by the kernel
+as a TRAP instruction. Nothing had thrown before gdb, which throws as
+ordinary control flow and so could not run at all.
+
+`libc/crtbegin-eh.s` is the missing part of crtbegin and only that: the
+specs link it straight after crt0, so its label is the start of the
+output `.eh_frame`; a priority-99 constructor registers the section
+through a WEAK reference, so a C program, which never pulls the
+unwinder out of libgcc.a, registers nothing and links nothing more; and
+`libc/crtend-eh.s`, the end file, writes the zero word the unwinder
+stops at. The static linker script used to discard `.eh_frame`; it
+keeps it now. `libc/test/ehtest.cc` throws three frames down and checks
+the destructors ran, static and dynamic (`kernel/gdbtest.sh`). A C++
+program linked WITHOUT the specs -- by hand, with crt0 and nothing else
+-- still cannot throw.
+
 ### That it is the same compiler
 
 The point of a native toolchain is not that it runs but that it is
