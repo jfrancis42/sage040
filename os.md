@@ -1698,7 +1698,7 @@ with ENOEXEC, and the shells run it themselves. `kernel/shebangtest.sh`.
 `lib/` is what a program written for this system links against: `crt0.s`,
 `ulib.c`, `user.ld`. `system/` is what the system ships, installed into
 `/bin`: `ifconfig`, `ping`, `netstat`, `host`, `ntpdate`, `shutdown`,
-`env`, `stty`, `resize`, `fsck`, `df`, `mount`, `umount`, `id`, `klogd`, `dmesg`,
+`env`, `stty`, `resize`, `fsck`, `df`, `mount`, `umount`, `id`, `locale` (in `utils/`, built on picolibc), `klogd`, `dmesg`,
 `swapon`, `swapoff`, `nvram`, `irqs` and `msh` (the system shell; `/bin/sh`
 is bash). `apps/` is everything
 else, installed at the root: `cube`, `fbtest`, `fbmap`, `hello`,
@@ -1863,7 +1863,7 @@ drive it over its serial line.
 | `kernel/sedtest.sh` | 21 | sed, against the same sed built for the host |
 | `kernel/greptest.sh` | 37 | grep's own 329 pattern cases, and its options against the host's grep |
 | `kernel/sbasetest.sh` | 77 | the utilities, against the host's own, and what only the disk can say |
-| `kernel/bashtest.sh` | 16 + 1 known | the shell language against the host's bash, and part of bash's own suite, each test through its own `run-NAME` as bash's `run-all` does. `glob` is expected to fail and is reported `[KNOWN]`: it wants a locale this system has not got. `type` and `varenv` used to be listed too, undiagnosed; both were the harness -- the runners were bypassed, and sbase's `cat` had no `-v`. One that starts PASSING is a loud failure |
+| `kernel/bashtest.sh` | 16 + 1 known | the shell language against the host's bash, and part of bash's own suite, each test through its own `run-NAME` as bash's `run-all` does. `glob` is expected to fail and is reported `[KNOWN]`: it wants a zh_TW.big5 locale, and picolibc has no Big5. `type` and `varenv` used to be listed too, undiagnosed; both were the harness -- the runners were bypassed, and sbase's `cat` had no `-v`. One that starts PASSING is a loud failure |
 | `kernel/threadtest.sh` | 52 | threads: clone, futexes, and the pthread layer, with the lock's own negative control |
 | `kernel/ptytest.sh` | 34 | pseudo-terminals, and that the pairs are given back |
 | `kernel/curstest.sh` | 28 | terminfo and curses, with the database renamed away as the control |
@@ -1886,6 +1886,7 @@ drive it over its serial line.
 | `kernel/sesstest.sh` | 14 | sessions and controlling terminals: a new session has none, a leader opening a pty gets it (tcgetsid, the front, `/dev/tty`, `tty_nr`), a job inherits it and another session cannot use it, `O_NOCTTY`, `TIOCSCTTY` refused to a user and taken by root, the master closing hanging up leader and job, the leader exiting hanging up its job, `TIOCNOTTY`, `setsid` |
 | `kernel/stacktest.sh` | 10 | a kernel stack that runs out: 4 and 16 KB come back and the high-water mark sees them, 64 KB is reported -- the task, the function (resolved by the host's addr2line), how deep, its return addresses out to the system call -- and panics in the red zone, never a double fault |
 | `kernel/panictest.sh` | 6 | a panic kept across a reset: a real one (a stack overflow) reported by the next boot with its report and return addresses, once only, and a `/bin/nvram` setting beside it surviving |
+| `kernel/localetest.sh` | 9 | `locale -a` lists what setlocale accepts (48: C, POSIX and C.<charset> for UTF-8, the ISO-8859s, the code pages, KOI8 and the Japanese sets) and not Big5; `locale charmap` under a LANG is that LANG's charset; `locale` follows POSIX's LC_ALL/LC_x/LANG order |
 | `kernel/fuzztest.sh` | 5 | 40 rounds of 3000 random system calls with hostile arguments (null, kernel and vector-table addresses, a buffer's last byte, lengths of 0 and 0xffffffff, descriptors live and dead), from a nobody in a chroot with the disk-delay knob on: no panic, fault or stack overflow, pages and tasks back where they were, the clock and host name untouched, the console answering, and the volume clean by the host's e2fsck |
 | `kernel/bootjtest.sh` | 7 | the boot ROM on a volume whose journal still needs replaying: a KERNEL.ROM renamed into place and the machine stopped after the commit, the host's home-blocks view still naming the old inode, the ROM loading the new one through the log, and the kernel replaying it clean |
 | `kernel/mounttest.sh` | 98 | more than one volume: mount and umount, refusals (no such device, unknown type, a file, `/tmp`, `/`, the root's own partition by either name, not root), crossing into a volume and out by `..`, its own `st_dev`, `statvfs` and fsid, `EXDEV` both ways, `EBUSY` for an open file, a working directory and another process in it, and a volume mounted on it, a read-only volume refusing every kind of write; from the host, all three volumes clean after `halt`, the read-only one bit for bit unchanged, Linux reading what was written, and a journal on a volume that is not the root replayed by `mount` |

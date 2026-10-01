@@ -76,11 +76,11 @@ cc -O2 -w -o "$WORK/host/awk" "$AWKSRC"/{b,main,parse,proctab,tran,lib,run,lex,a
 # should print.
 cp "$AWKSRC"/bugs-fixed/*.awk "$AWKSRC"/bugs-fixed/*.in "$WORK/tests/" 2>/dev/null
 UPSTREAM=$(cd "$AWKSRC/bugs-fixed" && ls *.awk | sed 's/\.awk$//')
-# Tests that need a tool this system does not have yet, and which task
-# brings it. Reported as SKIP, not passed; remove each as it lands.
+# Tests that cannot pass here, and why. Reported as SKIP, not passed;
+# remove each when it can. `space` used to be listed (it wanted sort and
+# `LC_ALL=C cmd`, sbase's and bash's now: /bin/sh is bash on this disk).
 declare -A NEEDS=(
-    [space]="sort, and LC_ALL=C cmd in the shell (tasks 29 and 28)"
-    [system-status]="kill -SIGNAME and \$\$ in the shell (task 28)"
+    [system-status]="a core dump: its .ok expects WCOREDUMP for a SIGABRT, and this kernel writes no core files, so the status is 262, not 518 -- as on Linux with ulimit -c 0"
 )
 cp ../ports/awk/tests/* "$WORK/tests/"
 OURS=$(cd ../ports/awk/tests && ls *.awk | sed 's/\.awk$//')
@@ -116,7 +116,10 @@ fsimg mkdir /bin; fsimg mkdir /lib; fsimg mkdir /AWKT
 for p in rm echo; do
     [ -f "../system/$p" ] && fsimg put -m 755 "../system/$p" "/bin/$p"
 done
-put_shells
+# What the tests' commands run, now that /bin/sh is bash: the system
+# shell had rm and cat built in, bash has neither.
+for p in sort cat rm; do fsimg put -m 755 ../ports/sbase/bin/$p /bin/$p; done
+put_shells bash
 fsimg put -m 755 ../ports/awk/awk /bin/awk
 fsimg put ../ldso/ld.so /lib/ld.so
 fsimg put "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" /lib/libc.so

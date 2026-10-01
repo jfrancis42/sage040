@@ -91,7 +91,7 @@ opts_stamp() {                  # opts_stamp DIR OPTIONS...
 MESON_OPTS="-Dbuildtype=release -Doptimization=2 -Dos-linux=true -Dsemihost=false
 -Dfake-semihost=false -Dpicocrt=false -Dpicocrt-lib=false -Dmultilib=false
 -Dtests=false -Dthread-local-storage=false -Dsingle-thread=true
--Dio-long-long=true -Dio-long-double=true -Dmb-capable=true
+-Dio-long-long=true -Dio-long-double=true -Dmb-capable=true -Dmb-extended-charsets=true
 -Dstdio-exit-flush=true -Dfstat-bufsiz=true -Dspecsdir=none -Dincludedir=include
 -Dlibdir=lib -Derrno-function=__errno_location -Dc_args=-D__PICOLIBC_HAS_THREADS__"
 
@@ -138,6 +138,12 @@ EOF
 #                         C.UTF-8 (LANG, setlocale) -- names here are
 #                         UTF-8 bytes. The default is still "C", as on
 #                         Linux with no LANG set.
+#   mb-extended-charsets  and the rest of picolibc's charsets: the
+#                         ISO-8859s, the Windows and DOS code pages, the
+#                         KOI8s and the Japanese ones -- so en_US.ISO-8859-1
+#                         is a locale setlocale accepts, not only
+#                         C.UTF-8 (locale -a lists them; Big5 and the
+#                         Chinese and Korean sets picolibc does not have)
 
 if [ ! -f "$BUILD/build.ninja" ]; then
     meson setup "$BUILD" "$SRC" \
@@ -157,6 +163,7 @@ if [ ! -f "$BUILD/build.ninja" ]; then
         -Dio-long-long=true \
         -Dio-long-double=true \
         -Dmb-capable=true \
+        -Dmb-extended-charsets=true \
         -Dstdio-exit-flush=true \
         -Dfstat-bufsiz=true \
         -Dspecsdir=none \
@@ -301,6 +308,7 @@ if [ ! -f "$BUILD_PIC/build.ninja" ]; then
         -Dio-long-long=true \
         -Dio-long-double=true \
         -Dmb-capable=true \
+        -Dmb-extended-charsets=true \
         -Dstdio-exit-flush=true \
         -Dfstat-bufsiz=true \
         -Dspecsdir=none \

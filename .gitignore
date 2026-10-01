@@ -195,3 +195,4 @@ libc/test/kstackprobe
 libc/test/sysfuzz
 libc/test/devperm
 libc/test/sigqtest
+utils/locale

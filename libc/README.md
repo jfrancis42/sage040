@@ -150,6 +150,11 @@ Two things are deliberately absent.
 - **`<fcntl.h>` gives the `S_I*` mode constants** (patches/55), and
   **`<arpa/inet.h>` gives what `<netinet/in.h>` has** -- `INET6_ADDRSTRLEN`,
   `struct in_addr` -- as glibc's do; `IN6_IS_ADDR_*` exist.
+- **Locales are charsets**: setlocale accepts `C`, `POSIX` and any
+  `language_TERRITORY.CHARSET` whose charset picolibc has -- UTF-8, the
+  ISO-8859s, the DOS and Windows code pages, KOI8, JIS, EUC-JP and
+  Shift-JIS (`mb-extended-charsets`); the part before the dot is ignored.
+  No Big5, GBK or EUC-KR. `locale -a` (utils/) lists them.
 - **No real-time signals.** picolibc's signal set is 32 bits, so there is
   no `SIGRTMIN`; a program that wants one has to do without.
 - **`statvfs` and `fstatvfs` work**, on the kernel's `statfs64`, for

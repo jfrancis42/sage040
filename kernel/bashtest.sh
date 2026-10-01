@@ -57,8 +57,9 @@ BASH_TESTS=${BASH_TESTS:-"arith array braces case comsub func glob quote strip t
 # This one fails for a reason this system knows about and has written
 # down, not because bash is broken:
 #
-#   glob  wants the `locale` command and a zh_TW.big5 locale, and says
-#         so itself in a warning. There is no locale database here.
+#   glob  wants a zh_TW.big5 locale, and says so itself in a warning:
+#         picolibc has no Big5 charset (it has UTF-8, the ISO-8859s,
+#         the code pages and the Japanese sets; `locale -a` lists them).
 #
 # They are reported as [KNOWN] and do not fail the suite -- otherwise
 # this suite can NEVER pass, `make test` stops here every time, and a
@@ -181,6 +182,7 @@ done
 # they produce output with a "command not found" where the filtered
 # text should be, which then differs from upstream's .right file in a
 # way that reads as a fault in the shell.
+make -s -C ../utils >/dev/null 2>&1 && fsimg put -m 755 ../utils/locale /bin/locale
 for u in grep sed awk; do
     [ -x "../ports/$u/$u" ] && fsimg put -m 755 "../ports/$u/$u" /bin/$u
 done
@@ -262,7 +264,7 @@ for n in $BASH_TESTS; do
     cmp -s "$WORK/suite/$n.out" "$BASHSRC/tests/$n.right"
     r=$?
     case $n in
-    glob)   why="no locale command and no zh_TW.big5 locale" ;;
+    glob)   why="no zh_TW.big5 locale: picolibc has no Big5" ;;
     *)    why="expected" ;;
     esac
     check_known "$n" $r "$why"
