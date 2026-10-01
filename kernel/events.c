@@ -77,6 +77,7 @@ static int anon_fstat(struct file *f, struct stat *st, u32 ino)
     memset(st, 0, sizeof(*st));
     st->st_mode = 0600;
     st->st_ino = ino;
+    st->st_dev = ST_DEV_ANON;
     st->st_nlink = 1;
     if (current) {
         st->st_uid = current->euid;

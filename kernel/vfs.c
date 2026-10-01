@@ -33,6 +33,7 @@
 #include "signal.h"
 #include "pty.h"
 #include "procfs.h"
+#include "timer.h"
 
 #define DEV_PREFIX     "/dev/"
 #define DEV_PREFIX_LEN 5
@@ -105,6 +106,16 @@ static struct fs_type *vfs_route(const char **path, char *buf)
     }
     if (rel && tmp_cwd()) {
         *path = buf;            /* out of tmpfs, onto the disk */
+    }
+    /*
+     * And into /dev, which is not on the disk either: it is the device
+     * registry, matched by its ABSOLUTE name. From /dev, "kbd0" was
+     * handed to the disk as it stood, which has no such file -- so
+     * `ls /dev` (sbase's ls chdirs into what it lists) said "lstat
+     * kbd0: No such file or directory" for the first device it met.
+     */
+    if (rel && (strncmp(buf, "/dev/", 5) == 0 || strcmp(buf, "/dev") == 0)) {
+        *path = buf;
     }
     return mounted_fs;
 }
@@ -335,6 +346,30 @@ const char *vfs_dev_name(void)
 /* ---------------------------------------------------------------- */
 /* Paths                                                             */
 /* ---------------------------------------------------------------- */
+
+/*
+ * What stat() says a device is, by path or by descriptor: all of it
+ * from the registry. The owner and mode used to be a constant --
+ * S_IFCHR|0600, owner root -- which said every device belonged to root
+ * whatever chown had been told; the inode and number were nothing at
+ * all. See dev.h.
+ */
+static void dev_stat(const struct chardev *cd, struct stat *st)
+{
+    struct timeval tv;
+
+    memset(st, 0, sizeof(*st));
+    /* Made at boot, as Linux's devtmpfs nodes are; 0 read as 1970. */
+    clock_get(&tv);
+    st->st_mtime = (time_t)((u32)tv.tv_sec - timer_jiffies() / HZ);
+    st->st_mode = S_IFCHR | (cd->mode & 07777);
+    st->st_uid = cd->uid;
+    st->st_gid = cd->gid;
+    st->st_nlink = 1;
+    st->st_dev = ST_DEV_DEVTMPFS;
+    st->st_ino = cd->ino;
+    st->st_rdev = cd->rdev;
+}
 
 /*
  * Is this a device path, and if so which device?  Returns the chardev,
@@ -2161,6 +2196,8 @@ static int tmp_chdir(const char *path)
     return 0;
 }
 
+static int vfs_chdir_disk(const char *path);
+
 int vfs_chdir(const char *path)
 {
     if (proc_owns(path)) {
@@ -2175,13 +2212,19 @@ int vfs_chdir(const char *path)
         if (vfs_route(&path, rbuf) != mounted_fs) {
             return tmp_chdir(path);
         }
-        if (path == rbuf) {
-            char abs[PATH_MAX];
-
-            strcpy(abs, rbuf);
-            return vfs_chdir(abs);      /* ".." led out, to the disk */
+        /* ".." led out, to the disk -- or into /proc, which is asked
+         * by its absolute name. This was a recursive call with a copy
+         * of rbuf: another 2 KB of kernel stack, on the path that
+         * overflowed it. rbuf is absolute and lives to the end. */
+        if (path == rbuf && proc_owns(path)) {
+            return proc_modify(PO_CHDIR, path, 0, 0, 0);
         }
+        return vfs_chdir_disk(path);
     }
+}
+
+static int vfs_chdir_disk(const char *path)
+{
     if (!mounted_fs || !mounted_fs->chdir) {
         return -ENOSYS;
     }
@@ -2336,7 +2379,10 @@ int vfs_lstat(const char *path, struct stat *st)
     if (!fs) {
         return -ENODEV;
     }
-    if (!fs->lstat) {
+    /* A device, or a directory of them, is no link: lstat is stat. It
+     * went to the disk, which has no /dev, so lstat("/dev/null") failed
+     * -- and with it every `ls -l` of a device. */
+    if (!fs->lstat || (fs == mounted_fs && (resolve_dev(path) || dev_is_dir(path)))) {
         return vfs_stat(path, st);
     }
     {
@@ -2540,18 +2586,13 @@ int vfs_stat(const char *path, struct stat *st)
         memset(st, 0, sizeof(*st));
         st->st_mode = S_IFDIR | 0555;
         st->st_nlink = 2;
+        st->st_dev = ST_DEV_DEVTMPFS;
+        st->st_ino = strcmp(path, "/dev") == 0 || strcmp(path, "/dev/") == 0
+                     ? DEV_INO_ROOT : DEV_INO_SUBDIR;
         return 0;
     }
     if (cd) {
-        memset(st, 0, sizeof(*st));
-        /* From the registry, not a constant. It used to be a constant
-         * -- S_IFCHR|0600, owner root -- which said every device
-         * belonged to root whatever chown had been told, and there was
-         * nowhere for chown to put an answer anyway. See dev.h. */
-        st->st_mode = S_IFCHR | (cd->mode & 07777);
-        st->st_uid = cd->uid;
-        st->st_gid = cd->gid;
-        st->st_nlink = 1;
+        dev_stat(cd, st);
         return 0;
     }
     if (!fs) {
@@ -2711,7 +2752,23 @@ int vfs_fstat(int fd, struct stat *st)
  * to describe another task's. */
 int vfs_file_stat(struct file *f, struct stat *st)
 {
+    struct chardev *cd;
+
     memset(st, 0, sizeof(*st));
+
+    /*
+     * A DESCRIPTOR ON A DEVICE IS DESCRIBED BY THE REGISTRY, as the
+     * device's path is: the same inode, number, owner and mode either
+     * way. The drivers' own fstat ops only ever said S_IFCHR, so fstat
+     * of the console and stat of /dev/null came out identical, and a
+     * program comparing the two (GNU cmp does, to skip writing to
+     * /dev/null) concluded its stdout was /dev/null.
+     */
+    cd = dev_char_for(f);
+    if (cd) {
+        dev_stat(cd, st);
+        return 0;
+    }
 
     if (f->ops && f->ops->fstat) {
         if (!f->fs) {

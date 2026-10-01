@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 
 static int failures, checks;
@@ -161,6 +162,64 @@ int main(void)
     chdir("/");
     check("a name under /dev that is not there is ENOENT",
           open("/dev/nothere", O_RDONLY) == -1 && errno == ENOENT);
+
+    /*
+     * WHAT A DEVICE IS, to stat(). Every device was inode 1 on the root
+     * disk with no number, so the console and /dev/null were the same
+     * file -- GNU cmp, which skips writing to /dev/null, printed nothing
+     * at all -- and a file in /tmp could be the same file as one on the
+     * disk.
+     */
+    {
+        static unsigned long inos[64];
+        int ndev = 0, dup = 0, i, j;
+        struct stat a, b, c;
+
+        d = opendir("/dev");
+        while (d && (e = readdir(d)) && ndev < 64) {
+            snprintf(path, sizeof(path), "/dev/%s", e->d_name);
+            if (e->d_type == DT_CHR && stat(path, &st) == 0) {
+                inos[ndev++] = (unsigned long)st.st_ino;
+            }
+        }
+        if (d) {
+            closedir(d);
+        }
+        for (i = 0; i < ndev; i++) {
+            for (j = i + 1; j < ndev; j++) {
+                dup += inos[i] == inos[j];
+            }
+        }
+        check("every device in /dev has an inode of its own", ndev > 5 && dup == 0);
+        check("  and Linux's numbers: null 1,3, console 5,1, ttyS0 4,64",
+              stat("/dev/null", &a) == 0 && major(a.st_rdev) == 1 && minor(a.st_rdev) == 3 &&
+              stat("/dev/console", &b) == 0 && major(b.st_rdev) == 5 && minor(b.st_rdev) == 1 &&
+              stat("/dev/ttyS0", &c) == 0 && major(c.st_rdev) == 4 && minor(c.st_rdev) == 64);
+        fd = open("/dev/null", O_RDONLY);
+        check("fstat of an open device says what stat of its name says",
+              fd >= 0 && fstat(fd, &st) == 0 && st.st_ino == a.st_ino && a.st_rdev != 0 &&
+              st.st_dev == a.st_dev && st.st_rdev == a.st_rdev && S_ISCHR(st.st_mode));
+        close(fd);
+        check("stdout, the terminal, is not the same file as /dev/null",
+              fstat(1, &st) == 0 && !(st.st_dev == a.st_dev && st.st_ino == a.st_ino));
+        check("lstat of a device works, by its full name",
+              lstat("/dev/null", &st) == 0 && S_ISCHR(st.st_mode) && st.st_ino == a.st_ino &&
+              st.st_rdev == a.st_rdev && a.st_ino > 1);
+        check("  and by a name relative to /dev, as ls -l in /dev asks",
+              chdir("/dev") == 0 && lstat("null", &st) == 0 && st.st_ino == a.st_ino);
+        chdir("/");
+        fd = open("/tmp/devdir-id", O_CREAT | O_RDWR, 0600);
+        check("tmpfs, the disk, /proc, /dev and a pipe are five filesystems",
+              fd >= 0 && fstat(fd, &a) == 0 && stat("/", &b) == 0 &&
+              stat("/proc/self", &c) == 0 && pipe(p) == 0 && fstat(p[0], &st2) == 0 &&
+              stat("/dev/null", &st) == 0 &&
+              a.st_dev != b.st_dev && c.st_dev != b.st_dev && c.st_dev != a.st_dev &&
+              st2.st_dev != b.st_dev && st.st_dev != b.st_dev && st.st_dev != a.st_dev);
+        close(fd);
+        close(p[0]);
+        close(p[1]);
+        unlink("/tmp/devdir-id");
+    }
 
     printf("devdirtest: %d checks, %d failed\n", checks, failures);
     return failures != 0;

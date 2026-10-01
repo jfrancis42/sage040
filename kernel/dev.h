@@ -127,12 +127,27 @@ struct chardev {
     u32  gid;
     u32  mode;                  /* permission bits, no S_IFCHR      */
     struct chardev *next;       /* the registry is a plain list     */
+    /*
+     * WHAT stat() SAYS IT IS, given out by dev_register_char(): an
+     * inode number of its own in /dev, and Linux's major and minor
+     * where Linux has the same device (null is 1:3, ttyS0 4:64, a pty
+     * 136:N), or one in the local range, 240, where it has not.
+     */
+    u32  ino;
+    u32  rdev;                  /* ST_DEV(major, minor)             */
 };
 
 /* What a device is openable by everybody, which is what they all were
  * when nothing recorded a mode at all. A driver that wants otherwise
  * sets d->mode before registering. */
 #define DEV_MODE_DEFAULT  0666
+
+/* Inode numbers in /dev: 1 is /dev, 2 a directory in it (pts), and the
+ * devices count up from here. They share st_dev ST_DEV_DEVTMPFS, so
+ * nothing else's numbers can meet them. */
+#define DEV_INO_ROOT      1
+#define DEV_INO_SUBDIR    2
+#define DEV_INO_FIRST     16
 
 /* The registry entry a descriptor is open on, or null if it is not a
  * character device. dev_char_name() is this, then ->name. */

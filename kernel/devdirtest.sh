@@ -10,6 +10,11 @@
 # Runs on a scratch image.
 
 set -u
+# A write to the console FIFO after QEMU has died raises SIGPIPE, and
+# that killed the suite before it printed a single check -- a machine
+# that crashed read as silence. Ignored, the write fails and the checks
+# say what went wrong.
+trap '' PIPE
 
 cd "$(dirname "$0")"
 . ../machine.conf
@@ -90,6 +95,11 @@ printf '/devdirtest; echo "DEVDIR-EXIT $?"\r' >&3
 wait_for "DEVDIR-EXIT [0-9]+" 900
 printf 'echo LS-START; /bin/ls /dev; echo LS-END\r' >&3
 wait_for "LS-END" 300
+# `cd /dev` at the CONSOLE, whose shell is a kernel task: it overflowed
+# a 16 KB kernel stack and killed the machine (double MMU fault). The
+# console has to come back and still be in /dev.
+printf 'cd /dev; pwd; /bin/ls -l null; cd /; echo "CD-DONE"\r' >&3
+wait_for "CD-DONE" 300
 printf 'sync; echo "SYNC-DONE"\r' >&3
 wait_for "SYNC-DONE" 300
 sleep 0.3
@@ -116,8 +126,12 @@ check "ran to the end, nothing failed" $?
 sed -n '/^LS-START/,/^LS-END/p' "$SCRATCH/devdir-clean.tmp" | grep -qwE 'null' &&
     sed -n '/^LS-START/,/^LS-END/p' "$SCRATCH/devdir-clean.tmp" | grep -qwE 'pts'
 check "/bin/ls /dev lists the devices and pts" $?
+grep -qx '/dev' "$SCRATCH/devdir-clean.tmp" && grep -qx 'CD-DONE' "$SCRATCH/devdir-clean.tmp"
+check "cd /dev at the console, and the machine is still there" $?
+grep -qE '^crw-rw-rw- +1 0 +0 +1, +3 .* null$' "$SCRATCH/devdir-clean.tmp"
+check "  ls -l there shows null as 1, 3" $?
 
-grep -qE 'panic|bus error|address error' "$SCRATCH/devdir-clean.tmp"
+grep -qE 'panic|bus error|address error|DOUBLE MMU FAULT' "$SCRATCH/devdir-clean.tmp"
 [ $? -ne 0 ]
 check "no panic, no fault" $?
 

@@ -563,6 +563,7 @@ int proc_stat(const char *path, struct stat *st)
     st->st_ino = 0x80000000UL | ((u32)(n.pid & 0x3ffff) << 12) |
                  ((u32)(n.e ? n.e->what + 1 : 32 + n.type) << 6) |
                  (u32)(n.fd >= 0 ? n.fd : 0);
+    st->st_dev = ST_DEV_PROC;
 
     switch (n.type) {
     case N_ROOT:

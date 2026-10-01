@@ -29,8 +29,49 @@ static struct fbdev    *fbs;
 /* Character devices                                                 */
 /* ---------------------------------------------------------------- */
 
+/*
+ * A device's number, Linux's where Linux has the device. Not for show:
+ * programs compare st_rdev and st_ino to tell devices apart, and every
+ * device here used to be inode 1, number 0.
+ */
+static const struct {
+    const char *name;
+    u16 major, minor;
+} linux_numbers[] = {
+    { "null", 1, 3 }, { "zero", 1, 5 }, { "full", 1, 7 },
+    { "random", 1, 8 }, { "urandom", 1, 9 }, { "klog", 1, 11 },
+    { "tty1", 4, 1 }, { "ttyS0", 4, 64 }, { "console", 5, 1 },
+    { "ptmx", 5, 2 }, { "vcsa", 7, 128 }, { "nvram", 10, 144 },
+    { "fb0", 29, 0 },
+};
+#define LOCAL_MAJOR     240     /* Linux's "for local use" range */
+
+static u32 dev_number(const char *name)
+{
+    static u32 next_local;
+    u32 i, n = 0;
+
+    for (i = 0; i < sizeof(linux_numbers) / sizeof(linux_numbers[0]); i++) {
+        if (strcmp(name, linux_numbers[i].name) == 0) {
+            return ST_DEV(linux_numbers[i].major, linux_numbers[i].minor);
+        }
+    }
+    /* pts/N: the Unix 98 pty slaves are major 136, minor N. */
+    if (strncmp(name, "pts/", 4) == 0 && name[4]) {
+        for (i = 4; name[i] >= '0' && name[i] <= '9'; i++) {
+            n = n * 10 + (u32)(name[i] - '0');
+        }
+        if (!name[i] && n < 256) {
+            return ST_DEV(136, n);
+        }
+    }
+    return ST_DEV(LOCAL_MAJOR, next_local++ & 0xff);
+}
+
 int dev_register_char(struct chardev *d)
 {
+    static u32 next_ino = DEV_INO_FIRST;
+
     if (!d || !d->name || !d->ops) {
         return -EINVAL;
     }
@@ -41,6 +82,10 @@ int dev_register_char(struct chardev *d)
         d->mode = DEV_MODE_DEFAULT;
     }
     d->mode &= 07777;
+    /* A pty slave registered again gets a new inode, as a new node
+     * would on Linux's devpts; its number is its own whatever. */
+    d->ino = next_ino++;
+    d->rdev = dev_number(d->name);
     d->next = chars;
     chars = d;
     return 0;

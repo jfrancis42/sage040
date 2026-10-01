@@ -298,8 +298,11 @@ static int sock_close(struct file *f)
 
 static int sock_fstat(struct file *f, struct stat *st)
 {
-    (void)f;
     st->st_mode = S_IFSOCK;
+    /* sockfs's, numbered by the socket itself: unique while it is open,
+     * as Linux's are, and what /proc/<pid>/fd shows as socket:[N]. */
+    st->st_dev = ST_DEV_SOCKFS;
+    st->st_ino = ((u32)f->priv >> 2) | 0x20000000UL;
     st->st_size = 0;
     st->st_mtime = 0;
     st->st_blocks = 0;

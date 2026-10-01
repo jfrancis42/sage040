@@ -1,0 +1,28 @@
+st_dev and st_rdev through makedev(), which is what major() and minor()
+in <sys/sysmacros.h> undo. _statbuf.c packed them as (major << 8) |
+minor while sysmacros.h shifts by half of dev_t -- 16 bits here -- so
+major() of every device came back 0 and ls -l showed "0, 0".
+
+--- a/libos/linux/_statbuf.c	2026-09-30 20:33:48.314924820 -0600
++++ b/libos/linux/_statbuf.c	2026-09-30 20:33:48.329042247 -0600
+@@ -34,17 +34,18 @@
+  */
+ 
+ #include "local-statx.h"
++#include <sys/sysmacros.h>
+ 
+ int
+ _statbuf(struct stat *statbuf, const struct __kernel_statx *statxbuf)
+ {
+-    statbuf->st_dev = (statxbuf->stx_dev_major << 8) | (statxbuf->stx_dev_minor);
++    statbuf->st_dev = makedev(statxbuf->stx_dev_major, statxbuf->stx_dev_minor);
+     statbuf->st_ino = (ino_t)statxbuf->stx_ino;
+     statbuf->st_mode = statxbuf->stx_mode;
+     statbuf->st_nlink = statxbuf->stx_nlink;
+     statbuf->st_uid = statxbuf->stx_uid;
+     statbuf->st_gid = statxbuf->stx_gid;
+-    statbuf->st_rdev = (statxbuf->stx_rdev_major << 8) | (statxbuf->stx_rdev_minor);
++    statbuf->st_rdev = makedev(statxbuf->stx_rdev_major, statxbuf->stx_rdev_minor);
+     statbuf->st_size = statxbuf->stx_size;
+     statbuf->st_blksize = statxbuf->stx_blksize;
+     statbuf->st_blocks = statxbuf->stx_blocks;

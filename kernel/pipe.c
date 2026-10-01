@@ -18,6 +18,8 @@
  */
 #include "pipe.h"
 #include "vfs.h"
+
+extern struct fs_type *tmpfs_fs(void);
 #include "dev.h"
 #include "task.h"
 #include "wait.h"
@@ -177,6 +179,10 @@ static int pipe_fstat(struct file *f, struct stat *st)
      * makes /proc/<pid>/fd show "pipe:[N]" twice for the same pipe. */
     st->st_ino = p->fifo_ino ? p->fifo_ino
                              : 0x40000000UL | (u32)(p - pipes + 1);
+    /* A named FIFO is the inode of the file it was opened by, on that
+     * file's filesystem; an anonymous pipe is pipefs's. */
+    st->st_dev = !p->fifo_ino ? ST_DEV_PIPEFS
+               : p->fifo_fs == (const void *)tmpfs_fs() ? ST_DEV_TMPFS : 0;
     return 0;
 }
 
@@ -475,8 +481,9 @@ static int usock_close(struct file *f)
 
 static int usock_fstat(struct file *f, struct stat *st)
 {
-    (void)f;
     st->st_mode = S_IFSOCK;
+    st->st_dev = ST_DEV_SOCKFS;
+    st->st_ino = ((u32)f->priv >> 2) | 0x10000000UL;
     st->st_size = 0;
     st->st_mtime = 0;
     st->st_blocks = 0;

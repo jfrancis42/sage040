@@ -61,8 +61,15 @@ static volatile int need_resched;
 /* --- the kernel stack ------------------------------------------------ */
 
 /*
- * Five pages: a guard and then four of stack -- 16 KB, which leaves the
- * deepest use yet measured (see THE HIGH-WATER MARK) well under half.
+ * Nine pages: a guard and then eight of stack -- 32 KB.
+ *
+ * It was 16 KB, and `cd /dev` typed at the console overflowed it: the
+ * console's shell is a KERNEL task, so its parser and builtins
+ * (run_list alone is 4.3 KB, run_builtin 1.6, shell_main 1.1) sit on
+ * the same stack as the system call it then makes -- do_syscall and
+ * syscall_linux, 2.5 KB, then vfs_chdir and procfs's lookup with a
+ * path buffer each. 9.4 KB were used before vfs_chdir was entered. The
+ * guard page caught it, as the double MMU fault that kills QEMU.
  *
  * The guard comes out of the KERNEL's map rather than the task's,
  * because it is the kernel that would overflow -- running that task's
@@ -70,7 +77,7 @@ static volatile int need_resched;
  * corrupts whatever is next and surfaces somewhere else entirely, which
  * is close to the worst failure a system can have.
  */
-#define KSTACK_PAGES    4
+#define KSTACK_PAGES    8
 #define KSTACK_TOTAL    (KSTACK_PAGES + 1)
 #define KSTACK_BYTES    (KSTACK_PAGES * (u32)PAGE_SIZE)
 

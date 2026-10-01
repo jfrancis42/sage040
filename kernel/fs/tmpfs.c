@@ -524,6 +524,7 @@ static void fill_stat(int i, struct stat *st)
     st->st_size = S_ISDIR(n->mode) ? PAGE_SIZE : n->size;
     st->st_mtime = n->mtime;
     st->st_ino = n->ino;
+    st->st_dev = ST_DEV_TMPFS;  /* not the disk: its inodes count apart */
     st->st_uid = n->uid;
     st->st_gid = n->gid;
     st->st_nlink = n->nlink;

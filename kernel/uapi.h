@@ -380,7 +380,35 @@ struct stat {
     u32    st_uid;
     u32    st_gid;
     u32    st_nlink;           /* how many names this inode has */
+    /*
+     * WHICH FILESYSTEM, AND WHICH DEVICE -- appended, as the three
+     * above were, and every ulib program rebuilt with them.
+     *
+     * st_dev 0 is the root disk (Linux's 3:1); anything else is
+     * ST_DEV(major, minor). Without it, every file on the machine --
+     * tmpfs, /proc, every device -- claimed the root disk, so a file in
+     * /tmp and one on the disk with the same inode number were "the
+     * same file" to anything that compares the two, and every device
+     * was inode 1 with no device number: GNU cmp saw that its stdout
+     * (the console) was "the same file" as /dev/null and printed
+     * nothing at all.
+     */
+    u32    st_dev;
+    u32    st_rdev;            /* a device's own number, ST_DEV() too */
 };
+
+/* (major << 8) | minor, as the old Linux encoding has it. */
+#define ST_DEV(major, minor)   (((u32)(major) << 8) | (u32)(minor))
+#define ST_DEV_MAJOR(d)        ((u32)(d) >> 8)
+#define ST_DEV_MINOR(d)        ((u32)(d) & 0xff)
+/* The filesystems that are not the disk, numbered as Linux's anonymous
+ * ones are: major 0. */
+#define ST_DEV_PROC            ST_DEV(0, 4)
+#define ST_DEV_DEVTMPFS        ST_DEV(0, 5)
+#define ST_DEV_SOCKFS          ST_DEV(0, 8)
+#define ST_DEV_PIPEFS          ST_DEV(0, 12)
+#define ST_DEV_ANON            ST_DEV(0, 13)   /* eventfd, epoll, ... */
+#define ST_DEV_TMPFS           ST_DEV(0, 21)
 
 struct dirent {
     char   d_name[NAME_MAX + 1];

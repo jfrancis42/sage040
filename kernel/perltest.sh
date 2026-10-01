@@ -26,6 +26,11 @@
 # this disk is the big one.
 
 set -u
+# A write to the console FIFO after QEMU has died raises SIGPIPE, and
+# that killed the suite before it printed a single check -- a machine
+# that crashed read as silence. Ignored, the write fails and the checks
+# say what went wrong.
+trap '' PIPE
 cd "$(dirname "$0")"
 . ../machine.conf
 . ./shells.sh

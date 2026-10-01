@@ -277,7 +277,7 @@ s32 sys_copy_file_range(int in, u32 uoff_in, int out, u32 uoff_out,
         return err;
     }
     /* The same file, overlapping ranges: Linux refuses. */
-    if (si.st_ino == so.st_ino) {
+    if (si.st_ino == so.st_ino && si.st_dev == so.st_dev) {
         u32 ai = uoff_in ? oi : fi->pos, ao = uoff_out ? oo : fo->pos;
 
         if (ai < ao + len && ao < ai + len) {

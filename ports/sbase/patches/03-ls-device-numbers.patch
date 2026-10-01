@@ -1,0 +1,17 @@
+sbase: ls -l printed a device's numbers with %u, which is right where
+major() and minor() return unsigned int (glibc's do) and wrong where
+dev_t is 64 bits and they return that (picolibc's): each took two %u,
+and every device read as "0, <its major>". Cast, as an int is what is
+meant.
+
+--- a/ls.c	2026-09-30 20:35:28.361136548 -0600
++++ b/ls.c	2026-09-30 20:35:28.361565489 -0600
+@@ -202,7 +202,7 @@
+ 	printf("%s %4ld %-8.8s %-8.8s ", mode, (long)ent->nlink, pwname, grname);
+ 
+ 	if (S_ISBLK(ent->mode) || S_ISCHR(ent->mode))
+-		printf("%4u, %4u ", major(ent->rdev), minor(ent->rdev));
++		printf("%4u, %4u ", (unsigned)major(ent->rdev), (unsigned)minor(ent->rdev));
+ 	else if (hflag)
+ 		printf("%10s ", humansize(ent->size));
+ 	else

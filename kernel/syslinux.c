@@ -155,9 +155,17 @@ static void to_statx(const struct stat *st, int is_prog, struct statx *sx)
     sx->stx_btime.tv_sec = st->st_mtime;
     sx->stx_ctime.tv_sec = st->st_mtime;
     sx->stx_mtime.tv_sec = st->st_mtime;
-    /* The first partition of the first IDE disk, as Linux numbers it. */
-    sx->stx_dev_major = 3;
-    sx->stx_dev_minor = 1;
+    /* st_dev 0 is the root disk: the first partition of the first IDE
+     * disk, as Linux numbers it. Anything else says which. */
+    if (st->st_dev) {
+        sx->stx_dev_major = ST_DEV_MAJOR(st->st_dev);
+        sx->stx_dev_minor = ST_DEV_MINOR(st->st_dev);
+    } else {
+        sx->stx_dev_major = 3;
+        sx->stx_dev_minor = 1;
+    }
+    sx->stx_rdev_major = ST_DEV_MAJOR(st->st_rdev);
+    sx->stx_rdev_minor = ST_DEV_MINOR(st->st_rdev);
 }
 
 static s32 do_statx(int dirfd, u32 upath, int flags, u32 ubuf)
