@@ -1916,9 +1916,11 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
             return err;
         }
         if (nr == __NR_mkdir) {
+            vfs_trim_slashes(path);
             return vfs_mkdir_mode(path, a2);
         }
         if (nr == __NR_rmdir) {
+            vfs_trim_slashes(path);
             return vfs_rmdir(path);
         }
         return vfs_chdir(path);

@@ -562,7 +562,11 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
 
     case __NR_mkdirat:
         err = at_path((int)a1, a2, path);
-        return err < 0 ? err : vfs_mkdir_mode(path, a3);
+        if (err < 0) {
+            return err;
+        }
+        vfs_trim_slashes(path);
+        return vfs_mkdir_mode(path, a3);
 
     case __NR_unlinkat:
         if (a3 & ~(u32)AT_REMOVEDIR) {
@@ -572,7 +576,11 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         if (err < 0) {
             return err;
         }
-        return (a3 & AT_REMOVEDIR) ? vfs_rmdir(path) : vfs_unlink(path);
+        if (a3 & AT_REMOVEDIR) {
+            vfs_trim_slashes(path);
+            return vfs_rmdir(path);
+        }
+        return vfs_unlink(path);
 
     case __NR_renameat:
         return do_renameat((int)a1, a2, (int)a3, a4);

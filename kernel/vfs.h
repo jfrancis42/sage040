@@ -160,6 +160,7 @@ int  fd_open(const char *path, int flags);
 #define VFS_NO_MODE  0xffffffffUL
 int  fd_open_mode(const char *path, int flags, u32 mode);
 int  vfs_mkdir_mode(const char *path, u32 mode);
+void vfs_trim_slashes(char *path);  /* "dir/" -> "dir", in place */
 int  fd_close(int fd);
 s32  fd_read(int fd, void *buf, u32 len);
 s32  fd_write(int fd, const void *buf, u32 len);

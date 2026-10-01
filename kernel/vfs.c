@@ -2198,6 +2198,23 @@ static int tmp_chdir(const char *path)
 
 static int vfs_chdir_disk(const char *path);
 
+/*
+ * "dir/" is "dir" to mkdir and rmdir, as on Linux. The filesystems take
+ * the last component as the name to make, and a trailing slash made
+ * that name empty: mkdir("/x/") said ENOENT. git's `init` copies its
+ * template directories with exactly that, and every repository it
+ * tried to make on the machine stopped at "/r/.git/hooks/: No such
+ * file or directory". In place, in a buffer the caller owns.
+ */
+void vfs_trim_slashes(char *path)
+{
+    u32 n = (u32)strlen(path);
+
+    while (n > 1 && path[n - 1] == '/') {
+        path[--n] = '\0';
+    }
+}
+
 int vfs_chdir(const char *path)
 {
     if (proc_owns(path)) {

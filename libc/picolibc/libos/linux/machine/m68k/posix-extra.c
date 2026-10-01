@@ -34,8 +34,8 @@
  */
 
 /*
- * pause, usleep, select, flock, ftruncate, truncate, clock_getres and
- * clock_nanosleep are not in picolibc's libos/linux (1.8.12)
+ * pause, getpgid, usleep, select, flock, ftruncate, truncate, clock_getres
+ * and clock_nanosleep are not in picolibc's libos/linux (1.8.12)
  * on any architecture. They are here, in the m68k backend, only so that
  * the release underneath stays unmodified; nothing in them is specific
  * to m68k, and they belong beside the other calls in libos/linux.
@@ -52,6 +52,14 @@ int
 pause(void)
 {
     return syscall(LINUX_SYS_pause);
+}
+
+/* Declared in <sys/unistd.h>, defined nowhere, and the kernel has had
+ * the call all along: git's link was the first to ask. */
+pid_t
+getpgid(pid_t pid)
+{
+    return syscall(LINUX_SYS_getpgid, pid);
 }
 
 int

@@ -346,6 +346,13 @@ static void test_files(void)
     report("mkdir and rmdir", mkdir("/LCDIR", 0755) == 0 &&
                               stat("/LCDIR", &st) == 0 && S_ISDIR(st.st_mode) &&
                               rmdir("/LCDIR") == 0);
+    /* "dir/" is the directory, as on Linux: git init makes its
+     * template directories that way, and the disk said ENOENT. */
+    report("mkdir and rmdir of \"dir/\", on the disk and in tmpfs",
+           mkdir("/LCDIR2/", 0755) == 0 && stat("/LCDIR2", &st) == 0 &&
+           S_ISDIR(st.st_mode) && rmdir("/LCDIR2/") == 0 &&
+           stat("/LCDIR2", &st) < 0 &&
+           mkdir("/tmp/lcdir3/", 0755) == 0 && rmdir("/tmp/lcdir3//") == 0);
 }
 
 /* --- directories --------------------------------------------------- */
