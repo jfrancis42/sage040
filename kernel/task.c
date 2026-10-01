@@ -10,6 +10,7 @@
  * There is no other fairness accounting, deliberately: a ranking that
  * is wrong is far harder to see than a simple one.
  */
+#include "ctty.h"
 #include "task.h"
 #include "ptrace.h"
 #include "events.h"
@@ -424,6 +425,7 @@ struct task *task_fork(struct pt_regs *regs)
     t->parent = p;
     t->pgid = p->pgid;
     t->sid = p->sid;
+    t->ctty = p->ctty;          /* and its controlling terminal */
     t->nice = p->nice;
     t->ss_sp = p->ss_sp;        /* the alternate stack is in the copy */
     t->tp = p->tp;              /* and so is its thread-local storage */
@@ -545,6 +547,7 @@ struct task *task_clone(struct pt_regs *regs, u32 flags, u32 child_stack,
     t->parent = 0;
     t->pgid = p->pgid;
     t->sid = p->sid;
+    t->ctty = p->ctty;
     t->nice = p->nice;
     memcpy(t->cmd, p->cmd, sizeof(t->cmd));
 
@@ -1006,6 +1009,9 @@ void task_exit(int status)
     ptrace_exit_event(t->signalled ? t->signalled : (status & 0xff) << 8);
     t->exit_status = status;
     t->exiting = 1;
+    /* A session leader takes its terminal with it: the foreground job
+     * is hung up and the terminal belongs to nobody (ctty.c). */
+    ctty_exiting(t);
 
     /*
      * It lets go of its descriptors now; its kernel stack cannot go,

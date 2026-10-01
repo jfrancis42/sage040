@@ -148,6 +148,7 @@ libc/test/ehtest
 libc/test/ehtest.static
 libc/test/jtest
 libc/test/fsmanifest
+libc/test/sesstest
 system/reboot
 system/which
 system/who

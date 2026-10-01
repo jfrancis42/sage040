@@ -56,6 +56,8 @@
                                  * with EAGAIN instead                    */
 #define O_CLOEXEC     0x80000   /* the new descriptor is FD_CLOEXEC       */
 #define O_EXCL        0x0080    /* with O_CREAT: fail if it exists        */
+#define O_NOCTTY      0x0100    /* a terminal opened is not made the
+                                 * session's controlling terminal         */
 #define O_DIRECTORY   0x4000    /* m68k's value, not the generic 0x10000 */
 #define O_NOFOLLOW    0x8000    /* do not follow a final symlink          */
 #define O_LARGEFILE   0x20000   /* accepted: no file is over 4 GB         */
@@ -616,6 +618,10 @@ struct flock64 {
 #define FD_CLOEXEC      1       /* not given to a program spawn()ed    */
 
 #define TIOCGPGRP       0x540F  /* the terminal's foreground group     */
+#define TIOCSCTTY       0x540E  /* make it this session's controlling
+                                 * terminal (arg 1: root may take it)   */
+#define TIOCNOTTY       0x5422  /* give up the controlling terminal     */
+#define TIOCGSID        0x5429  /* the session it controls             */
 #define TIOCSPGRP       0x5410
 
 /*

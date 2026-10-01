@@ -40,7 +40,7 @@ static const struct {
 } linux_numbers[] = {
     { "null", 1, 3 }, { "zero", 1, 5 }, { "full", 1, 7 },
     { "random", 1, 8 }, { "urandom", 1, 9 }, { "klog", 1, 11 },
-    { "tty1", 4, 1 }, { "ttyS0", 4, 64 }, { "console", 5, 1 },
+    { "tty1", 4, 1 }, { "ttyS0", 4, 64 }, { "console", 5, 1 }, { "tty", 5, 0 },
     { "ptmx", 5, 2 }, { "vcsa", 7, 128 }, { "nvram", 10, 144 },
     { "fb0", 29, 0 },
 };

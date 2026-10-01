@@ -98,6 +98,18 @@ struct file {
 /* Character devices                                                 */
 /* ---------------------------------------------------------------- */
 
+/*
+ * WHAT A TERMINAL IS TO SESSIONS AND JOB CONTROL, whichever kind it is:
+ * the screen, the serial line or a pty's slave (tty.c, pty.c) each
+ * carry one, and a task's controlling terminal (task.h, ctty) points at
+ * it. ctty.c has the rules.
+ */
+struct ttyctl {
+    int sid;                    /* the session it controls, or 0      */
+    int pgrp;                   /* its foreground process group       */
+    struct chardev *dev;        /* the device, for /dev/tty           */
+};
+
 struct chardev {
     const char *name;           /* as it appears under /dev         */
     const struct file_ops *ops;
@@ -135,6 +147,7 @@ struct chardev {
      */
     u32  ino;
     u32  rdev;                  /* ST_DEV(major, minor)             */
+    struct ttyctl *tc;          /* a terminal's: see struct ttyctl  */
 };
 
 /* What a device is openable by everybody, which is what they all were

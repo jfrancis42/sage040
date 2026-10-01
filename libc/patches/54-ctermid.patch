@@ -1,0 +1,21 @@
+ctermid(3), and L_ctermid, as POSIX has them in <stdio.h>.
+
+The name of the controlling terminal -- "/dev/tty", which opens it --
+for a program that needs to ask somebody something while its standard
+input is a pipe. Perl's POSIX module supplied its own for want of one;
+the m68k backend defines it now that the kernel has controlling
+terminals to open.
+
+--- a/libc/include/stdio.h
++++ b/libc/include/stdio.h
+@@ -489,6 +489,10 @@
+ int   fsetpos(FILE *stream, const fpos_t *pos) __nonnull((1)) __picolibc_export;
+ long  ftell(FILE *stream) __nonnull((1)) __picolibc_export;
+ int   fileno(FILE *stream) __nonnull((1)) __picolibc_export;
++char *ctermid(char *s) __picolibc_export;
++#ifndef L_ctermid
++#define L_ctermid 16            /* "/dev/tty" and room to spare */
++#endif
+ void  perror(const char *s) __picolibc_export;
+ int   remove(const char *pathname) __picolibc_export;
+ int   rename(const char *oldpath, const char *newpath) __picolibc_export;

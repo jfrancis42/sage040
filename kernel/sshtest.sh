@@ -222,6 +222,48 @@ r=$(timeout 30 ssh $SSHO root@127.0.0.1 'cat /ST/rs.txt' 2>/dev/null)
 test "$r" = "by rsync"
 check "rsync over ssh transfers a file to the machine" $?
 
+# --- a terminal: ssh -t, and hanging up -------------------------------
+# With a pseudo-terminal the server runs the command in a session of its
+# own, with the pty as its controlling terminal (kernel/ctty.c), and the
+# output comes back through the pty's master.
+#
+# THE CLIENT'S STDIN STAYS OPEN, as a person's terminal does. With it at
+# end of file the client sends EOF at once, and Dropbear closes a pty
+# channel's master on EOF -- a hangup, so the command gets SIGHUP, and
+# whether `echo` beat it was a race. That race was the "ssh -t output
+# never arrives" this machine's notes carried for weeks: Dropbear's
+# behaviour, and Linux's would be the same, not a kernel bug.
+r=$( (sleep 25) | timeout 30 ssh -tt $SSHO root@127.0.0.1 'echo TTYOUT; tty' 2>"$WORK/tt.err" | tr -d '\r')
+[ -s "$WORK/tt.err" ] && sed 's/^/  | ssh -tt: /' "$WORK/tt.err"
+shown=$(echo $r | tr '\n' ' ')
+echo "$r" | grep -qx 'TTYOUT' && echo "$r" | grep -qE '^/dev/pts/[0-9]+$'
+check "ssh -t: the command's output arrives, and it is on a pty ($shown)" $?
+
+# A dropped connection is a hangup: the server closes the master, and
+# the session's leader and foreground job get SIGHUP. Before sessions
+# nothing was told, and a shell whose user had gone ran on for ever.
+procs() { timeout 30 ssh $SSHO root@127.0.0.1 \
+    'find /proc -name cmdline -exec cat {} +' 2>/dev/null | tr '\0' ' '; }
+( (sleep 60) | timeout 60 ssh -tt $SSHO root@127.0.0.1 'sleep 3017' > /dev/null 2>&1 ) &
+cpid=$!
+there=0
+for _ in $(seq 1 20); do
+    procs | grep -q 'sleep 3017' && { there=1; break; }
+    sleep 1
+done
+# The client is in a subshell with its stdin's writer: kill them all.
+for p in $(ps -eo pid,args | grep "ssh -tt.*sleep 3017" | grep -v grep | awk '{print $1}'); do
+    kill -9 "$p" 2>/dev/null
+done
+wait "$cpid" 2>/dev/null
+gone=0
+for _ in $(seq 1 20); do
+    procs | grep -q 'sleep 3017' || { gone=1; break; }
+    sleep 1
+done
+[ $there = 1 ] && [ $gone = 1 ]
+check "the connection dropped, the command on its terminal is hung up (sleep: there $there, gone $gone)" $?
+
 send 'echo ALL-DONE' 3
 sleep 1
 exec 3>&-
@@ -232,6 +274,8 @@ rm -f "$SCRATCH/ssh.fifo"
 tr -d '\r' < "$LOG" > "$WORK/session.txt"
 ! grep -qE "panic|exception at|DOUBLE MMU" "$WORK/session.txt"
 check "no panic, no kernel exception" $?
+! grep -qE "Failed to disconnect from controlling tty|TIOCSCTTY" "$WORK/session.txt"
+check "the server gives each session its terminal without complaint (no TIOCSCTTY errors)" $?
 
 echo
 echo "  passed: $pass"

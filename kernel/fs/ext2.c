@@ -213,27 +213,7 @@ static void put_le32(u8 *p, u32 v)
 /* Mount state                                                       */
 /* ---------------------------------------------------------------- */
 
-static struct blockdev *dev;
-static int  mounted;
-static u32  part_lba;           /* LBA the filesystem starts at         */
 
-static u32  block_size;
-static u32  sectors_per_block;
-static u32  inodes_count;
-static u32  blocks_count;
-static u32  r_blocks_count;
-static u32  free_blocks;
-static u32  free_inodes;
-static u32  first_data_block;
-static u32  blocks_per_group;
-static u32  inodes_per_group;
-static u32  inode_size;
-static u32  first_ino;
-static u32  group_count;
-static u32  gd_first_block;     /* block holding the descriptor table   */
-static u32  addrs_per_block;    /* block_size / 4                       */
-static u32  alloc_goal;         /* where the last allocation landed     */
-static int  sb_dirty;
 /*
  * Whether the volume was in use when it was mounted -- read from the
  * superblock BEFORE mounting marks it in use, which is the only moment
@@ -241,8 +221,6 @@ static int  sb_dirty;
  * boot-time check then runs on every boot and reports every previous
  * run as unclean.
  */
-static int  was_unclean;
-static char volume_label[17];
 
 /* ---------------------------------------------------------------- */
 /* Block cache                                                       */
@@ -268,19 +246,108 @@ struct bbuf {
                                  * committed copy (see "The journal")   */
 };
 
-static struct bbuf bcache[NBUF];
-static u32 bclock;
+/*
+ * ONE MOUNTED VOLUME. Everything this driver knows about a volume lives
+ * here -- the device and where on it the filesystem starts, its
+ * geometry and free counts, its block cache, its journal and running
+ * transaction, and which of its inodes are open -- so that more than
+ * one can be mounted (vfs.c's mount table). V is the volume being
+ * worked on: vfs.c selects it (ext2_select) before every call, under
+ * the filesystem lock, so nothing here can see two at once. The code
+ * below still says `block_size` and `bcache`; the macros after this
+ * make each of those V's.
+ *
+ * Shared by every volume, because they are scratch for the length of
+ * one call: the journal's block buffers, symlink resolution's paths,
+ * recovery's revoke table, and fsck's work maps.
+ */
+#define EXT2_MAX_OPEN   256
+
+struct ext2_vol {
+    struct blockdev *dev;
+    int  mounted;
+    u32  part_lba;              /* LBA the filesystem starts at         */
+    u32  block_size, sectors_per_block;
+    u32  inodes_count, blocks_count, r_blocks_count;
+    u32  free_blocks, free_inodes;
+    u32  first_data_block, blocks_per_group, inodes_per_group;
+    u32  inode_size, first_ino, group_count;
+    u32  gd_first_block;        /* block holding the descriptor table   */
+    u32  addrs_per_block;       /* block_size / 4                       */
+    u32  alloc_goal;            /* where the last allocation landed     */
+    int  sb_dirty;
+    int  was_unclean;           /* see ext2_mount_dev                   */
+    char volume_label[17];
+    struct bbuf bcache[NBUF];
+    u32  bclock;
+    u8   sbuf[EXT2_SUPER_OFF + 1024];
+    /* the journal: see "The journal" */
+    int  journal_on;
+    u32  journal_forced, journal_commits, journal_replayed;
+    u32  txn_started;           /* timer_jiffies() at its first change */
+    int  txn_open, commit_due;
+    u8 **txn_freed;             /* group -> page of bits, or 0          */
+    u32  txn_freed_groups;
+    u32 *jmap;                  /* journal block -> volume block        */
+    u32  jmap_pages, j_maxlen, j_first, j_seq;
+    u8   j_uuid[16];
+    /* the inodes open on it, and how many times each */
+    struct { u32 ino; int refs; } opened[EXT2_MAX_OPEN];
+};
+
+static struct ext2_vol vol0;            /* the first mounted: the root */
+static struct ext2_vol *V = &vol0;
+
+#define dev               (V->dev)
+#define mounted           (V->mounted)
+#define part_lba          (V->part_lba)
+#define block_size        (V->block_size)
+#define sectors_per_block (V->sectors_per_block)
+#define inodes_count      (V->inodes_count)
+#define blocks_count      (V->blocks_count)
+#define r_blocks_count    (V->r_blocks_count)
+#define free_blocks       (V->free_blocks)
+#define free_inodes       (V->free_inodes)
+#define first_data_block  (V->first_data_block)
+#define blocks_per_group  (V->blocks_per_group)
+#define inodes_per_group  (V->inodes_per_group)
+#define inode_size        (V->inode_size)
+#define first_ino         (V->first_ino)
+#define group_count       (V->group_count)
+#define gd_first_block    (V->gd_first_block)
+#define addrs_per_block   (V->addrs_per_block)
+#define alloc_goal        (V->alloc_goal)
+#define sb_dirty          (V->sb_dirty)
+#define was_unclean       (V->was_unclean)
+#define volume_label      (V->volume_label)
+#define bcache            (V->bcache)
+#define bclock            (V->bclock)
+#define sbuf              (V->sbuf)
+#define journal_on        (V->journal_on)
+#define journal_forced    (V->journal_forced)
+#define journal_commits   (V->journal_commits)
+#define journal_replayed  (V->journal_replayed)
+#define txn_started       (V->txn_started)
+#define txn_open          (V->txn_open)
+#define commit_due        (V->commit_due)
+#define txn_freed         (V->txn_freed)
+#define txn_freed_groups  (V->txn_freed_groups)
+#define jmap              (V->jmap)
+#define jmap_pages        (V->jmap_pages)
+#define j_maxlen          (V->j_maxlen)
+#define j_first           (V->j_first)
+#define j_seq             (V->j_seq)
+#define j_uuid            (V->j_uuid)
+#define opened            (V->opened)
+
 
 /* The journal, below; the cache has to know whether one is in use. */
-static int journal_on;
 static int journal_commit(void);
-static u32 journal_forced;      /* commits a full cache forced mid-call */
 
 /* The superblock lives at byte 1024, which is inside block 0 when the
  * block size is 2048 or 4096 and is block 1 when it is 1024.  It is read
  * and written through its own buffer rather than the cache, so that
  * nothing can evict it half-written. */
-static u8 sbuf[EXT2_SUPER_OFF + 1024];
 
 static int bwrite_raw(u32 blk, const u8 *data)
 {
@@ -433,8 +500,6 @@ static struct bbuf *bget_zero(u32 blk)
     return victim;
 }
 
-static u32 txn_started;         /* timer_jiffies() at its first change */
-static int txn_open;
 
 /* Dirty metadata: a bitmap, an inode table block, a group descriptor, an
  * indirect or a directory block. With a journal it joins the running
@@ -521,7 +586,6 @@ static int bcache_flush_all(void)
  * commit within five seconds, or at sync and fsync.
  */
 static int sb_write(void);
-static int commit_due;
 static int op_flush(void)
 {
     int a, b;
@@ -712,8 +776,6 @@ static u32 group_blocks(u32 g)
  * at them. One bit per block, per group, in a page allocated the first
  * time a group frees something; cleared at every commit.
  */
-static u8 **txn_freed;          /* group -> page of bits, or 0          */
-static u32 txn_freed_groups;
 
 static int freed_in_txn(u32 g, u32 bit)
 {
@@ -2454,14 +2516,9 @@ static int ext2_dir_path(u32 ino, char *out, u32 size)
 #define JBD_HEADER                12      /* magic, blocktype, sequence  */
 #define JBD_TAG_BYTES             8       /* blocknr, checksum, flags    */
 
-static u32 *jmap;               /* journal block -> volume block        */
-static u32  jmap_pages;
-static u32  j_maxlen, j_first, j_seq;
-static u8   j_uuid[16];
 static u8   jbuf[EXT2_MAX_BLOCK];
 static u8   jbuf2[EXT2_MAX_BLOCK];
 static u8   jsbimg[EXT2_MAX_BLOCK];
-static u32  journal_commits;
 
 static u32 be32(const u8 *p)
 {
@@ -2593,7 +2650,6 @@ static int journal_reinit(void)
 }
 
 /* kstat's view, and its test knob (uapi.h). */
-static u32 journal_replayed;
 static u32 jstop_how, jstop_left;
 static int committing_for_sync;
 
@@ -3241,12 +3297,6 @@ static int ext2_mount_dev(void)
  * the machine refuses an open the VFS still has room for, with ENFILE:
  * at 64 that happened on the 65th file and read as a descriptor leak.
  */
-#define EXT2_MAX_OPEN   256
-
-static struct {
-    u32 ino;
-    int refs;
-} opened[EXT2_MAX_OPEN];
 
 static int open_ref(u32 ino)
 {

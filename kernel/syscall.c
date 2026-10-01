@@ -516,6 +516,7 @@ static const struct {
     { TIOCGDEVNAME, TTYNAME_MAX,                  IO_OUT },
     { TIOCGPGRP,    sizeof(int),                  IO_OUT },
     { TIOCSPGRP,    sizeof(int),                  IO_IN  },
+    { TIOCGSID,     sizeof(int),                  IO_OUT },
     { TIOCGPTN,     sizeof(int),                  IO_OUT },
     { TIOCSPTLCK,   sizeof(int),                  IO_IN  },
     { TIOCGWINSZ,   sizeof(struct winsize),       IO_OUT },

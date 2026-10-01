@@ -90,6 +90,31 @@ personality(unsigned long persona)
     return syscall(LINUX_SYS_personality, persona);
 }
 
+/* The session a terminal controls (TIOCGSID); declared in <termios.h>
+ * and, until there were sessions to ask about, defined nowhere. */
+pid_t
+tcgetsid(int fd)
+{
+    int sid = 0;
+
+    if (syscall(LINUX_SYS_ioctl, fd, 0x5429 /* TIOCGSID */, &sid) < 0)
+        return -1;
+    return (pid_t)sid;
+}
+
+/* The controlling terminal's name: always /dev/tty, which now opens it
+ * (kernel/ctty.c). */
+char *
+ctermid(char *s)
+{
+    static char name[16];       /* L_ctermid */
+
+    if (!s)
+        s = name;
+    strcpy(s, "/dev/tty");
+    return s;
+}
+
 int
 usleep(useconds_t usec)
 {

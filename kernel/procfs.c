@@ -65,6 +65,7 @@
 #include "loadavg.h"
 #include "swap.h"
 #include "ptrace.h"
+#include "ctty.h"
 #include "textcache.h"
 #include "errno.h"
 #include "string.h"
@@ -584,6 +585,11 @@ int proc_stat(const char *path, struct stat *st)
     st->st_ino = 0x80000000UL | ((u32)(n.pid & 0x3ffff) << 12) |
                  ((u32)(n.e ? n.e->what + 1 : 32 + n.type) << 6) |
                  (u32)(n.fd >= 0 ? n.fd : 0);
+    /* /proc/N/task/N is not /proc/N: the same pid, a different place,
+     * and a different inode -- find(1) took the two for a loop. */
+    if (n.in_task) {
+        st->st_ino |= 0x40000000UL;
+    }
     st->st_dev = ST_DEV_PROC;
 
     switch (n.type) {
@@ -999,9 +1005,9 @@ static void sig_masks(struct task *t, u32 m[4])
 
 /*
  * Linux's fifty-two fields, in Linux's order (fs/proc/array.c,
- * do_task_stat). Zeroes, each for want of something to count: tty_nr
- * (nothing records a controlling terminal per process yet), the fault
- * counts, the scheduling and accounting fields, wchan, and the stack and
+ * do_task_stat). tty_nr is the controlling terminal's device number
+ * (ctty.c), 0 for none. Zeroes, each for want of something to count: the
+ * fault counts, the scheduling and accounting fields, wchan, and the stack and
  * instruction pointers, which Linux itself zeroes for other processes.
  */
 static void gen_pid_stat(struct pbuf *b, struct task *t)
@@ -1025,7 +1031,7 @@ static void gen_pid_stat(struct pbuf *b, struct task *t)
     field(b, t->parent ? (u32)t->parent->tgid : 0);     /* 4 ppid       */
     field(b, (u32)t->pgid);
     field(b, (u32)t->sid);
-    field(b, 0);                                        /* 7 tty_nr     */
+    field(b, ctty_number(t));                           /* 7 tty_nr     */
     puts_(b, "-1 ");                                    /* 8 tpgid      */
     field(b, as ? 0 : 0x00200000UL);                    /* 9 PF_KTHREAD */
     puts_(b, "0 0 0 0 ");                               /* 10-13 faults */

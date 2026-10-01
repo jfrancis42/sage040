@@ -47,6 +47,7 @@
 #include "console.h"
 #include "errno.h"
 #include "string.h"
+#include "ctty.h"
 
 #define CTRL(x)    ((x) & 0x1f)
 #define IN_RING    256
@@ -69,7 +70,8 @@ struct tty {
     int   pushback;                     /* one char taken and not wanted */
     struct waitq wait;
 
-    int   fg_pgrp;                      /* ctrl-C's target here          */
+    struct ttyctl ctl;                  /* session, and the foreground
+                                         * group ctrl-C goes to (ctty.c) */
     int   pending_sig;                  /* a ctrl-C waiting for a group  */
 
     struct winsize ws;                  /* assumed size; a self-sizing
@@ -134,7 +136,7 @@ static void set_foreground(struct tty *t, int pgrp)
 {
     int sig = t->pending_sig;
 
-    t->fg_pgrp = pgrp;
+    t->ctl.pgrp = pgrp;
     t->pending_sig = 0;
     if (sig && pgrp && (!current || pgrp != current->pgid)) {
         signal_group(pgrp, sig);
@@ -163,7 +165,7 @@ static int may_read(struct tty *t)
 {
     struct task *c = current;
 
-    if (!c || !c->as || c->pgid == t->fg_pgrp) {
+    if (!c || !c->as || c->pgid == t->ctl.pgrp) {
         return 0;
     }
     if ((c->sig_blocked & SIGMASK(SIGTTIN)) ||
@@ -390,7 +392,7 @@ static int signal_char(struct tty *t, int c)
     if (!sig) {
         return 0;
     }
-    signal_group(t->fg_pgrp, sig);
+    signal_group(t->ctl.pgrp, sig);
     t->pending_sig = 0;
     return sig;
 }
@@ -530,7 +532,7 @@ static void drain_irq(struct tty *t)
              * pending_sig for a job the shell is about to start. */
             sig = signal_of(t, c);
             if (sig) {
-                if (signal_group(t->fg_pgrp, sig) == 0) {
+                if (signal_group(t->ctl.pgrp, sig) == 0) {
                     continue;
                 }
                 t->pending_sig = sig;
@@ -621,9 +623,14 @@ static void get_ws(struct tty *t, struct winsize *out)
 static int tty_ioctl(struct file *f, u32 request, u32 arg)
 {
     struct tty *t = tty_of(f);
+    int r;
 
     if (!t) {
         return -ENOTTY;
+    }
+    r = ctty_ioctl(&t->ctl, request, arg);
+    if (r != CTTY_NOT_MINE) {
+        return r;
     }
     switch (request) {
     case FIONREAD:
@@ -633,14 +640,17 @@ static int tty_ioctl(struct file *f, u32 request, u32 arg)
         return 0;
 
     case TIOCGPGRP:
-        *(int *)arg = t->fg_pgrp;
+        *(int *)arg = t->ctl.pgrp;
         return 0;
 
     case TIOCSPGRP: {
         int pg = *(int *)arg;
         struct task *task;
-        int i;
+        int i, err = ctty_may_setpgrp(&t->ctl, pg);
 
+        if (err < 0) {
+            return err;
+        }
         for (i = 0; (task = task_nth(i)) != 0; i++) {
             if (task->pgid == pg && task->state != TASK_ZOMBIE) {
                 /* set_foreground, not a bare assignment: taking the
@@ -672,7 +682,7 @@ static int tty_ioctl(struct file *f, u32 request, u32 arg)
         t->ws = *(const struct winsize *)arg;
         get_ws(t, &after);
         if (after.ws_row != before.ws_row || after.ws_col != before.ws_col) {
-            signal_group(t->fg_pgrp, SIGWINCH);
+            signal_group(t->ctl.pgrp, SIGWINCH);
         }
         return 0;
     }
@@ -854,6 +864,8 @@ static void register_tty(struct tty *t)
     t->dev.ops = &tty_ops;
     t->dev.priv = t;
     t->dev.next = 0;
+    t->dev.tc = &t->ctl;
+    t->ctl.dev = &t->dev;
     dev_register_char(&t->dev);
 }
 

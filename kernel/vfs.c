@@ -32,6 +32,7 @@
 #include "wait.h"
 #include "signal.h"
 #include "pty.h"
+#include "ctty.h"
 #include "procfs.h"
 #include "timer.h"
 
@@ -1506,6 +1507,23 @@ static int fd_open_mode_raw(const char *path, int flags, u32 mode)
          * pty has to be told, so that it knows when the program on the
          * terminal has gone.
          */
+        /*
+         * /dev/tty is the controlling terminal of whoever opens it --
+         * the screen, the serial line or a pty -- so the descriptor is
+         * pointed at that device. With no controlling terminal there is
+         * nothing to open: ENXIO, as on Linux.
+         */
+        if (f && strcmp(cd->name, "tty") == 0) {
+            struct chardev *ct = ctty_device();
+
+            if (!ct) {
+                fd_close(fd);
+                return -ENXIO;
+            }
+            f->ops = ct->ops;
+            f->priv = ct->priv;
+            cd = ct;
+        }
         if (f && strcmp(cd->name, "ptmx") == 0) {
             int err = pty_open_master(f);
 
@@ -1515,6 +1533,9 @@ static int fd_open_mode_raw(const char *path, int flags, u32 mode)
             }
         } else if (f && strncmp(cd->name, "pts/", 4) == 0) {
             pty_slave_opened(cd->priv);
+        }
+        if (f) {
+            ctty_opened(cd, flags);     /* a session leader may gain it */
         }
         return fd;
     }

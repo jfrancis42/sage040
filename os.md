@@ -1238,6 +1238,44 @@ it gets SIGHUP.
 Eight pairs, and they are given back -- which `kernel/ptytest.sh`
 checks by taking every one, closing them, and taking them all again.
 
+## Sessions and controlling terminals
+
+A **session** is a login: `setsid()` starts one, and its leader is the
+first program of it. A session has at most one **controlling terminal**
+-- the screen, the serial line or a pty -- and a terminal controls at
+most one session (`kernel/ctty.c`). The rules are Linux's:
+
+- a session leader with no controlling terminal that opens a terminal
+  nobody controls gets it, unless it says `O_NOCTTY`;
+- `TIOCSCTTY` asks for it explicitly, and root (argument 1) may take one
+  another session holds; `TIOCNOTTY` gives it up; `TIOCGSID`
+  (`tcgetsid`) says which session a terminal controls;
+- a job may be put in front (`TIOCSPGRP`) only by its own session, on
+  its own controlling terminal;
+- `/dev/tty` is the opener's controlling terminal, ENXIO without one,
+  and `ctermid()` names it;
+- **a hangup** -- a pty's master closing, as when an ssh connection
+  drops -- sends SIGHUP and SIGCONT to the session's leader and its
+  foreground job, and the session loses the terminal; **the leader
+  exiting** does the same to the foreground job;
+- `/proc/<pid>/stat`'s `tty_nr` is the controlling terminal's device
+  number, so `ps` can say which terminal a process is on.
+
+A **console login** is a session: `/bin/login`, started by the system's
+shell inside its own session, forks, and the child starts the session
+and takes the terminal (as a getty-started login does on Linux). An ssh
+login is one too -- Dropbear's own `setsid` and `TIOCSCTTY` now work, and
+its log no longer says "Failed to disconnect from controlling tty".
+The console's own shell is a kernel task and outside all of this.
+
+**Dropbear closes a pty channel's master when the client sends EOF**, and
+a client whose standard input is at end of file sends it at once -- so
+`ssh -t host cmd < /dev/null` hangs `cmd` up. That is Dropbear's
+behaviour and Linux's would be the same; a person's terminal never sends
+it. It was long noted here as "ssh -t output never arrives".
+`kernel/sesstest.sh` checks every rule above from processes built for
+it; `kernel/sshtest.sh` the ssh end.
+
 ## Users
 
 A task has a real, effective and saved user id and the same three group
@@ -1695,7 +1733,8 @@ drive it over its serial line.
 | `kernel/logintest.sh` | 14 | logging in: the right password gets that user's shell in that user's home and the wrong one does not, `su`, `sudo`, and the modes on them; and after a session dies without handing the terminal back, the next login still gets it |
 | `kernel/linktest.sh` | 30 | hard links and symlinks -- one inode with two names, fast targets and slow ones, loops, dangling targets -- agreed with by the host's e2fsck; fast symlinks the host made surviving the boot-time check, and deleted without freeing their "blocks" |
 | `kernel/dftest.sh` | 15 | `df` and `du` against the host's own figures for the same volume, with the shell's built-in as the control |
-| `kernel/sshtest.sh` | 10 | ssh, scp and rsync against the workstation's own OpenSSH, which knows nothing about this project -- so the protocol is either right or it is not |
+| `kernel/sesstest.sh` | 14 | sessions and controlling terminals: a new session has none, a leader opening a pty gets it (tcgetsid, the front, `/dev/tty`, `tty_nr`), a job inherits it and another session cannot use it, `O_NOCTTY`, `TIOCSCTTY` refused to a user and taken by root, the master closing hanging up leader and job, the leader exiting hanging up its job, `TIOCNOTTY`, `setsid` |
+| `kernel/sshtest.sh` | 14 | ssh, scp and rsync against the workstation's own OpenSSH, which knows nothing about this project -- so the protocol is either right or it is not; `ssh -t` on a pty; a dropped connection hanging up the command; no TIOCSCTTY complaints from the server |
 | `kernel/pylibtest.sh` | 27 | the libraries CPython is built against, proven by the programs that ship with them, every stream crossing the host boundary both ways |
 | `libc/test/qemutest.sh` | 8 | a program built for this machine, run as a Linux/m68k binary by qemu-m68k user mode -- the system call numbers and errnos are Linux's, so something else can check them |
 

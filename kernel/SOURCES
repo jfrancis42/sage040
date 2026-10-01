@@ -60,6 +60,7 @@ fb.c
 fbcon.c
 klog.c
 pty.c
+ctty.c
 cache.c
 font8x16.c
 probe.c

@@ -1026,6 +1026,7 @@ static int spawn(struct script *script, const char *path, int argc,
      */
     t->pgid = current->pgid;
     t->sid = current->sid;
+    t->ctty = current->ctty;
     t->nice = current->nice;
 
     return t->pid;

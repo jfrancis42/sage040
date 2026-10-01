@@ -72,6 +72,8 @@ enum task_state {
                                  * (or SIGKILL) resumes it: ptrace.c   */
 };
 
+struct ttyctl;                  /* dev.h: a terminal's session state */
+
 struct task {
     /*
      * The address space this task's uaccess calls reach, when it is not
@@ -103,6 +105,7 @@ struct task {
     struct task *parent;
     int   pgid;                 /* process group: what ctrl-C reaches  */
     int   sid;                  /* session: the groups a login holds   */
+    struct ttyctl *ctty;        /* controlling terminal (ctty.c)       */
     /*
      * When this task was made, in jiffies since boot. It is here so
      * that `who` can say when somebody logged in: a session's login

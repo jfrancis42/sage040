@@ -42,6 +42,7 @@
 #include "signal.h"
 #include "uaccess.h"
 #include "string.h"
+#include "ctty.h"
 
 #define PTY_MAX     8           /* pairs; each costs two rings         */
 #define PTY_BUF     2048        /* bytes each way                      */
@@ -63,7 +64,8 @@ struct pty {
 
     struct termios tio;
     struct winsize win;
-    int pgrp;                   /* the foreground group on this pty    */
+    struct ttyctl ctl;          /* session, and the foreground group on
+                                 * this pty (ctty.c)                   */
 
     char name[12];              /* "pts/N"                             */
     struct chardev slave_dev;
@@ -166,8 +168,8 @@ static int pty_input(struct pty *p, u8 c)
                 ring_put(&p->to_master, '\n');
                 wake_all(&p->to_master.wait);
             }
-            if (p->pgrp) {
-                signal_group(p->pgrp, sig);
+            if (p->ctl.pgrp) {
+                signal_group(p->ctl.pgrp, sig);
             }
             return 1;
         }
@@ -364,18 +366,24 @@ static int pty_ioctl_common(struct pty *p, u32 req, u32 arg, int is_master)
          * A terminal whose size changed tells the program on it, which
          * is the whole mechanism behind a window that can be resized.
          */
-        if (p->pgrp) {
-            signal_group(p->pgrp, SIGWINCH);
+        if (p->ctl.pgrp) {
+            signal_group(p->ctl.pgrp, SIGWINCH);
         }
         return 0;
 
     case TIOCGPGRP:
-        *(int *)arg = p->pgrp;
+        *(int *)arg = p->ctl.pgrp;
         return 0;
 
-    case TIOCSPGRP:
-        p->pgrp = *(const int *)arg;
+    case TIOCSPGRP: {
+        int err = is_master ? 0 : ctty_may_setpgrp(&p->ctl, *(const int *)arg);
+
+        if (err < 0) {
+            return err;
+        }
+        p->ctl.pgrp = *(const int *)arg;
         return 0;
+    }
 
     case TIOCGPTN:
         /* Which pts this is. ptsname(3) asks the MASTER. */
@@ -403,7 +411,10 @@ static int pty_ioctl_common(struct pty *p, u32 req, u32 arg, int is_master)
 
 static int pty_slave_ioctl(struct file *f, u32 req, u32 arg)
 {
-    return pty_ioctl_common(pty_of(f), req, arg, 0);
+    struct pty *p = pty_of(f);
+    int r = ctty_ioctl(&p->ctl, req, arg);
+
+    return r != CTTY_NOT_MINE ? r : pty_ioctl_common(p, req, arg, 0);
 }
 
 static int pty_slave_poll(struct file *f)
@@ -525,8 +536,15 @@ static int pty_master_close(struct file *f)
         p->master_open--;
     }
     if (p->master_open == 0) {
-        if (p->pgrp) {
-            signal_group(p->pgrp, SIGHUP);
+        /* A hangup: the session's leader and its foreground job are
+         * told (SIGHUP, and SIGCONT to wake a stopped one), and the
+         * session loses the terminal. Without a session -- nobody made
+         * it their controlling terminal -- the foreground job is still
+         * told, as before. */
+        if (p->ctl.sid) {
+            ctty_hangup(&p->ctl);
+        } else if (p->ctl.pgrp) {
+            signal_group(p->ctl.pgrp, SIGHUP);
         }
         wake_all(&p->to_slave.wait);
         if (p->slave_open == 0) {
@@ -572,7 +590,7 @@ static void pty_defaults(struct pty *p)
     p->tio.c_cc[VSUSP] = 26;    /* ctrl-Z */
     p->win.ws_row = 24;
     p->win.ws_col = 80;
-    p->pgrp = 0;
+    p->ctl.pgrp = 0;
 }
 
 int pty_open_master(struct file *f)
@@ -603,6 +621,8 @@ int pty_open_master(struct file *f)
         p->slave_dev.name = p->name;
         p->slave_dev.ops = &p->slave_ops;
         p->slave_dev.priv = p;
+        p->slave_dev.tc = &p->ctl;
+        p->ctl.dev = &p->slave_dev;
         /*
          * A PSEUDO-TERMINAL BELONGS TO WHOEVER ALLOCATED IT, which is
          * what Linux's devpts does and what programs assume. It is not
@@ -653,6 +673,10 @@ int pty_init(void)
      */
     static const struct file_ops ptmx_ops = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
     static struct chardev ptmx = { .name = "ptmx", .ops = &ptmx_ops };
+    /* /dev/tty: whichever terminal controls the opener's session. Like
+     * ptmx, a name whose open vfs.c turns into something else. */
+    static struct chardev tty = { .name = "tty", .ops = &ptmx_ops };
 
+    dev_register_char(&tty);
     return dev_register_char(&ptmx);
 }

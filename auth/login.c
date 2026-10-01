@@ -28,6 +28,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
+#include <sys/wait.h>
+#include <errno.h>
 #include <grp.h>
 #include <time.h>
 #include "pwdb.h"
@@ -159,6 +162,43 @@ int main(int argc, char **argv)
             }
         }
         break;
+    }
+
+    /*
+     * A LOGIN IS A SESSION, with the terminal as its controlling
+     * terminal: that is what lets a hangup reach it and /dev/tty find
+     * it. On the console this program is started by the system's
+     * shell, inside the shell's session and as a group leader, which
+     * may not start a session (POSIX) -- so, as a getty-started login
+     * does, it forks, and the child starts the session and takes the
+     * terminal while it is still root (TIOCSCTTY's 1: take it even if
+     * an earlier session left it attached). The parent only waits, so
+     * the shell that started it sees the session end.
+     *
+     * Started by an ssh server, it is already a session leader with its
+     * terminal, and nothing needs doing.
+     */
+    if (getsid(0) != getpid()) {
+        pid_t child = fork();
+
+        if (child < 0) {
+            perror("login: fork");
+            return 1;
+        }
+        if (child > 0) {
+            int st = 0;
+
+            while (waitpid(child, &st, 0) < 0 && errno == EINTR) {
+            }
+            return WIFEXITED(st) ? WEXITSTATUS(st) : 1;
+        }
+        if (setsid() < 0) {
+            perror("login: setsid");
+            return 1;
+        }
+        if (isatty(0) && ioctl(0, TIOCSCTTY, 1) != 0) {
+            perror("login: TIOCSCTTY");
+        }
     }
 
     /*
