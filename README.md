@@ -189,6 +189,8 @@ the POSIX layer added to it.
 | `ports/python` | CPython 3.14.7: big integers, the FPU, threads, sockets, curses, the standard library on the disk |
 | `ports/perl` | Perl 5.44.0: 64-bit integers, XS modules as shared objects, perldoc, and MakeMaker -- an XS module builds on the machine |
 | `ports/make` | GNU make 4.4.1, as `/bin/make` |
+| `ports/diffutils` | GNU diffutils 3.12: `diff`, `cmp`, `diff3`, `sdiff` |
+| `ports/patch` | GNU patch 2.8 |
 | `ports/bash` | GNU bash 5.3.20 — job control, arrays, `[[ ]]`, arithmetic, here-documents; and `/bin/sh` |
 | `ports/ncurses` | ncurses 6.5: the terminfo database at /usr/share/terminfo, and curses |
 | `ports/less` | the pager, over terminfo |
@@ -364,6 +366,7 @@ is a 25 MHz 68040, and one of the suites waits for the wall clock.
 | `make perltest` | Perl: its modules against the host's answers, and an XS module built on the machine |
 | `make shebangtest` | `#!` scripts, from spawn and from execve |
 | `make shtest` | `/bin/sh` is bash; the system shell is `/bin/msh` |
+| `make difftest` | diff and patch, each crossed with the host's |
 | `make uemacstest` `make vitest` | the editors |
 | `make bashsuite` | every one of bash's own 83 tests (hours, not minutes) |
 

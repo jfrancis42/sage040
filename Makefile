@@ -31,13 +31,13 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: pagecheck autoinccheck shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest linetest gfxtest fpsptest faulttest procfstest tlstest logintest fsimgtest fattest all boot run install src qemu world libc-if-missing toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest qemutest libc cube programs clean distclean perl shebangtest shtest perltest
+.PHONY: pagecheck autoinccheck shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest linetest gfxtest fpsptest faulttest procfstest tlstest logintest fsimgtest fattest all boot run install src qemu world libc-if-missing toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest qemutest libc cube programs clean distclean perl shebangtest shtest difftest perltest
 
 # EVERY PORT, in the order they need each other: what `ports`, `python`, `perl`
 # and `toolchain` install, in the order they install it. One list, so
 # that `all` building a port and `install` installing it cannot drift
 # apart.
-PORT_DIRS := sbase make awk sed grep bash ncurses less uemacs vi bzip2 gzip xz \
+PORT_DIRS := sbase make diffutils patch awk sed grep bash ncurses less uemacs vi bzip2 gzip xz \
              zstd sqlite openssl ca-certs brotli nghttp2 libunistring \
              libidn2 libpsl curl wget lynx readline libffi dropbear rsync \
              libiconv gettext zlib python perl binutils gmp mpfr mpc libstdcxx gcc
@@ -160,6 +160,8 @@ programs:
 ports:
 	$(MAKE) -C ports/sbase install
 	$(MAKE) -C ports/make install
+	$(MAKE) -C ports/diffutils install
+	$(MAKE) -C ports/patch install
 	$(MAKE) -C ports/awk install
 	$(MAKE) -C ports/sed install
 	$(MAKE) -C ports/grep install
@@ -316,7 +318,7 @@ qemu:
 run:
 	$(MAKE) -C kernel run
 
-test: autoinccheck pagecheck fsimgtest tests cryptotest fstest fattest apitest fpsptest faulttest procfstest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest tlstest shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest linetest gfxtest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest logintest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest shebangtest shtest perltest qemutest
+test: autoinccheck pagecheck fsimgtest tests cryptotest fstest fattest apitest fpsptest faulttest procfstest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest tlstest shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest linetest gfxtest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest logintest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest shebangtest shtest difftest perltest qemutest
 
 # Code and data on separate pages, in everything built for the machine
 # (tools/pagecheck.py says why). First, and cheap: what it catches never
@@ -581,6 +583,10 @@ ttytest:
 # vacuously, and this tree does not do vacuous passes.
 nativetest:
 	cd kernel && ./nativetest.sh
+
+# diff and patch, crossed over with the host's.
+difftest:
+	cd kernel && ./difftest.sh
 
 # /bin/sh is bash, laid out by the real install rules.
 shtest:

@@ -676,6 +676,20 @@ which is what bash's `<(...)` opens. Everything else under `/dev` is the
 registry's, and `/dev/shm` is tmpfs. A name there that is no device is
 `ENOENT`. There is no `/dev/tty` (the controlling terminal) yet.
 
+**Every file says which filesystem it is on, and every device which
+device it is.** `struct stat` carries `st_dev` and `st_rdev`: the disk
+is 3:1, as Linux numbers the first IDE partition, and the rest are
+Linux's anonymous majors -- `/proc` 0:4, `/dev` 0:5, sockets 0:8, pipes
+0:12, eventfd and friends 0:13, tmpfs 0:21. Each device has an inode of
+its own in `/dev` and Linux's number where Linux has the device (`null`
+1,3, `console` 5,1, `ttyS0` 4,64, a pty 136,N), or one in the local
+range, 240, where it has not (`kbd0`, `fbcon`). Before this every
+device was inode 1 of the root disk with no number, so the console and
+`/dev/null` were the same file -- GNU cmp, which skips writing to
+`/dev/null`, printed nothing -- and `lstat` of a device failed. picolibc
+packed the numbers into its 64-bit `dev_t` so that `major()` could not
+unpack them (libc patch 46).
+
 ### /tmp and /dev/shm: tmpfs
 
 `/tmp` and `/dev/shm` are **tmpfs** (`fs/tmpfs.c`): files in pages of
@@ -1485,7 +1499,7 @@ drive it over its serial line.
 | `kernel/eventtest.sh` | 102 | eventfd, timerfd, signalfd, epoll and inotify, and ppoll/pselect: counts, blocking and waking by another process, timers timed by CLOCK_MONOTONIC, signals checked gone from `sigpending`, level/edge/oneshot, one epoll over all four kinds, masks that let a signal in only during the wait, inotify on the disk and in tmpfs, queue overflow |
 | `kernel/locktest.sh` | 54 | fcntl record locks, POSIX and OFD, on the disk and in tmpfs, seen from a second process: conflicts, F_GETLK naming the holder, splitting, read locks shared, the close-drops-all wart, F_SETLKW waiting, EDEADLK, release at exit, SEEK_END and negative lengths; F_DUPFD's argument |
 | `kernel/fifotest.sh` | 38 | named pipes on the disk and in tmpfs: two processes through a path, an open that waits for the other end (timed), end of file, O_NONBLOCK and ENXIO, O_RDWR, EINTR, unlink while open; and from the host, e2fsck clean and debugfs seeing the FIFO |
-| `kernel/devdirtest.sh` | 17 | `/dev` as a directory: every listed device stats as one, a new pty appears in `/dev/pts` under its ptsname, `/dev/fd` and `/dev/std*` are the links Linux has, `/dev/fd/N` of a pipe shares the pipe and of a file reopens it, a working directory in `/dev`; and `/bin/ls /dev` |
+| `kernel/devdirtest.sh` | 26 | `/dev` as a directory: every listed device stats as one, a new pty appears in `/dev/pts` under its ptsname, `/dev/fd` and `/dev/std*` are the links Linux has, `/dev/fd/N` of a pipe shares the pipe and of a file reopens it, a working directory in `/dev`; every device an inode of its own and Linux's number, the terminal not the same file as `/dev/null`, `lstat` of a device, five filesystems told apart by `st_dev`; `cd /dev` at the console, and `/bin/ls -l` there |
 | `kernel/xfertest.sh` | 39 | sendfile (file to file, with an offset, into a pipe five times its size), splice both ways and its refusals, copy_file_range, mremap (moved with its contents, the old address faulting in a second process, shrunk, grown in place, a moved MAP_SHARED mapping still the file), memfd_create; and from the host, the files moved compared byte for byte |
 | `kernel/linetest.sh` | 43 | lines drawn by the SM501's own Line Draw, judged from a screendump by `lineprobe.py`: every octant from both ends the same pixels, end points, one pixel per major step, within half a pixel of the true line, clipping at three edges exactly the on-screen part, nothing stray; a line past the engine's range refused |
 | `kernel/gfxtest.sh` | 66 | the graphics demos: each started, screendumped twice a second apart, stopped with q -- exits 0, draws a picture, moves, prints its summary; sorts leaves every array sorted; mandel's fixed-point and FPU pictures agree on the set pixel for pixel, and the centre of its view is in it |
@@ -1508,6 +1522,7 @@ drive it over its serial line.
 | `kernel/crontest.sh` | 8 | something the machine does by itself, later |
 | `kernel/pytest.sh` | 43 | CPython, against the host's Python's answers to the same questions |
 | `kernel/perltest.sh` | 37 | Perl: 64-bit integers, byte order, the XS modules against the host's digests and zlib, a `#!` script, perldoc, and an XS module built on the machine with CBuilder and with MakeMaker and GNU make |
+| `kernel/difftest.sh` | 16 | GNU diff and patch: the machine's diff applied by the host's patch and the host's by the machine's, exit statuses, `diff -r`, binary files, `diff3 -m`, `cmp`, `sdiff`, `patch -R`, `--dry-run`, `-p1`, and a hunk found at an offset |
 | `kernel/shtest.sh` | 8 | `/bin/sh` is bash and the system shell `/bin/msh`, as the real install rules lay them out, read on the host; a `#!/bin/sh` continuation line and `system()` on the machine |
 | `kernel/shebangtest.sh` | 20 | `#!`: the argv the interpreter gets, nesting and ELOOP, permissions, a set-user-id script ignored against an ELF control, from spawn and from execve |
 | `kernel/usertest.sh` | 16 | uids and gids, `/etc/passwd` and `/etc/group`, and what an ordinary user is refused |
