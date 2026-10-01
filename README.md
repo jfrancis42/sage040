@@ -374,6 +374,8 @@ is a 25 MHz 68040, and one of the suites waits for the wall clock.
 | `make ptracetest` `make stracetest` | ptrace from a small tracer; strace's account of known calls |
 | `make gdbtest` | gdb and gdbserver on the machine, and C++ exceptions |
 | `make journaltest` | the journal: the machine stopped mid-commit, replayed three ways |
+| `make bootjtest` | the boot ROM reads a journal that still needs replaying |
+| `make journal` | give an existing disk ext3's journal, in place (refuses a disk in use or not clean) |
 | `make linuxfstest` | the disk handed back and forth with Linux's own ext3 driver (needs sudo) |
 | `make sesstest` | sessions and controlling terminals: `/dev/tty`, `TIOCSCTTY`, hangups |
 | `make mounttest` | more than one volume: `mount`, `umount`, partitions, read-only, a journal replayed off the root |

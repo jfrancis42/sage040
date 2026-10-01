@@ -189,12 +189,32 @@ mkfs)
 journal)
     # Give an existing volume a journal, in place: its files are left
     # alone. A no-op on a volume that already has one.
+    #
+    # This is run on disks that hold somebody's work (`make journal`,
+    # and `make install` on a disk made before there was a journal), so
+    # it refuses rather than guesses: not while an emulator has the
+    # image open, and not on a volume that is not clean -- tune2fs would
+    # add a journal to a damaged volume, and the damage would then sit
+    # under a journal that promises consistency. The volume is checked
+    # again afterwards.
     if debugfs -R stats "$IMG?offset=$OFF" 2>/dev/null | grep -q 'has_journal'; then
         echo "already has a journal"
-    else
-        tune2fs -j "$IMG?offset=$OFF" >/dev/null || die "tune2fs -j failed"
-        echo "journal added"
+        exit 0
     fi
+    if command -v fuser >/dev/null && fuser -s "$IMG" 2>/dev/null; then
+        die "$IMG is open (a running machine?) -- halt it first"
+    fi
+    if ! debugfs -R stats "$IMG?offset=$OFF" 2>/dev/null |
+         grep -qE '^Filesystem state: +clean$'; then
+        die "the volume was not unmounted cleanly: halt the machine (or run 'fsck -p') first"
+    fi
+    if ! "$0" "$IMG" fsck >/dev/null 2>&1; then
+        die "e2fsck does not find the volume clean; not adding a journal to it"
+    fi
+    tune2fs -j "$IMG?offset=$OFF" >/dev/null || die "tune2fs -j failed"
+    "$0" "$IMG" fsck >/dev/null 2>&1 || die "e2fsck finds the volume NOT clean after adding the journal"
+    echo "journal added: $(debugfs -R 'stat <8>' "$IMG?offset=$OFF" 2>/dev/null |
+        sed -n 's/.*Size: \([0-9]*\).*/\1/p' | head -1) bytes ($IMG)"
     ;;
 put)
     MODE=""

@@ -54,7 +54,7 @@ FSIMG := PART_OFFSET=$(PART_OFFSET) FS_BLOCK_SIZE=$(FS_BLOCK_SIZE) \
 ABS_FSIMG := PART_OFFSET=$(PART_OFFSET) FS_BLOCK_SIZE=$(FS_BLOCK_SIZE) \
          $(abspath $(TOPDIR)/tools/fsimg.sh) $(abspath $(DISK))
 
-.PHONY: disk disk-ls disk-fsck disk-clean
+.PHONY: disk disk-ls disk-fsck disk-clean journal
 
 disk: $(DISK)
 
@@ -73,6 +73,13 @@ disk-ls: $(DISK)
 
 disk-fsck: $(DISK)
 	@$(FSIMG) fsck
+
+# A disk made before the journal existed (2026-09-30) is plain ext2; this
+# gives it ext3's journal in place, files untouched -- refusing while the
+# image is in use or the volume is not clean (tools/fsimg.sh, journal).
+# A no-op on a disk that already has one, so `make install` runs it.
+journal: $(DISK)
+	@$(FSIMG) journal
 
 disk-clean:
 	rm -f $(DISK)

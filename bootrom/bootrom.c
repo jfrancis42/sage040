@@ -210,6 +210,12 @@ static u32 partition_start(void)
 #define SB_REV_LEVEL        76
 #define SB_INODE_SIZE       88
 #define SB_FIRST_DATA_BLOCK 20
+#define SB_FEATURE_COMPAT   92
+#define SB_FEATURE_INCOMPAT 96
+#define SB_JOURNAL_INUM     224
+
+#define FEAT_COMPAT_HAS_JOURNAL  0x0004
+#define FEAT_INCOMPAT_RECOVER    0x0004
 
 /* Group descriptor. */
 #define GD_INODE_TABLE       8
@@ -219,6 +225,7 @@ static u32 partition_start(void)
 #define IN_BLOCK            40
 #define EXT2_NDIR_BLOCKS    12
 #define EXT2_IND_BLOCK      12
+#define EXT2_DIND_BLOCK     13
 
 /* Directory entry. */
 #define DE_INODE             0
@@ -245,8 +252,66 @@ static u16 le16(const u8 *p)
     return (u16)((u32)p[0] | ((u32)p[1] << 8));
 }
 
-/* Read one filesystem block into `dst`. */
-static int ext2_read_block(const struct ext2_info *fi, u32 blk, u8 *dst)
+/*
+ * THE JOURNAL, read and never written. A volume that stopped with
+ * committed transactions still in its log (needs_recovery set) has its
+ * newest metadata THERE, not at home: the kernel replays it when it
+ * mounts the volume, but this loader runs first, and reading home blocks
+ * could find the directory or inode of a KERNEL.ROM replaced in the last
+ * seconds before the stop as it was before. So the log is read the way
+ * the kernel's recovery reads it (fs/ext2.c, journal_pass) -- committed
+ * transactions only, revokes honoured -- and instead of writing anything
+ * home it builds a map: for each block the log holds a newer copy of,
+ * where that copy is. ext2_read_block consults the map. The disk is not
+ * touched: replaying is the kernel's job, which is done with a journal
+ * it can commit to.
+ *
+ * Only metadata is ever in the log (the kernel journals in ordered
+ * mode), so ext2_load's straight-to-memory data reads need no map.
+ */
+#define JBD_MAGIC           0xC03B3998UL
+#define JBD_DESCRIPTOR      1
+#define JBD_COMMIT          2
+#define JBD_SB_V1           3
+#define JBD_SB_V2           4
+#define JBD_REVOKE          5
+#define JBD_FLAG_ESCAPE     1
+#define JBD_FLAG_SAME_UUID  2
+#define JBD_FLAG_LAST_TAG   8
+#define JBD_HEADER          12
+#define JBD_TAG_BYTES       8
+#define JS_BLOCKSIZE        12
+#define JS_MAXLEN           16
+#define JS_FIRST            20
+#define JS_SEQUENCE         24
+#define JS_START            28
+#define JS_FEATURE_INCOMPAT 40
+#define JBD_INCOMPAT_OK     0x05        /* revoke, async commit        */
+
+#define JMAP_MAX            2048        /* blocks the log may hold new */
+#define JREVOKE_MAX         1024
+
+static struct { u32 blk, at, escape; } jmap[JMAP_MAX];
+static u32 jmap_n;
+static struct { u32 blk, seq; } jrevoke[JREVOKE_MAX];
+static u32 jrevoke_n;
+static u8 jbuf[EXT2_MAX_BLOCK];         /* the log's block being read  */
+static u8 jind[EXT2_MAX_BLOCK];         /* the journal's own indirects */
+static u8 jinode[256];
+static u32 j_maxlen, j_first;
+
+static u32 be32(const u8 *p)
+{
+    return ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | p[3];
+}
+
+static u32 be16(const u8 *p)
+{
+    return ((u32)p[0] << 8) | p[1];
+}
+
+/* Read one filesystem block into `dst`, from home: no map. */
+static int ext2_read_home(const struct ext2_info *fi, u32 blk, u8 *dst)
 {
     u32 lba = fi->part_lba + blk * fi->sectors_per_block;
     u32 i;
@@ -257,6 +322,235 @@ static int ext2_read_block(const struct ext2_info *fi, u32 blk, u8 *dst)
         }
     }
     return 0;
+}
+
+/* Read one filesystem block into `dst`: the log's newer copy if it has
+ * one (see "THE JOURNAL"), otherwise the block at home. */
+static int ext2_read_block(const struct ext2_info *fi, u32 blk, u8 *dst)
+{
+    u32 lba = fi->part_lba + blk * fi->sectors_per_block;
+    u32 i;
+
+    for (i = 0; i < jmap_n; i++) {
+        if (jmap[i].blk == blk) {
+            if (ext2_read_home(fi, jmap[i].at, dst) != 0) {
+                return -1;
+            }
+            if (jmap[i].escape) {           /* the magic the log hid */
+                dst[0] = 0xC0; dst[1] = 0x3B; dst[2] = 0x39; dst[3] = 0x98;
+            }
+            return 0;
+        }
+    }
+
+    for (i = 0; i < fi->sectors_per_block; i++) {
+        if (ata_read_sector(lba + i, dst + i * SECTOR_SIZE) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* The disk block behind block `n` of the journal: direct, indirect and
+ * double indirect, since a journal is megabytes. Its own buffer, so it
+ * never disturbs ext2_bmap's; and always from home -- the journal inode
+ * is not something a transaction changes. */
+static u32 jbmap(const struct ext2_info *fi, u32 n)
+{
+    u32 per = fi->block_size / 4, b;
+
+    if (n < EXT2_NDIR_BLOCKS) {
+        return le32(&jinode[IN_BLOCK + 4 * n]);
+    }
+    n -= EXT2_NDIR_BLOCKS;
+    if (n < per) {
+        b = le32(&jinode[IN_BLOCK + 4 * EXT2_IND_BLOCK]);
+        if (b == 0 || ext2_read_home(fi, b, jind) != 0) {
+            return 0;
+        }
+        return le32(&jind[4 * n]);
+    }
+    n -= per;
+    if (n >= per * per) {
+        return 0;
+    }
+    b = le32(&jinode[IN_BLOCK + 4 * EXT2_DIND_BLOCK]);
+    if (b == 0 || ext2_read_home(fi, b, jind) != 0) {
+        return 0;
+    }
+    b = le32(&jind[4 * (n / per)]);
+    if (b == 0 || ext2_read_home(fi, b, jind) != 0) {
+        return 0;
+    }
+    return le32(&jind[4 * (n % per)]);
+}
+
+static int jread(const struct ext2_info *fi, u32 pos, u8 *dst)
+{
+    u32 b = jbmap(fi, pos);
+
+    return b ? ext2_read_home(fi, b, dst) : -1;
+}
+
+static u32 jnext(u32 pos)
+{
+    return (pos + 1 >= j_maxlen) ? j_first : pos + 1;
+}
+
+static int jrevoked(u32 blk, u32 seq)
+{
+    u32 i;
+
+    for (i = 0; i < jrevoke_n; i++) {
+        if (jrevoke[i].blk == blk && (long)(jrevoke[i].seq - seq) >= 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/*
+ * One pass over the log, as the kernel's journal_pass: pass 0 finds the
+ * end of the committed transactions and gathers revokes; pass 1 maps
+ * every copy that is not revoked, a later transaction's copy replacing
+ * an earlier one. Returns the first sequence number with no commit.
+ * -1 in *bad if the map overflowed: the log is then not used at all,
+ * rather than used for some blocks and not others.
+ */
+static u32 jpass(const struct ext2_info *fi, u32 start, u32 seq, u32 end,
+                 int map, int *bad)
+{
+    u32 pos = start, steps = 0;
+
+    while (map ? (long)(seq - end) < 0 : 1) {
+        if (steps++ > j_maxlen || jread(fi, pos, jbuf) != 0) {
+            break;
+        }
+        if (be32(jbuf) != JBD_MAGIC || be32(jbuf + 8) != seq) {
+            break;
+        }
+        switch (be32(jbuf + 4)) {
+        case JBD_DESCRIPTOR: {
+            u32 t = JBD_HEADER;
+
+            pos = jnext(pos);
+            for (;;) {
+                u32 blk, fl, i;
+
+                if (t + JBD_TAG_BYTES > fi->block_size) {
+                    break;
+                }
+                blk = be32(jbuf + t);
+                fl = be16(jbuf + t + 6);
+                t += JBD_TAG_BYTES;
+                if (!(fl & JBD_FLAG_SAME_UUID)) {
+                    t += 16;
+                }
+                if (map && !jrevoked(blk, seq)) {
+                    for (i = 0; i < jmap_n && jmap[i].blk != blk; i++) {
+                    }
+                    if (i == jmap_n) {
+                        if (jmap_n == JMAP_MAX) {
+                            *bad = 1;
+                            return seq;
+                        }
+                        jmap_n++;
+                    }
+                    jmap[i].blk = blk;
+                    jmap[i].at = jbmap(fi, pos);
+                    jmap[i].escape = (fl & JBD_FLAG_ESCAPE) != 0;
+                }
+                pos = jnext(pos);
+                if (fl & JBD_FLAG_LAST_TAG) {
+                    break;
+                }
+            }
+            continue;
+        }
+        case JBD_COMMIT:
+            seq++;
+            pos = jnext(pos);
+            continue;
+        case JBD_REVOKE:
+            if (!map) {
+                u32 used = be32(jbuf + JBD_HEADER), r;
+
+                for (r = JBD_HEADER + 4; r + 4 <= used && r + 4 <= fi->block_size;
+                     r += 4) {
+                    if (jrevoke_n == JREVOKE_MAX) {
+                        *bad = 1;
+                        return seq;
+                    }
+                    jrevoke[jrevoke_n].blk = be32(jbuf + r);
+                    jrevoke[jrevoke_n].seq = seq;
+                    jrevoke_n++;
+                }
+            }
+            pos = jnext(pos);
+            continue;
+        }
+        break;
+    }
+    return seq;
+}
+
+static int ext2_read_inode(const struct ext2_info *fi, u32 ino, u8 *dst);
+
+/* The journal's superblock into jbuf, checked as the kernel checks it. */
+static int jread_sb(const struct ext2_info *fi)
+{
+    if (jread(fi, 0, jbuf) != 0 || be32(jbuf) != JBD_MAGIC ||
+        (be32(jbuf + 4) != JBD_SB_V1 && be32(jbuf + 4) != JBD_SB_V2) ||
+        be32(jbuf + JS_BLOCKSIZE) != fi->block_size) {
+        return -1;
+    }
+    if (be32(jbuf + 4) == JBD_SB_V2 &&
+        (be32(jbuf + JS_FEATURE_INCOMPAT) & ~(u32)JBD_INCOMPAT_OK) != 0) {
+        return -1;
+    }
+    j_maxlen = be32(jbuf + JS_MAXLEN);
+    j_first = be32(jbuf + JS_FIRST);
+    if (j_first == 0 || j_first >= j_maxlen) {
+        return -1;
+    }
+    return 0;
+}
+
+/* Read the log of a volume that needs recovery into the map. Says what
+ * it found; a log it cannot read leaves the map empty, and the boot
+ * goes on from the home blocks, as it always used to. */
+static void journal_overlay(const struct ext2_info *fi, u32 jino)
+{
+    u32 start, seq, end;
+    int bad = 0;
+
+    uart_puts("the journal needs replaying: ");
+    if (fi->inode_size > sizeof(jinode) ||
+        ext2_read_inode(fi, jino, jinode) != 0 ||
+        jread_sb(fi) != 0) {
+        uart_puts("cannot read it; booting from the volume as it is\n");
+        return;
+    }
+    start = be32(jbuf + JS_START);
+    seq = be32(jbuf + JS_SEQUENCE);
+    if (start == 0) {
+        uart_puts("it is empty\n");
+        return;
+    }
+    end = jpass(fi, start, seq, 0, 0, &bad);
+    if (!bad && end != seq) {
+        jpass(fi, start, seq, end, 1, &bad);
+    }
+    if (bad) {
+        jmap_n = 0;
+        uart_puts("too much in it to read here; booting from the volume"
+                  " as it is\n");
+        return;
+    }
+    uart_putdec(end - seq);
+    uart_puts(" transactions, ");
+    uart_putdec(jmap_n);
+    uart_puts(" blocks read from the log (the kernel will write them home)\n");
 }
 
 static int ext2_mount(u32 part_lba, struct ext2_info *fi)
@@ -286,6 +580,18 @@ static int ext2_mount(u32 part_lba, struct ext2_info *fi)
         return -1;
     }
     fi->gd_block = fi->first_data_block + 1;
+    jmap_n = 0;
+    jrevoke_n = 0;
+    {
+        u32 compat = le32(&secbuf[SB_FEATURE_COMPAT]);
+        u32 incompat = le32(&secbuf[SB_FEATURE_INCOMPAT]);
+        u32 jino = le32(&secbuf[SB_JOURNAL_INUM]);
+
+        if ((compat & FEAT_COMPAT_HAS_JOURNAL) &&
+            (incompat & FEAT_INCOMPAT_RECOVER) && jino != 0) {
+            journal_overlay(fi, jino);
+        }
+    }
     return 0;
 }
 

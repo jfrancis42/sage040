@@ -108,6 +108,26 @@ filesystem and jumps to it. The kernel can also be loaded directly with
 QEMU's `-kernel`, which is faster to iterate on and skips the ROM
 entirely; `make run` does that and `make boot` goes through the ROM.
 
+**The ROM reads the journal, and never writes it.** It runs before the
+kernel, so before anything has replayed the log, and a volume stopped with
+committed transactions still in it has its newest metadata there and not at
+home -- a KERNEL.ROM replaced just before a power cut would load as the old
+one. So when the superblock says `needs_recovery`, the ROM walks the log as
+the kernel's recovery does (committed transactions only, revokes honoured)
+and builds a map of the blocks it holds newer copies of; every metadata read
+goes through the map, and the disk is left exactly as it was for the kernel
+to replay. File data needs no map: the journal is ordered mode, so only
+metadata is ever in it. It also follows double-indirect blocks now, for the
+journal's own inode -- a 16 MB journal is far past a single indirect block.
+`kernel/bootjtest.sh` makes that disk on purpose and checks the ROM boots the
+new kernel where the home blocks still name the old one.
+
+**A disk made before the journal is converted in place**: `make journal`
+(and `make install`, which runs it) adds ext3's journal with `tune2fs -j`,
+files untouched -- and refuses while an emulator has the image open or while
+the volume is not clean by e2fsck, then checks it again afterwards. A no-op
+on a disk that already has one.
+
 Then, in `main()`, in this order and for reasons:
 
 ```
@@ -1783,6 +1803,7 @@ drive it over its serial line.
 | `kernel/linktest.sh` | 30 | hard links and symlinks -- one inode with two names, fast targets and slow ones, loops, dangling targets -- agreed with by the host's e2fsck; fast symlinks the host made surviving the boot-time check, and deleted without freeing their "blocks" |
 | `kernel/dftest.sh` | 15 | `df` and `du` against the host's own figures for the same volume, with the shell's built-in as the control |
 | `kernel/sesstest.sh` | 14 | sessions and controlling terminals: a new session has none, a leader opening a pty gets it (tcgetsid, the front, `/dev/tty`, `tty_nr`), a job inherits it and another session cannot use it, `O_NOCTTY`, `TIOCSCTTY` refused to a user and taken by root, the master closing hanging up leader and job, the leader exiting hanging up its job, `TIOCNOTTY`, `setsid` |
+| `kernel/bootjtest.sh` | 7 | the boot ROM on a volume whose journal still needs replaying: a KERNEL.ROM renamed into place and the machine stopped after the commit, the host's home-blocks view still naming the old inode, the ROM loading the new one through the log, and the kernel replaying it clean |
 | `kernel/mounttest.sh` | 98 | more than one volume: mount and umount, refusals (no such device, unknown type, a file, `/tmp`, `/`, the root's own partition by either name, not root), crossing into a volume and out by `..`, its own `st_dev`, `statvfs` and fsid, `EXDEV` both ways, `EBUSY` for an open file, a working directory and another process in it, and a volume mounted on it, a read-only volume refusing every kind of write; from the host, all three volumes clean after `halt`, the read-only one bit for bit unchanged, Linux reading what was written, and a journal on a volume that is not the root replayed by `mount` |
 | `kernel/sshtest.sh` | 14 | ssh, scp and rsync against the workstation's own OpenSSH, which knows nothing about this project -- so the protocol is either right or it is not; `ssh -t` on a pty; a dropped connection hanging up the command; no TIOCSCTTY complaints from the server |
 | `kernel/pylibtest.sh` | 27 | the libraries CPython is built against, proven by the programs that ship with them, every stream crossing the host boundary both ways |

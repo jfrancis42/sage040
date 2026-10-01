@@ -44,6 +44,18 @@ LBA 2048       partition 1, type 0x83, ext2, volume SAGE040
 the partition; underneath it is e2fsprogs' `?offset=` suffix, which every
 one of its tools understands.
 
+**With a journal (ext3), which a disk has had since 2026-10-01** (`make
+journal` converts an older one in place). The ROM reads it but never writes
+it: when the superblock says `needs_recovery`, it maps the blocks the log's
+committed transactions hold newer copies of and reads those instead of the
+ones at home, so a KERNEL.ROM replaced just before a power cut boots as the
+new one. The kernel does the actual replay when it mounts the volume. The
+boot prints what it found:
+
+```
+the journal needs replaying: 1 transactions, 6 blocks read from the log (the kernel will write them home)
+```
+
 The image lives in the **project root**, not here: the ROM boots from it, the
 kernel reads and writes it, and the host puts files on it, so it belongs to
 the machine rather than to any one of them. Its definition is in
