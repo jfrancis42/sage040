@@ -141,8 +141,8 @@ Two things are deliberately absent.
 - **`CLOCK_MONOTONIC` needs `_GNU_SOURCE`.** picolibc only claims
   `_POSIX_MONOTONIC_CLOCK` for RTEMS, so under plain POSIX the constant
   is hidden where glibc shows it.
-- **`statvfs` fails with `ENOSYS`**: the kernel has no `statfs64`.
-  `statfs` itself works and is Linux's structure.
+- **`statvfs` and `fstatvfs` work**, on the kernel's `statfs64`, for
+  whichever volume the path is on; `ST_RDONLY` for a read-only mount.
 - **`ioctl()` knows only `TIOCGWINSZ`, `TIOCSWINSZ`, `TIOCLINUX` and
   `FIONREAD`**: picolibc translates its own request numbers to Linux's
   and refuses the rest with `EINVAL`. `FIONREAD`, and `struct winsize`

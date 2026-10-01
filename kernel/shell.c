@@ -898,7 +898,7 @@ static void cmd_df(void)
 {
     struct statfs sf;
     struct fslabel fl;
-    int err = sys_statfs(&sf);
+    int err = sys_statfs("/", &sf);
     u32 total, avail, used;
     const char *name;
     int n;

@@ -451,6 +451,12 @@ struct dirent {
  */
 #define MSDOS_SUPER_MAGIC 0x4d44
 #define EXT2_SUPER_MAGIC  0xef53
+#define PROC_SUPER_MAGIC  0x9fa0
+#define TMPFS_MAGIC       0x01021994
+
+/* mount(2)'s flags: the one honoured. And umount2's. */
+#define MS_RDONLY         1
+#define MNT_FORCE         1
 
 struct statfs {
     u32 f_type;                 /* one of the *_SUPER_MAGIC above     */
@@ -464,6 +470,24 @@ struct statfs {
     u32 f_namelen;             /* longest name: 255, VFAT's           */
     u32 f_frsize;               /* fragment size                      */
     u32 f_flags;                /* mount flags                        */
+    u32 f_spare[4];
+};
+
+/* statfs64's: the counts 64 bits wide, the words still 32, as
+ * Linux/m68k lays it out (84 bytes; the call passes its size). What
+ * picolibc's statvfs asks for. */
+struct statfs64 {
+    u32 f_type;
+    u32 f_bsize;
+    u32 f_blocks_hi, f_blocks;
+    u32 f_bfree_hi, f_bfree;
+    u32 f_bavail_hi, f_bavail;
+    u32 f_files_hi, f_files;
+    u32 f_ffree_hi, f_ffree;
+    u32 f_fsid[2];
+    u32 f_namelen;
+    u32 f_frsize;
+    u32 f_flags;
     u32 f_spare[4];
 };
 /* ---------------------------------------------------------------- */
@@ -490,6 +514,9 @@ struct statfs {
 #define __NR_ioctl      54
 #define __NR_reboot     88
 #define __NR_statfs     99
+#define __NR_mount      21
+#define __NR_umount     22
+#define __NR_umount2    52
 #define __NR_stat      106
 #define __NR_fstat     108      /* describe an open descriptor        */
 #define __NR_access     33      /* answered from stat; see vfs.c      */

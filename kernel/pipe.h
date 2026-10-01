@@ -19,7 +19,7 @@ int pipe_create(int fds[2], int flags);
  * that tells filesystems apart): join its pipe, or make one. Waits for
  * the other end as POSIX says. Returns a descriptor or -errno.
  */
-int fifo_open(const void *fs, u32 ino, int flags);
+int fifo_open(const void *fs, u32 ino, u32 dev, int flags);
 
 /* Is this an end of a pipe or a FIFO? (splice needs one.) */
 struct file;

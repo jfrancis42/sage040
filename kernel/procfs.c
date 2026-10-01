@@ -862,14 +862,25 @@ static void gen_meminfo(struct pbuf *b)
     kb_line(b, "SwapFree:", sw.slots - sw.used);
 }
 
+/*
+ * Every volume, from the root filesystem's own table (vfs_mount_list),
+ * then the things that are not volumes. A volume whose type is ext2
+ * with a journal is ext3 to Linux; it says ext2 here because that is
+ * what the driver calls itself and what `mount -t` takes.
+ */
 static void gen_mounts(struct pbuf *b)
 {
-    if (vfs_mounted()) {
+    static struct mount_entry m;
+    int i;
+
+    for (i = 0; vfs_mount_list(i, &m) == 0; i++) {
         puts_(b, "/dev/");
-        puts_(b, vfs_dev_name());
-        puts_(b, " / ");
+        puts_(b, m.source);
+        puts_(b, " ");
+        puts_(b, m.dir);
+        puts_(b, " ");
         puts_(b, vfs_fs_name());
-        puts_(b, " rw 0 0\n");
+        puts_(b, (m.flags & MS_RDONLY) ? " ro 0 0\n" : " rw 0 0\n");
     }
     puts_(b, "devtmpfs /dev devtmpfs rw 0 0\n");
     puts_(b, "proc /proc proc rw 0 0\n");

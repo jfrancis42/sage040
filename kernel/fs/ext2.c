@@ -264,81 +264,125 @@ struct bbuf {
 #define EXT2_MAX_OPEN   256
 
 struct ext2_vol {
-    struct blockdev *dev;
-    int  mounted;
-    u32  part_lba;              /* LBA the filesystem starts at         */
-    u32  block_size, sectors_per_block;
-    u32  inodes_count, blocks_count, r_blocks_count;
-    u32  free_blocks, free_inodes;
-    u32  first_data_block, blocks_per_group, inodes_per_group;
-    u32  inode_size, first_ino, group_count;
-    u32  gd_first_block;        /* block holding the descriptor table   */
-    u32  addrs_per_block;       /* block_size / 4                       */
-    u32  alloc_goal;            /* where the last allocation landed     */
-    int  sb_dirty;
-    int  was_unclean;           /* see ext2_mount_dev                   */
-    char volume_label[17];
-    struct bbuf bcache[NBUF];
-    u32  bclock;
-    u8   sbuf[EXT2_SUPER_OFF + 1024];
+    struct blockdev *v_dev;
+    int  v_mounted;
+    u32  v_part_lba;              /* LBA the filesystem starts at         */
+    u32  v_block_size, v_sectors_per_block;
+    u32  v_inodes_count, v_blocks_count, v_r_blocks_count;
+    u32  v_free_blocks, v_free_inodes;
+    u32  v_first_data_block, v_blocks_per_group, v_inodes_per_group;
+    u32  v_inode_size, v_first_ino, v_group_count;
+    u32  v_gd_first_block;        /* block holding the descriptor table   */
+    u32  v_addrs_per_block;       /* block_size / 4                       */
+    u32  v_alloc_goal;            /* where the last allocation landed     */
+    int  v_sb_dirty;
+    int  v_was_unclean;           /* see ext2_mount_dev                   */
+    char v_volume_label[17];
+    struct bbuf v_bcache[NBUF];
+    u32  v_bclock;
+    u8   v_sbuf[EXT2_SUPER_OFF + 1024];
     /* the journal: see "The journal" */
-    int  journal_on;
-    u32  journal_forced, journal_commits, journal_replayed;
-    u32  txn_started;           /* timer_jiffies() at its first change */
-    int  txn_open, commit_due;
-    u8 **txn_freed;             /* group -> page of bits, or 0          */
-    u32  txn_freed_groups;
-    u32 *jmap;                  /* journal block -> volume block        */
-    u32  jmap_pages, j_maxlen, j_first, j_seq;
-    u8   j_uuid[16];
+    int  v_journal_on;
+    u32  v_journal_forced, v_journal_commits, v_journal_replayed;
+    u32  v_txn_started;           /* timer_jiffies() at its first change */
+    int  v_txn_open, v_commit_due;
+    u8 **v_txn_freed;             /* group -> page of bits, or 0          */
+    u32  v_txn_freed_groups;
+    u32 *v_jmap;                  /* journal block -> volume block        */
+    u32  v_jmap_pages, v_j_maxlen, v_j_first, v_j_seq;
+    u8   v_j_uuid[16];
     /* the inodes open on it, and how many times each */
-    struct { u32 ino; int refs; } opened[EXT2_MAX_OPEN];
+    struct { u32 ino; int refs; } v_opened[EXT2_MAX_OPEN];
+    /* where it is: see "Volumes" */
+    int  idx;                   /* in vols[]; 0 is the root volume      */
+    struct ext2_vol *parent;    /* the volume it is mounted on          */
+    u32  mp;                    /* the directory it covers, a handle    */
+    u32  st_dev;                /* what stat says; 0 for the root       */
+    int  rdonly;
+    u32  pages;                 /* how much of the page pool it took    */
 };
 
 static struct ext2_vol vol0;            /* the first mounted: the root */
 static struct ext2_vol *V = &vol0;
 
-#define dev               (V->dev)
-#define mounted           (V->mounted)
-#define part_lba          (V->part_lba)
-#define block_size        (V->block_size)
-#define sectors_per_block (V->sectors_per_block)
-#define inodes_count      (V->inodes_count)
-#define blocks_count      (V->blocks_count)
-#define r_blocks_count    (V->r_blocks_count)
-#define free_blocks       (V->free_blocks)
-#define free_inodes       (V->free_inodes)
-#define first_data_block  (V->first_data_block)
-#define blocks_per_group  (V->blocks_per_group)
-#define inodes_per_group  (V->inodes_per_group)
-#define inode_size        (V->inode_size)
-#define first_ino         (V->first_ino)
-#define group_count       (V->group_count)
-#define gd_first_block    (V->gd_first_block)
-#define addrs_per_block   (V->addrs_per_block)
-#define alloc_goal        (V->alloc_goal)
-#define sb_dirty          (V->sb_dirty)
-#define was_unclean       (V->was_unclean)
-#define volume_label      (V->volume_label)
-#define bcache            (V->bcache)
-#define bclock            (V->bclock)
-#define sbuf              (V->sbuf)
-#define journal_on        (V->journal_on)
-#define journal_forced    (V->journal_forced)
-#define journal_commits   (V->journal_commits)
-#define journal_replayed  (V->journal_replayed)
-#define txn_started       (V->txn_started)
-#define txn_open          (V->txn_open)
-#define commit_due        (V->commit_due)
-#define txn_freed         (V->txn_freed)
-#define txn_freed_groups  (V->txn_freed_groups)
-#define jmap              (V->jmap)
-#define jmap_pages        (V->jmap_pages)
-#define j_maxlen          (V->j_maxlen)
-#define j_first           (V->j_first)
-#define j_seq             (V->j_seq)
-#define j_uuid            (V->j_uuid)
-#define opened            (V->opened)
+/*
+ * VOLUMES. The root volume is vol0; mount(2) adds the others, each on a
+ * directory of one already mounted -- so all of them are this driver's,
+ * and crossing from one to another is part of walking a path (lookup_x)
+ * rather than something vfs.c has to know about.
+ *
+ * Outside this file an inode is named by a HANDLE: the volume's index in
+ * the top byte, the inode number below. The root volume's index is 0, so
+ * its handles are plain inode numbers -- everything that held one before
+ * there were mounts still holds the right thing. sel() makes a handle's
+ * volume the current one and gives back the inode number; hnd() goes
+ * the other way.
+ *
+ * WHICH VOLUME IS CURRENT is a side effect of the walk: path_walk leaves
+ * V at the volume its answer is on. Every entry point therefore starts
+ * from a handle or a path, never from whatever V the last call left --
+ * that volume may since have been unmounted.
+ */
+#define EXT2_MAX_VOLS   8
+#define VOL_SHIFT       24
+#define INO_MASK        0x00ffffffUL
+
+static struct ext2_vol *vols[EXT2_MAX_VOLS] = { &vol0 };
+
+static u32 sel(u32 h)
+{
+    struct ext2_vol *v = vols[(h >> VOL_SHIFT) % EXT2_MAX_VOLS];
+
+    V = v ? v : &vol0;
+    return h & INO_MASK;
+}
+
+static u32 hnd(u32 ino)
+{
+    return ((u32)V->idx << VOL_SHIFT) | ino;
+}
+
+#define dev               (V->v_dev)
+#define mounted           (V->v_mounted)
+#define part_lba          (V->v_part_lba)
+#define block_size        (V->v_block_size)
+#define sectors_per_block (V->v_sectors_per_block)
+#define inodes_count      (V->v_inodes_count)
+#define blocks_count      (V->v_blocks_count)
+#define r_blocks_count    (V->v_r_blocks_count)
+#define free_blocks       (V->v_free_blocks)
+#define free_inodes       (V->v_free_inodes)
+#define first_data_block  (V->v_first_data_block)
+#define blocks_per_group  (V->v_blocks_per_group)
+#define inodes_per_group  (V->v_inodes_per_group)
+#define inode_size        (V->v_inode_size)
+#define first_ino         (V->v_first_ino)
+#define group_count       (V->v_group_count)
+#define gd_first_block    (V->v_gd_first_block)
+#define addrs_per_block   (V->v_addrs_per_block)
+#define alloc_goal        (V->v_alloc_goal)
+#define sb_dirty          (V->v_sb_dirty)
+#define was_unclean       (V->v_was_unclean)
+#define volume_label      (V->v_volume_label)
+#define bcache            (V->v_bcache)
+#define bclock            (V->v_bclock)
+#define sbuf              (V->v_sbuf)
+#define journal_on        (V->v_journal_on)
+#define journal_forced    (V->v_journal_forced)
+#define journal_commits   (V->v_journal_commits)
+#define journal_replayed  (V->v_journal_replayed)
+#define txn_started       (V->v_txn_started)
+#define txn_open          (V->v_txn_open)
+#define commit_due        (V->v_commit_due)
+#define txn_freed         (V->v_txn_freed)
+#define txn_freed_groups  (V->v_txn_freed_groups)
+#define jmap              (V->v_jmap)
+#define jmap_pages        (V->v_jmap_pages)
+#define j_maxlen          (V->v_j_maxlen)
+#define j_first           (V->v_j_first)
+#define j_seq             (V->v_j_seq)
+#define j_uuid            (V->v_j_uuid)
+#define opened            (V->v_opened)
 
 
 /* The journal, below; the cache has to know whether one is in use. */
@@ -1942,18 +1986,107 @@ static int dir_nth(u32 dino, int index, char *name, u32 *ino, u8 *type)
 /* Paths                                                             */
 /* ---------------------------------------------------------------- */
 
-static u32 root_ino(void)
+/* The start of every call: the root volume, until a handle or a walk
+ * says otherwise. Whether anything is mounted at all. */
+static int enter(void)
 {
-    u32 r = vfs_root_ino();     /* a chroot's root, or the real one   */
+    V = &vol0;
+    return vol0.v_mounted;
+}
+
+/* The handle of this task's "/": a chroot's, or the real one. */
+static u32 root_handle(void)
+{
+    u32 r = vfs_root_ino();
 
     return (r == 0) ? EXT2_ROOT_INO : r;
 }
 
-static u32 cwd_ino(void)
+static u32 cwd_handle(void)
 {
     u32 c = vfs_cwd_ino();
 
-    return (c == 0) ? root_ino() : c;
+    return (c == 0) ? root_handle() : c;
+}
+
+/* Start a walk at the root or the working directory: make its volume
+ * current and give back its inode number there. */
+static u32 go_root(void)
+{
+    return sel(root_handle());
+}
+
+static u32 go_cwd(void)
+{
+    return sel(cwd_handle());
+}
+
+/* Is inode `d` of the current volume this task's "/"? */
+static int at_root(u32 d)
+{
+    return hnd(d) == root_handle();
+}
+
+/* The volume mounted on inode `d` of the current one, if any. */
+static struct ext2_vol *mounted_on(u32 d)
+{
+    u32 h = hnd(d);
+    int i;
+
+    for (i = 1; i < EXT2_MAX_VOLS; i++) {
+        if (vols[i] && vols[i]->parent == V && vols[i]->mp == h) {
+            return vols[i];
+        }
+    }
+    return 0;
+}
+
+/* Does inode `d` of the current volume have anything mounted on it? */
+static int is_mountpoint(u32 d)
+{
+    return mounted_on(d) != 0;
+}
+
+/*
+ * dir_lookup, CROSSING MOUNTS: a name that is a mount point gives the
+ * mounted volume's root, and ".." at a volume's root gives the parent
+ * of the directory it is mounted on. What a walk uses, and anything
+ * that wants the thing a whole path names. What it must NOT be used for
+ * is a lookup that is about to change the entry -- unlink, rmdir,
+ * rename -- which wants the name in this directory as it stands, and
+ * says EBUSY if that is a mount point.
+ *
+ * V changes only on success.
+ */
+static int dir_lookup(u32 dino, const char *name, u32 nlen, u32 *ino,
+                      u8 *type);
+
+static int lookup_x(u32 d, const char *name, u32 nlen, u32 *ino, u8 *type)
+{
+    struct ext2_vol *was = V, *m;
+    int err;
+
+    if (nlen == 2 && name[0] == '.' && name[1] == '.' &&
+        d == EXT2_ROOT_INO && V->parent && !at_root(d)) {
+        d = sel(V->mp);         /* up to the directory it covers      */
+        err = dir_lookup(d, name, nlen, ino, type);
+        if (err != 0) {
+            V = was;
+        }
+        return err;
+    }
+    err = dir_lookup(d, name, nlen, ino, type);
+    if (err != 0) {
+        return err;
+    }
+    while ((m = mounted_on(*ino)) != 0) {
+        V = m;
+        *ino = EXT2_ROOT_INO;
+        if (type) {
+            *type = EXT2_FT_DIR;
+        }
+    }
+    return 0;
 }
 
 /*
@@ -2094,7 +2227,7 @@ static int path_walk(u32 start, const char *path, u32 *out_dir,
     out_name[0] = '\0';
 
     if (*p == '/') {
-        d = root_ino();
+        d = go_root();
         while (*p == '/') {
             p++;
         }
@@ -2131,7 +2264,7 @@ static int path_walk(u32 start, const char *path, u32 *out_dir,
          * so following that entry walks straight out of a chroot jail.
          * Clamping here is what keeps the jail a jail.
          */
-        if (d == root_ino() && strcmp(comp, "..") == 0) {
+        if (at_root(d) && strcmp(comp, "..") == 0) {
             p = slash;
             while (*p == '/') {
                 p++;
@@ -2154,7 +2287,7 @@ static int path_walk(u32 start, const char *path, u32 *out_dir,
         }
 
         /* An interior component has to exist and be a directory. */
-        err = dir_lookup(d, comp, n, &ino, &type);
+        err = lookup_x(d, comp, n, &ino, &type);
         if (err != 0) {
             return err;
         }
@@ -2216,7 +2349,7 @@ static int path_walk(u32 start, const char *path, u32 *out_dir,
              * continues from the directory the LINK is in, which is
              * where `d` already points. */
             if (sl_target[0] == '/') {
-                d = root_ino();
+                d = go_root();
             }
             p = dst;
             /*
@@ -2261,7 +2394,7 @@ static int path_resolve_nofollow(const char *path, u32 *ino)
     u32 d;
     int last_is_dir, err;
 
-    err = path_walk(cwd_ino(), path, &d, name, &last_is_dir);
+    err = path_walk(go_cwd(), path, &d, name, &last_is_dir);
     if (err != 0) {
         return err;
     }
@@ -2269,7 +2402,7 @@ static int path_resolve_nofollow(const char *path, u32 *ino)
         *ino = d;
         return 0;
     }
-    return dir_lookup(d, name, name_len_of(name), ino, 0);
+    return lookup_x(d, name, name_len_of(name), ino, 0);
 }
 
 /*
@@ -2300,7 +2433,7 @@ static int path_resolve(const char *path, u32 *ino)
         u32 got;
         struct einode ei;
 
-        err = path_walk(cwd_ino(), cur, &d, name, &last_is_dir);
+        err = path_walk(go_cwd(), cur, &d, name, &last_is_dir);
         if (err != 0) {
             return err;
         }
@@ -2308,7 +2441,7 @@ static int path_resolve(const char *path, u32 *ino)
             *ino = d;
             return 0;
         }
-        err = dir_lookup(d, name, name_len_of(name), &got, 0);
+        err = lookup_x(d, name, name_len_of(name), &got, 0);
         if (err != 0) {
             return err;
         }
@@ -2373,11 +2506,10 @@ static int ext2_dir_path(u32 ino, char *out, u32 size)
     char buf[PATH_MAX];
     u32 end = sizeof(buf) - 1;
     u32 cur = ino;
-    u32 root = root_ino();
     int depth = 0;
 
     buf[end] = '\0';
-    if (cur == root) {
+    if (at_root(cur)) {
         if (size < 2) {
             return -ERANGE;
         }
@@ -2386,7 +2518,7 @@ static int ext2_dir_path(u32 ino, char *out, u32 size)
         return 0;
     }
 
-    while (cur != root) {
+    while (!at_root(cur)) {
         u32 parent, n;
         int i, found = 0;
         char name[NAME_MAX + 1];
@@ -2395,6 +2527,12 @@ static int ext2_dir_path(u32 ino, char *out, u32 size)
 
         if (++depth > 64) {
             return -ELOOP;
+        }
+        /* The root of a mounted volume is named by the directory it
+         * covers: carry on from there, on the volume below. */
+        if (cur == EXT2_ROOT_INO && V->parent) {
+            cur = sel(V->mp);
+            continue;
         }
         err = dir_lookup(cur, "..", 2, &parent, &type);
         if (err != 0) {
@@ -2655,10 +2793,12 @@ static int committing_for_sync;
 
 void ext2_journal_stats(struct journalstats *js)
 {
-    js->on = journal_on;
-    js->commits = journal_commits;
-    js->forced = journal_forced;
-    js->replayed = journal_replayed;
+    /* The root volume's. Not under the filesystem lock, so it must not
+     * move V: another task may be asleep in the middle of a call. */
+    js->on = vol0.v_journal_on;
+    js->commits = vol0.v_journal_commits;
+    js->forced = vol0.v_journal_forced;
+    js->replayed = vol0.v_journal_replayed;
 }
 
 void ext2_journal_stop(u32 how, u32 n)
@@ -3059,7 +3199,7 @@ static int journal_setup(u32 *replayed)
 
 /* From vfs.c, as its filesystem lock is let go: between two calls, the
  * only place a commit leaves nothing half-done. */
-static void ext2_boundary(void)
+static void boundary_one(void)
 {
     u32 pinned = 0, i;
 
@@ -3081,6 +3221,19 @@ static void ext2_boundary(void)
         (u32)(timer_jiffies() - txn_started) >= 5 * HZ) {
         journal_commit();
     }
+}
+
+static void ext2_boundary(void)
+{
+    int i;
+
+    for (i = 0; i < EXT2_MAX_VOLS; i++) {
+        if (vols[i]) {
+            V = vols[i];
+            boundary_one();
+        }
+    }
+    V = &vol0;
 }
 
 static u32 find_partition(void)
@@ -3274,6 +3427,13 @@ static int ext2_mount_dev(void)
         }
     }
 
+    /* Read-only: whatever the log held has been replayed (Linux does
+     * that too), and from here nothing is written -- not even the
+     * mark that says the volume is in use. */
+    if (V->rdonly) {
+        journal_on = 0;
+        return 0;
+    }
     /* Say so on the disk, so that a machine which stops without
      * unmounting leaves a volume that says it was in use. */
     set_clean(0);
@@ -3550,13 +3710,14 @@ static int ext2_file_close(struct file *f);
 static s32 ext2_file_read(struct file *f, void *buf, u32 len)
 {
     struct einode ei;
-    u32 ino = (u32)f->priv;
+    u32 ino;
     s32 n;
     int err;
 
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
     }
+    ino = sel((u32)f->priv);
     err = iread(ino, &ei);
     if (err != 0) {
         return err;
@@ -3574,13 +3735,14 @@ static s32 ext2_file_read(struct file *f, void *buf, u32 len)
 static s32 ext2_file_write(struct file *f, const void *buf, u32 len)
 {
     struct einode ei;
-    u32 ino = (u32)f->priv;
+    u32 ino;
     s32 n;
     int err;
 
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
     }
+    ino = sel((u32)f->priv);
     err = iread(ino, &ei);
     if (err != 0) {
         return err;
@@ -3607,7 +3769,7 @@ static s32 ext2_file_write(struct file *f, const void *buf, u32 len)
 static s32 ext2_file_lseek(struct file *f, s32 offset, int whence)
 {
     struct einode ei;
-    u32 ino = (u32)f->priv;
+    u32 ino = sel((u32)f->priv);
     s32 base;
     int err;
 
@@ -3638,12 +3800,13 @@ static void fill_stat(const struct einode *ei, struct stat *st)
     st->st_uid = ei->uid;
     st->st_gid = ei->gid;
     st->st_nlink = ei->links;
+    st->st_dev = V->st_dev;
 }
 
 static int ext2_file_fstat(struct file *f, struct stat *st)
 {
     struct einode ei;
-    int err = iread((u32)f->priv, &ei);
+    int err = iread(sel((u32)f->priv), &ei);
 
     if (err != 0) {
         return err;
@@ -3660,7 +3823,7 @@ static int ext2_file_truncate(struct file *f, u32 len)
     if (!can_write(f->flags)) {
         return -EINVAL;         /* Linux's answer for a read-only fd  */
     }
-    err = iread((u32)f->priv, &ei);
+    err = iread(sel((u32)f->priv), &ei);
     if (err != 0) {
         return err;
     }
@@ -3676,7 +3839,7 @@ static int ext2_file_truncate(struct file *f, u32 len)
 
 static int ext2_file_close(struct file *f)
 {
-    u32 ino = (u32)f->priv;
+    u32 ino = sel((u32)f->priv);
     struct einode ei;
 
     open_unref(ino);
@@ -3708,10 +3871,10 @@ static int ext2_open(const char *path, int flags, struct file *f)
     int last_is_dir, err;
     struct einode ei;
 
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
     }
-    err = path_walk(cwd_ino(), path, &dino, nm, &last_is_dir);
+    err = path_walk(go_cwd(), path, &dino, nm, &last_is_dir);
     if (err != 0) {
         return err;
     }
@@ -3720,13 +3883,16 @@ static int ext2_open(const char *path, int flags, struct file *f)
     }
     nlen = name_len_of(nm);
 
-    err = dir_lookup(dino, nm, nlen, &ino, &type);
+    err = lookup_x(dino, nm, nlen, &ino, &type);
     if (err == -ENOENT) {
         if (!(flags & O_CREAT)) {
             return -ENOENT;
         }
         if (!can_write(flags)) {
             return -EACCES;
+        }
+        if (V->rdonly) {
+            return -EROFS;
         }
         err = make_inode(dino, nm, nlen, (u16)(S_IFREG | 0644),
                          EXT2_FT_REG_FILE, &ino);
@@ -3818,6 +3984,9 @@ static int ext2_open(const char *path, int flags, struct file *f)
         }
     }
 
+    if (V->rdonly && (can_write(flags) || (flags & O_TRUNC))) {
+        return -EROFS;
+    }
     err = open_ref(ino);
     if (err != 0) {
         return err;
@@ -3838,7 +4007,7 @@ static int ext2_open(const char *path, int flags, struct file *f)
     }
 
     f->ops = &ext2_file_ops;
-    f->priv = (void *)ino;
+    f->priv = (void *)hnd(ino);
     f->flags = flags;
     f->pos = 0;
     if (flags & O_APPEND) {
@@ -3857,12 +4026,15 @@ static int ext2_unlink(const char *path)
     int last_is_dir, err;
     struct einode ei;
 
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
     }
-    err = path_walk(cwd_ino(), path, &dino, nm, &last_is_dir);
+    err = path_walk(go_cwd(), path, &dino, nm, &last_is_dir);
     if (err != 0) {
         return err;
+    }
+    if (V->rdonly) {
+        return -EROFS;
     }
     if (last_is_dir || nm[0] == '\0') {
         return -EISDIR;
@@ -3899,12 +4071,15 @@ static int ext2_mkdir(const char *path)
     struct einode ei, pe;
     struct bbuf *b;
 
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
     }
-    err = path_walk(cwd_ino(), path, &dino, nm, &last_is_dir);
+    err = path_walk(go_cwd(), path, &dino, nm, &last_is_dir);
     if (err != 0) {
         return err;
+    }
+    if (V->rdonly) {
+        return -EROFS;
     }
     if (last_is_dir || nm[0] == '\0') {
         return -EEXIST;
@@ -3980,12 +4155,15 @@ static int ext2_rmdir(const char *path)
     int last_is_dir, err;
     struct einode ei, pe;
 
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
     }
-    err = path_walk(cwd_ino(), path, &dino, nm, &last_is_dir);
+    err = path_walk(go_cwd(), path, &dino, nm, &last_is_dir);
     if (err != 0) {
         return err;
+    }
+    if (V->rdonly) {
+        return -EROFS;
     }
     if (last_is_dir || nm[0] == '\0') {
         return -EINVAL;         /* "rmdir dir/" names no entry        */
@@ -4005,7 +4183,7 @@ static int ext2_rmdir(const char *path)
     if (!S_ISDIR(ei.mode)) {
         return -ENOTDIR;
     }
-    if (ino == root_ino() || ino == cwd_ino()) {
+    if (at_root(ino) || hnd(ino) == cwd_handle() || is_mountpoint(ino)) {
         return -EBUSY;
     }
     err = dir_is_empty(ino);
@@ -4057,7 +4235,7 @@ static int dir_is_within(u32 c, u32 anc)
 {
     int guard = 0;
 
-    while (c != root_ino() && ++guard < 256) {
+    while (!at_root(c) && ++guard < 256) {
         u32 parent;
 
         if (c == anc) {
@@ -4096,20 +4274,28 @@ static int ext2_link(const char *from, const char *to)
     u8 ftype, ttype;
     int last_is_dir, err;
     struct einode fe;
+    struct ext2_vol *fvol;
 
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
     }
-    err = path_walk(cwd_ino(), from, &fdir, fnm, &last_is_dir);
+    err = path_walk(go_cwd(), from, &fdir, fnm, &last_is_dir);
     if (err != 0) {
         return err;
     }
     if (last_is_dir || fnm[0] == '\0') {
         return -EINVAL;
     }
-    err = path_walk(cwd_ino(), to, &tdir, tnm, &last_is_dir);
+    fvol = V;
+    err = path_walk(go_cwd(), to, &tdir, tnm, &last_is_dir);
     if (err != 0) {
         return err;
+    }
+    if (V != fvol) {
+        return -EXDEV;          /* a link or a move never crosses volumes */
+    }
+    if (V->rdonly) {
+        return -EROFS;
     }
     if (last_is_dir || tnm[0] == '\0') {
         return -EINVAL;
@@ -4186,15 +4372,18 @@ static int ext2_mknod(const char *path, u32 mode)
     u32 dir, ino, nl;
     int last_is_dir, err;
 
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
     }
     if (!S_ISFIFO(mode)) {
         return -EPERM;
     }
-    err = path_walk(cwd_ino(), path, &dir, nm, &last_is_dir);
+    err = path_walk(go_cwd(), path, &dir, nm, &last_is_dir);
     if (err != 0) {
         return err;
+    }
+    if (V->rdonly) {
+        return -EROFS;
     }
     if (last_is_dir || nm[0] == '\0') {
         return -EEXIST;
@@ -4214,7 +4403,7 @@ static int ext2_symlink(const char *target, const char *linkpath)
     int last_is_dir, err;
     struct einode ei;
 
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
     }
     tlen = (u32)strlen(target);
@@ -4224,9 +4413,12 @@ static int ext2_symlink(const char *target, const char *linkpath)
     if (tlen > PATH_MAX - 1) {
         return -ENAMETOOLONG;
     }
-    err = path_walk(cwd_ino(), linkpath, &dir, nm, &last_is_dir);
+    err = path_walk(go_cwd(), linkpath, &dir, nm, &last_is_dir);
     if (err != 0) {
         return err;
+    }
+    if (V->rdonly) {
+        return -EROFS;
     }
     if (last_is_dir || nm[0] == '\0') {
         return -EEXIST;
@@ -4301,7 +4493,7 @@ static int ext2_lstat(const char *path, struct stat *st)
     u32 ino;
     int err;
 
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
     }
     err = path_resolve_nofollow(path, &ino);
@@ -4322,7 +4514,7 @@ static int ext2_readlink(const char *path, char *out, u32 size)
     u32 ino;
     int err;
 
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
     }
     /* NOT path_resolve: that follows the last component, and following
@@ -4341,20 +4533,28 @@ static int ext2_rename(const char *from, const char *to)
     u8 ftype, ttype;
     int last_is_dir, err;
     struct einode fe;
+    struct ext2_vol *fvol;
 
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
     }
-    err = path_walk(cwd_ino(), from, &fdir, fnm, &last_is_dir);
+    err = path_walk(go_cwd(), from, &fdir, fnm, &last_is_dir);
     if (err != 0) {
         return err;
     }
     if (last_is_dir || fnm[0] == '\0') {
         return -EINVAL;
     }
-    err = path_walk(cwd_ino(), to, &tdir, tnm, &last_is_dir);
+    fvol = V;
+    err = path_walk(go_cwd(), to, &tdir, tnm, &last_is_dir);
     if (err != 0) {
         return err;
+    }
+    if (V != fvol) {
+        return -EXDEV;          /* a link or a move never crosses volumes */
+    }
+    if (V->rdonly) {
+        return -EROFS;
     }
     if (last_is_dir || tnm[0] == '\0') {
         return -EINVAL;
@@ -4373,6 +4573,9 @@ static int ext2_rename(const char *from, const char *to)
     if (fdir == tdir && strcmp(fnm, tnm) == 0) {
         return 0;               /* renaming a thing to itself         */
     }
+    if (is_mountpoint(fino)) {
+        return -EBUSY;
+    }
     if (S_ISDIR(fe.mode) && dir_is_within(tdir, fino)) {
         return -EINVAL;
     }
@@ -4384,6 +4587,9 @@ static int ext2_rename(const char *from, const char *to)
 
         if (tino == fino) {
             return 0;
+        }
+        if (is_mountpoint(tino)) {
+            return -EBUSY;
         }
         err = iread(tino, &te);
         if (err != 0) {
@@ -4485,7 +4691,7 @@ static int ext2_stat(const char *path, struct stat *st)
     u32 ino;
     int err;
 
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
     }
     err = path_resolve(path, &ino);
@@ -4524,12 +4730,10 @@ static int ext2_readdir_in(u32 ino, int index, struct dirent *out)
     u8 type;
     int err;
 
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
     }
-    if (ino == 0) {
-        ino = root_ino();
-    }
+    ino = (ino == 0) ? go_root() : sel(ino);
     err = dir_nth(ino, index, name, &child, &type);
     if (err != 0) {
         return err;
@@ -4544,7 +4748,7 @@ static int ext2_readdir_in(u32 ino, int index, struct dirent *out)
 
 static int ext2_readdir(int index, struct dirent *out)
 {
-    return ext2_readdir_in(cwd_ino(), index, out);
+    return ext2_readdir_in(cwd_handle(), index, out);
 }
 
 static int ext2_dir_ino(const char *path, u32 *ino)
@@ -4553,7 +4757,7 @@ static int ext2_dir_ino(const char *path, u32 *ino)
     u32 n;
     int err;
 
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
     }
     err = path_resolve(path, &n);
@@ -4567,18 +4771,16 @@ static int ext2_dir_ino(const char *path, u32 *ino)
     if (!S_ISDIR(ei.mode)) {
         return -ENOTDIR;
     }
-    *ino = n;
+    *ino = hnd(n);              /* a handle: the volume goes with it */
     return 0;
 }
 
 static int ext2_dir_path_op(u32 ino, char *out, u32 size)
 {
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
     }
-    if (ino == 0) {
-        ino = root_ino();
-    }
+    ino = (ino == 0) ? go_root() : sel(ino);
     return ext2_dir_path(ino, out, size);
 }
 
@@ -4586,10 +4788,10 @@ static int ext2_chdir(const char *path)
 {
     char cwd_path[PATH_MAX];
     struct einode ei;
-    u32 ino;
+    u32 ino, h;
     int err;
 
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
     }
     err = path_resolve(path, &ino);
@@ -4603,11 +4805,14 @@ static int ext2_chdir(const char *path)
     if (!S_ISDIR(ei.mode)) {
         return -ENOTDIR;
     }
+    /* The handle BEFORE the path: naming a directory on a mounted
+     * volume walks up out of it, and leaves V on the volume below. */
+    h = hnd(ino);
     err = ext2_dir_path(ino, cwd_path, sizeof(cwd_path));
     if (err != 0) {
         return err;
     }
-    vfs_cwd_set(ino, cwd_path);
+    vfs_cwd_set(h, cwd_path);
     return 0;
 }
 
@@ -4616,10 +4821,19 @@ static const char *ext2_getcwd(void)
     return vfs_cwd_path();
 }
 
-static int ext2_statfs(struct statfs *s)
+static int ext2_statfs(const char *path, struct statfs *s)
 {
-    if (!mounted) {
+    u32 ino;
+
+    if (!enter()) {
         return -ENODEV;
+    }
+    if (path) {
+        int err = path_resolve(path, &ino);    /* leaves V at its volume */
+
+        if (err != 0) {
+            return err;
+        }
     }
     memset(s, 0, sizeof(*s));
     s->f_type = EXT2_SUPER_MAGIC;
@@ -4634,15 +4848,23 @@ static int ext2_statfs(struct statfs *s)
     s->f_namelen = 255;
     s->f_fsid[0] = le32(sbp(SB_UUID));
     s->f_fsid[1] = le32(sbp(SB_UUID + 4));
+    s->f_flags = V->rdonly ? MS_RDONLY : 0;
     return 0;
 }
 
-static int ext2_label(struct fslabel *l)
+static int ext2_label(const char *path, struct fslabel *l)
 {
     u32 i;
 
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
+    }
+    if (path) {
+        int err = path_resolve(path, &i);      /* leaves V at its volume */
+
+        if (err != 0) {
+            return err;
+        }
     }
     for (i = 0; i < sizeof(l->name) - 1 && i < 16; i++) {
         l->name[i] = volume_label[i];
@@ -4651,11 +4873,11 @@ static int ext2_label(struct fslabel *l)
     return 0;
 }
 
-static int ext2_sync(void)
+static int sync_one(void)
 {
     int a, b;
 
-    if (!mounted) {
+    if (!mounted || V->rdonly) {
         return 0;
     }
     committing_for_sync = 1;
@@ -4663,6 +4885,25 @@ static int ext2_sync(void)
     committing_for_sync = 0;
     b = sb_write();
     return (a != 0) ? a : b;
+}
+
+static int ext2_sync(void)
+{
+    int i, err = 0;
+
+    for (i = 0; i < EXT2_MAX_VOLS; i++) {
+        if (vols[i]) {
+            int e;
+
+            V = vols[i];
+            e = sync_one();
+            if (e != 0 && err == 0) {
+                err = e;
+            }
+        }
+    }
+    V = &vol0;
+    return err;
 }
 
 /*
@@ -4674,8 +4915,12 @@ static int ext2_sync(void)
 static int set_times(u32 ino, u32 mtime, u32 atime)
 {
     struct einode ei;
-    int err = iread(ino, &ei);
+    int err;
 
+    if (V->rdonly) {
+        return -EROFS;
+    }
+    err = iread(ino, &ei);
     if (err != 0) {
         return err;
     }
@@ -4706,8 +4951,12 @@ static int set_times(u32 ino, u32 mtime, u32 atime)
 static int set_attr(u32 ino, u32 mask, u32 mode, u32 uid, u32 gid)
 {
     struct einode ei;
-    int err = iread(ino, &ei);
+    int err;
 
+    if (V->rdonly) {
+        return -EROFS;
+    }
+    err = iread(ino, &ei);
     if (err != 0) {
         return err;
     }
@@ -4734,7 +4983,7 @@ static int ext2_setattr(const char *path, u32 mask, u32 mode, u32 uid, u32 gid)
     u32 ino;
     int err;
 
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
     }
     err = path_resolve(path, &ino);
@@ -4746,10 +4995,10 @@ static int ext2_setattr(const char *path, u32 mask, u32 mode, u32 uid, u32 gid)
 
 static int ext2_fsetattr(struct file *f, u32 mask, u32 mode, u32 uid, u32 gid)
 {
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
     }
-    return set_attr((u32)f->priv, mask, mode, uid, gid);
+    return set_attr(sel((u32)f->priv), mask, mode, uid, gid);
 }
 
 static int ext2_utime(const char *path, u32 mtime, u32 atime)
@@ -4757,7 +5006,7 @@ static int ext2_utime(const char *path, u32 mtime, u32 atime)
     u32 ino;
     int err;
 
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
     }
     err = path_resolve(path, &ino);
@@ -4769,10 +5018,10 @@ static int ext2_utime(const char *path, u32 mtime, u32 atime)
 
 static int ext2_futime(struct file *f, u32 mtime, u32 atime)
 {
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
     }
-    return set_times((u32)f->priv, mtime, atime);
+    return set_times(sel((u32)f->priv), mtime, atime);
 }
 
 /*
@@ -4785,10 +5034,10 @@ static int ext2_bmap(struct file *f, u32 off, u32 *lba, struct blockdev **d)
     u32 blk;
     int err;
 
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
     }
-    err = iread((u32)f->priv, &ei);
+    err = iread(sel((u32)f->priv), &ei);
     if (err != 0) {
         return err;
     }
@@ -5146,7 +5395,7 @@ static int fsck_reconnect(u32 ino)
     int i = 0, j;
     u8 type;
 
-    if (dir_lookup(root_ino(), "lost+found", 10, &lf, &type) != 0) {
+    if (dir_lookup(EXT2_ROOT_INO, "lost+found", 10, &lf, &type) != 0) {
         return 0;
     }
     if (iread(ino, &ei) != 0) {
@@ -5360,7 +5609,7 @@ static int ext2_check(int flags, struct fsck_report *r)
     static u32 orphans[64];
     struct einode ei;
 
-    if (!mounted) {
+    if (!enter()) {
         return -ENODEV;
     }
     memset(r, 0, sizeof(*r));
@@ -5434,7 +5683,7 @@ static int ext2_check(int flags, struct fsck_report *r)
         links_map[EXT2_ROOT_INO] = 1;
     }
     fsck_repairing = repair;
-    fsck_tree(root_ino(), root_ino(), 0, r);
+    fsck_tree(EXT2_ROOT_INO, EXT2_ROOT_INO, 0, r);
     fsck_repairing = 0;
 
     /* Every inode that is in use: its blocks, and its type. */
@@ -5657,6 +5906,7 @@ static int ext2_mount(struct blockdev *b)
     if (b->sector_size != SECTOR_SIZE) {
         return -EINVAL;
     }
+    V = &vol0;
     dev = b;
     memset(opened, 0, sizeof(opened));
     err = ext2_mount_dev();
@@ -5674,9 +5924,10 @@ static int ext2_mount(struct blockdev *b)
     return 0;
 }
 
-static int ext2_umount(void)
+/* Write everything out, say the volume is clean, and let go of it. */
+static void umount_one(void)
 {
-    if (mounted) {
+    if (mounted && !V->rdonly) {
         bcache_flush_all();
         if (journal_on) {
             u8 *s = sbuf + EXT2_SUPER_OFF;
@@ -5687,43 +5938,284 @@ static int ext2_umount(void)
         }
         set_clean(1);           /* everything out, then say so         */
     }
+    if (txn_freed) {
+        txn_freed_clear();
+        pmm_free((u32)txn_freed);
+        txn_freed = 0;
+    }
+    if (jmap) {
+        pmm_free_pages((u32)jmap, jmap_pages);
+        jmap = 0;
+    }
+    journal_on = 0;
     mounted = 0;
     dev = 0;
+}
+
+/* Let go of a mounted volume's memory and its slot. */
+static void vol_free(struct ext2_vol *v)
+{
+    vols[v->idx] = 0;
+    pmm_free_pages((u32)v, v->pages);
+    V = &vol0;
+}
+
+/* The whole tree, as the machine stops: the mounted volumes first, the
+ * most recently mounted first, so nothing is let go while something is
+ * still mounted on it. */
+static int ext2_umount(void)
+{
+    int i;
+
+    for (i = EXT2_MAX_VOLS - 1; i > 0; i--) {
+        if (vols[i]) {
+            V = vols[i];
+            umount_one();
+            vol_free(vols[i]);
+        }
+    }
+    V = &vol0;
+    umount_one();
+    return 0;
+}
+
+/*
+ * MOUNT: the volume on `b` at directory `dir`.
+ *
+ * The directory must exist, must not be the root of a volume (stacking
+ * a mount on another's root is something Linux allows and nothing here
+ * needs), and so cannot already have something on it -- a walk to it
+ * would have crossed. The device must not hold a volume that is already
+ * mounted, by any of its names: the root is mounted from "hda" and
+ * lives in hda1, so the check is on the sectors, not the name.
+ */
+static int ext2_mount_on(const char *dir, struct blockdev *b, u32 flags)
+{
+    struct ext2_vol *parent, *v;
+    struct blockdev *disk;
+    u32 ino, h, start, lba, pages, pa;
+    struct einode ei;
+    int i, slot = -1, err;
+
+    if (!enter()) {
+        return -ENODEV;
+    }
+    if (!b || !b->read || b->sector_size != SECTOR_SIZE) {
+        return -ENXIO;
+    }
+    if ((flags & ~(u32)MS_RDONLY) != 0) {
+        return -EINVAL;
+    }
+    if (!b->write) {
+        flags |= MS_RDONLY;
+    }
+    err = path_resolve(dir, &ino);
+    if (err != 0) {
+        return err;
+    }
+    err = iread(ino, &ei);
+    if (err != 0) {
+        return err;
+    }
+    if (!S_ISDIR(ei.mode)) {
+        return -ENOTDIR;
+    }
+    if (ino == EXT2_ROOT_INO) {
+        return -EBUSY;          /* a volume's root: something is here  */
+    }
+    parent = V;
+    h = hnd(ino);
+
+    for (i = 1; i < EXT2_MAX_VOLS; i++) {
+        if (!vols[i]) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        return -EMFILE;
+    }
+
+    pages = (sizeof(struct ext2_vol) + PAGE_SIZE - 1) / PAGE_SIZE;
+    pa = pmm_alloc_pages(pages);
+    if (!pa) {
+        return -ENOMEM;
+    }
+    v = (struct ext2_vol *)pa;
+    memset(v, 0, sizeof(*v));
+    v->idx = slot;
+    v->pages = pages;
+    v->parent = parent;
+    v->mp = h;
+    v->rdonly = (flags & MS_RDONLY) != 0;
+    v->st_dev = dev_block_rdev(b);
+
+    /* The sectors it would use, against every volume mounted already. */
+    V = v;
+    dev = b;
+    lba = find_partition();
+    disk = dev_block_base(b, &start);
+    for (i = 0; i < EXT2_MAX_VOLS; i++) {
+        u32 s2;
+
+        if (vols[i] && vols[i]->v_mounted &&
+            dev_block_base(vols[i]->v_dev, &s2) == disk &&
+            s2 + vols[i]->v_part_lba == start + lba) {
+            pmm_free_pages(pa, pages);
+            V = &vol0;
+            return -EBUSY;
+        }
+    }
+
+    vols[slot] = v;
+    err = ext2_mount_dev();
+    if (err == 0 && !v->rdonly) {
+        orphan_process();
+        bcache_flush_all();
+        sb_write();
+    }
+    if (err != 0) {
+        V = v;
+        mounted = 0;
+        vol_free(v);
+        return err;
+    }
+    V = &vol0;
+    return 0;
+}
+
+/*
+ * Is volume `v` in use: a file open on it, a volume mounted on it, or a
+ * task whose working directory or root is on it (asked of the VFS,
+ * which knows the tasks). A program running from it holds its file
+ * open, so that is the first case.
+ */
+static int vol_in_use(struct ext2_vol *v)
+{
+    u32 lo = (u32)v->idx << VOL_SHIFT;
+    int i;
+
+    for (i = 0; i < EXT2_MAX_OPEN; i++) {
+        if (v->v_opened[i].refs > 0) {
+            return 1;
+        }
+    }
+    for (i = 1; i < EXT2_MAX_VOLS; i++) {
+        if (vols[i] && vols[i]->parent == v) {
+            return 1;
+        }
+    }
+    return vfs_handles_in(lo, lo | INO_MASK);
+}
+
+static int ext2_umount_on(const char *dir, u32 flags)
+{
+    struct ext2_vol *v;
+    u32 ino;
+    int err;
+
+    if (!enter()) {
+        return -ENODEV;
+    }
+    if ((flags & ~(u32)MNT_FORCE) != 0) {
+        return -EINVAL;         /* MNT_DETACH, MNT_EXPIRE: not here     */
+    }
+    err = path_resolve(dir, &ino);
+    if (err != 0) {
+        return err;
+    }
+    v = V;
+    if (ino != EXT2_ROOT_INO || !v->parent) {
+        V = &vol0;
+        return -EINVAL;         /* not a mount point (or the root)     */
+    }
+    if (vol_in_use(v)) {
+        V = &vol0;
+        return -EBUSY;
+    }
+    umount_one();
+    vol_free(v);
+    return 0;
+}
+
+static int ext2_mount_list(int i, struct mount_entry *m)
+{
+    struct ext2_vol *v;
+    int n = 0, k;
+
+    if (!enter()) {
+        return -ENOENT;
+    }
+    for (k = 0; k < EXT2_MAX_VOLS; k++) {
+        if (vols[k] && vols[k]->v_mounted && n++ == i) {
+            break;
+        }
+    }
+    if (k == EXT2_MAX_VOLS) {
+        return -ENOENT;
+    }
+    v = vols[k];
+    memset(m, 0, sizeof(*m));
+    strncpy(m->source, v->v_dev->name, sizeof(m->source) - 1);
+    m->flags = v->rdonly ? MS_RDONLY : 0;
+    if (!v->parent) {
+        strcpy(m->dir, "/");
+        /* The root is mounted from the whole disk and lives in its
+         * first Linux partition: name the partition, as Linux would. */
+        if (v->v_part_lba) {
+            u32 nl = (u32)strlen(m->source);
+
+            if (nl + 1 < sizeof(m->source)) {
+                m->source[nl] = '1';
+                m->source[nl + 1] = '\0';
+            }
+        }
+    } else {
+        /* Where it is. A task in a chroot sees it from its own root,
+         * which is what Linux's /proc/self/mounts does too. */
+        V = v;
+        if (ext2_dir_path(EXT2_ROOT_INO, m->dir, sizeof(m->dir)) != 0) {
+            strcpy(m->dir, "?");
+        }
+    }
+    V = &vol0;
     return 0;
 }
 
 static struct fs_type ext2_fs = {
-    "ext2",
-    ext2_mount,
-    ext2_umount,
-    ext2_open,
-    ext2_unlink,
-    ext2_rename,
-    ext2_stat,
-    ext2_readdir,
-    ext2_statfs,
-    ext2_sync,
-    ext2_mkdir,
-    ext2_rmdir,
-    ext2_chdir,
-    ext2_getcwd,
-    ext2_readdir_in,
-    ext2_dir_ino,
-    ext2_dir_path_op,
-    ext2_utime,
-    ext2_futime,
-    ext2_setattr,
-    ext2_fsetattr,
-    ext2_link,
-    ext2_symlink,
-    ext2_readlink,
-    ext2_lstat,
-    ext2_check,
-    ext2_label,
-    ext2_bmap,
-    ext2_mknod,
-    ext2_boundary,
-    0
+    .name = "ext2",
+    .mount = ext2_mount,
+    .umount = ext2_umount,
+    .open = ext2_open,
+    .unlink = ext2_unlink,
+    .rename = ext2_rename,
+    .stat = ext2_stat,
+    .readdir = ext2_readdir,
+    .statfs = ext2_statfs,
+    .sync = ext2_sync,
+    .mkdir = ext2_mkdir,
+    .rmdir = ext2_rmdir,
+    .chdir = ext2_chdir,
+    .getcwd = ext2_getcwd,
+    .readdir_in = ext2_readdir_in,
+    .dir_ino = ext2_dir_ino,
+    .dir_path = ext2_dir_path_op,
+    .utime = ext2_utime,
+    .futime = ext2_futime,
+    .setattr = ext2_setattr,
+    .fsetattr = ext2_fsetattr,
+    .link = ext2_link,
+    .symlink = ext2_symlink,
+    .readlink = ext2_readlink,
+    .lstat = ext2_lstat,
+    .check = ext2_check,
+    .label = ext2_label,
+    .bmap = ext2_bmap,
+    .mknod = ext2_mknod,
+    .boundary = ext2_boundary,
+    .mount_on = ext2_mount_on,
+    .umount_on = ext2_umount_on,
+    .mount_list = ext2_mount_list,
 };
 
 int ext2_init(void)

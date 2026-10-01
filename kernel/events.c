@@ -1182,7 +1182,7 @@ static void to_parent(const char *path, u32 ev, u32 cookie, int isdir)
         vfs_stat(dir, &st) < 0) {
         return;
     }
-    deliver(st.st_ino, ev | (isdir ? IN_ISDIR : 0), cookie, name);
+    deliver(vfs_file_key(&st), ev | (isdir ? IN_ISDIR : 0), cookie, name);
 }
 
 /* One event at a time, lowest bit first, as Linux queues a combined one. */
@@ -1205,7 +1205,7 @@ void inotify_path(const char *path, u32 parent, u32 self)
         to_parent(path, b, 0, isdir);
     }
     EACH_BIT(self, b) {
-        deliver(st.st_ino, b | (isdir ? IN_ISDIR : 0), 0, 0);
+        deliver(vfs_file_key(&st), b | (isdir ? IN_ISDIR : 0), 0, 0);
     }
 }
 
@@ -1225,7 +1225,7 @@ void inotify_file(struct file *f, u32 mask)
     isdir = S_ISDIR(st.st_mode);
     named = vfs_file_name(f, path, sizeof(path)) == 0 && path[0] == '/';
     EACH_BIT(mask, b) {
-        deliver(st.st_ino, b | (isdir ? IN_ISDIR : 0), 0, 0);
+        deliver(vfs_file_key(&st), b | (isdir ? IN_ISDIR : 0), 0, 0);
         if (named) {
             to_parent(path, b, 0, isdir);
         }
@@ -1241,7 +1241,7 @@ void inotify_look(const char *path, struct inotify_victim *v)
         return;
     }
     v->valid = 1;
-    v->ino = st.st_ino;
+    v->ino = vfs_file_key(&st);
     v->nlink = st.st_nlink;
     v->isdir = S_ISDIR(st.st_mode);
 }
@@ -1429,7 +1429,7 @@ s32 sys_inotify_add_watch(int fd, u32 upath, u32 mask)
     for (i = 0; i < WATCH_MAX; i++) {
         struct iwatch *w = &watches[i];
 
-        if (w->used && w->in == in && w->ino == st.st_ino) {
+        if (w->used && w->in == in && w->ino == vfs_file_key(&st)) {
             if (mask & IN_MASK_CREATE) {
                 return -EEXIST;
             }
@@ -1446,7 +1446,7 @@ s32 sys_inotify_add_watch(int fd, u32 upath, u32 mask)
     watches[slot].used = 1;
     watches[slot].in = in;
     watches[slot].wd = ++in->next_wd;
-    watches[slot].ino = st.st_ino;
+    watches[slot].ino = vfs_file_key(&st);
     watches[slot].mask = mask & ~IN_MASK_ADD;
     inotify_watching++;
     return watches[slot].wd;

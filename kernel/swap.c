@@ -151,7 +151,7 @@ int swap_on(const char *path)
     file_get(sw.file);
     fd_close(fd);
 
-    sw.ino = st.st_ino;
+    sw.ino = vfs_file_key(&st);
     sw.nslots = slots;
     sw.table_pages = pages;
     sw.table_pa = pa;
@@ -187,7 +187,7 @@ int swap_matches(const char *path)
 {
     struct stat st;
 
-    return sw.on && vfs_stat(path, &st) == 0 && st.st_ino == sw.ino;
+    return sw.on && vfs_stat(path, &st) == 0 && vfs_file_key(&st) == sw.ino;
 }
 
 /*

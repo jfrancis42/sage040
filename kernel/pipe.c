@@ -43,7 +43,7 @@ struct pipe {
     /* A FIFO's: which inode it is, and how many opens each end has
      * ever had -- what a blocked open waits to see change. */
     const void *fifo_fs;
-    u32  fifo_ino;
+    u32  fifo_ino, fifo_dev;    /* the name's inode, and its st_dev */
     u32  r_opens, w_opens;
 };
 
@@ -181,8 +181,7 @@ static int pipe_fstat(struct file *f, struct stat *st)
                              : 0x40000000UL | (u32)(p - pipes + 1);
     /* A named FIFO is the inode of the file it was opened by, on that
      * file's filesystem; an anonymous pipe is pipefs's. */
-    st->st_dev = !p->fifo_ino ? ST_DEV_PIPEFS
-               : p->fifo_fs == (const void *)tmpfs_fs() ? ST_DEV_TMPFS : 0;
+    st->st_dev = !p->fifo_ino ? ST_DEV_PIPEFS : p->fifo_dev;
     return 0;
 }
 
@@ -288,13 +287,13 @@ static void ring_put(struct pipe *p, int reader)
  */
 static struct waitq fifo_wait;
 
-static struct pipe *fifo_find(const void *fs, u32 ino)
+static struct pipe *fifo_find(const void *fs, u32 ino, u32 dev)
 {
     int i;
 
     for (i = 0; i < PIPE_MAX; i++) {
         if (pipes[i].used && pipes[i].fifo_ino == ino &&
-            pipes[i].fifo_fs == fs) {
+            pipes[i].fifo_dev == dev && pipes[i].fifo_fs == fs) {
             return &pipes[i];
         }
     }
@@ -340,9 +339,9 @@ int pipe_is(struct file *f)
     return f && (f->ops == &pipe_ops || f->ops == &fifo_ops);
 }
 
-int fifo_open(const void *fs, u32 ino, int flags)
+int fifo_open(const void *fs, u32 ino, u32 dev, int flags)
 {
-    struct pipe *p = fifo_find(fs, ino);
+    struct pipe *p = fifo_find(fs, ino, dev);
     int acc = flags & O_ACCMODE, reads, writes, fd;
     u32 seen;
 
@@ -354,6 +353,7 @@ int fifo_open(const void *fs, u32 ino, int flags)
         p->readers = p->writers = 0;
         p->fifo_fs = fs;
         p->fifo_ino = ino;
+        p->fifo_dev = dev;
     }
     reads = acc == O_RDONLY || acc == O_RDWR;
     writes = acc == O_WRONLY || acc == O_RDWR;

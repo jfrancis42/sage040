@@ -37,6 +37,7 @@
 #include <sys/wait.h>
 #include <sys/time.h>
 #include <sys/statvfs.h>
+#include <sys/syscall.h>
 #include <sys/file.h>
 #include <sys/personality.h>
 #include <pwd.h>
@@ -390,12 +391,17 @@ static void test_dirs(const char *self)
     {
         struct statvfs sv;
 
-        /* statfs64 is not implemented, and says ENOSYS -- which is 38
-         * to the kernel and 88 to picolibc. */
+        /* lookup_dcookie (248) is not implemented, and says ENOSYS --
+         * which is 38 to the kernel and 88 to picolibc. This used to be
+         * statvfs, until statfs64 was. */
         errno = 0;
         report("an unimplemented call reports picolibc's ENOSYS, "
                "translated from Linux's",
-               statvfs("/", &sv) < 0 && errno == ENOSYS);
+               syscall(248, 0, 0, 0) < 0 && errno == ENOSYS);
+        report("statvfs of / reports the volume: 4 KB blocks, some free",
+               statvfs("/", &sv) == 0 && sv.f_bsize == 4096 &&
+               sv.f_blocks > 0 && sv.f_bfree <= sv.f_blocks &&
+               sv.f_files > 0 && !(sv.f_flag & ST_RDONLY));
     }
 }
 

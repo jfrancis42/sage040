@@ -197,7 +197,14 @@ static void start_drivers(void)
         kputdec(b->sectors);
         kputs(" sectors (");
         kputdec(b->sectors / 2048);
-        kputs(" MiB)\n");
+        kputs(" MiB)");
+        err = dev_scan_partitions(b);
+        if (err > 0) {
+            kputs(", ");
+            kputdec((u32)err);
+            kputs(err == 1 ? " partition" : " partitions");
+        }
+        kputc('\n');
     }
 
     status("clock");
@@ -482,7 +489,7 @@ static void mount_root(void)
     kputs(vfs_fs_name());
     kputs(" on /dev/");
     kputs(vfs_dev_name());
-    if (sys_statfs(&sf) == 0) {
+    if (sys_statfs("/", &sf) == 0) {
         struct fslabel fl;
 
         kputs(" '");

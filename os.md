@@ -682,7 +682,7 @@ above 400 are local, because Linux has nothing to match.
 
 | | |
 |---|---|
-| **Files** | `open` `close` `read` `write` `lseek` `ioctl` `unlink` `rename` `stat` `getdents` `fsync` `sync` `statfs` |
+| **Files** | `open` `close` `read` `write` `lseek` `ioctl` `unlink` `rename` `stat` `getdents` `fsync` `sync` `statfs` `mount` `umount2` |
 | **Directories** | `mkdir` `rmdir` `chdir` `getcwd` |
 | **Tasks** | `exit` `getpid` `kill` `waitpid` `sched_yield` `spawn` (1000) `jobctl` (1001) |
 | **Time** | `time` `stime` `times` `nanosleep` |
@@ -799,8 +799,8 @@ links, modes, owners and times; the sticky bit on `/tmp` is enforced.
 Half the machine's memory at most; `ENOSPC` past it. A rename or link
 between tmpfs and the disk is `EXDEV`, as between any two filesystems
 (`mv` copies); a symbolic link in tmpfs that leads out of it is refused
-with `EXDEV` rather than followed onto the disk; and `statfs`, so `df`,
-reports the disk.
+with `EXDEV` rather than followed onto the disk. `statfs` of a path in
+it reports tmpfs and its limits, so `df /tmp` shows what is left of them.
 
 **`open` and `mkdir` honour their mode now**, less the umask, on every
 filesystem. The umask starts at 022, as Linux starts init: task 0, which
@@ -1108,6 +1108,55 @@ symlinks, UTF-8 and 255-byte names, a FIFO and set times, listed by both
 sides down to the inode number and a hash of every byte; changed by
 sbase's tools on the machine and by coreutils on Linux; and each side's
 listing must equal the other's.
+
+### More than one volume: mount
+
+`mount /dev/hda2 /mnt` puts a second ext2 volume into the tree, and
+`umount /mnt` takes it out; `mount` alone lists what is mounted
+(`/proc/mounts`), `df` gives a line for each, and `mount -o ro` (or `-r`)
+mounts one read-only. The disk's partitions are block devices of their own,
+`hda1` to `hda4`, found in the MBR at boot (the banner counts them); a
+partition is a window onto the disk, so a volume mounted from one needs to
+know nothing about the table. Only root mounts, as on Linux, and only on a
+directory of the disk: `/tmp`, `/proc` and `/dev` are routed by name before
+the disk sees a path, so a volume mounted there could never be reached.
+
+**The mount table is ext2's, not the VFS's.** Crossing from one volume to
+another happens in the middle of walking a path -- `/mnt/d/../../etc` goes in
+and comes out again -- and the walk is the filesystem's. So `fs/ext2.c` keeps
+every mounted volume in a `struct ext2_vol` (its device and geometry, its
+block cache, its journal, its open inodes), and the lookup a walk makes
+(`lookup_x`) turns a name that is a mount point into the mounted volume's
+root, and `..` at a mounted root into the parent of the directory it covers.
+Lookups that are about to change an entry -- unlink, rmdir, rename -- use the
+plain one and say `EBUSY` for a mount point.
+
+**Outside ext2.c an inode is named by a handle**: the volume's index in the
+top byte, the inode number below. The root volume's index is 0, so its
+handles are plain inode numbers and everything that held one before -- a
+working directory, a chroot, an open directory -- holds the right thing.
+`stat` gives the real inode number and a device of the partition's own
+(`3:2` for hda2, as Linux numbers it); what keys on a file internally (the
+text cache, the lock table, inotify, FIFOs, swap) uses `vfs_file_key()`,
+the two together, because each volume numbers its inodes from 1.
+
+A hard link or a rename across volumes is `EXDEV`, which is what makes `mv`
+copy instead. A volume cannot be unmounted while anything uses it -- a file
+open on it (which includes a program running from it), any task's working
+directory or root on it, or another volume mounted on it -- and the answer is
+`EBUSY`; there is no lazy unmount. `halt`, `shutdown` and `reboot` unmount
+every volume, the most recent first, so each is left clean. A read-only
+mount replays its journal if the volume needs it (Linux does too) and then
+writes nothing at all, not even the mark that says it is in use.
+
+`statfs(2)` and `fstatfs(2)` are Linux's now -- a path or a descriptor --
+where `statfs` used to take only the buffer and answer for the root; with
+`statfs64` and `fstatfs64`, which picolibc's `statvfs` and `fstatvfs` call
+and which used to be missing. `kernel/mounttest.sh` checks
+all of this on a disk of three partitions, judging what is left with the
+host's tools: every volume clean by e2fsck after the halt, the files on the
+right volume, the read-only one bit for bit what it was, and a sync on hda2
+stopped after its commit block replayed by the next mount.
 
 ### FAT16
 
@@ -1550,7 +1599,7 @@ with ENOEXEC, and the shells run it themselves. `kernel/shebangtest.sh`.
 `lib/` is what a program written for this system links against: `crt0.s`,
 `ulib.c`, `user.ld`. `system/` is what the system ships, installed into
 `/bin`: `ifconfig`, `ping`, `netstat`, `host`, `ntpdate`, `shutdown`,
-`env`, `stty`, `resize`, `fsck`, `df`, `id`, `klogd`, `dmesg`,
+`env`, `stty`, `resize`, `fsck`, `df`, `mount`, `umount`, `id`, `klogd`, `dmesg`,
 `swapon`, `swapoff`, `nvram`, `irqs` and `msh` (the system shell; `/bin/sh`
 is bash). `apps/` is everything
 else, installed at the root: `cube`, `fbtest`, `fbmap`, `hello`,
@@ -1734,6 +1783,7 @@ drive it over its serial line.
 | `kernel/linktest.sh` | 30 | hard links and symlinks -- one inode with two names, fast targets and slow ones, loops, dangling targets -- agreed with by the host's e2fsck; fast symlinks the host made surviving the boot-time check, and deleted without freeing their "blocks" |
 | `kernel/dftest.sh` | 15 | `df` and `du` against the host's own figures for the same volume, with the shell's built-in as the control |
 | `kernel/sesstest.sh` | 14 | sessions and controlling terminals: a new session has none, a leader opening a pty gets it (tcgetsid, the front, `/dev/tty`, `tty_nr`), a job inherits it and another session cannot use it, `O_NOCTTY`, `TIOCSCTTY` refused to a user and taken by root, the master closing hanging up leader and job, the leader exiting hanging up its job, `TIOCNOTTY`, `setsid` |
+| `kernel/mounttest.sh` | 98 | more than one volume: mount and umount, refusals (no such device, unknown type, a file, `/tmp`, `/`, the root's own partition by either name, not root), crossing into a volume and out by `..`, its own `st_dev`, `statvfs` and fsid, `EXDEV` both ways, `EBUSY` for an open file, a working directory and another process in it, and a volume mounted on it, a read-only volume refusing every kind of write; from the host, all three volumes clean after `halt`, the read-only one bit for bit unchanged, Linux reading what was written, and a journal on a volume that is not the root replayed by `mount` |
 | `kernel/sshtest.sh` | 14 | ssh, scp and rsync against the workstation's own OpenSSH, which knows nothing about this project -- so the protocol is either right or it is not; `ssh -t` on a pty; a dropped connection hanging up the command; no TIOCSCTTY complaints from the server |
 | `kernel/pylibtest.sh` | 27 | the libraries CPython is built against, proven by the programs that ship with them, every stream crossing the host boundary both ways |
 | `libc/test/qemutest.sh` | 8 | a program built for this machine, run as a Linux/m68k binary by qemu-m68k user mode -- the system call numbers and errnos are Linux's, so something else can check them |

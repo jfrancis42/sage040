@@ -188,3 +188,6 @@ core.*
 
 # Python bytecode from running the tools/ scripts.
 __pycache__/
+libc/test/mnttest
+system/mount
+system/umount

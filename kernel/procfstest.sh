@@ -183,7 +183,7 @@ free_=$(awk '/^MemFree:/ {print $2}' "$WORK/meminfo.out")
 check "  and MemFree is below it" $?
 
 # What filesystem the disk holds: the host made it.
-[ "$(head -1 "$WORK/mounts.out")" = "/dev/hda / ext2 rw 0 0" ]
+[ "$(head -1 "$WORK/mounts.out")" = "/dev/hda1 / ext2 rw 0 0" ]
 check "/proc/mounts says the root is the ext2 volume the host made" $?
 
 grep -qE '^[0-9a-f]{8}-[0-9a-f]{8} r-xp 00000000 03:01 [0-9]+ +/bin/cat$' \

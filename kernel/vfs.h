@@ -43,6 +43,13 @@
 #define ATTR_UID    0x02
 #define ATTR_GID    0x04
 
+/* One line of /proc/mounts. */
+struct mount_entry {
+    char source[16];            /* "hda2"                               */
+    char dir[256];              /* where, as an absolute path           */
+    u32  flags;                 /* MS_RDONLY                            */
+};
+
 struct fs_type {
     const char *name;
     int (*mount)(struct blockdev *dev);
@@ -52,7 +59,7 @@ struct fs_type {
     int (*rename)(const char *from, const char *to);
     int (*stat)(const char *path, struct stat *st);
     int (*readdir)(int index, struct dirent *d);
-    int (*statfs)(struct statfs *s);
+    int (*statfs)(const char *path, struct statfs *s);
     int (*sync)(void);
 
     /*
@@ -122,7 +129,7 @@ struct fs_type {
 
     /* Check the volume, and with FSCK_REPAIR put it right. */
     int (*check)(int flags, struct fsck_report *r);
-    int (*label)(struct fslabel *l);
+    int (*label)(const char *path, struct fslabel *l);
 
     /*
      * Where on the disk byte `off` of an open file is: the sector, and
@@ -141,6 +148,18 @@ struct fs_type {
      * about to let it go: a point between two calls, where a journal
      * may commit. Optional. */
     void (*boundary)(void);
+
+    /*
+     * MORE VOLUMES, on directories of this one: mount(2) and umount(2).
+     * The root filesystem keeps its own mount table, because crossing
+     * from one volume to the next happens in the middle of walking a
+     * path, which is the filesystem's job. `list` gives entry i of it
+     * (0 is the root volume) or -ENOENT past the end. Null on a
+     * filesystem that cannot: the VFS says EINVAL.
+     */
+    int (*mount_on)(const char *dir, struct blockdev *b, u32 flags);
+    int (*umount_on)(const char *dir, u32 flags);
+    int (*mount_list)(int i, struct mount_entry *m);
     struct fs_type *next;
 };
 
@@ -153,6 +172,23 @@ void vfs_flusher(void);           /* the kjournald task: see vfs.c */
 int vfs_mount(const char *fsname, const char *devname);
 int vfs_umount(void);
 void vfs_shutdown(void);
+int vfs_mount_on(const char *source, const char *dir, const char *type,
+                 u32 flags);
+int vfs_umount_on(const char *dir, u32 flags);
+int vfs_mount_list(int i, struct mount_entry *m);
+int vfs_handles_in(u32 lo, u32 hi);   /* for fs/: is a cwd or root there */
+
+/*
+ * WHICH FILE, as one number: what the text cache, the lock table,
+ * inotify, FIFOs and swap key on. The inode number alone stopped being
+ * enough when a second volume could be mounted, because it numbers its
+ * inodes from 1 as well; the device goes in the top bits. The root
+ * volume's st_dev is 0, so its keys are its inode numbers, as before.
+ */
+static inline u32 vfs_file_key(const struct stat *st)
+{
+    return st->st_ino ^ ((u32)st->st_dev << 20);
+}
 int vfs_mounted(void);
 const char *vfs_fs_name(void);
 const char *vfs_dev_name(void);
@@ -268,9 +304,9 @@ int  vfs_dir_path(struct file *f, char *out, u32 size);
 int  vfs_fchdir(int fd);
 int  vfs_utime(const char *path, u32 mtime, u32 atime);
 int  vfs_futime(int fd, u32 mtime, u32 atime);
-int  vfs_statfs(struct statfs *s);
+int  vfs_statfs(const char *path, struct statfs *s);  /* 0: the root */
 int  vfs_check(int flags, struct fsck_report *r);
-int  vfs_label(struct fslabel *l);
+int  vfs_label(const char *path, struct fslabel *l);
 int  vfs_flock(int fd, int op);
 u32  flock_key(struct file *f);      /* what identifies a file to a lock */
 int  vfs_ftruncate(int fd, u32 len);

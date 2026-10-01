@@ -376,6 +376,7 @@ is a 25 MHz 68040, and one of the suites waits for the wall clock.
 | `make journaltest` | the journal: the machine stopped mid-commit, replayed three ways |
 | `make linuxfstest` | the disk handed back and forth with Linux's own ext3 driver (needs sudo) |
 | `make sesstest` | sessions and controlling terminals: `/dev/tty`, `TIOCSCTTY`, hangups |
+| `make mounttest` | more than one volume: `mount`, `umount`, partitions, read-only, a journal replayed off the root |
 | `make uemacstest` `make vitest` | the editors |
 | `make bashsuite` | every one of bash's own 83 tests (hours, not minutes) |
 

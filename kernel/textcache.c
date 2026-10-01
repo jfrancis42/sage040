@@ -239,7 +239,7 @@ u32 textcache_get(int fd, u32 off)
         return 0;
     }
 
-    i = find(st.st_ino, off);
+    i = find(vfs_file_key(&st), off);
     if (i >= 0 && pmm_ref(entries[i].pa)) {
         stats.hits++;
         return entries[i].pa;
@@ -257,7 +257,7 @@ u32 textcache_get(int fd, u32 off)
     if (i >= 0) {
         return pa;              /* shared by 65536 already: a copy */
     }
-    insert(st.st_ino, off, pa); /* no room to keep it: still a good page */
+    insert(vfs_file_key(&st), off, pa); /* no room to keep it: still a good page */
     return pa;
 }
 
@@ -297,13 +297,13 @@ u32 textcache_get_shared(int fd, u32 off, int writable)
         !S_ISREG(st.st_mode)) {
         return 0;
     }
-    i = find(st.st_ino, off);
+    i = find(vfs_file_key(&st), off);
     if (i < 0) {
         pa = pmm_alloc();
         if (!pa) {
             return 0;
         }
-        if (fill_file(f, off, pa) < 0 || (i = insert(st.st_ino, off, pa)) < 0) {
+        if (fill_file(f, off, pa) < 0 || (i = insert(vfs_file_key(&st), off, pa)) < 0) {
             /* A shared page has to be THE page: one nobody else can
              * find is no use to a second process mapping the file. */
             pmm_free(pa);
@@ -411,7 +411,7 @@ static int ino_of(struct file *f, u32 *ino)
     if (!f || vfs_file_stat(f, &st) < 0 || !S_ISREG(st.st_mode)) {
         return -1;
     }
-    *ino = st.st_ino;
+    *ino = vfs_file_key(&st);
     return 0;
 }
 
@@ -495,7 +495,7 @@ void textcache_forget_fd(int fd)
     struct stat st;
 
     if (ready && stats.cached && vfs_fstat(fd, &st) == 0 && S_ISREG(st.st_mode)) {
-        textcache_forget(st.st_ino);
+        textcache_forget(vfs_file_key(&st));
     }
 }
 
@@ -504,7 +504,7 @@ void textcache_forget_path(const char *path)
     struct stat st;
 
     if (ready && stats.cached && vfs_stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
-        textcache_forget(st.st_ino);
+        textcache_forget(vfs_file_key(&st));
     }
 }
 

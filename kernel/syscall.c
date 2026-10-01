@@ -1948,6 +1948,25 @@ static int do_jobctl(int cmd, int arg, u32 p)
     }
 }
 
+/* FSCTL_LABEL: the name of the volume the path at upath is on (0: the
+ * root's), stored at ubuf. Its own function, and not inlined, to keep a
+ * path buffer off the dispatcher's frame. */
+static __attribute__((noinline)) int fsctl_label(u32 upath, u32 ubuf)
+{
+    struct fslabel l;
+    char p[PATH_MAX];
+    int err = upath ? fetch_str(p, upath, sizeof(p)) : 0;
+
+    if (err < 0) {
+        return err;
+    }
+    err = vfs_label(upath ? p : 0, &l);
+    if (err < 0) {
+        return err;
+    }
+    return ubuf ? sys_store(ubuf, &l, sizeof(l)) : 0;
+}
+
 /* rename's two paths, out of do_syscall's frame: see do_renameat in
  * syslinux.c for why. */
 static __attribute__((noinline))
@@ -2135,16 +2154,6 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         return err < 0 ? err : 0;
     }
 
-    case __NR_statfs: {
-        struct statfs sf;
-        int err = vfs_statfs(&sf);
-
-        if (err < 0) {
-            return err;
-        }
-        return sys_store(a1, &sf, sizeof(sf));
-    }
-
     /*
      * fdatasync is fsync here: there is no separate metadata journal
      * for it to skip. See uapi.h -- it exists because SQLite prefers
@@ -2256,15 +2265,8 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
             }
             return a3 ? sys_store(a3, &r, size) : 0;
         }
-        case FSCTL_LABEL: {
-            struct fslabel l;
-            int err = vfs_label(&l);
-
-            if (err < 0) {
-                return err;
-            }
-            return a3 ? sys_store(a3, &l, sizeof(l)) : 0;
-        }
+        case FSCTL_LABEL:
+            return fsctl_label(a2, a3);
         default:
             return -EINVAL;
         }

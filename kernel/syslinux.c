@@ -536,6 +536,91 @@ s32 do_symlink(u32 nr, u32 a1, u32 a2, u32 a3)
     return err < 0 ? err : vfs_symlink(target, path);
 }
 
+/*
+ * mount(2): source, target, type, flags, data. A source is a block
+ * device ("/dev/hda2" or "hda2"); `data` (options as a string) is not
+ * read -- the one option there is, ro, comes as MS_RDONLY. In a
+ * function of its own so its strings are not on syscall_linux's frame
+ * on every other call.
+ */
+static __attribute__((noinline)) int do_mount(u32 usrc, u32 udir, u32 utype, u32 flags)
+{
+    char src[32], type[16], dir[PATH_MAX];
+    int err;
+
+    err = fetch_str(src, usrc, sizeof(src));
+    if (err < 0) {
+        return err;
+    }
+    err = fetch_str(dir, udir, sizeof(dir));
+    if (err < 0) {
+        return err;
+    }
+    if (utype) {
+        err = fetch_str(type, utype, sizeof(type));
+        if (err < 0) {
+            return err;
+        }
+    }
+    /* MS_MGC_VAL in the top half is what old callers put there. */
+    if ((flags & 0xffff0000UL) == 0xc0ed0000UL) {
+        flags &= 0xffff;
+    }
+    return vfs_mount_on(src, dir, utype ? type : 0, flags);
+}
+
+static __attribute__((noinline)) int do_statfs(u32 upath, int fd, u32 ubuf,
+                                               u32 size64)
+{
+    char path[PATH_MAX];
+    struct statfs sf;
+    int err;
+
+    if (fd >= 0) {
+        struct file *f = fd_get(fd);
+
+        if (!f) {
+            return -EBADF;
+        }
+        err = vfs_file_name(f, path, sizeof(path));
+        if (err < 0 || path[0] != '/') {
+            path[0] = '/';      /* a pipe or a socket: say the root's */
+            path[1] = '\0';
+        }
+    } else {
+        err = fetch_str(path, upath, sizeof(path));
+        if (err < 0) {
+            return err;
+        }
+    }
+    err = vfs_statfs(path, &sf);
+    if (err < 0) {
+        return err;
+    }
+    if (size64) {
+        struct statfs64 s64;
+
+        if (size64 != sizeof(s64)) {
+            return -EINVAL;     /* as Linux: the size must be its own */
+        }
+        memset(&s64, 0, sizeof(s64));
+        s64.f_type = sf.f_type;
+        s64.f_bsize = sf.f_bsize;
+        s64.f_blocks = sf.f_blocks;
+        s64.f_bfree = sf.f_bfree;
+        s64.f_bavail = sf.f_bavail;
+        s64.f_files = sf.f_files;
+        s64.f_ffree = sf.f_ffree;
+        s64.f_fsid[0] = sf.f_fsid[0];
+        s64.f_fsid[1] = sf.f_fsid[1];
+        s64.f_namelen = sf.f_namelen;
+        s64.f_frsize = sf.f_frsize;
+        s64.f_flags = sf.f_flags;
+        return sys_store(ubuf, &s64, sizeof(s64));
+    }
+    return sys_store(ubuf, &sf, sizeof(sf));
+}
+
 s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
                   struct pt_regs *regs)
 {
@@ -758,6 +843,27 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
     case __NR_chroot:
         err = fetch_str(path, a1, sizeof(path));
         return err < 0 ? err : vfs_chroot(path);
+
+    case __NR_mount:
+        return do_mount(a1, a2, a3, a4);
+
+    case __NR_umount:
+    case __NR_umount2:
+        err = fetch_str(path, a1, sizeof(path));
+        return err < 0 ? err
+                       : vfs_umount_on(path, nr == __NR_umount2 ? a2 : 0);
+
+    /* The volume a path, or an open file, is on. statfs64 and
+     * fstatfs64 take the structure's size second, and have 64-bit
+     * counts: what picolibc's statvfs calls. */
+    case __NR_statfs:
+        return do_statfs(a1, -1, a2, 0);
+    case __NR_fstatfs:
+        return do_statfs(0, (int)a1, a2, 0);
+    case __NR_statfs64:
+        return do_statfs(a1, -1, a3, a2);
+    case __NR_fstatfs64:
+        return do_statfs(0, (int)a1, a3, a2);
 
     /* An open directory as the working directory. */
     case __NR_fchdir:

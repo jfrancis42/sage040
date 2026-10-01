@@ -27,7 +27,7 @@
  * What it is not: a place for a symbolic link that leads OUT of it. The
  * paths this is handed are its own, and a link to /etc/passwd from /tmp
  * is refused with EXDEV rather than followed onto the wrong
- * filesystem. Nor is statfs asked of it; df reports the disk.
+ * filesystem.
  *
  * Limits: TMP_NODES files and directories, TMP_DENTS names, and half
  * the machine's memory in pages, beyond which ENOSPC.
@@ -1067,6 +1067,29 @@ static int t_fsetattr(struct file *f, u32 mask, u32 mode, u32 uid, u32 gid)
     return 0;
 }
 
+/* Its limits, as statfs reports a tmpfs on Linux: pages and nodes. */
+static int t_statfs(const char *path, struct statfs *st)
+{
+    u32 i, free_nodes = 0;
+
+    (void)path;
+    for (i = ROOT + 1; i < TMP_NODES; i++) {
+        if (!nodes[i].used) {
+            free_nodes++;
+        }
+    }
+    memset(st, 0, sizeof(*st));
+    st->f_type = TMPFS_MAGIC;
+    st->f_bsize = st->f_frsize = PAGE_SIZE;
+    st->f_blocks = pages_max;
+    st->f_bfree = st->f_bavail = pages_max > pages_used ? pages_max - pages_used : 0;
+    st->f_files = TMP_NODES - 1;
+    st->f_ffree = free_nodes;
+    st->f_fsid[0] = TMPFS_MAGIC;
+    st->f_namelen = NAME_MAX;
+    return 0;
+}
+
 static struct fs_type tmpfs_type = {
     .name = "tmpfs",
     .open = t_open,
@@ -1087,6 +1110,7 @@ static struct fs_type tmpfs_type = {
     .readlink = t_readlink,
     .lstat = t_lstat,
     .mknod = t_mknod,
+    .statfs = t_statfs,
 };
 
 struct fs_type *tmpfs_fs(void)

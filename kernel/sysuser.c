@@ -122,9 +122,9 @@ int sys_getdents(int index, void *dirent)
     return (int)syscall2(__NR_getdents, (u32)index, (u32)dirent);
 }
 
-int sys_statfs(void *sfs)
+int sys_statfs(const char *path, void *sfs)
 {
-    return (int)syscall1(__NR_statfs, (u32)sfs);
+    return (int)syscall2(__NR_statfs, (u32)path, (u32)sfs);
 }
 
 /*

@@ -180,9 +180,133 @@ int dev_register_block(struct blockdev *b)
     if (dev_find_block(b->name)) {
         return -EEXIST;
     }
-    b->next = blocks;
-    blocks = b;
+    /* At the END: the first registered is the boot disk (main.c mounts
+     * dev_first_block), and its partitions come after it. */
+    b->next = 0;
+    if (!blocks) {
+        blocks = b;
+    } else {
+        struct blockdev *t = blocks;
+
+        while (t->next) {
+            t = t->next;
+        }
+        t->next = b;
+    }
     return 0;
+}
+
+/*
+ * PARTITIONS, as block devices of their own: hda1 to hda4 from the
+ * MBR's four entries, as Linux names them. A partition is a window onto
+ * its disk -- sector 0 is the partition's first -- so a filesystem
+ * mounted on one needs to know nothing about the table. The root
+ * volume still mounts the whole disk and finds its partition itself;
+ * these are for mount(2).
+ */
+#define PART_MAX 8
+
+struct partdev {
+    struct blockdev b;
+    struct blockdev *disk;
+    u32 start;
+    u8  minor;
+    char name[12];
+};
+
+static struct partdev parts[PART_MAX];
+static int nparts;
+
+static int part_io(struct blockdev *b, u32 lba, u32 count, void *buf, int wr)
+{
+    struct partdev *p = b->priv;
+
+    if (lba >= b->sectors || count > b->sectors - lba) {
+        return -EIO;                    /* outside the partition       */
+    }
+    return wr ? p->disk->write(p->disk, p->start + lba, count, buf)
+              : p->disk->read(p->disk, p->start + lba, count, buf);
+}
+
+static int part_read(struct blockdev *b, u32 lba, u32 count, void *buf)
+{
+    return part_io(b, lba, count, buf, 0);
+}
+
+static int part_write(struct blockdev *b, u32 lba, u32 count, const void *buf)
+{
+    return part_io(b, lba, count, (void *)buf, 1);
+}
+
+/* The disk under a block device and where on it the device starts:
+ * what tells two names for the same sectors apart (mount refuses to
+ * mount one volume twice). */
+struct blockdev *dev_block_base(struct blockdev *b, u32 *start)
+{
+    if (b && b->read == part_read) {
+        struct partdev *p = b->priv;
+
+        *start = p->start;
+        return p->disk;
+    }
+    *start = 0;
+    return b;
+}
+
+/* Its device number, as Linux gives the first IDE disk: 3:0 for the
+ * disk, 3:N for its Nth partition. */
+u32 dev_block_rdev(struct blockdev *b)
+{
+    if (b && b->read == part_read) {
+        return ST_DEV(3, ((struct partdev *)b->priv)->minor);
+    }
+    return ST_DEV(3, 0);
+}
+
+int dev_scan_partitions(struct blockdev *disk)
+{
+    static u8 mbr[512];
+    int i, found = 0;
+
+    if (!disk || disk->sector_size != 512 || disk->read(disk, 0, 1, mbr) != 0) {
+        return -EIO;
+    }
+    if (mbr[510] != 0x55 || mbr[511] != 0xaa) {
+        return 0;                       /* no table: no partitions     */
+    }
+    for (i = 0; i < 4 && nparts < PART_MAX; i++) {
+        const u8 *e = &mbr[446 + i * 16];
+        u32 start = e[8] | ((u32)e[9] << 8) | ((u32)e[10] << 16) | ((u32)e[11] << 24);
+        u32 size = e[12] | ((u32)e[13] << 8) | ((u32)e[14] << 16) | ((u32)e[15] << 24);
+        struct partdev *p = &parts[nparts];
+        u32 n = 0;
+
+        if (e[4] == 0 || size == 0 || start >= disk->sectors ||
+            size > disk->sectors - start) {
+            continue;
+        }
+        while (disk->name[n] && n < sizeof(p->name) - 2) {
+            p->name[n] = disk->name[n];
+            n++;
+        }
+        p->name[n++] = (char)('1' + i);
+        p->name[n] = '\0';
+        p->disk = disk;
+        p->start = start;
+        p->minor = (u8)(i + 1);
+        p->b.name = p->name;
+        p->b.model = disk->model;
+        p->b.sector_size = 512;
+        p->b.sectors = size;
+        p->b.read = part_read;
+        p->b.write = disk->write ? part_write : 0;
+        p->b.priv = p;
+        if (dev_register_block(&p->b) == 0) {
+            nparts++;
+            found++;
+        }
+    }
+    return found;
 }
 
 struct blockdev *dev_find_block(const char *name)

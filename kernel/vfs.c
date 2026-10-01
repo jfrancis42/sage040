@@ -983,7 +983,7 @@ u32 flock_key(struct file *f)
             fs_unlock();
         }
     }
-    return st.st_ino ? st.st_ino : (u32)f->priv ^ 0x80000000UL;
+    return st.st_ino ? vfs_file_key(&st) : (u32)f->priv ^ 0x80000000UL;
 }
 
 static void flock_release(struct file *f)
@@ -1208,12 +1208,32 @@ static int dir_close(struct file *f)
     return 0;
 }
 
+/*
+ * An open directory is described as stat would describe it by its path
+ * as it is now: its own mode, owner, device and inode number. This used
+ * to make up a mode of 0755 and give the filesystem's handle as the
+ * inode number -- which, with more than one volume, carries the volume
+ * in its top byte and matches nothing stat says.
+ */
 static int dir_fstat(struct file *f, struct stat *st)
 {
+    struct fs_type *fs = file_fs[file_index(f)];
     u32 ino = dir_ino_of(f);
+    char path[PATH_MAX];
+    int r = -ENOSYS;
 
-    st->st_mode = S_IFDIR | 0755;
-    st->st_ino = ino ? ino : 1;
+    if (fs && fs->dir_path && fs->stat) {
+        fs_lock();
+        r = fs->dir_path(ino, path, sizeof(path));
+        if (r == 0) {
+            r = fs->stat(path, st);
+        }
+        fs_unlock();
+    }
+    if (r != 0) {
+        st->st_mode = S_IFDIR | 0755;
+        st->st_ino = ino ? ino : 1;
+    }
     return 0;
 }
 
@@ -1580,7 +1600,7 @@ static int fd_open_mode_raw(const char *path, int flags, u32 mode)
             if (err < 0) {
                 return err;
             }
-            fd = fifo_open(fs, st.st_ino, flags & ~(O_CREAT | O_EXCL | O_TRUNC));
+            fd = fifo_open(fs, st.st_ino, st.st_dev, flags & ~(O_CREAT | O_EXCL | O_TRUNC));
             if (fd >= 0 && (ff = fd_get(fd)) != 0) {
                 vfs_file_set_path(ff, path);
             }
@@ -3359,26 +3379,182 @@ int vfs_access(const char *path, int mode)
     return perm_ok(&st, mode & (R_OK | W_OK));
 }
 
-int vfs_statfs(struct statfs *s)
+/*
+ * statfs(2): the volume `path` is on. Null means the root. tmpfs says
+ * its own limits; /proc and /dev are not on anything, and say what they
+ * are with nothing in them, as Linux's proc and devtmpfs do.
+ */
+int vfs_statfs(const char *path, struct statfs *s)
 {
+    struct fs_type *fs = mounted_fs;
+    char rbuf[PATH_MAX];
+    struct stat st;
+    int r;
+
     if (!mounted_fs) {
         return -ENODEV;
     }
-    if (!mounted_fs->statfs) {
+    if (path) {
+        r = vfs_stat(path, &st);        /* it must exist, as on Linux */
+        if (r < 0) {
+            return r;
+        }
+        fs = vfs_route(&path, rbuf);
+        if ((fs != mounted_fs && !fs->statfs) || proc_owns(path) ||
+            dev_is_dir(path) || resolve_dev(path)) {
+            memset(s, 0, sizeof(*s));
+            s->f_type = proc_owns(path) ? PROC_SUPER_MAGIC : TMPFS_MAGIC;
+            s->f_bsize = s->f_frsize = 4096;
+            s->f_namelen = 255;
+            return 0;
+        }
+    }
+    if (!fs->statfs) {
         return -ENOSYS;
     }
-    {
-        int r;
-
-        fs_lock();
-        r = mounted_fs->statfs(s);
-        fs_unlock();
-        return r;
-    }
+    fs_lock();
+    r = fs->statfs(path, s);
+    fs_unlock();
+    return r;
 }
 
-/* The mounted volume's name. See FSCTL_LABEL in uapi.h. */
-int vfs_label(struct fslabel *l)
+/* ---------------------------------------------------------------- */
+/* Mounting more volumes                                             */
+/* ---------------------------------------------------------------- */
+
+/*
+ * mount(2) and umount2(2). The volumes are the root filesystem's to
+ * keep (see mount_on in vfs.h): what is decided here is who may, and
+ * where. Only root mounts, as on Linux; the mount point has to be a
+ * directory ON THE DISK -- /tmp, /proc and /dev are routed by name
+ * before the disk ever sees the path, so a volume mounted on one of
+ * them could never be reached.
+ */
+static int mount_point_ok(const char *dir)
+{
+    char rbuf[PATH_MAX];
+    const char *p = dir;
+
+    if (vfs_route(&p, rbuf) != mounted_fs || proc_owns(p) ||
+        dev_is_dir(p) || resolve_dev(p)) {
+        return -EINVAL;
+    }
+    return 0;
+}
+
+int vfs_mount_on(const char *source, const char *dir, const char *type,
+                 u32 flags)
+{
+    struct blockdev *b;
+    int r;
+
+    if (!mounted_fs) {
+        return -ENODEV;
+    }
+    if (current && current->euid != 0) {
+        return -EPERM;
+    }
+    if (type && strcmp(type, "ext2") != 0 && strcmp(type, "ext3") != 0 &&
+        strcmp(type, "auto") != 0) {
+        return -ENODEV;         /* Linux's answer for an unknown type */
+    }
+    if (strncmp(source, DEV_PREFIX, DEV_PREFIX_LEN) == 0) {
+        source += DEV_PREFIX_LEN;
+    }
+    b = dev_find_block(source);
+    if (!b) {
+        return -ENOENT;         /* ENOTBLK for a non-device, on Linux */
+    }
+    r = mount_point_ok(dir);
+    if (r < 0) {
+        return r;
+    }
+    if (!mounted_fs->mount_on) {
+        return -EINVAL;
+    }
+    fs_lock();
+    r = mounted_fs->mount_on(dir, b, flags);
+    fs_unlock();
+    return r;
+}
+
+int vfs_umount_on(const char *dir, u32 flags)
+{
+    int r;
+
+    if (!mounted_fs) {
+        return -ENODEV;
+    }
+    if (current && current->euid != 0) {
+        return -EPERM;
+    }
+    r = mount_point_ok(dir);
+    if (r < 0) {
+        return r;
+    }
+    if (!mounted_fs->umount_on) {
+        return -EINVAL;
+    }
+    fs_lock();
+    r = mounted_fs->umount_on(dir, flags);
+    fs_unlock();
+    if (r == 0) {
+        /* Pages cached from it are keyed by inode number, which the
+         * next volume mounted there will reuse. */
+        textcache_forget_all();
+    }
+    return r;
+}
+
+int vfs_mount_list(int i, struct mount_entry *m)
+{
+    int r;
+
+    if (!mounted_fs || !mounted_fs->mount_list) {
+        if (i == 0 && mounted_fs) {
+            memset(m, 0, sizeof(*m));
+            strncpy(m->source, mounted_dev->name, sizeof(m->source) - 1);
+            strcpy(m->dir, "/");
+            return 0;
+        }
+        return -ENOENT;
+    }
+    fs_lock();
+    r = mounted_fs->mount_list(i, m);
+    fs_unlock();
+    return r;
+}
+
+/*
+ * Does any task have its working directory or its root on an inode
+ * whose handle is in [lo, hi]? What umount asks before letting a volume
+ * go. A working directory in tmpfs or /proc keeps the disk's old number
+ * (see vfs_chdir) and is not on the disk at all, so it is not counted.
+ */
+int vfs_handles_in(u32 lo, u32 hi)
+{
+    int i;
+
+    for (i = 0; i < TASK_MAX; i++) {
+        struct task *t = task_slot(i);
+
+        if (!t || t->state == TASK_UNUSED) {
+            continue;
+        }
+        if (t->root_ino >= lo && t->root_ino <= hi) {
+            return 1;
+        }
+        if (t->cwd_ino >= lo && t->cwd_ino <= hi &&
+            !tmp_path(t->cwd_path) && !proc_owns(t->cwd_path)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* A volume's name: the one `path` is on, or the root's. See
+ * FSCTL_LABEL in uapi.h. */
+int vfs_label(const char *path, struct fslabel *l)
 {
     if (!mounted_fs) {
         return -ENODEV;
@@ -3386,11 +3562,14 @@ int vfs_label(struct fslabel *l)
     if (!mounted_fs->label) {
         return -ENOSYS;
     }
+    if (path && vfs_tmp_owns(path)) {
+        return -EINVAL;         /* not a volume: no name */
+    }
     {
         int r;
 
         fs_lock();
-        r = mounted_fs->label(l);
+        r = mounted_fs->label(path, l);
         fs_unlock();
         return r;
     }

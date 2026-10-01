@@ -3699,8 +3699,9 @@ static int fat_rmdir(const char *path)
     return fat_flush_all();
 }
 
-static int fat_statfs(struct statfs *s)
+static int fat_statfs(const char *path, struct statfs *s)
 {
+    (void)path;               /* one volume */
     u32 cb = block_bytes ? block_bytes : 1;
 
     if (!mounted) {
@@ -3728,8 +3729,9 @@ static int fat_statfs(struct statfs *s)
 }
 
 /* The volume label, which Linux's statfs has no room for. */
-static int fat_label_get(struct fslabel *l)
+static int fat_label_get(const char *path, struct fslabel *l)
 {
+    (void)path;               /* one volume */
     int i;
 
     if (!mounted) {
@@ -3851,6 +3853,9 @@ static struct fs_type fat16_type = {
     fat_bmap,
     0,                          /* mknod: FAT has no FIFOs */
     0,                          /* boundary: no journal */
+    0,                          /* mount_on: no mount table on FAT    */
+    0,                          /* umount_on */
+    0,                          /* mount_list */
     0
 };
 

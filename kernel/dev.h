@@ -192,6 +192,10 @@ struct blockdev {
 int  dev_register_block(struct blockdev *b);
 struct blockdev *dev_find_block(const char *name);
 struct blockdev *dev_first_block(void);
+/* Register DISK's MBR partitions as DISK1..DISK4; how many. */
+int  dev_scan_partitions(struct blockdev *disk);
+struct blockdev *dev_block_base(struct blockdev *b, u32 *start);
+u32  dev_block_rdev(struct blockdev *b);
 
 /* ---------------------------------------------------------------- */
 /* Real-time clocks                                                  */

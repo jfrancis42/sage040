@@ -55,7 +55,7 @@ int  sys_unlink(const char *path);
 int  sys_rename(const char *from, const char *to);
 int  sys_stat(const char *path, void *st);
 int  sys_getdents(int index, void *dirent);
-int  sys_statfs(void *sfs);
+int  sys_statfs(const char *path, void *sfs);
 int  sys_fslabel(void *label);
 int  sys_getuid(void);
 int  sys_getgid(void);

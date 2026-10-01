@@ -18,7 +18,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-PROGS := ifconfig ping netstat route arp shutdown reboot env stty resize fsck host ntpdate swapon swapoff irqs nvram klogd dmesg df id who w uptime sh
+PROGS := ifconfig ping netstat route arp shutdown reboot env stty resize fsck host ntpdate swapon swapoff irqs nvram klogd dmesg df mount umount id who w uptime sh
 INSTALL_DIR := /bin
 # sh is built as `sh` and installed as /bin/msh: see install-msh below.
 INSTALL_PROGS := $(filter-out sh,$(PROGS))
