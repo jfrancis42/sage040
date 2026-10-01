@@ -169,8 +169,16 @@ static void fs_lock(void)
 
 static void fs_unlock(void)
 {
-    u16 sr = irq_save();
+    u16 sr;
 
+    /* The outermost holder, about to let go: between two calls, which
+     * is where a journal may commit (fs/ext2.c, ext2_boundary). Still
+     * holding the lock, so nothing else is inside the filesystem. */
+    if (fs_depth == 1 && fs_owner == current && mounted_fs &&
+        mounted_fs->boundary) {
+        mounted_fs->boundary();
+    }
+    sr = irq_save();
     if (--fs_depth == 0) {
         fs_owner = 0;
         irq_restore(sr);
@@ -236,6 +244,33 @@ int vfs_register(struct fs_type *t)
     t->next = types;
     types = t;
     return 0;
+}
+
+/*
+ * kjournald: once a second, between whatever calls are running, give the
+ * filesystem its boundary. A journal commits only at one (ext2_boundary)
+ * and only when a transaction is old enough, so without this a machine
+ * that went quiet after a write would hold the change in memory until
+ * the next call came along -- however long that was.
+ */
+static struct waitq flusher_wait;
+
+void vfs_flusher(void)
+{
+    for (;;) {
+        sleep_on_timeout(&flusher_wait, 1000);
+        if (mounted_fs && mounted_fs->boundary) {
+            fs_lock();
+            fs_unlock();
+        }
+    }
+}
+
+/* Does the root volume record permission bits? FAT does not: its modes
+ * are invented (syslinux.c, to_statx). */
+int vfs_root_has_modes(void)
+{
+    return !mounted_fs || strcmp(mounted_fs->name, "fat16") != 0;
 }
 
 struct fs_type *vfs_find(const char *name)
@@ -2138,8 +2173,16 @@ static int vfs_mkdir_mode_raw(const char *path, u32 mode)
         fs_lock();
         r = fs->mkdir(path);
         if (r == 0 && mode != VFS_NO_MODE && fs->setattr && current) {
-            fs->setattr(path, ATTR_MODE, (mode & ~current->umask) & 07777,
-                        0, 0);
+            /* As Linux: mkdir's mode gives the permission bits and the
+             * sticky bit, never setuid or setgid -- but a setgid the new
+             * directory INHERITED from its parent stays. */
+            u32 keep = 0;
+
+            if (fs->stat(path, &st) == 0) {
+                keep = st.st_mode & S_ISGID;
+            }
+            fs->setattr(path, ATTR_MODE,
+                        ((mode & ~current->umask) & 01777) | keep, 0, 0);
         }
         fs_unlock();
         return r;
@@ -2329,6 +2372,8 @@ static int vfs_unlink_raw(const char *path)
  * not on the file: making a second name for a file does not change the
  * file, and you need no right over it beyond being able to reach it.
  */
+static int walk_ok(const char *path);
+
 static int vfs_link_raw(const char *from, const char *to)
 {
     struct fs_type *fs, *fs2;
@@ -2353,9 +2398,21 @@ static int vfs_link_raw(const char *from, const char *to)
         return -EPERM;          /* what link(2) says for a volume that
                                  * has no such thing */
     }
-    err = vfs_may(from, 0);     /* reachable: search permission above it */
+    /* Reachable -- search permission above it -- and there, as a NAME:
+     * link(2) does not follow a symbolic link (Linux's linkat without
+     * AT_SYMLINK_FOLLOW), it gives the link itself a second name. Asking
+     * vfs_may, which stats THROUGH a link, refused every dangling one. */
+    err = walk_ok(from);
     if (err < 0) {
         return err;
+    }
+    {
+        struct stat lst;
+
+        err = vfs_lstat(from, &lst);
+        if (err < 0) {
+            return err;
+        }
     }
     err = vfs_may_parent(to, W_OK | X_OK);
     if (err < 0) {

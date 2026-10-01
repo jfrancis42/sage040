@@ -57,6 +57,8 @@
  * That is not a quirk of this driver; it is the format.
  */
 #include "timer.h"
+#include "console.h"
+#include "pmm.h"
 #include "vfs.h"
 #include "dev.h"
 #include "time.h"
@@ -178,6 +180,8 @@ static void put_le32(u8 *p, u32 v)
 #define IN_BLOCK            40          /* 15 u32: 12 direct, 3 indirect  */
 #define IN_GENERATION      100
 #define IN_FILE_ACL        104
+#define IN_UID_HIGH        120          /* Linux's osd2: uid and gid past */
+#define IN_GID_HIGH        122          /* 65535, the high 16 bits each   */
 #define IN_DIR_ACL         108          /* the high 32 bits of a file size */
 /* Past 128, present only when the inode is bigger than that. */
 #define IN_EXTRA_ISIZE     128
@@ -250,7 +254,7 @@ static char volume_label[17];
 /* them several times.                                                 */
 /* ---------------------------------------------------------------- */
 
-#define NBUF    16
+#define NBUF    64
 
 struct bbuf {
     u8  data[EXT2_MAX_BLOCK];
@@ -258,10 +262,19 @@ struct bbuf {
     u32 stamp;                  /* for LRU                              */
     u8  valid;
     u8  dirty;
+    u8  meta;                   /* dirty METADATA: in the running
+                                 * transaction, so pinned -- it reaches
+                                 * its home only after the journal has a
+                                 * committed copy (see "The journal")   */
 };
 
 static struct bbuf bcache[NBUF];
 static u32 bclock;
+
+/* The journal, below; the cache has to know whether one is in use. */
+static int journal_on;
+static int journal_commit(void);
+static u32 journal_forced;      /* commits a full cache forced mid-call */
 
 /* The superblock lives at byte 1024, which is inside block 0 when the
  * block size is 2048 or 4096 and is block 1 when it is 1024.  It is read
@@ -307,9 +320,52 @@ static int bflush(struct bbuf *b)
  * Returns null on an I/O error, which every caller has to check: a
  * silently zero buffer would be read as a hole.
  */
+/*
+ * The buffer to reuse: an empty one, or the least recently used --
+ * written back first if it is dirty. A pinned buffer (dirty metadata in
+ * the running transaction) is never chosen: writing it home before its
+ * transaction commits is exactly what the journal exists to prevent. If
+ * every buffer is pinned, the transaction is committed here, in the
+ * middle of a call; that keeps the volume consistent at each commit but
+ * splits one call across two transactions, so it is counted.
+ */
+static struct bbuf *pick_victim(void)
+{
+    struct bbuf *victim = 0;
+    int i, pass;
+
+    for (pass = 0; pass < 2; pass++) {
+        for (i = 0; i < NBUF; i++) {
+            struct bbuf *b = &bcache[i];
+
+            if (!b->valid) {
+                victim = b;
+                break;
+            }
+            if (b->dirty && b->meta) {
+                continue;
+            }
+            if (!victim || b->stamp < victim->stamp) {
+                victim = b;
+            }
+        }
+        if (victim) {
+            break;
+        }
+        journal_forced++;
+        if (journal_commit() != 0) {
+            return 0;
+        }
+    }
+    if (!victim || bflush(victim) != 0) {
+        return 0;
+    }
+    return victim;
+}
+
 static struct bbuf *bget(u32 blk)
 {
-    struct bbuf *victim = &bcache[0];
+    struct bbuf *victim;
     int i;
 
     if (blk >= blocks_count) {
@@ -321,16 +377,8 @@ static struct bbuf *bget(u32 blk)
             return &bcache[i];
         }
     }
-    for (i = 0; i < NBUF; i++) {
-        if (!bcache[i].valid) {
-            victim = &bcache[i];
-            break;
-        }
-        if (bcache[i].stamp < victim->stamp) {
-            victim = &bcache[i];
-        }
-    }
-    if (bflush(victim) != 0) {
+    victim = pick_victim();
+    if (!victim) {
         return 0;
     }
     if (bread_raw(blk, victim->data) != 0) {
@@ -340,6 +388,7 @@ static struct bbuf *bget(u32 blk)
     victim->blk = blk;
     victim->valid = 1;
     victim->dirty = 0;
+    victim->meta = 0;
     victim->stamp = ++bclock;
     return victim;
 }
@@ -348,9 +397,16 @@ static struct bbuf *bget(u32 blk)
  * A buffer for a block that is about to be overwritten completely --
  * a freshly allocated one.  Skips the read, which is the whole point.
  */
+/*
+ * Dirty as DATA, not metadata: written home whenever it is evicted, and
+ * in any case before the transaction that points at it commits -- ext3's
+ * "ordered" mode. A freshly zeroed block starts this way; one that turns
+ * out to be an indirect or directory block becomes metadata the moment
+ * bdirty() is called on it.
+ */
 static struct bbuf *bget_zero(u32 blk)
 {
-    struct bbuf *victim = &bcache[0];
+    struct bbuf *victim = 0;
     int i;
 
     if (blk >= blocks_count) {
@@ -359,22 +415,16 @@ static struct bbuf *bget_zero(u32 blk)
     for (i = 0; i < NBUF; i++) {
         if (bcache[i].valid && bcache[i].blk == blk) {
             victim = &bcache[i];
-            goto found;
-        }
-    }
-    for (i = 0; i < NBUF; i++) {
-        if (!bcache[i].valid) {
-            victim = &bcache[i];
             break;
         }
-        if (bcache[i].stamp < victim->stamp) {
-            victim = &bcache[i];
+    }
+    if (!victim) {
+        victim = pick_victim();
+        if (!victim) {
+            return 0;
         }
+        victim->meta = 0;
     }
-    if (bflush(victim) != 0) {
-        return 0;
-    }
-found:
     memset(victim->data, 0, block_size);
     victim->blk = blk;
     victim->valid = 1;
@@ -383,7 +433,26 @@ found:
     return victim;
 }
 
+static u32 txn_started;         /* timer_jiffies() at its first change */
+static int txn_open;
+
+/* Dirty metadata: a bitmap, an inode table block, a group descriptor, an
+ * indirect or a directory block. With a journal it joins the running
+ * transaction and stays in the cache until that commits. */
 static void bdirty(struct bbuf *b)
+{
+    b->dirty = 1;
+    if (journal_on) {
+        b->meta = 1;
+        if (!txn_open) {
+            txn_open = 1;
+            txn_started = timer_jiffies();
+        }
+    }
+}
+
+/* Dirty file contents: see bget_zero. */
+static void bdirty_data(struct bbuf *b)
 {
     b->dirty = 1;
 }
@@ -399,6 +468,7 @@ static void bforget(u32 blk)
         if (bcache[i].valid && bcache[i].blk == blk) {
             bcache[i].valid = 0;
             bcache[i].dirty = 0;
+            bcache[i].meta = 0;
         }
     }
 }
@@ -410,11 +480,14 @@ static void bcache_reset(void)
     for (i = 0; i < NBUF; i++) {
         bcache[i].valid = 0;
         bcache[i].dirty = 0;
+        bcache[i].meta = 0;
     }
     bclock = 0;
 }
 
-static int bcache_flush_all(void)
+/* Every dirty buffer home, metadata included: without a journal this is
+ * the whole of sync, and with one it is the checkpoint after a commit. */
+static int bcache_flush_raw(void)
 {
     int i, first = 0, err;
 
@@ -423,8 +496,43 @@ static int bcache_flush_all(void)
         if (err != 0 && first == 0) {
             first = err;
         }
+        bcache[i].meta = 0;
     }
     return first;
+}
+
+/* Everything onto the disk: through the journal when there is one. */
+static int bcache_flush_all(void)
+{
+    if (journal_on) {
+        return journal_commit();
+    }
+    return bcache_flush_raw();
+}
+
+/*
+ * At the end of a call that changed the namespace or an inode -- close,
+ * unlink, mkdir, rmdir, link, symlink, rename, utime, chmod and chown.
+ * The driver has always made those durable before the call returns, and
+ * programs and tests rely on it: a file closed is a file on the disk.
+ * Without a journal everything goes out here. With one, the call asks
+ * for a commit, which happens as the call ends (ext2_boundary) -- the
+ * same promise, and atomic now. Plain writes to a file still open
+ * commit within five seconds, or at sync and fsync.
+ */
+static int sb_write(void);
+static int commit_due;
+static int op_flush(void)
+{
+    int a, b;
+
+    if (journal_on) {
+        commit_due = 1;
+        return 0;
+    }
+    a = bcache_flush_raw();
+    b = sb_write();
+    return a != 0 ? a : b;
 }
 
 /* ---------------------------------------------------------------- */
@@ -596,10 +704,86 @@ static u32 group_blocks(u32 g)
 }
 
 /*
+ * BLOCKS FREED IN THE RUNNING TRANSACTION ARE NOT GIVEN OUT AGAIN until
+ * it commits. File data is written home before the commit (ordered
+ * mode), so a block freed by an unlink and handed straight to a new file
+ * would take the new file's bytes -- and if the machine stopped before
+ * the commit, the journal would bring the unlinked file back, pointing
+ * at them. One bit per block, per group, in a page allocated the first
+ * time a group frees something; cleared at every commit.
+ */
+static u8 **txn_freed;          /* group -> page of bits, or 0          */
+static u32 txn_freed_groups;
+
+static int freed_in_txn(u32 g, u32 bit)
+{
+    return txn_freed && g < txn_freed_groups && txn_freed[g] &&
+           bitmap_test(txn_freed[g], bit);
+}
+
+static void note_freed(u32 g, u32 bit)
+{
+    if (!journal_on || !txn_freed || g >= txn_freed_groups) {
+        return;
+    }
+    if (!txn_freed[g]) {
+        u32 pa = pmm_alloc();
+
+        if (!pa) {
+            return;     /* no memory: the one case reuse is allowed */
+        }
+        txn_freed[g] = (u8 *)pa;
+        memset(txn_freed[g], 0, PAGE_SIZE);
+    }
+    bitmap_set(txn_freed[g], bit);
+}
+
+static void txn_freed_clear(void)
+{
+    u32 g;
+
+    for (g = 0; txn_freed && g < txn_freed_groups; g++) {
+        if (txn_freed[g]) {
+            pmm_free((u32)txn_freed[g]);
+            txn_freed[g] = 0;
+        }
+    }
+}
+
+/* The first bit in [start, limit) free in the bitmap AND not freed in the
+ * running transaction, or limit. */
+static u32 alloc_first_free(const u8 *map, u32 g, u32 start, u32 limit)
+{
+    u32 bit = bitmap_first_free(map, start, limit);
+
+    while (bit < limit && freed_in_txn(g, bit)) {
+        bit = bitmap_first_free(map, bit + 1, limit);
+    }
+    return bit;
+}
+
+/*
  * Allocate one block, preferring one near `goal`.  Returns 0 on failure,
  * which is a safe sentinel: block 0 is never allocatable.
  */
+static u32 block_alloc_once(u32 goal);
+
 static u32 block_alloc(u32 goal)
+{
+    u32 blk = block_alloc_once(goal);
+
+    /* Only blocks this transaction freed are left: commit it, which
+     * makes them anybody's, and try again. */
+    if (blk == 0 && free_blocks != 0 && journal_on && txn_open) {
+        journal_forced++;
+        if (journal_commit() == 0) {
+            blk = block_alloc_once(goal);
+        }
+    }
+    return blk;
+}
+
+static u32 block_alloc_once(u32 goal)
 {
     u32 start_g, g, i, n, bit, limit, blk;
     struct bbuf *b;
@@ -625,9 +809,9 @@ static u32 block_alloc(u32 goal)
         map = b->data;
         limit = group_blocks(g);
         i = (n == 0) ? (goal - first_data_block) % blocks_per_group : 0;
-        bit = bitmap_first_free(map, i, limit);
+        bit = alloc_first_free(map, g, i, limit);
         if (bit == limit && i != 0) {
-            bit = bitmap_first_free(map, 0, i);
+            bit = alloc_first_free(map, g, 0, i);
             if (bit >= i) {
                 continue;
             }
@@ -667,6 +851,7 @@ static void block_free(u32 blk)
     }
     bitmap_clear(b->data, bit);
     bdirty(b);
+    note_freed(g, bit);
     gd_add_free_blocks(g, 1);
     free_blocks++;
     sb_set_free_counts();
@@ -784,8 +969,8 @@ static void inode_free(u32 ino, int was_dir)
 struct einode {
     u32 ino;
     u16 mode;
-    u16 uid;
-    u16 gid;
+    u32 uid;                    /* 32 bits: the high halves are at 120 */
+    u32 gid;
     u16 links;
     u32 size;
     u32 atime;
@@ -876,8 +1061,8 @@ static int iread(u32 ino, struct einode *ei)
     raw = b->data + off;
     ei->ino = ino;
     ei->mode = le16(raw + IN_MODE);
-    ei->uid = le16(raw + IN_UID);
-    ei->gid = le16(raw + IN_GID);
+    ei->uid = le16(raw + IN_UID) | ((u32)le16(raw + IN_UID_HIGH) << 16);
+    ei->gid = le16(raw + IN_GID) | ((u32)le16(raw + IN_GID_HIGH) << 16);
     ei->links = le16(raw + IN_LINKS_COUNT);
     ei->size = le32(raw + IN_SIZE);
     ei->atime = itime_get(raw, IN_ATIME, IN_ATIME_EXTRA);
@@ -915,8 +1100,10 @@ static int iwrite(const struct einode *ei)
     }
     raw = b->data + off;
     put_le16(raw + IN_MODE, ei->mode);
-    put_le16(raw + IN_UID, ei->uid);
-    put_le16(raw + IN_GID, ei->gid);
+    put_le16(raw + IN_UID, (u16)ei->uid);
+    put_le16(raw + IN_GID, (u16)ei->gid);
+    put_le16(raw + IN_UID_HIGH, (u16)(ei->uid >> 16));
+    put_le16(raw + IN_GID_HIGH, (u16)(ei->gid >> 16));
     put_le16(raw + IN_LINKS_COUNT, ei->links);
     put_le32(raw + IN_SIZE, ei->size);
     itime_put(raw, IN_ATIME, IN_ATIME_EXTRA, ei->atime);
@@ -1270,7 +1457,7 @@ static s32 inode_write(struct einode *ei, u32 pos, const void *buf, u32 len)
             break;
         }
         memcpy(b->data + off, in + done, n);
-        bdirty(b);
+        bdirty_data(b);
         done += n;
         dirty = 1;
         if (pos + done > ei->size) {
@@ -1308,7 +1495,7 @@ static int inode_set_size(struct einode *ei, u32 len)
 
                 if (b) {
                     memset(b->data + off, 0, block_size - off);
-                    bdirty(b);
+                    bdirty_data(b);
                 }
             }
         }
@@ -2193,6 +2380,653 @@ static int ext2_dir_path(u32 ino, char *out, u32 size)
 /* Mounting                                                          */
 /* ---------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------- */
+/* The journal                                                       */
+/*                                                                   */
+/* ext3's: ext2 plus a log in an inode (number 8), in the JBD format   */
+/* e2fsprogs and Linux read -- which is what lets a test pull the plug */
+/* on the machine and have the HOST's e2fsck replay what this wrote.   */
+/* ---------------------------------------------------------------- */
+
+/*
+ * HOW A CHANGE REACHES THE DISK. Metadata dirtied by a call -- bitmaps,
+ * inodes, group descriptors, indirect and directory blocks -- collects
+ * in the cache as the running transaction, and stays there: a pinned
+ * buffer is never evicted. A commit then
+ *
+ *   1. writes file data home (ordered mode: nothing the transaction
+ *      points at can be older on the disk than the pointer),
+ *   2. writes a descriptor block and a copy of every pinned block into
+ *      the log, then the journal superblock saying where they start,
+ *      then a commit block -- the transaction exists from that moment,
+ *   3. writes every pinned block home (the checkpoint), and
+ *   4. marks the log empty.
+ *
+ * A stop anywhere before the commit block leaves the old volume; after
+ * it, mount (or e2fsck) replays the copies over whatever half-finished
+ * checkpoint it finds. Either way the volume is one the calls made, not
+ * something between two of them.
+ *
+ * WHEN. A commit happens only between calls -- vfs.c tells the
+ * filesystem when its lock is let go (ext2_boundary) -- once the
+ * transaction is five seconds old or half the cache is pinned; at sync,
+ * fsync and unmount; and, failing all of those, when a call has pinned
+ * the whole cache (journal_forced counts that).
+ *
+ * WHAT IS LEFT OUT, deliberately: the log is emptied at every commit,
+ * so a block is never in two transactions and nothing here writes a
+ * revoke record. Replay still honours revokes, so a journal Linux wrote
+ * replays correctly. No checksums and no 64-bit block numbers: a
+ * journal asking for either is not used (and if it needs replaying, the
+ * volume is not mounted).
+ */
+
+#define FEAT_COMPAT_HAS_JOURNAL   0x0004
+#define FEAT_INCOMPAT_RECOVER     0x0004
+#define SB_JOURNAL_UUID           208
+#define SB_JOURNAL_INUM           224
+#define SB_JOURNAL_DEV            228
+
+#define JBD_MAGIC                 0xC03B3998UL
+#define JBD_DESCRIPTOR            1
+#define JBD_COMMIT                2
+#define JBD_SB_V1                 3
+#define JBD_SB_V2                 4
+#define JBD_REVOKE                5
+
+#define JBD_FLAG_ESCAPE           1
+#define JBD_FLAG_SAME_UUID        2
+#define JBD_FLAG_LAST_TAG         8
+
+/* Journal superblock fields, BIG-endian, unlike everything else here. */
+#define JS_BLOCKSIZE              12
+#define JS_MAXLEN                 16
+#define JS_FIRST                  20
+#define JS_SEQUENCE               24
+#define JS_START                  28
+#define JS_FEATURE_INCOMPAT       40
+#define JS_UUID                   48
+
+#define JBD_INCOMPAT_REVOKE       0x01
+#define JBD_INCOMPAT_ASYNC_COMMIT 0x04
+#define JBD_INCOMPAT_OK           (JBD_INCOMPAT_REVOKE | JBD_INCOMPAT_ASYNC_COMMIT)
+
+#define JBD_HEADER                12      /* magic, blocktype, sequence  */
+#define JBD_TAG_BYTES             8       /* blocknr, checksum, flags    */
+
+static u32 *jmap;               /* journal block -> volume block        */
+static u32  jmap_pages;
+static u32  j_maxlen, j_first, j_seq;
+static u8   j_uuid[16];
+static u8   jbuf[EXT2_MAX_BLOCK];
+static u8   jbuf2[EXT2_MAX_BLOCK];
+static u8   jsbimg[EXT2_MAX_BLOCK];
+static u32  journal_commits;
+
+static u32 be32(const u8 *p)
+{
+    return ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | p[3];
+}
+
+static u16 be16(const u8 *p)
+{
+    return (u16)(((u16)p[0] << 8) | p[1]);
+}
+
+static void put_be32(u8 *p, u32 v)
+{
+    p[0] = (u8)(v >> 24);
+    p[1] = (u8)(v >> 16);
+    p[2] = (u8)(v >> 8);
+    p[3] = (u8)v;
+}
+
+static void put_be16(u8 *p, u16 v)
+{
+    p[0] = (u8)(v >> 8);
+    p[1] = (u8)v;
+}
+
+/* The log is circular from j_first to j_maxlen - 1. */
+static u32 jnext(u32 pos)
+{
+    pos++;
+    return pos >= j_maxlen ? j_first : pos;
+}
+
+static int jread(u32 pos, u8 *data)
+{
+    return pos < j_maxlen ? bread_raw(jmap[pos], data) : -EIO;
+}
+
+static int jwrite(u32 pos, const u8 *data)
+{
+    return pos < j_maxlen ? bwrite_raw(jmap[pos], data) : -EIO;
+}
+
+static void jheader(u8 *b, u32 type, u32 seq)
+{
+    memset(b, 0, block_size);
+    put_be32(b, JBD_MAGIC);
+    put_be32(b + 4, type);
+    put_be32(b + 8, seq);
+}
+
+/* The journal superblock's start and sequence: where the log begins (0
+ * when it is empty) and the transaction expected there. */
+static int jsb_set(u32 start, u32 seq)
+{
+    int err = jread(0, jbuf);
+
+    if (err != 0) {
+        return err;
+    }
+    put_be32(jbuf + JS_START, start);
+    put_be32(jbuf + JS_SEQUENCE, seq);
+    return jwrite(0, jbuf);
+}
+
+/* The volume block holding the superblock, whole: block 1 when blocks
+ * are 1 KB, block 0 (with the boot sector in front of it) otherwise. */
+static u32 sb_block(void)
+{
+    return block_size == 1024 ? 1 : 0;
+}
+
+/* That block as it should read now: the disk's, with sbuf laid over the
+ * superblock's 1024 bytes. */
+static int sb_block_image(u8 *out)
+{
+    u32 blk = sb_block();
+    u32 off = EXT2_SUPER_OFF - blk * block_size;
+    int err = bread_raw(blk, out);
+
+    if (err != 0) {
+        return err;
+    }
+    memcpy(out + off, sbuf + EXT2_SUPER_OFF, 1024);
+    return 0;
+}
+
+/* Copy a block into the log, escaping it if it happens to begin with the
+ * journal's magic number -- replay would take it for a log block. */
+static int jlog_block(u32 pos, const u8 *data, u16 *flags)
+{
+    memcpy(jbuf2, data, block_size);
+    if (be32(jbuf2) == JBD_MAGIC) {
+        put_be32(jbuf2, 0);
+        *flags |= JBD_FLAG_ESCAPE;
+    }
+    return jwrite(pos, jbuf2);
+}
+
+/*
+ * A journal whose superblock is damaged, made afresh in place -- what
+ * tune2fs -j would leave, in the same blocks: version 2, no features,
+ * the log empty, the volume's UUID. Its blocks are the inode's; if the
+ * inode itself is damaged there is nothing to make a journal in.
+ */
+static int journal_reinit(void)
+{
+    u8 *s = sbuf + EXT2_SUPER_OFF;
+    u32 jino = le32(s + SB_JOURNAL_INUM), blk, maxlen;
+    struct einode ei;
+
+    if (jino == 0 || iread(jino, &ei) != 0) {
+        return -EIO;
+    }
+    maxlen = ei.size / block_size;
+    if (maxlen < NBUF + 16 || bmap(&ei, 0, 0, &blk) != 0 || blk == 0) {
+        return -EIO;
+    }
+    memset(jbuf, 0, block_size);
+    put_be32(jbuf, JBD_MAGIC);
+    put_be32(jbuf + 4, JBD_SB_V2);
+    put_be32(jbuf + JS_BLOCKSIZE, block_size);
+    put_be32(jbuf + JS_MAXLEN, maxlen);
+    put_be32(jbuf + JS_FIRST, 1);
+    put_be32(jbuf + JS_SEQUENCE, 1);
+    put_be32(jbuf + JS_START, 0);
+    memcpy(jbuf + JS_UUID, s + SB_UUID, 16);
+    put_be32(jbuf + 64, 1);                     /* s_nr_users */
+    return bwrite_raw(blk, jbuf);
+}
+
+/* kstat's view, and its test knob (uapi.h). */
+static u32 journal_replayed;
+static u32 jstop_how, jstop_left;
+static int committing_for_sync;
+
+void ext2_journal_stats(struct journalstats *js)
+{
+    js->on = journal_on;
+    js->commits = journal_commits;
+    js->forced = journal_forced;
+    js->replayed = journal_replayed;
+}
+
+void ext2_journal_stop(u32 how, u32 n)
+{
+    jstop_how = how;
+    jstop_left = n;
+}
+
+/* The power cut, if one was asked for at this point of this commit. */
+static void jstop_check(u32 how)
+{
+    if ((jstop_how & 0xff) == how && jstop_left &&
+        (!(jstop_how & JSTOP_SYNC_ONLY) || committing_for_sync) &&
+        --jstop_left == 0) {
+        kputs(how == JSTOP_COMMITTED ? "journal: stopped after the commit block\n"
+                                     : "journal: stopped before the commit block\n");
+        halt();
+    }
+}
+
+static int journal_commit(void)
+{
+    int idx[NBUF];
+    u32 n = 0, pos, tag, i, seq;
+    int with_sb, err;
+    u16 flags;
+
+    if (!journal_on) {
+        return bcache_flush_raw();
+    }
+    for (i = 0; i < NBUF; i++) {
+        if (bcache[i].valid && bcache[i].dirty && bcache[i].meta) {
+            idx[n++] = (int)i;
+        }
+    }
+    with_sb = sb_dirty;
+
+    /* 1. File data home first: ordered mode. */
+    for (i = 0; i < NBUF; i++) {
+        if (bcache[i].valid && bcache[i].dirty && !bcache[i].meta) {
+            err = bflush(&bcache[i]);
+            if (err != 0) {
+                return err;
+            }
+        }
+    }
+    commit_due = 0;
+    if (n == 0 && !with_sb) {
+        txn_open = 0;
+        txn_freed_clear();
+        return 0;
+    }
+
+    /* 2. The log: descriptor, copies, then where it is, then commit. */
+    seq = j_seq;
+    jheader(jbuf, JBD_DESCRIPTOR, seq);
+    tag = JBD_HEADER;
+    pos = jnext(j_first);
+    for (i = 0; i < n + (u32)(with_sb ? 1 : 0); i++) {
+        struct bbuf *b = (i < n) ? &bcache[idx[i]] : 0;
+        u32 blk = b ? b->blk : sb_block();
+
+        flags = (i == 0) ? 0 : JBD_FLAG_SAME_UUID;
+        if (b) {
+            err = jlog_block(pos, b->data, &flags);
+        } else {
+            err = sb_block_image(jsbimg);
+            if (err == 0) {
+                err = jlog_block(pos, jsbimg, &flags);
+            }
+        }
+        if (err != 0) {
+            return err;
+        }
+        if (i + 1 == n + (u32)(with_sb ? 1 : 0)) {
+            flags |= JBD_FLAG_LAST_TAG;
+        }
+        put_be32(jbuf + tag, blk);
+        put_be16(jbuf + tag + 4, 0);            /* no checksum */
+        put_be16(jbuf + tag + 6, flags);
+        tag += JBD_TAG_BYTES;
+        if (i == 0) {
+            memcpy(jbuf + tag, j_uuid, 16);
+            tag += 16;
+        }
+        pos = jnext(pos);
+    }
+    err = jwrite(j_first, jbuf);
+    if (err == 0) {
+        err = jsb_set(j_first, seq);
+    }
+    if (err == 0) {
+        jstop_check(JSTOP_UNCOMMITTED);
+        jheader(jbuf, JBD_COMMIT, seq);
+        put_be32(jbuf + 48 + 4, now_secs());    /* h_commit_sec, low half */
+        err = jwrite(pos, jbuf);
+    }
+    if (err != 0) {
+        return err;
+    }
+    jstop_check(JSTOP_COMMITTED);
+
+    /* 3. The checkpoint: every copy home. */
+    err = bcache_flush_raw();
+    if (err == 0 && with_sb) {
+        err = sb_write();
+    }
+    if (err != 0) {
+        return err;
+    }
+
+    /* 4. Empty again. */
+    j_seq = seq + 1;
+    err = jsb_set(0, j_seq);
+    txn_open = 0;
+    txn_freed_clear();
+    journal_commits++;
+    return err;
+}
+
+/* --- replay --- */
+
+/*
+ * Revoke records: a block a later transaction freed, which an earlier
+ * one's copy must not be replayed over. Kept as (block, sequence) pairs
+ * in pages for the length of one recovery.
+ */
+#define REVOKE_PER_PAGE   (PAGE_SIZE / 8)
+#define REVOKE_PAGES      16
+static u32 *revoke_page[REVOKE_PAGES];
+static u32  revoke_n;
+
+static void revoke_add(u32 blk, u32 seq)
+{
+    u32 i, p;
+
+    for (i = 0; i < revoke_n; i++) {
+        u32 *e = revoke_page[i / REVOKE_PER_PAGE] + 2 * (i % REVOKE_PER_PAGE);
+
+        if (e[0] == blk) {
+            if ((s32)(seq - e[1]) > 0) {
+                e[1] = seq;
+            }
+            return;
+        }
+    }
+    p = revoke_n / REVOKE_PER_PAGE;
+    if (p >= REVOKE_PAGES) {
+        return;
+    }
+    if (!revoke_page[p]) {
+        u32 pa = pmm_alloc();
+
+        if (!pa) {
+            return;
+        }
+        revoke_page[p] = (u32 *)pa;
+    }
+    revoke_page[p][2 * (revoke_n % REVOKE_PER_PAGE)] = blk;
+    revoke_page[p][2 * (revoke_n % REVOKE_PER_PAGE) + 1] = seq;
+    revoke_n++;
+}
+
+/* Is this block revoked by the transaction `seq` or a later one? */
+static int revoked(u32 blk, u32 seq)
+{
+    u32 i;
+
+    for (i = 0; i < revoke_n; i++) {
+        u32 *e = revoke_page[i / REVOKE_PER_PAGE] + 2 * (i % REVOKE_PER_PAGE);
+
+        if (e[0] == blk && (s32)(e[1] - seq) >= 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void revoke_free(void)
+{
+    u32 i;
+
+    for (i = 0; i < REVOKE_PAGES; i++) {
+        if (revoke_page[i]) {
+            pmm_free((u32)revoke_page[i]);
+            revoke_page[i] = 0;
+        }
+    }
+    revoke_n = 0;
+}
+
+/*
+ * One pass over the log from `start`, transaction `seq` on. Pass 0 finds
+ * where the committed transactions end and gathers the revokes; pass 1
+ * writes every copy home that is not revoked. Returns the sequence
+ * number of the first transaction with no commit block -- the end.
+ */
+static u32 journal_pass(u32 start, u32 seq, u32 end, int replay, int *err)
+{
+    u32 pos = start;
+    u32 steps = 0;
+
+    *err = 0;
+    while (replay ? (s32)(seq - end) < 0 : 1) {
+        if (steps++ > j_maxlen) {
+            break;                  /* a log that loops: stop          */
+        }
+        if (jread(pos, jbuf) != 0) {
+            *err = -EIO;
+            break;
+        }
+        if (be32(jbuf) != JBD_MAGIC || be32(jbuf + 8) != seq) {
+            break;
+        }
+        switch (be32(jbuf + 4)) {
+        case JBD_DESCRIPTOR: {
+            u32 t = JBD_HEADER;
+
+            pos = jnext(pos);
+            for (;;) {
+                u32 blk, fl;
+
+                if (t + JBD_TAG_BYTES > block_size) {
+                    break;
+                }
+                blk = be32(jbuf + t);
+                fl = be16(jbuf + t + 6);
+                t += JBD_TAG_BYTES;
+                if (!(fl & JBD_FLAG_SAME_UUID)) {
+                    t += 16;
+                }
+                if (replay && !revoked(blk, seq) && blk < blocks_count) {
+                    /* jbuf holds the descriptor; the copy goes through
+                     * jbuf2 on its way home. */
+                    if (jread(pos, jbuf2) != 0) {
+                        *err = -EIO;
+                        return seq;
+                    }
+                    if (fl & JBD_FLAG_ESCAPE) {
+                        put_be32(jbuf2, JBD_MAGIC);
+                    }
+                    if (bwrite_raw(blk, jbuf2) != 0) {
+                        *err = -EIO;
+                        return seq;
+                    }
+                }
+                pos = jnext(pos);
+                if (fl & JBD_FLAG_LAST_TAG) {
+                    break;
+                }
+            }
+            continue;
+        }
+        case JBD_COMMIT:
+            seq++;
+            pos = jnext(pos);
+            continue;
+        case JBD_REVOKE:
+            if (!replay) {
+                u32 used = be32(jbuf + JBD_HEADER), r;
+
+                for (r = JBD_HEADER + 4; r + 4 <= used && r + 4 <= block_size;
+                     r += 4) {
+                    revoke_add(be32(jbuf + r), seq);
+                }
+            }
+            pos = jnext(pos);
+            continue;
+        default:
+            break;
+        }
+        break;
+    }
+    return seq;
+}
+
+/* Replay whatever the log holds. Returns how many transactions. */
+static int journal_recover(u32 *replayed)
+{
+    u32 start, seq, end;
+    int err;
+
+    *replayed = 0;
+    if (jread(0, jbuf) != 0) {
+        return -EIO;
+    }
+    start = be32(jbuf + JS_START);
+    seq = be32(jbuf + JS_SEQUENCE);
+    if (start == 0) {
+        j_seq = seq;
+        return 0;
+    }
+    revoke_free();
+    end = journal_pass(start, seq, 0, 0, &err);
+    if (err == 0 && end != seq) {
+        journal_pass(start, seq, end, 1, &err);
+    }
+    revoke_free();
+    if (err != 0) {
+        return err;
+    }
+    *replayed = end - seq;
+    j_seq = end;
+    return jsb_set(0, end);
+}
+
+/*
+ * Find the journal and make it usable: map its blocks, check its
+ * superblock, replay it if it holds anything. Returns 0 with journal_on
+ * set or clear, or -errno to refuse the mount (a log that needs
+ * replaying and cannot be).
+ */
+static int journal_setup(u32 *replayed)
+{
+    u8 *s = sbuf + EXT2_SUPER_OFF;
+    u32 compat = le32(s + SB_FEATURE_COMPAT);
+    u32 incompat = le32(s + SB_FEATURE_INCOMPAT);
+    u32 jino = le32(s + SB_JOURNAL_INUM);
+    int needs = (incompat & FEAT_INCOMPAT_RECOVER) != 0;
+    struct einode ei;
+    u32 i, pages, jsb_blk;
+    int err;
+
+    *replayed = 0;
+    journal_on = 0;
+    if (!(compat & FEAT_COMPAT_HAS_JOURNAL) || jino == 0) {
+        return needs ? -EOPNOTSUPP : 0;     /* an external journal */
+    }
+    err = iread(jino, &ei);
+    if (err != 0) {
+        return -EIO;
+    }
+    if (bmap(&ei, 0, 0, &jsb_blk) != 0 || jsb_blk == 0 ||
+        bread_raw(jsb_blk, jbuf) != 0) {
+        return -EIO;
+    }
+    if (be32(jbuf) != JBD_MAGIC ||
+        (be32(jbuf + 4) != JBD_SB_V1 && be32(jbuf + 4) != JBD_SB_V2) ||
+        be32(jbuf + JS_BLOCKSIZE) != block_size) {
+        return -EINVAL;
+    }
+    if (be32(jbuf + 4) == JBD_SB_V2 &&
+        (be32(jbuf + JS_FEATURE_INCOMPAT) & ~(u32)JBD_INCOMPAT_OK) != 0) {
+        return -EOPNOTSUPP;
+    }
+    j_maxlen = be32(jbuf + JS_MAXLEN);
+    j_first = be32(jbuf + JS_FIRST);
+    if (j_maxlen > ei.size / block_size || j_first == 0 ||
+        j_first + NBUF + 8 > j_maxlen) {
+        return -EINVAL;
+    }
+    if (be32(jbuf + 4) == JBD_SB_V2) {
+        memcpy(j_uuid, jbuf + JS_UUID, 16);
+    } else {
+        memset(j_uuid, 0, 16);
+    }
+
+    /* The whole map, once: the log is written a block at a time from
+     * inside a commit, where walking indirect blocks through the cache
+     * is the last thing wanted. */
+    pages = (j_maxlen * 4 + PAGE_SIZE - 1) / PAGE_SIZE;
+    if (jmap && jmap_pages < pages) {
+        pmm_free_pages((u32)jmap, jmap_pages);
+        jmap = 0;
+    }
+    if (!jmap) {
+        u32 pa = pmm_alloc_pages(pages);
+
+        if (!pa) {
+            return -ENOMEM;
+        }
+        jmap = (u32 *)pa;
+        jmap_pages = pages;
+    }
+    for (i = 0; i < j_maxlen; i++) {
+        if (bmap(&ei, i, 0, &jmap[i]) != 0 || jmap[i] == 0) {
+            return -EIO;
+        }
+    }
+
+    err = journal_recover(replayed);
+    if (err != 0) {
+        return err;
+    }
+    if (!txn_freed) {
+        u32 pa = pmm_alloc();
+
+        if (pa) {
+            txn_freed = (u8 **)pa;
+            memset(txn_freed, 0, PAGE_SIZE);
+            txn_freed_groups = PAGE_SIZE / sizeof(u8 *);
+        }
+    }
+    journal_on = 1;
+    txn_open = 0;
+    return 0;
+}
+
+/* From vfs.c, as its filesystem lock is let go: between two calls, the
+ * only place a commit leaves nothing half-done. */
+static void ext2_boundary(void)
+{
+    u32 pinned = 0, i;
+
+    if (!mounted || !journal_on || (!txn_open && !commit_due)) {
+        return;
+    }
+    /* A test has armed a stop for the next sync's commit: nothing may
+     * commit before it, or the change it is waiting for goes into some
+     * other transaction and the sync finds nothing to do. */
+    if (jstop_left && (jstop_how & JSTOP_SYNC_ONLY)) {
+        return;
+    }
+    for (i = 0; i < NBUF; i++) {
+        if (bcache[i].valid && bcache[i].dirty && bcache[i].meta) {
+            pinned++;
+        }
+    }
+    if (commit_due || pinned >= NBUF / 2 ||
+        (u32)(timer_jiffies() - txn_started) >= 5 * HZ) {
+        journal_commit();
+    }
+}
+
 static u32 find_partition(void)
 {
     u8 mbr[SECTOR_SIZE];
@@ -2264,7 +3098,9 @@ static int ext2_mount_dev(void)
     incompat = le32(s + SB_FEATURE_INCOMPAT);
     ro_compat = le32(s + SB_FEATURE_RO_COMPAT);
     compat = le32(s + SB_FEATURE_COMPAT);
-    if ((incompat & ~(u32)FEAT_INCOMPAT_OK) != 0) {
+    /* RECOVER (needs_recovery) is a journal with something in it;
+     * journal_setup replays it or refuses the mount. */
+    if ((incompat & ~(u32)(FEAT_INCOMPAT_OK | FEAT_INCOMPAT_RECOVER)) != 0) {
         return -EOPNOTSUPP;
     }
     if ((ro_compat & ~(u32)FEAT_RO_OK) != 0) {
@@ -2309,6 +3145,78 @@ static int ext2_mount_dev(void)
     read_label();
     was_unclean = (le16(s + SB_STATE) & EXT2_VALID_FS) ? 0 : 1;
     mounted = 1;
+
+    {
+        u32 replayed;
+        int err = journal_setup(&replayed);
+
+        if (err == -EINVAL || err == -EIO) {
+            /* Damaged. Made afresh, it can be used from here on -- but
+             * whatever it held is gone, so if it held anything the
+             * volume is checked, as after an unclean stop. */
+            if (journal_reinit() == 0 && journal_setup(&replayed) == 0) {
+                kputs("ext2: the journal was damaged and has been made afresh\n");
+                if (incompat & FEAT_INCOMPAT_RECOVER) {
+                    was_unclean = 1;
+                    incompat &= ~(u32)FEAT_INCOMPAT_RECOVER;
+                }
+                err = 0;
+            }
+        }
+        if (err != 0 && !(incompat & FEAT_INCOMPAT_RECOVER)) {
+            /* A journal this driver cannot use, holding nothing: the
+             * volume is used without it, as an ext2 driver would. */
+            kputs("ext2: the journal is not usable; running without it\n");
+            journal_on = 0;
+            err = 0;
+        }
+        if (err != 0) {
+            /*
+             * The volume says its journal holds changes and the journal
+             * cannot be read -- damaged, or a kind this driver cannot
+             * replay. Linux refuses such a volume; refusing the ROOT
+             * volume would leave a machine that cannot start. Instead it
+             * is mounted without the journal, and the full check runs
+             * as it would after any unclean stop: what the journal held
+             * is lost, the volume is made consistent.
+             */
+            kputs("ext2: the journal needs replaying and cannot be "
+                  "used; checking the volume instead\n");
+            journal_on = 0;
+            was_unclean = 1;
+            put_le32(sbp(SB_FEATURE_INCOMPAT),
+                     le32(s + SB_FEATURE_INCOMPAT) & ~(u32)FEAT_INCOMPAT_RECOVER);
+            incompat &= ~(u32)FEAT_INCOMPAT_RECOVER;
+        }
+        journal_replayed = replayed;
+        if (replayed) {
+            /* The log rewrote blocks under the cache -- the superblock's
+             * among them, perhaps -- so everything is read again. */
+            bcache_reset();
+            if (sb_read() != 0) {
+                mounted = 0;
+                journal_on = 0;
+                return -EIO;
+            }
+            free_blocks = le32(s + SB_FREE_BLOCKS);
+            free_inodes = le32(s + SB_FREE_INODES);
+            read_label();
+        }
+        /*
+         * A volume that stopped while THIS driver had it, journal and
+         * all, is consistent once the log is replayed: that is the
+         * point of the journal, and the check is not run. One that
+         * stopped under a driver without the journal (needs_recovery
+         * clear, state dirty) is checked as before.
+         */
+        if (journal_on && (incompat & FEAT_INCOMPAT_RECOVER)) {
+            was_unclean = 0;
+        }
+        if (journal_on) {
+            put_le32(sbp(SB_FEATURE_INCOMPAT),
+                     le32(s + SB_FEATURE_INCOMPAT) | FEAT_INCOMPAT_RECOVER);
+        }
+    }
 
     /* Say so on the disk, so that a machine which stops without
      * unmounting leaves a volume that says it was in use. */
@@ -2548,11 +3456,29 @@ static int make_inode(u32 dino, const char *name, u32 nlen, u16 mode,
         return err;
     }
     vfs_cred(&uid, &gid);
+    /*
+     * A SETGID DIRECTORY gives what is made in it its own group, and a
+     * directory made in it the bit as well -- BSD's rule, which Linux
+     * follows, so that a shared directory stays shared all the way
+     * down. Without it a file made here by one user was in that user's
+     * group, and Linux reading the volume saw the difference
+     * (kernel/linuxfstest.sh).
+     */
+    {
+        struct einode parent;
+
+        if (iread(dino, &parent) == 0 && (parent.mode & S_ISGID)) {
+            gid = parent.gid;
+            if (S_ISDIR(mode)) {
+                mode |= S_ISGID;
+            }
+        }
+    }
     memset(&ei, 0, sizeof(ei));
     ei.ino = ino;
     ei.mode = mode;
-    ei.uid = (u16)uid;
-    ei.gid = (u16)gid;
+    ei.uid = uid;
+    ei.gid = gid;
     ei.links = 1;
     ei.atime = ei.ctime = ei.mtime = now_secs();
     err = iwrite(&ei);
@@ -2708,8 +3634,7 @@ static int ext2_file_close(struct file *f)
         orphan_remove(ino);
         inode_release(ino);
     }
-    bcache_flush_all();
-    sb_write();
+    op_flush();
     return 0;
 }
 
@@ -2784,6 +3709,45 @@ static int ext2_open(const char *path, int flags, struct file *f)
                 return -ELOOP;
             }
             err = path_resolve(path, &ino);
+            if (err == -ENOENT && (flags & O_CREAT)) {
+                /*
+                 * A DANGLING link opened to create: what is created is
+                 * the file the link names, as on Linux -- `echo x > link`
+                 * makes the target. The target is absolute, or relative
+                 * to the link's own directory; a link to a link is
+                 * followed the same way, as far as the limit Linux has.
+                 */
+                static int depth;
+                char target[PATH_MAX], next[PATH_MAX];
+                u32 dlen = 0, i;
+
+                for (i = 0; path[i]; i++) {
+                    if (path[i] == '/') {
+                        dlen = i + 1;   /* up to and with the last slash */
+                    }
+                }
+
+                if (depth >= 8) {
+                    return -ELOOP;
+                }
+                err = read_link(ino, target, sizeof(target));
+                if (err != 0) {
+                    return err;
+                }
+                if (target[0] == '/') {
+                    strcpy(next, target);
+                } else {
+                    if (dlen + strlen(target) + 1 > sizeof(next)) {
+                        return -ENAMETOOLONG;
+                    }
+                    memcpy(next, path, dlen);
+                    strcpy(next + dlen, target);
+                }
+                depth++;
+                err = ext2_open(next, flags, f);
+                depth--;
+                return err;
+            }
             if (err != 0) {
                 return err;
             }
@@ -2873,8 +3837,7 @@ static int ext2_unlink(const char *path)
     if (err != 0) {
         return err;
     }
-    bcache_flush_all();
-    return sb_write();
+    return op_flush();
 }
 
 static int ext2_mkdir(const char *path)
@@ -2956,8 +3919,7 @@ static int ext2_mkdir(const char *path)
     if (err != 0) {
         return err;
     }
-    bcache_flush_all();
-    return sb_write();
+    return op_flush();
 }
 
 static int ext2_rmdir(const char *path)
@@ -3036,8 +3998,7 @@ static int ext2_rmdir(const char *path)
     if (err != 0) {
         return err;
     }
-    bcache_flush_all();
-    return sb_write();
+    return op_flush();
 }
 
 /* Is `anc` an ancestor of `c`?  Renaming a directory into its own
@@ -3151,7 +4112,7 @@ static int ext2_link(const char *from, const char *to)
         (void)iwrite(&fe);
         return err;
     }
-    return bcache_flush_all();
+    return op_flush();
 }
 
 /*
@@ -3280,7 +4241,7 @@ static int ext2_symlink(const char *target, const char *linkpath)
         (void)inode_release(ino);
         return err;
     }
-    return bcache_flush_all();
+    return op_flush();
 }
 
 /* stat, without following a symlink in the last component. */
@@ -3465,8 +4426,7 @@ static int ext2_rename(const char *from, const char *to)
         fe.ctime = now_secs();
         iwrite(&fe);
     }
-    bcache_flush_all();
-    return sb_write();
+    return op_flush();
 }
 
 static int ext2_stat(const char *path, struct stat *st)
@@ -3648,7 +4608,9 @@ static int ext2_sync(void)
     if (!mounted) {
         return 0;
     }
+    committing_for_sync = 1;
     a = bcache_flush_all();
+    committing_for_sync = 0;
     b = sb_write();
     return (a != 0) ? a : b;
 }
@@ -3678,7 +4640,7 @@ static int set_times(u32 ino, u32 mtime, u32 atime)
     if (err != 0) {
         return err;
     }
-    return bcache_flush_all();
+    return op_flush();
 }
 
 /*
@@ -3703,10 +4665,10 @@ static int set_attr(u32 ino, u32 mask, u32 mode, u32 uid, u32 gid)
         ei.mode = (u16)((ei.mode & S_IFMT) | (mode & 07777));
     }
     if (mask & ATTR_UID) {
-        ei.uid = (u16)uid;
+        ei.uid = uid;
     }
     if (mask & ATTR_GID) {
-        ei.gid = (u16)gid;
+        ei.gid = gid;
     }
     /* ctime is "when the inode last changed", which is exactly this. */
     ei.ctime = now_secs();
@@ -3714,7 +4676,7 @@ static int set_attr(u32 ino, u32 mask, u32 mode, u32 uid, u32 gid)
     if (err != 0) {
         return err;
     }
-    return bcache_flush_all();
+    return op_flush();
 }
 
 static int ext2_setattr(const char *path, u32 mask, u32 mode, u32 uid, u32 gid)
@@ -4203,7 +5165,7 @@ static void fsck_tree(u32 dino, u32 parent, int depth, struct fsck_report *r)
     }
 
     for (off = 0; off < di.size; off += block_size) {
-        u32 blk, p = 0;
+        u32 blk, p = 0, prev = 0xffffffffUL;
 
         if (bmap(&di, off / block_size, 0, &blk) != 0 || blk == 0) {
             continue;
@@ -4213,26 +5175,49 @@ static void fsck_tree(u32 dino, u32 parent, int depth, struct fsck_report *r)
             char name[NAME_MAX + 1];
             struct einode ce;
             u8 *ent;
-            u32 rec, child, nl;
+            u32 rec, child, nl, cur = p;
 
             if (!b) {
                 return;
             }
             ent = b->data + p;
             rec = le16(ent + DE_REC_LEN);
-            if (rec < DE_MIN_SIZE || p + rec > block_size) {
-                break;
-            }
             child = le32(ent + DE_INODE);
             nl = ent[DE_NAME_LEN];
-            if (nl > NAME_MAX) {
-                nl = NAME_MAX;
+
+            /*
+             * A TORN ENTRY: a length that cannot be, a name longer than
+             * its slot, an inode number past the end. Nothing after it in
+             * the block can be trusted to be where it seems, so it is
+             * salvaged as e2fsck does -- the entry before it takes the
+             * rest of the block (or, first in the block, it becomes one
+             * empty entry). Names lost with it leave their inodes
+             * unattached, and the sweep reconnects those to /lost+found.
+             * Before this the walk simply stopped: everything after the
+             * damage went uncounted, and nothing repaired the block.
+             */
+            if (rec < DE_MIN_SIZE || (rec & 3) != 0 || p + rec > block_size ||
+                DE_NAME + nl > rec || child > inodes_count) {
+                r->bad_entries++;
+                if (fsck_repairing) {
+                    if (prev != 0xffffffffUL) {
+                        put_le16(b->data + prev + DE_REC_LEN,
+                                 (u16)(block_size - prev));
+                    } else {
+                        put_le32(ent + DE_INODE, 0);
+                        put_le16(ent + DE_REC_LEN, (u16)(block_size - p));
+                    }
+                    bdirty(b);
+                    r->fixed++;
+                }
+                break;
             }
             memcpy(name, ent + DE_NAME, nl);
             name[nl] = '\0';
             p += rec;           /* advance BEFORE anything may recurse */
 
             if (child == 0) {
+                prev = cur;
                 continue;
             }
             if (nl == 1 && name[0] == '.') {
@@ -4240,6 +5225,7 @@ static void fsck_tree(u32 dino, u32 parent, int depth, struct fsck_report *r)
                     r->dot_entries++;
                     bad_dots = 1;
                 }
+                prev = cur;
                 continue;       /* not a name for counting purposes   */
             }
             if (nl == 2 && name[0] == '.' && name[1] == '.') {
@@ -4247,12 +5233,42 @@ static void fsck_tree(u32 dino, u32 parent, int depth, struct fsck_report *r)
                     r->dot_entries++;
                     bad_dots = 1;
                 }
+                prev = cur;
                 continue;
             }
-            if (child > inodes_count || !inode_in_use(child)) {
-                r->orphan_names++;
-                continue;
+            if (!inode_in_use(child)) {
+                int in_bitmap;
+
+                /*
+                 * The bitmap says free. If the inode TABLE says the file
+                 * is live, the bitmap is what is wrong -- the sweep sets
+                 * the bit -- and this name counts. Counting it as an
+                 * orphan instead left the file with no names, so it was
+                 * reconnected to /lost+found as well, and the next check
+                 * found one link too many.
+                 */
+                if (!fsck_inode_live(child, &ce, &in_bitmap)) {
+                    r->orphan_names++;
+                    if (fsck_repairing) {
+                        /* A name for nothing: removed, as e2fsck does. */
+                        b = bget(blk);
+                        if (b) {
+                            if (prev != 0xffffffffUL) {
+                                put_le16(b->data + prev + DE_REC_LEN,
+                                         (u16)(le16(b->data + prev + DE_REC_LEN) + rec));
+                            } else {
+                                put_le32(b->data + cur + DE_INODE, 0);
+                            }
+                            bdirty(b);
+                            r->fixed++;
+                        }
+                    } else {
+                        prev = cur;
+                    }
+                    continue;
+                }
             }
+            prev = cur;
             if (child < links_cap && links_map[child] < 255) {
                 links_map[child]++;
             }
@@ -4612,6 +5628,13 @@ static int ext2_umount(void)
 {
     if (mounted) {
         bcache_flush_all();
+        if (journal_on) {
+            u8 *s = sbuf + EXT2_SUPER_OFF;
+
+            put_le32(s + SB_FEATURE_INCOMPAT,
+                     le32(s + SB_FEATURE_INCOMPAT) & ~(u32)FEAT_INCOMPAT_RECOVER);
+            journal_on = 0;
+        }
         set_clean(1);           /* everything out, then say so         */
     }
     mounted = 0;
@@ -4649,6 +5672,7 @@ static struct fs_type ext2_fs = {
     ext2_label,
     ext2_bmap,
     ext2_mknod,
+    ext2_boundary,
     0
 };
 

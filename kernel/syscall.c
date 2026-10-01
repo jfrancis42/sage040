@@ -2236,14 +2236,24 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
 
     case __NR_fsctl:
         switch (a1) {
-        case FSCTL_CHECK: {
+        case FSCTL_CHECK:
+        case FSCTL_CHECK_SIZED: {
             struct fsck_report r;
-            int err = vfs_check((int)a2, &r);
+            u32 size = FSCK_REPORT_V1;
+            int err;
 
+            if (a1 == FSCTL_CHECK_SIZED) {
+                size = a2 >> 8;
+                if (size > sizeof(r)) {
+                    size = sizeof(r);
+                }
+            }
+            memset(&r, 0, sizeof(r));
+            err = vfs_check((int)(a2 & 0xff), &r);
             if (err < 0) {
                 return err;
             }
-            return a3 ? sys_store(a3, &r, sizeof(r)) : 0;
+            return a3 ? sys_store(a3, &r, size) : 0;
         }
         case FSCTL_LABEL: {
             struct fslabel l;
@@ -2327,6 +2337,20 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
         }
         if (a1 == KSTAT_DISK_DELAY) {
             ata_set_delay(a2 > 1000 ? 1000 : a2);
+            return 0;
+        }
+        if (a1 == KSTAT_JOURNAL) {
+            struct journalstats js;
+
+            memset(&js, 0, sizeof(js));
+            ext2_journal_stats(&js);
+            return sys_store(a3, &js, a2 < sizeof(js) ? a2 : sizeof(js));
+        }
+        if (a1 == KSTAT_JOURNAL_STOP) {
+            if (current->euid != 0) {
+                return -EPERM;
+            }
+            ext2_journal_stop(a2, a3);
             return 0;
         }
         return -EINVAL;

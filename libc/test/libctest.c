@@ -39,6 +39,8 @@
 #include <sys/statvfs.h>
 #include <sys/file.h>
 #include <sys/personality.h>
+#include <pwd.h>
+#include <grp.h>
 #include <sys/ioctl.h>
 
 /* POSIX has programs declare it themselves; picolibc declares it nowhere. */
@@ -601,6 +603,28 @@ static void test_signals(void)
         ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
         report("sigsuspend sleeps until the signal (~200 ms), then EINTR, handler run",
                r == -1 && e == EINTR && got_sig == SIGUSR1 && ms >= 150);
+    }
+    /*
+     * A user or group that is not there is NULL with errno untouched --
+     * not an error (libc/patches/53). sbase's chown reads a NULL with
+     * errno set as an error, and refused `chown 1000 f` for a uid with
+     * no name.
+     */
+    {
+        struct passwd pw, *pr = (struct passwd *)1;
+        struct group gr, *gp = (struct group *)1;
+        char buf[512];
+        int ok;
+
+        errno = 0;
+        ok = getpwnam("no-such-user-here") == 0 && errno == 0;
+        errno = 0;
+        ok = ok && getgrgid(54321) == 0 && errno == 0;
+        ok = ok && getpwnam_r("no-such-user-here", &pw, buf, sizeof(buf), &pr) == 0 &&
+             pr == 0;
+        ok = ok && getgrnam_r("no-such-group-here", &gr, buf, sizeof(buf), &gp) == 0 &&
+             gp == 0;
+        report("getpwnam/getgrgid of nothing: NULL, errno 0; the _r forms store NULL", ok);
     }
     report("personality: PER_LINUX, and ADDR_NO_RANDOMIZE kept once set",
            personality(0xffffffff) == 0 &&

@@ -1,0 +1,147 @@
+The reentrant user and group lookups: no entry is NULL, and no
+database is no entry, and neither is an error.
+
+POSIX has getpwnam_r and its three siblings store NULL through the
+result pointer when nothing matches; these left it untouched, so a
+caller that had not cleared it first read whatever was there.
+
+And "not found" came back as an error. fgetpwent_r sets errno to ENOENT
+at the end of the file, and a missing /etc/passwd or /etc/group was
+returned as ENOENT outright -- either way the non-reentrant getpwnam
+returned NULL with errno set, which is POSIX's signal for an error
+rather than for "no such user". sbase's chown checks exactly that, so
+`chown 1000 file` failed whenever 1000 was not also a NAME. Now errno is
+what it was when nothing matches; a real read error is still returned.
+
+diff -ru a/libc/posix/getgrgid_r.c b/libc/posix/getgrgid_r.c
+--- a/libc/posix/getgrgid_r.c	2026-10-01 10:13:22.943328238 -0600
++++ b/libc/posix/getgrgid_r.c	2026-10-01 10:13:42.431193064 -0600
+@@ -46,15 +46,28 @@
+     FILE         *file;
+     struct group *grp;
+     int           ret;
++    int            saved_errno = errno;
+ 
++    *grbufp = NULL;
+     file = fopen(_PATH_GROUP, "r");
+-    if (!file)
++    if (!file) {
++        /* No database is no entry, not an error: callers tell the two
++         * apart by errno, and chown(1) refused a numeric owner. */
++        if (errno == ENOENT) {
++            errno = saved_errno;
++            return 0;
++        }
+         return errno;
++    }
+     while ((ret = fgetgrent_r(file, grbuf, buf, size, &grp)) == 0)
+         if (grp->gr_gid == gid)
+             break;
+     fclose(file);
+     if (ret == 0)
+         *grbufp = grp;
++    else if (ret == ENOENT)
++        errno = saved_errno;    /* the end of the file: no such entry */
++    else
++        return ret;
+     return 0;
+ }
+diff -ru a/libc/posix/getgrnam_r.c b/libc/posix/getgrnam_r.c
+--- a/libc/posix/getgrnam_r.c	2026-10-01 10:13:22.941647215 -0600
++++ b/libc/posix/getgrnam_r.c	2026-10-01 10:13:42.430256746 -0600
+@@ -46,15 +46,28 @@
+     FILE         *file;
+     struct group *grp;
+     int           ret;
++    int            saved_errno = errno;
+ 
++    *grbufp = NULL;
+     file = fopen(_PATH_GROUP, "r");
+-    if (!file)
++    if (!file) {
++        /* No database is no entry, not an error: callers tell the two
++         * apart by errno, and chown(1) refused a numeric owner. */
++        if (errno == ENOENT) {
++            errno = saved_errno;
++            return 0;
++        }
+         return errno;
++    }
+     while ((ret = fgetgrent_r(file, grbuf, buf, size, &grp)) == 0)
+         if (strcmp(name, grp->gr_name) == 0)
+             break;
+     fclose(file);
+     if (ret == 0)
+         *grbufp = grp;
++    else if (ret == ENOENT)
++        errno = saved_errno;    /* the end of the file: no such entry */
++    else
++        return ret;
+     return 0;
+ }
+diff -ru a/libc/posix/getpwnam_r.c b/libc/posix/getpwnam_r.c
+--- a/libc/posix/getpwnam_r.c	2026-10-01 10:13:22.940011438 -0600
++++ b/libc/posix/getpwnam_r.c	2026-10-01 10:13:42.428412226 -0600
+@@ -46,15 +46,28 @@
+     FILE          *file;
+     struct passwd *pwd;
+     int            ret;
++    int            saved_errno = errno;
+ 
++    *pwbufp = NULL;
+     file = fopen(_PATH_PASSWD, "r");
+-    if (!file)
++    if (!file) {
++        /* No database is no entry, not an error: callers tell the two
++         * apart by errno, and chown(1) refused a numeric owner. */
++        if (errno == ENOENT) {
++            errno = saved_errno;
++            return 0;
++        }
+         return errno;
++    }
+     while ((ret = fgetpwent_r(file, pwbuf, buf, size, &pwd)) == 0)
+         if (strcmp(name, pwd->pw_name) == 0)
+             break;
+     fclose(file);
+     if (ret == 0)
+         *pwbufp = pwd;
++    else if (ret == ENOENT)
++        errno = saved_errno;    /* the end of the file: no such entry */
++    else
++        return ret;
+     return 0;
+ }
+diff -ru a/libc/posix/getpwuid_r.c b/libc/posix/getpwuid_r.c
+--- a/libc/posix/getpwuid_r.c	2026-10-01 10:13:22.941148216 -0600
++++ b/libc/posix/getpwuid_r.c	2026-10-01 10:13:42.429331575 -0600
+@@ -46,15 +46,28 @@
+     FILE          *file;
+     struct passwd *pwd;
+     int            ret;
++    int            saved_errno = errno;
+ 
++    *pwbufp = NULL;
+     file = fopen(_PATH_PASSWD, "r");
+-    if (!file)
++    if (!file) {
++        /* No database is no entry, not an error: callers tell the two
++         * apart by errno, and chown(1) refused a numeric owner. */
++        if (errno == ENOENT) {
++            errno = saved_errno;
++            return 0;
++        }
+         return errno;
++    }
+     while ((ret = fgetpwent_r(file, pwbuf, buf, size, &pwd)) == 0)
+         if (pwd->pw_uid == uid)
+             break;
+     fclose(file);
+     if (ret == 0)
+         *pwbufp = pwd;
++    else if (ret == ENOENT)
++        errno = saved_errno;    /* the end of the file: no such entry */
++    else
++        return ret;
+     return 0;
+ }

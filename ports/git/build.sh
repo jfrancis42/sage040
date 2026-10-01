@@ -55,9 +55,8 @@ ICONVOUT=$SRCDIR/build-libiconv-sage040/sage040
 # the same object: ports/wget), nothing in libidn2 calls it, and git has
 # an error() of its own: linking both is "multiple definition of `error'".
 # A copy with that one object taken out is what git links.
-mkdir -p "$BUILD/idn2"
-cp "$SRCDIR/build-libidn2-sage040/sage040/lib/libidn2.a" "$BUILD/idn2/libidn2.a"
-"$CROSS_BIN/m68k-elf-ar" d "$BUILD/idn2/libidn2.a" libgnu_la-error.o
+# (Made below, after libc_fresh: that empties $BUILD when the C
+# library's headers change, and took this copy with it.)
 # libcurl.a's own needs, in the order curl's Makefile links them.
 CURLLIBS="-L$CURLOUT/lib -lcurl \
 -L$SRCDIR/build-nghttp2-sage040/sage040/lib -lnghttp2 \
@@ -70,6 +69,9 @@ CURLLIBS="-L$CURLOUT/lib -lcurl \
 -L$SRCDIR/build-libunistring-sage040/sage040/lib -lunistring"
 
 libc_fresh "$BUILD" || true
+mkdir -p "$BUILD/idn2"
+cp "$SRCDIR/build-libidn2-sage040/sage040/lib/libidn2.a" "$BUILD/idn2/libidn2.a"
+"$CROSS_BIN/m68k-elf-ar" d "$BUILD/idn2/libidn2.a" libgnu_la-error.o
 if [ ! -d "$SRC" ]; then
     tarball=$SRCDIR/git-$VERSION.tar.xz
     [ -f "$tarball" ] || curl -L --fail -o "$tarball" "$URL"

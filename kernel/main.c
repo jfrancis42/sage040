@@ -513,7 +513,7 @@ static void mount_root(void)
             kputc('\n');
         } else if (r.was_dirty) {
             u32 found = r.meta_mismatch + r.bad_blocks + r.cross_linked +
-                        r.size_fixed + r.dot_entries + r.orphan_names +
+                        r.size_fixed + r.dot_entries + r.orphan_names + r.bad_entries +
                         r.lost_blocks;
 
             status("fsck");
@@ -609,6 +609,12 @@ void kmain(void)
      */
     if (!task_create("netd", net_task)) {
         kputln("could not start netd");
+    }
+
+    /* The journal's clock: a transaction left behind by a machine that
+     * has gone quiet still commits within seconds (vfs.c). */
+    if (!task_create("kjournald", vfs_flusher)) {
+        kputln("could not start kjournald");
     }
 
     {

@@ -21,6 +21,7 @@
 #
 # Usage:
 #   fsimg.sh IMG mkfs [LABEL]        make the filesystem (destroys it)
+#   fsimg.sh IMG journal             give an existing volume a journal
 #   fsimg.sh IMG put SRC... DST      copy host files in, overwriting
 #                                    (DST may be a directory)
 #   fsimg.sh IMG put -m MODE SRC DST ... and set its permissions
@@ -175,11 +176,25 @@ mkfs)
     #    has to step over.
     # -I 256: room for the inode's "extra" word, which is what carries
     #    a date past 2038.
+    # -j: a journal (ext3's), which the kernel uses to survive being
+    #    stopped mid-write; FS_JOURNAL=0 for a plain ext2 volume.
     SIZE=$(stat -c %s "$IMG")
     BLOCKS=$(( (SIZE - OFF) / BS ))
-    mke2fs -q -t ext2 -b "$BS" -I 256 -O ^dir_index,^resize_inode \
+    JOURNAL=-j
+    [ "${FS_JOURNAL:-1}" = 0 ] && JOURNAL=
+    mke2fs -q -t ext2 $JOURNAL -b "$BS" -I 256 -O ^dir_index,^resize_inode \
            -L "$LABEL" -E offset="$OFF" -F "$IMG" "$BLOCKS" ||
         die "mke2fs failed"
+    ;;
+journal)
+    # Give an existing volume a journal, in place: its files are left
+    # alone. A no-op on a volume that already has one.
+    if debugfs -R stats "$IMG?offset=$OFF" 2>/dev/null | grep -q 'has_journal'; then
+        echo "already has a journal"
+    else
+        tune2fs -j "$IMG?offset=$OFF" >/dev/null || die "tune2fs -j failed"
+        echo "journal added"
+    fi
     ;;
 put)
     MODE=""

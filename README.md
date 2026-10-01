@@ -373,6 +373,8 @@ is a 25 MHz 68040, and one of the suites waits for the wall clock.
 | `make gittest` | git: repositories crossed with the host's git, a clone over HTTP |
 | `make ptracetest` `make stracetest` | ptrace from a small tracer; strace's account of known calls |
 | `make gdbtest` | gdb and gdbserver on the machine, and C++ exceptions |
+| `make journaltest` | the journal: the machine stopped mid-commit, replayed three ways |
+| `make linuxfstest` | the disk handed back and forth with Linux's own ext3 driver (needs sudo) |
 | `make uemacstest` `make vitest` | the editors |
 | `make bashsuite` | every one of bash's own 83 tests (hours, not minutes) |
 

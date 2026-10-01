@@ -998,6 +998,13 @@ struct msghdr {
  */
 #define FSCTL_LABEL    2
 
+/*
+ * fsctl(FSCTL_CHECK_SIZED, flags | size << 8, &report): FSCTL_CHECK with
+ * the caller's idea of the report's size, so that the report can grow.
+ * FSCTL_CHECK stores only what the report held before bad_entries.
+ */
+#define FSCTL_CHECK_SIZED 3
+
 struct fslabel {
     char name[16];              /* 11 characters and a terminator     */
 };
@@ -1031,7 +1038,11 @@ struct fsck_report {
     u32 unattached;             /* an in-use inode no name reaches     */
     u32 count_mismatch;         /* free counts unequal to the bitmaps  */
     u32 fixed;                  /* repairs made                        */
+    u32 bad_entries;            /* directory entries that do not parse:
+                                 * a torn block. Only FSCTL_CHECK_SIZED
+                                 * reports this one */
 };
+#define FSCK_REPORT_V1 (18 * 4)     /* its size before bad_entries */
 
 /*
  * memctl: what memory is doing, which sysinfo() has no fields for.
@@ -1066,6 +1077,27 @@ struct fsck_report {
                                  * knob -- every disk request sleeps ms
                                  * first, to widen the windows in which
                                  * a task is asleep inside the filesystem */
+#define KSTAT_JOURNAL  5        /* kstat(KSTAT_JOURNAL, size, &journalstats) */
+#define KSTAT_JOURNAL_STOP 6    /* kstat(KSTAT_JOURNAL_STOP, how, n): a test
+                                 * knob -- the n'th commit from now stops
+                                 * the machine, as a power cut would:
+                                 * JSTOP_COMMITTED after its commit block
+                                 * and before anything is written home,
+                                 * JSTOP_UNCOMMITTED just before the
+                                 * commit block */
+#define JSTOP_COMMITTED    1
+#define JSTOP_UNCOMMITTED  2
+#define JSTOP_SYNC_ONLY    0x100   /* | either: count only commits sync(2)
+                                     * asked for, not ones made because a
+                                     * transaction got old or big */
+
+/* What the root volume's journal has done (kstat KSTAT_JOURNAL). */
+struct journalstats {
+    u32 on;                     /* 1 if the volume has one in use        */
+    u32 commits;                /* transactions written                  */
+    u32 forced;                 /* commits a full cache forced mid-call  */
+    u32 replayed;               /* transactions replayed at mount        */
+};
 
 /*
  * What the M68040 Floating-Point Software Package has done

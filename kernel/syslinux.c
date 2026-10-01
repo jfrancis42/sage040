@@ -123,14 +123,17 @@ static int at_path(int dirfd, u32 upath, char *path)
  * read-only, executable if it is a program, judged by the same four
  * bytes exec() judges it by so the two never disagree.
  *
- * "No permission bits at all" is the test, rather than asking which
- * filesystem is mounted: a file really can be mode 0, and one that is
- * should read as 0 rather than as 0444.
+ * WHICH FILESYSTEM is the test, not whether the bits happen to be zero:
+ * a file really can be mode 0, and one that is must read as 0 rather
+ * than 0444. Testing the bits did exactly that -- Linux's `chmod 0`
+ * read back on this machine as r--r--r-- (kernel/linuxfstest.sh).
  */
 static void to_statx(const struct stat *st, int is_prog, struct statx *sx)
 {
     u32 mode = st->st_mode;
-    int have_perms = (mode & 07777) != 0;
+    /* Invented only for a file on a FAT root volume: everywhere else
+     * the bits are the file's, mode 0 included. */
+    int have_perms = st->st_dev != 0 || vfs_root_has_modes();
 
     memset(sx, 0, sizeof(*sx));
     if (!have_perms) {

@@ -39,8 +39,9 @@ int main(int argc, char **argv)
         eputs("usage: fsck [-y]\n");
         return 8;
     }
-    err = syscall(__NR_fsctl, FSCTL_CHECK, repair ? FSCK_REPAIR : 0,
-                  (u32)&r);
+    memset(&r, 0, sizeof(r));
+    err = syscall(__NR_fsctl, FSCTL_CHECK_SIZED,
+                  (repair ? FSCK_REPAIR : 0) | (u32)sizeof(r) << 8, (u32)&r);
     if (err < 0) {
         eputs("fsck: ");
         eputs(err == -EBUSY ? "files are open; cannot repair while they are"
@@ -64,6 +65,7 @@ int main(int argc, char **argv)
     line("blocks shared by two files, or by a loop", r.cross_linked);
     line("sizes that did not fit their blocks", r.size_fixed);
     line("wrong . or .. entries", r.dot_entries);
+    line("directory entries that do not parse", r.bad_entries);
     line("names with nothing behind them", r.orphan_names);
     line("blocks nothing reaches", r.lost_blocks);
     line("link counts unequal to the names found", r.bad_links);
@@ -72,7 +74,8 @@ int main(int argc, char **argv)
     line("directories too deep to check", r.too_deep);
 
     found = r.meta_mismatch + r.bad_blocks + r.cross_linked + r.size_fixed +
-            r.dot_entries + r.orphan_names + r.lost_blocks + r.bad_links +
+            r.dot_entries + r.orphan_names + r.bad_entries + r.lost_blocks +
+            r.bad_links +
             r.unattached + r.count_mismatch;
     if (found == 0) {
         puts("fsck: clean\n");

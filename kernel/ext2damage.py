@@ -28,6 +28,12 @@
 #                                 -> dot_entries
 #   unattached     mark an inode in use that no name reaches
 #                                 -> unattached
+#   freebit NAME   mark a live file's first block FREE in the bitmap, so
+#                  the allocator could give it to someone else
+#                                 -> bad_blocks
+#   baddir DIR     fill a directory's block with garbage after "." and
+#                  "..", a zero rec_len first -- what a torn write leaves,
+#                  and what a careless directory walk loops on for ever
 #   dirty          clear the superblock's "cleanly unmounted" flag
 #
 # Usage: ext2damage.py IMAGE OFFSET KIND [ARGS...]
@@ -263,6 +269,30 @@ def main():
                 break
         else:
             raise SystemExit("ext2damage: no free inode to strand")
+
+    elif kind == "freebit":
+        name = args[0]
+        ino, _o, _b = fs.find(name)
+        b = fs.blocks_of(ino)[0]
+        fs.block_bit(b, 0)
+        print("freebit: %s's block %d marked free" % (name, b))
+
+    elif kind == "baddir":
+        d = args[0]
+        dino, _o, _b = fs.find(d)
+        blk = fs.blocks_of(dino)[0]
+        data = fs.rblock(blk)
+        # "." is 12 bytes and ".." the next; whatever follows becomes junk,
+        # beginning with an entry whose rec_len is zero.
+        dot_rec = struct.unpack_from("<H", data, 4)[0]
+        dd = dot_rec
+        struct.pack_into("<H", data, dd + 4, 12 + 12)   # ".." ends early
+        junk = dd + 24
+        for i in range(junk, fs.bs):
+            data[i] = (i * 37 + 11) & 0xFF
+        struct.pack_into("<IHBB", data, junk, 13, 0, 5, 1)   # rec_len 0
+        fs.wblock(blk, data)
+        print("baddir: %s's entries after .. are garbage (rec_len 0 first)" % d)
 
     elif kind == "dirty":
         sb = fs.rd(1024, 1024)

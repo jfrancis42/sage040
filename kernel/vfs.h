@@ -137,11 +137,17 @@ struct fs_type {
      * the umask is already off. Null: -EPERM. */
     int (*mknod)(const char *path, u32 mode);
 
+    /* Called with the filesystem lock held, as the outermost holder is
+     * about to let it go: a point between two calls, where a journal
+     * may commit. Optional. */
+    void (*boundary)(void);
     struct fs_type *next;
 };
 
 int vfs_register(struct fs_type *t);
 struct fs_type *vfs_find(const char *name);
+int vfs_root_has_modes(void);
+void vfs_flusher(void);           /* the kjournald task: see vfs.c */
 
 /* Mount `fsname` from `devname` at "/". Returns 0 or -errno. */
 int vfs_mount(const char *fsname, const char *devname);
@@ -307,5 +313,9 @@ int  vfs_may_parent(const char *path, int want);
 int  vfs_chroot(const char *path);
 void vfs_cwd_set(u32 ino, const char *path);
 const char *vfs_cwd_path(void);
+
+/* The root volume's journal (fs/ext2.c): kstat's numbers and test knob. */
+void ext2_journal_stats(struct journalstats *js);
+void ext2_journal_stop(u32 how, u32 n);
 
 #endif /* VFS_H */

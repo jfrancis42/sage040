@@ -1048,6 +1048,67 @@ threaded through the inodes' own `i_dtime` fields. Mounting walks it and
 frees what is on it, so a machine that stopped with a deleted file open
 leaks nothing.
 
+#### The journal
+
+The volume is made with a journal (`mke2fs -j`), ext3's: ext2 plus a log
+in inode 8, in the JBD format Linux and e2fsprogs read. `fsimg.sh journal`
+adds one to an existing volume in place; `FS_JOURNAL=0` makes one without.
+
+**What it buys:** a machine stopped at any instant -- power cut, QEMU
+killed, a panic -- leaves a volume that is exactly what some set of calls
+made, never something between two of them, and the next mount makes it so
+without a check. Before the journal the answer was the boot-time check,
+which repairs what it can recognise; a crash mid-update is the case a
+check cannot always get right.
+
+**How:** metadata a call dirties -- bitmaps, inodes, group descriptors,
+indirect and directory blocks, the superblock -- stays in the block cache
+(pinned, never evicted) as the running transaction. A commit writes file
+data home first (ordered mode: nothing committed can point at data older
+than it), then a descriptor block and a copy of every pinned block into
+the log, the journal superblock saying where, and a commit block; then
+writes the copies home and marks the log empty. A stop before the commit
+block leaves the old volume; after it, replay rewrites the copies over
+whatever half-done checkpoint it finds.
+
+**When:** only between calls (vfs.c tells the filesystem as its lock is
+let go). At the end of every call that changes the namespace or an inode
+-- close, unlink, rename, mkdir, link, symlink, chmod, chown, utime -- so
+those are on the disk when they return, as they always were; once a
+transaction is five seconds old (writes to a file still open), from
+`kjournald` once a second when the machine is otherwise idle; when half
+the cache is pinned; at `sync`, `fsync` and unmount; and, failing those,
+when one call pins the whole cache. A block freed in the running transaction is not
+given out again until it commits -- file data goes home before the
+commit, and a crash would otherwise bring back the old file pointing at
+the new one's bytes.
+
+**Replay** happens at mount, honours revoke records (so a journal Linux
+wrote replays correctly), and is also done by the host's `e2fsck` and by
+Linux mounting the volume -- three implementations that share no code,
+and `kernel/journaltest.sh` checks all three against a machine stopped
+at a chosen point of a chosen commit (`kstat KSTAT_JOURNAL_STOP`).
+
+**A damaged journal:** a journal superblock that cannot be read is made
+afresh in place and, if it held anything, the volume is checked as after
+any unclean stop. A journal of a kind this driver cannot replay (64-bit
+block numbers, checksums -- Linux's ext4 defaults) holding something is
+not refused: the volume is mounted without it and checked, because
+refusing the root volume would leave a machine that cannot start.
+
+**What it does not do:** journal file DATA (ordered mode, as ext3's
+default), or checksum the log -- like ext3 without `journal_checksum`, a
+copy corrupted inside a committed transaction would be replayed as it is.
+
+**Linux reads and writes the same volume.** `kernel/linuxfstest.sh`
+hands one volume back and forth with the Linux kernel's own ext3 driver
+(a loop mount, so it needs sudo): a tree with every size boundary, every
+permission bit, four owners, hard links, fast, slow and dangling
+symlinks, UTF-8 and 255-byte names, a FIFO and set times, listed by both
+sides down to the inode number and a hash of every byte; changed by
+sbase's tools on the machine and by coreutils on Linux; and each side's
+listing must equal the other's.
+
 ### FAT16
 
 `fs/fat16.c` is still here and still registered: the mount probes ext2
@@ -1604,7 +1665,9 @@ drive it over its serial line.
 | `kernel/gfxtest.sh` | 66 | the graphics demos: each started, screendumped twice a second apart, stopped with q -- exits 0, draws a picture, moves, prints its summary; sorts leaves every array sorted; mandel's fixed-point and FPU pictures agree on the set pixel for pixel, and the centre of its view is in it |
 | `kernel/shmaptest.sh` | 21 | `MAP_SHARED` of a file against read() and write(), a forked child, another process, a second mapping and `/proc/self/maps`; msync, munmap and exit writing back; truncate; a mapping outliving its name; and a file written only through a mapping, checked byte for byte from the host |
 | `kernel/tlstest.sh` | 46 | `__thread`, static and dynamic: initial values, a fresh copy per thread, alignment, fork; a start-time library's TLS reached two ways that must agree; `dlopen` of a library with TLS, a dependency and a constructor, its TLS made per thread on first use; refusal and rollback of an initial-exec TLS library; `dlsym` scopes, `dladdr`, `dl_iterate_phdr`, `dlerror` |
-| `kernel/fscktest.sh` | 23 | `fsck`, against seven kinds of damage made on the host, each repaired and then agreed with by e2fsck |
+| `kernel/fscktest.sh` | 31 | `fsck`, against ten kinds of damage made on the host -- including a torn directory block, a name for a freed inode and a live block marked free -- each repaired in one pass and then agreed with by e2fsck; the clean flag on a volume without a journal, and no check needed after a crash with one |
+| `kernel/journaltest.sh` | 30 | the journal: the machine stopped (a kernel knob) after a commit block and before one, each replayed by the host's e2fsck, by Linux mounting it and by this kernel; killed five times mid-storm, never needing more than the journal; the journal superblock and a commit block destroyed; and the control, the same storm with no journal, leaving damage e2fsck finds |
+| `kernel/linuxfstest.sh` | 31 | the volume handed back and forth with Linux's own ext3 driver (needs sudo): a tree of every size boundary, permission bit, owner (past 65535 too), link kind and name shape, listed by both down to inode, time and a hash of every byte; changed by sbase's tools here and coreutils there, each side's listing equal to the other's; setgid inheritance; and the same 3000-call storm on both, three seeds, every call's result and the final trees identical |
 | `kernel/fattest.sh` | 10 | the FAT16 fallback, which is no longer the machine's own filesystem |
 | `tools/fsimgtest.sh` | 40 | the host's end of the disk, which every other suite stages its files through |
 | `kernel/uemacstest.sh` `kernel/vitest.sh` | 9, 9 | the two editors |

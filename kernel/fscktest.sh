@@ -227,8 +227,43 @@ check "exit status 4 unrepaired, 1 after -y, 0 when clean" $?
 host_fsck
 check "the host's e2fsck agrees fsck -y repaired it" $?
 
-echo "=== session 3: the flag itself ==="
+echo "=== session 4: a torn directory, a free inode named, a live block free ==="
 make_image
+python3 ./ext2damage.py "$DISK" "$OFFSET" orphan C.TXT
+python3 ./ext2damage.py "$DISK" "$OFFSET" freebit B.TXT
+python3 ./ext2damage.py "$DISK" "$OFFSET" baddir SUB
+python3 ./ext2damage.py "$DISK" "$OFFSET" dirty
+host_fsck
+test $? -ne 0
+check "the host's e2fsck finds all three" $?
+start_qemu
+wait_for "kernel ready"
+check "  the machine still boots: garbage in a directory does not hang the check" $?
+printf 'fsck\r' >&3;            sleep 2
+printf 'echo FSCK-RC=$?\r' >&3; sleep 0.5
+printf 'halt\r' >&3
+wait_for "halting"
+sleep 0.5
+stop_qemu
+grep -q "fsck.*not cleanly unmounted; checked .* [1-9][0-9]* problems, [1-9][0-9]* repairs" "$SCRATCH/clean.tmp" &&
+    grep -qx "FSCK-RC=0" "$SCRATCH/clean.tmp"
+check "  repaired at boot, and /bin/fsck then finds it clean" $?
+host_fsck
+check "  the host's e2fsck agrees it is clean" $?
+LC_ALL=C fsimg cat /B.TXT > "$SCRATCH/keep.out" 2>/dev/null
+cmp -s "$SCRATCH/b.tmp" "$SCRATCH/keep.out"
+check "  the file whose block was marked free is byte for byte what it was" $?
+found=""
+for n in $(debugfs -R "ls -p /lost+found" "$DISK?offset=$OFFSET" 2>/dev/null | awk -F/ '$6 != "." && $6 != ".." && $6 != "" {print $6}'); do
+    [ "$(debugfs -R "cat /lost+found/$n" "$DISK?offset=$OFFSET" 2>/dev/null)" = small ] && found=$n
+done
+[ -n "$found" ]
+check "  the file the torn directory stranded is in lost+found, contents intact ($found)" $?
+
+echo "=== session 3: the flag itself, on a volume with no journal ==="
+# Without a journal the clean flag is what tells the next boot a check is
+# needed. (With one, the journal is: session 3b.)
+FS_JOURNAL=0 make_image
 start_qemu
 printf 'echo written > /NOTE.TXT\r' >&3
 sleep 1
@@ -250,6 +285,22 @@ test "$(flags)" = clean
 check "and shutdown left it clean" $?
 host_fsck
 check "  which the host's e2fsck agrees with" $?
+
+echo "=== session 3b: the same stop, with the journal ==="
+make_image
+start_qemu
+printf 'echo written > /NOTE.TXT\r' >&3
+sleep 1
+kill "$qemu_pid" 2>/dev/null
+stop_qemu >/dev/null
+start_qemu
+printf '/bin/shutdown\r' >&3
+for _ in $(seq 1 50); do kill -0 "$qemu_pid" 2>/dev/null || break; sleep 0.2; done
+stop_qemu
+! grep -q "not cleanly unmounted; checked" "$SCRATCH/clean.tmp"
+check "a journaled volume stopped the same way needs no check at the next boot" $?
+host_fsck
+check "  and the host's e2fsck finds it clean after shutdown" $?
 
 rm -f "$SCRATCH"/{a,b,c,d,keep}.tmp "$SCRATCH/keep.out" \
       "$SCRATCH/hostfsck.tmp"
