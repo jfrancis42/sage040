@@ -359,6 +359,108 @@ static void test_files(void)
            mkdir("/tmp/lcdir3/", 0755) == 0 && rmdir("/tmp/lcdir3//") == 0);
 }
 
+/* --- seeking past the end -------------------------------------------
+ *
+ * Bytes skipped by seeking past the end of a file and writing read as
+ * zero. The pattern is the assembler's: BFD writes an object through
+ * stdio, section by section, and seeks one to three bytes PAST the end
+ * before the next write -- the alignment padding before .comment and
+ * the section header table. Objects assembled here had 0x1b and 0x04 in
+ * exactly those bytes. Free blocks are dirtied first, by a file of 0xAA
+ * written and deleted, so stale data cannot pass as zeroes. Each path is
+ * checked twice: raw system calls, and stdio.
+ */
+static int all_zero(const unsigned char *p, long from, long to)
+{
+    for (; from < to; from++) {
+        if (p[from] != 0) {
+            printf("         byte %ld is %#x\n", from, p[from]);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void dirty_free_blocks(const char *path)
+{
+    static unsigned char aa[4096];
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644), i;
+
+    memset(aa, 0xAA, sizeof(aa));
+    for (i = 0; fd >= 0 && i < 16; i++) {
+        if (write(fd, aa, sizeof(aa)) != (ssize_t)sizeof(aa)) {
+            break;
+        }
+    }
+    if (fd >= 0) {
+        close(fd);
+    }
+    unlink(path);
+}
+
+static void gap_case(const char *dir)
+{
+    char path[64], junk[64], what[96];
+    static unsigned char back[8192];
+    FILE *f;
+    int fd, ok;
+    long n;
+
+    snprintf(path, sizeof(path), "%s/gap.o", dir);
+    snprintf(junk, sizeof(junk), "%s/gap.junk", dir);
+
+    /* Raw: write 305 bytes, seek 3 past the end, write; then the same
+     * one byte past the end of 419, as the strace of gas shows. */
+    dirty_free_blocks(junk);
+    fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    memset(back, 'x', 305);
+    ok = fd >= 0 && write(fd, back, 305) == 305 &&
+         lseek(fd, 3, SEEK_CUR) == 308 && write(fd, "y", 1) == 1 &&
+         lseek(fd, 6000, SEEK_SET) == 6000 && write(fd, "z", 1) == 1;
+    if (fd >= 0) {
+        close(fd);
+    }
+    memset(back, 0x55, sizeof(back));
+    fd = open(path, O_RDONLY);
+    n = fd >= 0 ? read(fd, back, sizeof(back)) : -1;
+    if (fd >= 0) {
+        close(fd);
+    }
+    snprintf(what, sizeof(what), "%s: lseek past the end, write: the gap reads zero", dir);
+    report(what, ok && n == 6001 && all_zero(back, 305, 308) &&
+                 back[308] == 'y' && all_zero(back, 309, 6000) && back[6000] == 'z');
+
+    /* stdio, as BFD does it: fopen "w+", fwrite, fseek past the end,
+     * fwrite -- and an fseek back and forth between. */
+    dirty_free_blocks(junk);
+    f = fopen(path, "w+");
+    memset(back, 'x', 419);
+    ok = f && fwrite(back, 1, 305, f) == 305 &&
+         fseek(f, 308, SEEK_SET) == 0 && fwrite("y", 1, 1, f) == 1 &&
+         fseek(f, 0, SEEK_SET) == 0 && fwrite(back, 1, 52, f) == 52 &&
+         fseek(f, 309, SEEK_SET) == 0 && fwrite(back, 1, 110, f) == 110 &&
+         fseek(f, 420, SEEK_SET) == 0 && fwrite("z", 1, 1, f) == 1;
+    if (f) {
+        ok = fclose(f) == 0 && ok;
+    }
+    memset(back, 0x55, sizeof(back));
+    fd = open(path, O_RDONLY);
+    n = fd >= 0 ? read(fd, back, sizeof(back)) : -1;
+    if (fd >= 0) {
+        close(fd);
+    }
+    snprintf(what, sizeof(what), "%s: fseek past the end, fwrite: the gap reads zero", dir);
+    report(what, ok && n == 421 && all_zero(back, 305, 308) && back[308] == 'y' &&
+                 back[418] == 'x' && back[419] == 0 && back[420] == 'z');
+    unlink(path);
+}
+
+static void test_gaps(void)
+{
+    gap_case("");           /* the disk: "/gap.o" */
+    gap_case("/tmp");       /* tmpfs */
+}
+
 /* --- directories --------------------------------------------------- */
 
 static void test_dirs(const char *self)
@@ -818,6 +920,7 @@ int main(int argc, char **argv)
     test_memory();
     test_control();
     test_files();
+    test_gaps();
     /* This program, by the name it was run as: the static and the
      * dynamic builds are two files, and each must exec itself. */
     test_dirs(argv[0][0] == '/' ? argv[0] : "/libctest");
