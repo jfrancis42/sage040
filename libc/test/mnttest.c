@@ -48,6 +48,29 @@ static void check(const char *what, int ok)
 }
 
 /* The raw calls, with errno: picolibc has no mount(). */
+#define MS_REMOUNT_ 32           /* Linux's MS_REMOUNT */
+
+/* A volume's superblock as the DISK has it: s_state in the low half
+ * (1: clean), the needs_recovery bit (incompat 4) shifted to 0x40000. */
+static unsigned sb_state(const char *dev)
+{
+    unsigned char sb[1024];
+    int fd = open(dev, O_RDONLY);
+    unsigned st, inc;
+
+    if (fd < 0 || lseek(fd, 1024, SEEK_SET) != 1024 ||
+        read(fd, sb, sizeof(sb)) != (ssize_t)sizeof(sb)) {
+        if (fd >= 0) {
+            close(fd);
+        }
+        return 0xdead;
+    }
+    close(fd);
+    st = sb[58] | (sb[59] << 8);
+    inc = sb[96] | (sb[97] << 8) | ((unsigned)sb[98] << 16) | ((unsigned)sb[99] << 24);
+    return st | ((inc & 4) << 16);
+}
+
 static int do_mount(const char *src, const char *dir, const char *type,
                     unsigned long flags)
 {
@@ -316,6 +339,50 @@ int main(void)
           symlink("../shadow-link-target", "/mnt/out") == 0 &&
           put("/shadow-link-target", "outside\n") &&
           file_is("/mnt/out", "outside\n"));
+
+    /* REMOUNT: read-only and back, the volume staying where it is. */
+    {
+        int w = open("/mnt/hello.txt", O_WRONLY | O_APPEND);
+
+        check("remount read-only with a file open for writing: EBUSY",
+              w >= 0 && fails(do_mount("none", "/mnt", 0, MS_REMOUNT_ | 1), EBUSY));
+        if (w >= 0) {
+            close(w);
+        }
+        fd = open("/mnt/hello.txt", O_RDONLY);
+        check("  but a file open for reading does not stop it",
+              fd >= 0 && do_mount("none", "/mnt", 0, MS_REMOUNT_ | 1) == 0);
+        check("  and then it is read-only: EROFS, and /proc/mounts says ro",
+              fails(open("/mnt/new-ro.txt", O_WRONLY | O_CREAT, 0644), EROFS) &&
+              has_line("/proc/mounts", "/dev/hda2 /mnt ext3 ro"));
+        /* On the DISK, read past the block cache through /dev/hda2:
+         * marked clean (s_state 1) and nothing for the journal to
+         * replay (needs_recovery, incompat bit 4, clear) -- a machine
+         * stopped now leaves a volume that needs neither. */
+        check("  and on the disk it is clean, with nothing to replay",
+              sb_state("/dev/hda2") == 0x1);
+        check("  its files still read, through the descriptor that was open",
+              fd >= 0 && read(fd, cwd, 5) == 5 && memcmp(cwd, "hello", 5) == 0);
+        if (fd >= 0) {
+            close(fd);
+        }
+        check("remount it writable again",
+              do_mount("none", "/mnt", 0, MS_REMOUNT_) == 0 &&
+              has_line("/proc/mounts", "/dev/hda2 /mnt ext3 rw"));
+        check("  in use on the disk again, the journal open",
+              sb_state("/dev/hda2") == 0x40000);
+        check("  and it is: a new file, written and read back",
+              put("/mnt/after-rw.txt", "back\n") &&
+              file_is("/mnt/after-rw.txt", "back\n") &&
+              unlink("/mnt/after-rw.txt") == 0);
+        check("remount of a directory that is not a volume's root: EINVAL",
+              fails(do_mount("none", "/mnt/d", 0, MS_REMOUNT_ | 1), EINVAL));
+        check("remount of the root read-only, and back",
+              do_mount("none", "/", 0, MS_REMOUNT_ | 1) == 0 &&
+              fails(open("/root-ro.txt", O_WRONLY | O_CREAT, 0644), EROFS) &&
+              do_mount("none", "/", 0, MS_REMOUNT_) == 0 &&
+              put("/root-rw.txt", "rw\n") && unlink("/root-rw.txt") == 0);
+    }
 
     /* The mount point cannot be taken away. */
     check("rmdir of the mount point: EBUSY", fails(rmdir("/mnt"), EBUSY));

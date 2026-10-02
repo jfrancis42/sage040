@@ -162,6 +162,7 @@ struct fs_type {
     int (*mount_on)(const char *dir, struct blockdev *b, u32 flags);
     int (*umount_on)(const char *dir, u32 flags);
     int (*mount_list)(int i, struct mount_entry *m);
+    int (*remount)(const char *dir, u32 flags);    /* MS_RDONLY or not */
     struct fs_type *next;
 };
 
@@ -179,6 +180,7 @@ int vfs_mount_on(const char *source, const char *dir, const char *type,
 int vfs_umount_on(const char *dir, u32 flags);
 int vfs_mount_list(int i, struct mount_entry *m);
 int vfs_handles_in(u32 lo, u32 hi);   /* for fs/: is a cwd or root there */
+int vfs_writers_in(u32 lo, u32 hi);   /* ... or a file open for writing  */
 
 /*
  * WHICH FILE, as one number: what the text cache, the lock table,

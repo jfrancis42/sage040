@@ -6108,6 +6108,80 @@ static int vol_in_use(struct ext2_vol *v)
     return vfs_handles_in(lo, lo | INO_MASK);
 }
 
+/*
+ * REMOUNT a volume read-only, or writable again.
+ *
+ * Read-only is what unmounting does to it short of letting go: every
+ * block out, the journal committed and closed (needs_recovery cleared),
+ * the superblock marked clean -- so a machine that stops while it is
+ * read-only leaves a volume nothing has to check or replay. Refused
+ * while any file on it is open for writing, as on Linux.
+ *
+ * Writable again is the end of a mount: the journal set up afresh (it
+ * holds nothing, having been closed cleanly), needs_recovery set, the
+ * volume marked in use, and orphans dealt with.
+ */
+static int ext2_remount(const char *dir, u32 flags)
+{
+    u32 ino, lo;
+    int err, ro = (flags & MS_RDONLY) != 0;
+
+    if (!enter()) {
+        return -ENODEV;
+    }
+    if ((flags & ~(u32)MS_RDONLY) != 0) {
+        return -EINVAL;
+    }
+    err = path_resolve(dir, &ino);
+    if (err != 0) {
+        V = &vol0;
+        return err;
+    }
+    if (ino != EXT2_ROOT_INO) {
+        V = &vol0;
+        return -EINVAL;         /* not the root of a volume            */
+    }
+    if (ro == V->rdonly) {
+        V = &vol0;
+        return 0;
+    }
+    if (ro) {
+        lo = (u32)V->idx << VOL_SHIFT;
+        if (vfs_writers_in(lo, lo | INO_MASK)) {
+            V = &vol0;
+            return -EBUSY;
+        }
+        bcache_flush_all();
+        if (journal_on) {
+            u8 *s = sbuf + EXT2_SUPER_OFF;
+
+            put_le32(s + SB_FEATURE_INCOMPAT,
+                     le32(s + SB_FEATURE_INCOMPAT) & ~(u32)FEAT_INCOMPAT_RECOVER);
+            journal_on = 0;
+        }
+        set_clean(1);
+        V->rdonly = 1;
+    } else {
+        u32 replayed = 0;
+
+        V->rdonly = 0;
+        if (journal_setup(&replayed) != 0) {
+            journal_on = 0;     /* as mount does with one it cannot use */
+        }
+        if (journal_on) {
+            put_le32(sbp(SB_FEATURE_INCOMPAT),
+                     le32(sbuf + EXT2_SUPER_OFF + SB_FEATURE_INCOMPAT) |
+                     FEAT_INCOMPAT_RECOVER);
+        }
+        set_clean(0);
+        orphan_process();
+        bcache_flush_all();
+        sb_write();
+    }
+    V = &vol0;
+    return 0;
+}
+
 static int ext2_umount_on(const char *dir, u32 flags)
 {
     struct ext2_vol *v;
@@ -6159,8 +6233,11 @@ static int ext2_mount_list(int i, struct mount_entry *m)
     strncpy(m->source, v->v_dev->name, sizeof(m->source) - 1);
     m->flags = v->rdonly ? MS_RDONLY : 0;
     /* ext3's on-disk format is ext2's plus a journal, and Linux reports
-     * a volume by the format: df -T and findmnt read it from here. */
-    strcpy(m->type, v->v_journal_on ? "ext3" : "ext2");
+     * a volume by the format -- the has_journal feature, not whether the
+     * journal is running, which it is not while read-only: df -T and
+     * findmnt read it from here. */
+    strcpy(m->type, (le32(v->v_sbuf + EXT2_SUPER_OFF + SB_FEATURE_COMPAT) &
+                     FEAT_COMPAT_HAS_JOURNAL) ? "ext3" : "ext2");
     if (!v->parent) {
         strcpy(m->dir, "/");
         /* The root is mounted from the whole disk and lives in its
@@ -6195,6 +6272,7 @@ static struct fs_type ext2_fs = {
     .stat = ext2_stat,
     .readdir = ext2_readdir,
     .statfs = ext2_statfs,
+    .remount = ext2_remount,
     .sync = ext2_sync,
     .mkdir = ext2_mkdir,
     .rmdir = ext2_rmdir,

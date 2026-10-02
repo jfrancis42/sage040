@@ -3474,6 +3474,20 @@ int vfs_mount_on(const char *source, const char *dir, const char *type,
     if (current && current->euid != 0) {
         return -EPERM;
     }
+    /*
+     * REMOUNT: a mounted volume read-only, or writable again. The
+     * source and type are what mount(8) passes along and are not
+     * consulted; the directory names the volume, by its root.
+     */
+    if (flags & MS_REMOUNT) {
+        if (!mounted_fs->remount) {
+            return -EINVAL;
+        }
+        fs_lock();
+        r = mounted_fs->remount(dir, flags & ~(u32)MS_REMOUNT);
+        fs_unlock();
+        return r;
+    }
     if (type && strcmp(type, "ext2") != 0 && strcmp(type, "ext3") != 0 &&
         strcmp(type, "auto") != 0) {
         return -ENODEV;         /* Linux's answer for an unknown type */
@@ -3551,6 +3565,24 @@ int vfs_mount_list(int i, struct mount_entry *m)
  * go. A working directory in tmpfs or /proc keeps the disk's old number
  * (see vfs_chdir) and is not on the disk at all, so it is not counted.
  */
+/* Is a file whose handle is in [lo, hi] open for writing? What a
+ * volume going read-only asks: Linux refuses it then too (EBUSY). */
+int vfs_writers_in(u32 lo, u32 hi)
+{
+    int i;
+
+    for (i = 0; i < FILE_MAX; i++) {
+        const struct file *f = &files[i];
+
+        if (f->used && f->fs && fs_of(f) == mounted_fs &&
+            (f->flags & O_ACCMODE) != O_RDONLY &&
+            (u32)f->priv >= lo && (u32)f->priv <= hi) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int vfs_handles_in(u32 lo, u32 hi)
 {
     int i;

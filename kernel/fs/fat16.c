@@ -3856,6 +3856,7 @@ static struct fs_type fat16_type = {
     0,                          /* mount_on: no mount table on FAT    */
     0,                          /* umount_on */
     0,                          /* mount_list */
+    0,                          /* remount: FAT is the root or nothing */
     0
 };
 

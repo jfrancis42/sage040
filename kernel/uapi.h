@@ -456,6 +456,7 @@ struct dirent {
 
 /* mount(2)'s flags: the one honoured. And umount2's. */
 #define MS_RDONLY         1
+#define MS_REMOUNT        32     /* change a mounted volume's flags     */
 #define MNT_FORCE         1
 
 struct statfs {

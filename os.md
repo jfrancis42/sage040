@@ -762,6 +762,20 @@ read from the files. So the machine's own gdb opens one:
 `setrlimit` and `prlimit64` read and set it, and only root raises a
 hard limit.
 
+### Remount
+
+`mount -o remount,ro DIR` makes a mounted volume read-only where it
+stands, and `remount,rw` writable again; DIR is the volume's root (`/`
+for the root itself). Read-only is what unmounting does to the volume
+short of letting it go: every block out, the journal committed and
+closed, the superblock marked clean -- so a machine stopped then leaves
+a volume that needs no check and no replay (mnttest reads both from the
+disk through `/dev/hda2`). Refused with EBUSY while a file on it is open
+for writing, as on Linux; files open for reading carry on. Writable
+again sets the journal up afresh and marks the volume in use.
+`/proc/mounts` says ext3 for a volume with the has_journal feature,
+running or not.
+
 ### Disks in /dev
 
 `/dev/hda` and its partitions `/dev/hda1` to `hda4` are block devices
