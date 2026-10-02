@@ -20,7 +20,8 @@
 # what the machine has; one the host skips the machine may skip too. A
 # test that fails on the machine is listed with the end of its log.
 #
-# SED_TESTS limits the run to some.
+# SED_TESTS limits the run to some; SED_TIMEOUT changes the ten
+# minutes each test is allowed.
 
 set -u
 cd "$(dirname "$0")"
@@ -36,6 +37,8 @@ WORK="$SCRATCH/sedsuite.tmp"
 rm -rf "$LOG" "$WORK"; mkdir -p "$WORK"
 fsimg() { PART_OFFSET=$OFF ../tools/fsimg.sh "$DISK" "$@" ||
     { echo "sedsuite: fsimg $* failed" >&2; exit 1; }; }
+# For what may not be there -- a skipped test's log: no exit on failure.
+fsimg_try() { PART_OFFSET=$OFF ../tools/fsimg.sh "$DISK" "$@"; }
 SAGE_LIBC=${SAGE_LIBC:-$HOME/m68k/sage040-libc}
 SRCDIR=${SAGE_SRC:-$HOME/m68k/src}
 GSRC=$SRCDIR/sed-4.10
@@ -72,11 +75,17 @@ host_result() { sed -n 's/^:test-result: //p' "$HOSTBUILD/${1%.*}.trs" 2>/dev/nu
 
 echo "=== preparing $DISK ==="
 rm -f "$DISK"
-dd if=/dev/zero of="$DISK" bs=1M count=64 status=none
+dd if=/dev/zero of="$DISK" bs=1M count=160 status=none
 printf 'label: dos\nunit: sectors\nstart=2048, type=83\n' | sfdisk -q "$DISK" >/dev/null
 fsimg mkfs SAGE040 >/dev/null
 fsimg put kernel.rom /KERNEL.ROM
-for d in /bin /lib /tmp /GT /GT/sed /GT/testsuite; do fsimg mkdir $d; done
+for d in /bin /lib /tmp /GT /GT/sed /GT/testsuite /usr /usr/bin /usr/lib /usr/lib/perl5; do fsimg mkdir $d; done
+# Perl, for the tests written in it (misc.pl, debug.pl) and the ones
+# that use it as a tool: the suite's Makefile says PERL=perl.
+PERLOUT=$SRCDIR/build-perl-sage040/sage040
+PV=$(ls "$PERLOUT/lib/perl5" | grep -E '^5\.[0-9]+\.[0-9]+$' | head -1)
+fsimg put -m 755 "$PERLOUT/bin/perl" /usr/bin/perl
+fsimg put -r "$PERLOUT/lib/perl5/$PV" "/usr/lib/perl5/$PV"
 put_shells bash
 fsimg put ../ldso/ld.so /lib/ld.so
 fsimg put "$SAGE_LIBC/lib/libc.so" /lib/libc.so
@@ -87,29 +96,39 @@ fsimg put -m 755 ../ports/sed/sed /GT/sed/sed
 fsimg put -m 755 ../ports/awk/awk /bin/awk
 fsimg put -m 755 ../ports/grep/grep /bin/grep
 for p in timeout locale; do fsimg put -m 755 ../utils/$p /bin/$p; done
-fsimg put "$GSRC"/testsuite/* /GT/testsuite/ 2>/dev/null
+fsimg put "$GSRC"/testsuite/* /GT/testsuite/
 for h in get-mb-cur-max test-mbrtowc; do fsimg put -m 755 "$GBUILD/testsuite/$h" /GT/testsuite/$h; done
 fsimg put "$GBUILD/config.h" /GT/config.h
-for t in $TESTS; do fsimg put -m 755 "$GSRC/$t" "/GT/$t" >/dev/null 2>&1; done
+# init.cfg is at the top of sed's tree, not in testsuite/: it is where
+# print_ver_ and the require_* helpers live, and without it every test
+# that should have skipped for want of valgrind ran valgrind instead.
+fsimg put "$GSRC/init.cfg" /GT/init.cfg
+for t in $TESTS; do fsimg_try put -m 755 "$GSRC/$t" "/GT/$t" >/dev/null 2>&1; done
 
 # The runner: TESTS_ENVIRONMENT from sed's Makefile, by hand; from the
 # top of the tree, as `make check` runs them.
 # Each test under a ten-minute timeout, so one that hangs costs ten
 # minutes and not the run.
+# SED_TIMEOUT: each test's allowance, ten minutes unless said.
+SED_TIMEOUT=${SED_TIMEOUT:-600}
 cat > "$WORK/run.sh" <<EOF
 cd /GT
 export TMPDIR=/tmp VERSION=4.10 LC_ALL=C AWK=awk abs_top_builddir=/GT \\
     abs_top_srcdir=/GT abs_srcdir=/GT built_programs=sed \\
     srcdir=. top_srcdir=. CC=cc CONFIG_HEADER=/GT/config.h MAKE=make \\
     PACKAGE_BUGREPORT=bug-sed@gnu.org PACKAGE_VERSION=4.10 PERL=perl \\
-    SHELL=/bin/bash PATH=/GT/sed:/bin
+    SHELL=/bin/bash PATH=/GT/sed:/bin:/usr/bin
 . ./testsuite/envvar-check
 : > /GT/results
 for t in $TESTS; do
+    # A .pl test runs as the Makefile's PL_LOG_COMPILER runs it.
     case \$t in
-    *.pl) echo "\$t 77" >> /GT/results; continue ;;  # no Perl on this disk
+    *.pl) SED_TEST_NAME=\$(echo \$t | sed 's,/,-,g') timeout -k 10 $SED_TIMEOUT \\
+              perl -w -I./testsuite -MCuSkip -MCoreutils \\
+              -M"CuTmpdir qw(\$t)" ./\$t > \$t.log 2>&1 ;;
+    *)    SED_TEST_NAME=\$(echo \$t | sed 's,/,-,g') timeout -k 10 $SED_TIMEOUT \\
+              bash ./\$t > \$t.log 2>&1 ;;
     esac
-    SED_TEST_NAME=\$(echo \$t | sed 's,/,-,g') timeout -k 10 600 bash ./\$t > \$t.log 2>&1
     echo "\$t \$?" >> /GT/results
 done
 echo SEDSUITE-DONE
@@ -142,9 +161,9 @@ exec 3>&-
 kill -9 "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
 rm -f "$FIFO"
 
-fsimg get /GT/results "$WORK/results" >/dev/null 2>&1
+fsimg_try get /GT/results "$WORK/results" >/dev/null 2>&1
 mkdir -p "$WORK/logs"
-for t in $TESTS; do fsimg get "/GT/$t.log" "$WORK/logs/$(basename $t).log" >/dev/null 2>&1; done
+for t in $TESTS; do fsimg_try get "/GT/$t.log" "$WORK/logs/$(basename $t).log" >/dev/null 2>&1; done
 
 # Failures understood, and why. Keep the reason honest: "not a bug in
 # the kernel" has to be shown, not assumed.
@@ -157,7 +176,13 @@ while read -r t st; do
     h=$(host_result "$t")
     case "$st" in
     0)  mpass=$((mpass + 1)) ;;
-    77) mskip=$((mskip + 1)) ;;
+    77) mskip=$((mskip + 1))
+        # A skip the host does not take is a gap in what the machine
+        # has (a tool, an option, Perl) -- not a failure, but said.
+        if [ "$h" = PASS ]; then
+            why=$(grep -aom1 'skipped test: .*' "$WORK/logs/$(basename $t).log" 2>/dev/null)
+            echo "  [note] $t: skipped here, PASS on the host -- ${why:-no reason logged}"
+        fi ;;
     *)  mfail=$((mfail + 1))
         if [ -n "${KNOWN[$t]:-}" ]; then
             echo "  [KNOWN] $t -- ${KNOWN[$t]}"; known=$((known + 1))
