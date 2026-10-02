@@ -504,6 +504,15 @@ static void mount_root(void)
         kputdec(sf.f_bsize);
         kputs(" byte blocks");
     }
+    /* ext3's format is ext2's plus a journal, and this says which. */
+    {
+        struct journalstats js;
+
+        ext2_journal_stats(&js);
+        if (js.on) {
+            kputs(", journaled");
+        }
+    }
     kputc('\n');
 
     /*
