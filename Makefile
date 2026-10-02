@@ -31,7 +31,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: pagecheck autoinccheck shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest linetest gfxtest fpsptest faulttest procfstest tlstest logintest fsimgtest fattest all boot run install src qemu world libc-if-missing toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest qemutest libc cube programs clean distclean perl shebangtest shtest difftest gittest ptracetest stracetest gdbtest journaltest linuxfstest sesstest mounttest bootjtest stacktest fuzztest procpstest devmodetest panictest localetest xxhtest grepsuite sedsuite perltest
+.PHONY: pagecheck autoinccheck shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest linetest gfxtest fpsptest faulttest procfstest tlstest logintest fsimgtest fattest all boot run install src qemu world libc-if-missing toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest qemutest libc cube programs clean distclean perl shebangtest shtest difftest gittest ptracetest stracetest gdbtest journaltest linuxfstest sesstest mounttest bootjtest stacktest fuzztest procpstest devmodetest panictest localetest xxhtest compresstest pcretest grepsuite sedsuite perltest
 
 # EVERY PORT, in the order they need each other: what `ports`, `python`, `perl`
 # and `toolchain` install, in the order they install it. One list, so
@@ -165,6 +165,7 @@ ports:
 	$(MAKE) -C ports/patch install
 	$(MAKE) -C ports/awk install
 	$(MAKE) -C ports/sed install
+	$(MAKE) -C ports/pcre2 install
 	$(MAKE) -C ports/grep install
 	$(MAKE) -C ports/bash install
 	$(MAKE) -C ports/ncurses install
@@ -325,7 +326,7 @@ qemu:
 run:
 	$(MAKE) -C kernel run
 
-test: autoinccheck pagecheck fsimgtest tests cryptotest fstest fattest apitest fpsptest faulttest procfstest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest tlstest shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest linetest gfxtest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest logintest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest shebangtest shtest difftest gittest ptracetest stracetest gdbtest journaltest linuxfstest sesstest mounttest bootjtest stacktest fuzztest procpstest devmodetest panictest localetest xxhtest perltest qemutest
+test: autoinccheck pagecheck fsimgtest tests cryptotest fstest fattest apitest fpsptest faulttest procfstest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest tlstest shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest linetest gfxtest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest logintest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest shebangtest shtest difftest gittest ptracetest stracetest gdbtest journaltest linuxfstest sesstest mounttest bootjtest stacktest fuzztest procpstest devmodetest panictest localetest xxhtest compresstest pcretest perltest qemutest
 
 # Code and data on separate pages, in everything built for the machine
 # (tools/pagecheck.py says why). First, and cheap: what it catches never
@@ -638,6 +639,12 @@ localetest:
 
 xxhtest:
 	cd kernel && ./xxhtest.sh
+
+compresstest:
+	cd kernel && ./compresstest.sh
+
+pcretest:
+	cd kernel && ./pcretest.sh
 
 # GNU grep's and sed's own test suites, on the machine: an hour or more
 # each. Not in `make test`.

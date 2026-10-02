@@ -73,16 +73,11 @@ MAKEVARS=(
     LIBS="$STATIC_LIBS"
     HAVE_ZLIB=0 HAVE_LZMA=0 HAVE_LZ4=0 HAVE_PTHREAD=0
     ZSTD_NO_ASM=1
-    #
-    # NO LEGACY DECODERS, and the reason is a property of this target
-    # rather than a choice about features: on m68k-elf `uint32_t` is
-    # `long unsigned int`, so zstd's `U32 *` and a plain `unsigned *`
-    # are incompatible pointer types -- and zstd's v0.7 decoder passes
-    # one for the other. It does not compile here, and it is dead code:
-    # the v0.1-v0.7 frame formats have not been written by anything
-    # since 2016. The current format's code keeps U32 throughout and
-    # builds clean.
-    ZSTD_LEGACY_SUPPORT=0
+    # The legacy decoders (v0.1-v0.7 frames) are built, as upstream
+    # builds them. They used to be switched off: uint32_t was `long
+    # unsigned int` here and the v0.7 decoder passes a U32 * for an
+    # unsigned *. gcc's integer types are Linux's now (ports/gcc/
+    # patches/02), uint32_t is unsigned int, and it compiles.
 )
 
 make -C "$BUILD/src/lib" -j8 "${MAKEVARS[@]}" libzstd.a \

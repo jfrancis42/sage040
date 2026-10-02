@@ -29,15 +29,28 @@ if [ ! -d "$SRC" ]; then
     tar -C "$SRCDIR" -xf "$tarball"
 fi
 
+# grep -P: PCRE2 from ports/pcre2, linked in statically.
+PCREOUT=$SRCDIR/build-pcre2-sage040/sage040
+"$HERE/../pcre2/build.sh" > /dev/null
 libc_fresh "$BUILD" || true   # reconfigured if picolibc's headers changed
+# A build configured before -P was asked for is made again from
+# nothing: grep is built --disable-dependency-tracking, so a new
+# config.h alone recompiles nothing, and the old objects said no PCRE.
+if [ -f "$BUILD/config.h" ] && ! grep -q 'define HAVE_LIBPCRE 1' "$BUILD/config.h"; then
+    rm -rf "$BUILD"
+fi
 if [ ! -f "$BUILD/Makefile" ]; then
     mkdir -p "$BUILD"
     (cd "$BUILD" && cross_configure "$SRC" --disable-nls --disable-acl \
-        --without-selinux --disable-dependency-tracking > configure.log)
+        --without-selinux --disable-dependency-tracking \
+        --enable-perl-regexp \
+        PCRE_CFLAGS="-I$PCREOUT/include -DPCRE2_STATIC" \
+        PCRE_LIBS="$PCREOUT/lib/libpcre2-8.a" > configure.log)
 fi
 # grep itself -- gnulib's library, then the program -- not gnulib's
 # unit tests, which do not all build here.
 make -C "$BUILD/lib" -j8
-make -C "$BUILD/src" -j8 LDFLAGS="$DYN_LDFLAGS" LIBS="$DYN_LIBS" grep
+make -C "$BUILD/src" -j8 LDFLAGS="$DYN_LDFLAGS" \
+    LIBS="$PCREOUT/lib/libpcre2-8.a $DYN_LIBS" grep
 cp "$BUILD/src/grep" "$HERE/grep"
 "$CROSS_BIN/m68k-elf-size" "$HERE/grep"

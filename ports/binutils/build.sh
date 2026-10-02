@@ -115,8 +115,9 @@ if [ ! -d "$SRC" ]; then
     tar -C "$SRCDIR" -xf "$tarball"
 fi
 
-# Patches: each one a bug that only shows on a target where uint32_t
-# is not `unsigned int`. See the head of each.
+# Patches, if any. There are none now: the two this had were for a
+# uint32_t that was `long unsigned int`, which the compiler stopped
+# saying with ports/gcc/patches/02, and binutils builds unpatched.
 #
 # Applied to the SHARED source tree, which the cross binutils was also
 # built from -- so they are tracked, and applied once.
