@@ -147,6 +147,7 @@ struct chardev {
      */
     u32  ino;
     u32  rdev;                  /* ST_DEV(major, minor)             */
+    int  block;                 /* a block device's node: S_IFBLK   */
     struct ttyctl *tc;          /* a terminal's: see struct ttyctl  */
 };
 

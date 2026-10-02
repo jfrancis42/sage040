@@ -1822,7 +1822,7 @@ static int dev_entry(int pts, u32 k, char *name, u8 *type, u32 *next,
                 return -ENOENT;
             }
             strcpy(name, nm);
-            *type = DT_CHR;
+            *type = d->block ? DT_BLK : DT_CHR;
             return 0;
         }
     }

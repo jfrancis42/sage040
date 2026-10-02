@@ -79,10 +79,14 @@ int main(void)
           listed("/dev", ".") == DT_DIR);
     d = opendir("/dev");
     while (d && (e = readdir(d))) {
-        if (e->d_type == DT_CHR) {
+        if (e->d_type == DT_CHR || e->d_type == DT_BLK) {
             devs++;
             snprintf(path, sizeof(path), "/dev/%s", e->d_name);
-            if (stat(path, &st) == 0 && S_ISCHR(st.st_mode)) {
+            /* What the listing says it is, stat must agree: a disk is a
+             * block device in both, everything else a character one. */
+            if (stat(path, &st) == 0 &&
+                (e->d_type == DT_BLK ? S_ISBLK(st.st_mode)
+                                     : S_ISCHR(st.st_mode))) {
                 chars++;
             } else {
                 printf("         (%s does not stat as a device)\n", path);
@@ -92,7 +96,7 @@ int main(void)
     if (d) {
         closedir(d);
     }
-    check("  every device it lists stats as a character device",
+    check("  every device it lists stats as the type it is listed as",
           devs > 5 && chars == devs);
 
     check("/dev/fd is a link to /proc/self/fd",

@@ -400,7 +400,7 @@ static void dev_stat(const struct chardev *cd, struct stat *st)
     /* Made at boot, as Linux's devtmpfs nodes are; 0 read as 1970. */
     clock_get(&tv);
     st->st_mtime = (time_t)((u32)tv.tv_sec - timer_jiffies() / HZ);
-    st->st_mode = S_IFCHR | (cd->mode & 07777);
+    st->st_mode = (cd->block ? S_IFBLK : S_IFCHR) | (cd->mode & 07777);
     st->st_uid = cd->uid;
     st->st_gid = cd->gid;
     st->st_nlink = 1;

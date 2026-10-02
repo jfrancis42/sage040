@@ -172,6 +172,113 @@ struct chardev *dev_first_char(void)
 /* Block devices                                                     */
 /* ---------------------------------------------------------------- */
 
+/*
+ * A NODE IN /dev FOR EVERY BLOCK DEVICE: /dev/hda and /dev/hda1 to 4, as
+ * on Linux -- block devices to stat (S_IFBLK, 3:0 and 3:N) and to READ.
+ * Root's alone, 0600: there is no disk group here. Writing is refused
+ * (EROFS): the volume on it is mounted through the block cache, and
+ * bytes written around that cache are a corruption waiting for the next
+ * eviction. mount(2) still finds a device by its name, not this node.
+ */
+#define BLOCK_NODES 12
+
+struct blocknode {
+    struct chardev cd;
+    struct blockdev *b;
+};
+
+static struct blocknode bnodes[BLOCK_NODES];
+static int nbnodes;
+
+static s32 bnode_read(struct file *f, void *buf, u32 len)
+{
+    struct blockdev *b = ((struct blocknode *)f->priv)->b;
+    u64 size = (u64)b->sectors * 512;
+    u32 done = 0;
+    u8 bounce[512];             /* not static: the read sleeps, and
+                                 * another reader may come meanwhile */
+
+    while (done < len && f->pos < size) {
+        u32 lba = f->pos / 512, off = f->pos % 512, n = 512 - off;
+
+        if (n > len - done) {
+            n = len - done;
+        }
+        if ((u64)f->pos + n > size) {
+            n = (u32)(size - f->pos);
+        }
+        if (b->read(b, lba, 1, bounce) != 0) {
+            return done ? (s32)done : -EIO;
+        }
+        memcpy((u8 *)buf + done, bounce + off, n);
+        done += n;
+        f->pos += n;
+    }
+    return (s32)done;
+}
+
+static s32 bnode_write(struct file *f, const void *buf, u32 len)
+{
+    (void)f; (void)buf; (void)len;
+    return -EROFS;
+}
+
+static s32 bnode_lseek(struct file *f, s32 offset, int whence)
+{
+    struct blockdev *b = ((struct blocknode *)f->priv)->b;
+    s64 base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? (s64)f->pos :
+               whence == SEEK_END ? (s64)b->sectors * 512 : -1;
+
+    if (base < 0 || base + offset < 0) {
+        return -EINVAL;
+    }
+    f->pos = (u32)(base + offset);
+    return (s32)f->pos;
+}
+
+static int bnode_fstat(struct file *f, struct stat *st)
+{
+    struct blocknode *n = f->priv;
+
+    st->st_mode = S_IFBLK | (n->cd.mode & 07777);
+    st->st_rdev = n->cd.rdev;
+    st->st_ino = n->cd.ino;
+    st->st_size = 0;            /* Linux says 0 for a block device too */
+    return 0;
+}
+
+static const struct file_ops bnode_ops = {
+    bnode_read,
+    bnode_write,
+    bnode_lseek,
+    0,                          /* ioctl    */
+    0,                          /* close    */
+    bnode_fstat,
+    0,                          /* poll: a disk is always ready */
+    0,                          /* truncate */
+    0,                          /* mmap     */
+};
+
+static void block_node(struct blockdev *b)
+{
+    struct blocknode *n;
+
+    if (nbnodes >= BLOCK_NODES) {
+        return;
+    }
+    n = &bnodes[nbnodes];
+    n->b = b;
+    n->cd.name = b->name;
+    n->cd.ops = &bnode_ops;
+    n->cd.priv = n;
+    n->cd.mode = 0600;
+    n->cd.block = 1;
+    if (dev_register_char(&n->cd) == 0) {
+        n->cd.rdev = dev_block_rdev(b);
+        nbnodes++;
+    }
+}
+
 int dev_register_block(struct blockdev *b)
 {
     if (!b || !b->name || !b->read) {
@@ -193,6 +300,7 @@ int dev_register_block(struct blockdev *b)
         }
         t->next = b;
     }
+    block_node(b);
     return 0;
 }
 

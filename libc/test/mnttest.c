@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <sys/statvfs.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
@@ -145,6 +146,44 @@ int main(void)
           file_is("/mnt/shadow.txt", "under the mount\n"));
     check("/proc/mounts names the root as /dev/hda1 on /",
           has_line("/proc/mounts", "/dev/hda1 / "));
+
+    /* The disks as nodes in /dev: block devices, Linux's numbers, and
+     * readable -- checked against bytes known another way: the MBR's
+     * signature at 510 of the disk, ext2's magic at 1080 of a volume. */
+    {
+        struct stat st;
+        unsigned char b2[2] = { 0, 0 }, m2[2] = { 0, 0 };
+        int fd;
+
+        check("/dev/hda2 is a block device, 3:2",
+              stat("/dev/hda2", &st) == 0 && S_ISBLK(st.st_mode) &&
+              major(st.st_rdev) == 3 && minor(st.st_rdev) == 2);
+        check("  and /dev/hda, the whole disk, is 3:0",
+              stat("/dev/hda", &st) == 0 && S_ISBLK(st.st_mode) &&
+              major(st.st_rdev) == 3 && minor(st.st_rdev) == 0);
+        check("  and ls /dev lists them", listed("/dev", "hda2") &&
+              listed("/dev", "hda"));
+        fd = open("/dev/hda2", O_RDONLY);
+        check("reading /dev/hda2 at 1080 gives ext2's magic, 53 ef",
+              fd >= 0 && lseek(fd, 1080, SEEK_SET) == 1080 &&
+              read(fd, b2, 2) == 2 && b2[0] == 0x53 && b2[1] == 0xef);
+        if (fd >= 0) {
+            close(fd);
+        }
+        fd = open("/dev/hda", O_RDONLY);
+        check("reading /dev/hda at 510 gives the MBR's signature, 55 aa",
+              fd >= 0 && lseek(fd, 510, SEEK_SET) == 510 &&
+              read(fd, m2, 2) == 2 && m2[0] == 0x55 && m2[1] == 0xaa);
+        if (fd >= 0) {
+            close(fd);
+        }
+        fd = open("/dev/hda2", O_WRONLY);
+        check("writing to one is refused: EROFS",
+              fd >= 0 && write(fd, "x", 1) < 0 && errno == EROFS);
+        if (fd >= 0) {
+            close(fd);
+        }
+    }
 
     /* --- refusals that need nothing mounted ------------------------- */
     check("mounting a device that does not exist: ENOENT",

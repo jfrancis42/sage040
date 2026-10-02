@@ -762,6 +762,16 @@ read from the files. So the machine's own gdb opens one:
 `setrlimit` and `prlimit64` read and set it, and only root raises a
 hard limit.
 
+### Disks in /dev
+
+`/dev/hda` and its partitions `/dev/hda1` to `hda4` are block devices
+(3:0 and 3:N, as Linux numbers the first IDE disk), root's, mode 0600 --
+there is no disk group. They read: `dd if=/dev/hda2` gives the volume's
+bytes, through a sector bounce. Writing is refused with EROFS, because a
+mounted volume is written through the block cache and bytes written
+around it would be overwritten, or would overwrite, at the next
+eviction. mount(2) still finds a device by its name.
+
 ### Message queues
 
 POSIX message queues are the kernel's (`kernel/mqueue.c`): Linux's
