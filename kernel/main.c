@@ -188,21 +188,34 @@ static void start_drivers(void)
         kputs(strerror(err));
         kputc('\n');
     } else {
-        struct blockdev *b = dev_first_block();
+        /* Each drive the channel has -- hda, and hdb if a second one
+         * answers -- with its partitions. */
+        static const char *disks[2] = { "hda", "hdb" };
+        int i;
 
-        kputs(b->name);
-        kputs(" '");
-        kputs(b->model);
-        kputs("', ");
-        kputdec(b->sectors);
-        kputs(" sectors (");
-        kputdec(b->sectors / 2048);
-        kputs(" MiB)");
-        err = dev_scan_partitions(b);
-        if (err > 0) {
-            kputs(", ");
-            kputdec((u32)err);
-            kputs(err == 1 ? " partition" : " partitions");
+        for (i = 0; i < 2; i++) {
+            struct blockdev *b = dev_find_block(disks[i]);
+
+            if (!b) {
+                continue;
+            }
+            if (i) {
+                kputs("; ");
+            }
+            kputs(b->name);
+            kputs(" '");
+            kputs(b->model);
+            kputs("', ");
+            kputdec(b->sectors);
+            kputs(" sectors (");
+            kputdec(b->sectors / 2048);
+            kputs(" MiB)");
+            err = dev_scan_partitions(b);
+            if (err > 0) {
+                kputs(", ");
+                kputdec((u32)err);
+                kputs(err == 1 ? " partition" : " partitions");
+            }
         }
         kputc('\n');
     }

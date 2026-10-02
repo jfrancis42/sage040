@@ -412,6 +412,7 @@ is a 25 MHz 68040, and one of the suites waits for the wall clock.
 | `make ptesttest` | `ptest`: the MMU asked directly (PTESTR) about addresses with known answers, against the kernel's own walk |
 | `make coretest` | core files: `ulimit -c`, WCOREDUMP, and gdb on the machine reading one back |
 | `make mqueuetest` | POSIX message queues in the kernel, through the raw system calls |
+| `make hdbtest` | a second disk on the IDE channel, hdb, mounted and written |
 | `make devmodetest` | device modes enforced; a terminal belongs to whoever is logged in on it |
 | `make mounttest` | more than one volume: `mount`, `umount`, partitions, read-only, a journal replayed off the root |
 | `make uemacstest` `make vitest` | the editors |

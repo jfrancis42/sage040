@@ -361,14 +361,22 @@ struct blockdev *dev_block_base(struct blockdev *b, u32 *start)
     return b;
 }
 
-/* Its device number, as Linux gives the first IDE disk: 3:0 for the
- * disk, 3:N for its Nth partition. */
+/* The first minor of a disk on the first IDE channel, as Linux numbers
+ * them: 64 to a drive, hda at 0 and hdb at 64. */
+static u32 disk_minor(const struct blockdev *b)
+{
+    return (b->name[0] == 'h' && b->name[1] == 'd' && b->name[2] >= 'a' &&
+            b->name[2] <= 'b') ? (u32)(b->name[2] - 'a') * 64 : 0;
+}
+
+/* Its device number, as Linux gives the first IDE channel's disks:
+ * 3:0 for hda, 3:N for its Nth partition, 3:64 and up for hdb. */
 u32 dev_block_rdev(struct blockdev *b)
 {
     if (b && b->read == part_read) {
         return ST_DEV(3, ((struct partdev *)b->priv)->minor);
     }
-    return ST_DEV(3, 0);
+    return b ? ST_DEV(3, disk_minor(b)) : ST_DEV(3, 0);
 }
 
 int dev_scan_partitions(struct blockdev *disk)
@@ -401,7 +409,7 @@ int dev_scan_partitions(struct blockdev *disk)
         p->name[n] = '\0';
         p->disk = disk;
         p->start = start;
-        p->minor = (u8)(i + 1);
+        p->minor = (u8)(disk_minor(disk) + (u32)i + 1);
         p->b.name = p->name;
         p->b.model = disk->model;
         p->b.sector_size = 512;

@@ -56,9 +56,22 @@
 #define ATA_TIMEOUT      2000000
 #define ATA_SECTOR_SIZE  512
 
-static char  model[41];
-static u32   capacity;
-static int   ready;
+/*
+ * TWO DRIVES on the one channel, master and slave, as on a PC: the
+ * device register's bit 4 says which a command is for. They share the
+ * channel's registers, its interrupt and ata_lock -- one command at a
+ * time between them -- and each is a block device of its own: hda and
+ * hdb, as Linux names the first channel's two.
+ */
+struct ata_drive {
+    char model[41];
+    u32  capacity;
+    int  ready;
+    u8   sel;                   /* 0 for the master, 0x10 the slave    */
+    struct blockdev dev;
+};
+
+static struct ata_drive drives[2];
 
 #define ATA_NIEN         0x02           /* device control: interrupts off */
 #define ATA_WAIT_MS      5000           /* a dead drive, not a slow one   */
@@ -164,9 +177,9 @@ static int ata_wait_phase(void)
     return MMIO8(ATA_STATUS);           /* acknowledges, if it was on */
 }
 
-static void ata_select_lba(u32 lba, u8 count)
+static void ata_select_lba(const struct ata_drive *d, u32 lba, u8 count)
 {
-    MMIO8(ATA_DEVICE) = (u8)(ATA_DEV_LBA | ((lba >> 24) & 0x0f));
+    MMIO8(ATA_DEVICE) = (u8)(ATA_DEV_LBA | d->sel | ((lba >> 24) & 0x0f));
     MMIO8(ATA_NSECT)  = count;
     MMIO8(ATA_LBAL)   = (u8)(lba & 0xff);
     MMIO8(ATA_LBAM)   = (u8)((lba >> 8) & 0xff);
@@ -195,20 +208,23 @@ static void ata_pio_out(const u8 *src)
     }
 }
 
-static int ata_identify(void)
+static int ata_identify(struct ata_drive *d)
 {
     u16 id[256];
+    char *model = d->model;
     int i;
 
-    ready = 0;
+    d->ready = 0;
     model[0] = '\0';
-    capacity = 0;
+    d->capacity = 0;
 
     if (ata_wait_notbusy() != 0) {
         return -1;
     }
 
-    MMIO8(ATA_DEVICE) = ATA_DEV_LBA;
+    /* A drive that is not there never says ready: an empty slave
+     * position reads back no DRDY, and that is the whole probe. */
+    MMIO8(ATA_DEVICE) = (u8)(ATA_DEV_LBA | d->sel);
     if (ata_wait_notbusy() != 0) {
         return -1;
     }
@@ -216,7 +232,7 @@ static int ata_identify(void)
         return -1;
     }
 
-    ata_select_lba(0, 0);
+    ata_select_lba(d, 0, 0);
     MMIO8(ATA_COMMAND) = ATA_CMD_IDENTIFY;
     if (ata_wait_drq() != 0) {
         return -1;
@@ -239,22 +255,22 @@ static int ata_identify(void)
     }
 
     /* Words 60/61: LBA28 sector count, low word first. */
-    capacity = (u32)id[60] | ((u32)id[61] << 16);
+    d->capacity = (u32)id[60] | ((u32)id[61] << 16);
 
-    ready = 1;
+    d->ready = 1;
     return 0;
 }
 
 static int ata_read(struct blockdev *b, u32 lba, u32 count, void *buf)
 {
+    struct ata_drive *d = b->priv;
     u8 *p = buf;
     int err = 0;
 
-    (void)b;
-    if (!ready || count == 0) {
+    if (!d->ready || count == 0) {
         return -EINVAL;
     }
-    if (lba + count > capacity) {
+    if (lba + count > d->capacity) {
         return -EIO;
     }
 
@@ -268,7 +284,7 @@ static int ata_read(struct blockdev *b, u32 lba, u32 count, void *buf)
             break;
         }
         irq_seen = 0;
-        ata_select_lba(lba, (u8)(n & 0xff));        /* 0 means 256 */
+        ata_select_lba(d, lba, (u8)(n & 0xff));     /* 0 means 256 */
         MMIO8(ATA_COMMAND) = ATA_CMD_READ_PIO;
         for (k = 0; k < n; k++) {
             int st = ata_wait_phase();
@@ -291,14 +307,14 @@ static int ata_read(struct blockdev *b, u32 lba, u32 count, void *buf)
 static int ata_write(struct blockdev *b, u32 lba, u32 count,
                      const void *buf)
 {
+    struct ata_drive *d = b->priv;
     const u8 *p = buf;
     int err = 0;
 
-    (void)b;
-    if (!ready || count == 0) {
+    if (!d->ready || count == 0) {
         return -EINVAL;
     }
-    if (lba + count > capacity) {
+    if (lba + count > d->capacity) {
         return -EIO;
     }
 
@@ -311,7 +327,7 @@ static int ata_write(struct blockdev *b, u32 lba, u32 count,
             err = -EIO;
             break;
         }
-        ata_select_lba(lba, (u8)(n & 0xff));
+        ata_select_lba(d, lba, (u8)(n & 0xff));
         MMIO8(ATA_COMMAND) = ATA_CMD_WRITE_PIO;
         /* The first sector is asked for with DRQ and no interrupt; each
          * one after it, and the end, with an interrupt. */
@@ -344,37 +360,45 @@ static int ata_write(struct blockdev *b, u32 lba, u32 count,
 }
 
 /*
- * The device this driver presents upward.  Nothing above it knows the
- * word "ATA": the filesystem asks a struct blockdev for sectors.
+ * The devices this driver presents upward.  Nothing above them knows
+ * the word "ATA": the filesystem asks a struct blockdev for sectors.
+ * Returns how many drives answered, or -ENODEV for none.
  */
-static struct blockdev ata_dev = {
-    "hda",
-    model,
-    ATA_SECTOR_SIZE,
-    0,
-    ata_read,
-    ata_write,
-    0,
-    0
-};
-
 int ata_init(void)
 {
+    static const char *names[2] = { "hda", "hdb" };
+    int i, found = 0;
+
     /* Is the chip fitted? An address with nothing behind it raises a
      * bus error rather than reading back zeroes, so this has to be
      * asked before the first register access, not by making one. */
     if (!io_probe8((volatile void *)ATA_ALTSTAT)) {
         return -ENODEV;
     }
-
-    if (ata_identify() != 0) {
-        return -ENODEV;
-    }
-    ata_dev.sectors = capacity;
-    ata_dev.model = model;
     mutex_init(&ata_lock);
     MMIO8(ATA_DEVCTL) = ATA_NIEN;       /* until ata_irq_on() */
-    return dev_register_block(&ata_dev);
+    for (i = 0; i < 2; i++) {
+        struct ata_drive *d = &drives[i];
+
+        d->sel = i ? 0x10 : 0;
+        if (ata_identify(d) != 0) {
+            continue;
+        }
+        d->dev.name = names[i];
+        d->dev.model = d->model;
+        d->dev.sector_size = ATA_SECTOR_SIZE;
+        d->dev.sectors = d->capacity;
+        d->dev.read = ata_read;
+        d->dev.write = ata_write;
+        d->dev.priv = d;
+        if (dev_register_block(&d->dev) == 0) {
+            found++;
+        }
+    }
+    /* Leave the master selected: the interrupt line is the selected
+     * drive's, and nothing else asks. */
+    MMIO8(ATA_DEVICE) = ATA_DEV_LBA;
+    return found ? found : -ENODEV;
 }
 
 /*
@@ -386,7 +410,7 @@ int ata_irq_on(void)
 {
     int err;
 
-    if (!ready) {
+    if (!drives[0].ready && !drives[1].ready) {
         return -ENODEV;
     }
     err = mfp_request_gpip(MFP_PIN_ATA, ata_isr, 0);

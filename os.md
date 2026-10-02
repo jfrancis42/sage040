@@ -762,6 +762,16 @@ read from the files. So the machine's own gdb opens one:
 `setrlimit` and `prlimit64` read and set it, and only root raises a
 hard limit.
 
+### A second disk
+
+The IDE channel takes two drives, as on a PC: a second image attached
+with `-drive file=IMG,format=raw,if=ide,index=1` is the slave, `hdb`,
+with its partitions `hdb1` to `hdb4` -- 3:64 and up, as Linux numbers
+them -- and mounts like any other (`mount /dev/hdb1 /mnt`). The machine
+still boots from hda. Both drives share the channel's registers, its
+interrupt and one lock; bit 4 of the device register says which a
+command is for.
+
 ### Remount
 
 `mount -o remount,ro DIR` makes a mounted volume read-only where it
@@ -1894,6 +1904,7 @@ drive it over its serial line.
 | `kernel/ptesttest.sh` | 15 | `ptest` and memctl(MEMCTL_PTEST): the 68040's own answer (PTESTR, MMUSR) against the kernel's software walk, on addresses whose answers are known another way -- a program's text read-only at 0x10000000, its stack top writable, address 0 absent, the supervisor map the identity, another process's text a different physical page -- and who may ask (another's address space and the supervisor's are root's). Negative control: not loading the target's URP is reported as DISAGREE |
 | `kernel/coretest.sh` | 19 | core files and RLIMIT_CORE: none at `ulimit -c 0`, one at unlimited, cut off at a small limit, SIGQUIT dumps and SIGTERM does not, WCOREDUMP seen by a waiting parent; the core read by two readers sharing no code -- the machine's gdb (signal, backtrace, a variable's value) and Python on the host (the value at its `nm` address, the PC inside the function that faulted) -- and readelf on the notes' sizes. And an ignored SIGQUIT, set or inherited across exec, does not cut a sleep short, short or 300 s |
 | `kernel/mqueuetest.sh` | 27 | message queues through the raw calls: priority order, the size and priority limits, O_NONBLOCK both ways, poll, absolute timeouts that really wait (both timespec layouts), a receiver and a sender blocked in other processes and woken, mq_notify's signal with SI_MESGQ and its value and spent after one, EBUSY for a second registrant, EEXIST/ENOENT/EACCES, another user refused, unlink while open, and an 8192-byte message across two pages |
+| `kernel/hdbtest.sh` | 8 | a second disk as the IDE slave: found and numbered (3:64, 3:65), its volume mounted, a host file read and a file written, then the host's e2fsck finds it clean and reads the machine's file |
 | `kernel/devmodetest.sh` | 13 | device modes enforced: as a user logged in on the console, the console is theirs and opens, ttyS0, nvram and vcsa are refused, klog only reads, null and /dev/tty open; as root afterwards the console is root's again and every open succeeds |
 | `kernel/fpsptest.sh` | 17 | the 68040's missing FPU instructions: 59 results from Motorola's FPSP (`fpsp-trap=on`) and from QEMU, each against the host's libm; two at once; F-line as SIGILL; enabled divide by zero, operand error, signalling NaN and BSUN each a SIGFPE with its si_code; FMOVEM's control-register order |
 | `kernel/edittest.sh` | 41 | the line editor, history, job control, command lists, scripts, shutdown |
