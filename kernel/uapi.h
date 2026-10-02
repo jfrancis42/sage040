@@ -1039,6 +1039,12 @@ struct msghdr {
  */
 #define FSCTL_CHECK_SIZED 3
 
+/*
+ * fsctl(FSCTL_CHECK_DEV, flags | size << 8, &report, "/dev/hda2"): the
+ * same check of a volume that is NOT mounted -- EBUSY if it is. Root's.
+ */
+#define FSCTL_CHECK_DEV   4
+
 struct fslabel {
     char name[16];              /* 11 characters and a terminator     */
 };

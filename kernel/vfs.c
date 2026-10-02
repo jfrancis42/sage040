@@ -2821,6 +2821,33 @@ int vfs_bmap(int fd, u32 off, u32 *lba, struct blockdev **dev)
     }
 }
 
+int vfs_check_dev(const char *name, int flags, struct fsck_report *r)
+{
+    struct blockdev *b;
+    int rv;
+
+    if (!mounted_fs) {
+        return -ENODEV;
+    }
+    if (current && current->euid != 0) {
+        return -EPERM;
+    }
+    if (!mounted_fs->check_dev) {
+        return -ENOSYS;
+    }
+    if (strncmp(name, DEV_PREFIX, DEV_PREFIX_LEN) == 0) {
+        name += DEV_PREFIX_LEN;
+    }
+    b = dev_find_block(name);
+    if (!b) {
+        return -ENOENT;
+    }
+    fs_lock();
+    rv = mounted_fs->check_dev(b, flags, r);
+    fs_unlock();
+    return rv;
+}
+
 int vfs_check(int flags, struct fsck_report *r)
 {
     if (!mounted_fs) {

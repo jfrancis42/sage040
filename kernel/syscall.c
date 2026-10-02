@@ -2302,19 +2302,29 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
     case __NR_fsctl:
         switch (a1) {
         case FSCTL_CHECK:
-        case FSCTL_CHECK_SIZED: {
+        case FSCTL_CHECK_SIZED:
+        case FSCTL_CHECK_DEV: {
             struct fsck_report r;
             u32 size = FSCK_REPORT_V1;
             int err;
 
-            if (a1 == FSCTL_CHECK_SIZED) {
+            if (a1 == FSCTL_CHECK_SIZED || a1 == FSCTL_CHECK_DEV) {
                 size = a2 >> 8;
                 if (size > sizeof(r)) {
                     size = sizeof(r);
                 }
             }
             memset(&r, 0, sizeof(r));
-            err = vfs_check((int)(a2 & 0xff), &r);
+            if (a1 == FSCTL_CHECK_DEV) {
+                char name[32];
+
+                err = fetch_str(name, a4, sizeof(name));
+                if (err >= 0) {
+                    err = vfs_check_dev(name, (int)(a2 & 0xff), &r);
+                }
+            } else {
+                err = vfs_check((int)(a2 & 0xff), &r);
+            }
             if (err < 0) {
                 return err;
             }

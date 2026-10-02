@@ -163,6 +163,7 @@ struct fs_type {
     int (*umount_on)(const char *dir, u32 flags);
     int (*mount_list)(int i, struct mount_entry *m);
     int (*remount)(const char *dir, u32 flags);    /* MS_RDONLY or not */
+    int (*check_dev)(struct blockdev *b, int flags, struct fsck_report *r);
     struct fs_type *next;
 };
 
@@ -310,6 +311,8 @@ int  vfs_utime(const char *path, u32 mtime, u32 atime);
 int  vfs_futime(int fd, u32 mtime, u32 atime);
 int  vfs_statfs(const char *path, struct statfs *s);  /* 0: the root */
 int  vfs_check(int flags, struct fsck_report *r);
+/* The same for a volume that is NOT mounted, on device `name`. */
+int  vfs_check_dev(const char *name, int flags, struct fsck_report *r);
 int  vfs_label(const char *path, struct fslabel *l);
 int  vfs_flock(int fd, int op);
 u32  flock_key(struct file *f);      /* what identifies a file to a lock */

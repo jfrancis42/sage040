@@ -3,8 +3,12 @@
 /*
  * fsck - check the disk, and with -y, repair it.
  *
- *   fsck        report what is wrong, change nothing
- *   fsck -y     put it right
+ *   fsck [DEVICE]       report what is wrong, change nothing
+ *   fsck -y [DEVICE]    put it right
+ *
+ * With no DEVICE, the root volume. With one -- /dev/hda2 -- a volume
+ * that is NOT mounted, as Linux's fsck wants it; a mounted one is
+ * refused.
  *
  * The exit status is fsck's usual one: 0 clean, 1 problems found and
  * all repaired, 4 problems left as they were, 8 the check itself could
@@ -31,21 +35,37 @@ static void line(const char *what, u32 n)
 int main(int argc, char **argv)
 {
     struct fsck_report r;
-    int repair = argc > 1 && strcmp(argv[1], "-y") == 0;
+    int repair = 0, i;
+    const char *device = 0;
     s32 err;
     u32 found;
 
-    if (argc > 1 && !repair) {
-        eputs("usage: fsck [-y]\n");
-        return 8;
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-y") == 0) {
+            repair = 1;
+        } else if (argv[i][0] != '-' && !device) {
+            device = argv[i];
+        } else {
+            eputs("usage: fsck [-y] [DEVICE]\n");
+            return 8;
+        }
     }
     memset(&r, 0, sizeof(r));
-    err = syscall(__NR_fsctl, FSCTL_CHECK_SIZED,
-                  (repair ? FSCK_REPAIR : 0) | (u32)sizeof(r) << 8, (u32)&r);
+    if (device) {
+        err = syscall(__NR_fsctl, FSCTL_CHECK_DEV,
+                      (repair ? FSCK_REPAIR : 0) | (u32)sizeof(r) << 8,
+                      (u32)&r, (u32)device);
+    } else {
+        err = syscall(__NR_fsctl, FSCTL_CHECK_SIZED,
+                      (repair ? FSCK_REPAIR : 0) | (u32)sizeof(r) << 8, (u32)&r);
+    }
     if (err < 0) {
         eputs("fsck: ");
-        eputs(err == -EBUSY ? "files are open; cannot repair while they are"
-                            : "cannot check the volume");
+        eputs(err == -EBUSY ? (device ? "it is mounted; unmount it first"
+                                      : "files are open; cannot repair while they are") :
+              err == -ENOENT ? "no such device" :
+              err == -EPERM ? "only root can check a device" :
+                              "cannot check the volume");
         eputs("\n");
         return 8;
     }

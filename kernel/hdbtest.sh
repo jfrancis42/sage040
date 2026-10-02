@@ -37,7 +37,7 @@ check() {
 echo "=== building ==="
 make -s kernel.rom || exit 1
 make -s -C ../bootrom bootrom.elf || exit 1
-make -s -C ../system sh mount umount || exit 1
+make -s -C ../system sh mount umount fsck || exit 1
 ../ports/sbase/build.sh >/dev/null 2>&1 || exit 1
 
 echo "=== preparing $DISK and $DISK2 ==="
@@ -54,9 +54,15 @@ put_shells
 fsimg put ../ldso/ld.so /lib/ld.so
 fsimg put "${SAGE_LIBC:-$HOME/m68k/sage040-libc}/lib/libc.so" /lib/libc.so
 for p in ls cat; do fsimg put -m 755 ../ports/sbase/bin/$p /bin/$p; done
-for p in mount umount; do fsimg put -m 755 ../system/$p /bin/$p; done
+for p in mount umount fsck; do fsimg put -m 755 ../system/$p /bin/$p; done
 echo "from the second disk" > "$SCRATCH/hdb-hello.txt"
 fsimg2 put "$SCRATCH/hdb-hello.txt" /hello.txt || exit 1
+# A fault for fsck to find on the volume while it is NOT mounted: a free
+# block count that disagrees with the bitmaps -- and the host's own
+# e2fsck must see it first, or the machine's finding it proves nothing.
+debugfs -w -R 'ssv free_blocks_count 7' "$DISK2?offset=$OFF" >/dev/null 2>&1
+PART_OFFSET=$OFF ../tools/fsimg.sh "$DISK2" fsck >/dev/null 2>&1
+DAMAGED=$?
 
 rm -f "$FIFO"; mkfifo "$FIFO"
 "$QEMU" -M sage040 -cpu m68040 -m "$RAM_MB" -kernel ../bootrom/bootrom.elf \
@@ -82,6 +88,10 @@ wait_for 'kernel ready.*' 300
 sleep 1
 run START 'echo started'
 run LS '/bin/ls -l /dev/hda /dev/hdb /dev/hdb1'
+run FSCK1 '/bin/fsck /dev/hdb1'
+run FSCK2 '/bin/fsck -y /dev/hdb1'
+run FSCK3 '/bin/fsck /dev/hdb1'
+run FSCKROOT '/bin/fsck /dev/hda1'
 run MOUNT '/bin/mount /dev/hdb1 /mnt'
 run MOUNTS '/bin/cat /proc/mounts'
 run READ '/bin/cat /mnt/hello.txt'
@@ -107,6 +117,15 @@ check "the banner finds both drives: hdb, 16 MiB, one partition" $?
 block LS | grep -qE '^b.* 3, +0 .*/dev/hda$' && block LS | grep -qE '^b.* 3, +64 .*/dev/hdb$' &&
     block LS | grep -qE '^b.* 3, +65 .*/dev/hdb1$'
 check "/dev/hdb is 3:64 and /dev/hdb1 3:65, as Linux numbers them" $?
+[ "$DAMAGED" != 0 ]; check "the host's e2fsck sees the planted fault before the machine looks" $?
+[ "$(status FSCK1)" = 4 ]
+check "fsck /dev/hdb1, not mounted: finds it, changes nothing (exit 4)" $?
+[ "$(status FSCK2)" = 1 ]
+check "fsck -y /dev/hdb1: repairs it (exit 1)" $?
+[ "$(status FSCK3)" = 0 ]
+check "  and a second look finds it clean (exit 0)" $?
+[ "$(status FSCKROOT)" = 8 ] && block FSCKROOT | grep -q 'mounted'
+check "fsck of a mounted volume's device is refused: unmount it first" $?
 [ "$(status MOUNT)" = 0 ] && block MOUNTS | grep -qx '/dev/hdb1 /mnt ext3 rw 0 0'
 check "mount /dev/hdb1 /mnt, and /proc/mounts lists it" $?
 block READ | grep -qx 'from the second disk'

@@ -5598,7 +5598,95 @@ static void fsck_tree(u32 dino, u32 parent, int depth, struct fsck_report *r)
     }
 }
 
+static int check_volume(int flags, struct fsck_report *r);
+static void umount_one(void);
+static void vol_free(struct ext2_vol *v);
+
 static int ext2_check(int flags, struct fsck_report *r)
+{
+    if (!enter()) {
+        return -ENODEV;
+    }
+    return check_volume(flags, r);
+}
+
+/*
+ * CHECK A VOLUME THAT IS NOT MOUNTED -- fsck /dev/hda2, as on Linux,
+ * where fsck is run on a device before it is mounted. It is mounted for
+ * the length of the check, attached to nothing: read-only unless
+ * repairing, so a look changes nothing on the disk; with a repair, as
+ * a writable mount would, its journal replayed and the volume left
+ * marked clean. A device whose sectors are mounted is refused (EBUSY):
+ * checking a volume underneath its own mount is how checks corrupt.
+ */
+static int ext2_check_dev(struct blockdev *b, int flags, struct fsck_report *r)
+{
+    struct ext2_vol *v;
+    struct blockdev *disk;
+    u32 start, lba, pages, pa;
+    int i, slot = -1, err;
+
+    if (!enter()) {
+        return -ENODEV;
+    }
+    if (!b || !b->read || b->sector_size != SECTOR_SIZE) {
+        return -ENXIO;
+    }
+    if ((flags & FSCK_REPAIR) && !b->write) {
+        return -EROFS;
+    }
+    for (i = 1; i < EXT2_MAX_VOLS; i++) {
+        if (!vols[i]) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        return -EMFILE;
+    }
+    pages = (sizeof(struct ext2_vol) + PAGE_SIZE - 1) / PAGE_SIZE;
+    pa = pmm_alloc_pages(pages);
+    if (!pa) {
+        return -ENOMEM;
+    }
+    v = (struct ext2_vol *)pa;
+    memset(v, 0, sizeof(*v));
+    v->idx = slot;
+    v->pages = pages;
+    v->parent = 0;
+    v->rdonly = !(flags & FSCK_REPAIR);
+    v->st_dev = dev_block_rdev(b);
+
+    V = v;
+    dev = b;
+    lba = find_partition();
+    disk = dev_block_base(b, &start);
+    for (i = 0; i < EXT2_MAX_VOLS; i++) {
+        u32 s2;
+
+        if (vols[i] && vols[i]->v_mounted &&
+            dev_block_base(vols[i]->v_dev, &s2) == disk &&
+            s2 + vols[i]->v_part_lba == start + lba) {
+            pmm_free_pages(pa, pages);
+            V = &vol0;
+            return -EBUSY;
+        }
+    }
+    vols[slot] = v;
+    err = ext2_mount_dev();
+    if (err == 0) {
+        err = check_volume(flags, r);
+        V = v;
+        umount_one();
+    } else {
+        V = v;
+        mounted = 0;
+    }
+    vol_free(v);
+    return err;
+}
+
+static int check_volume(int flags, struct fsck_report *r)
 {
     u32 seen_bytes, g, ino, b, used = 0, counted_free = 0;
     u32 inodes_per_block = block_size / inode_size;
@@ -5609,9 +5697,6 @@ static int ext2_check(int flags, struct fsck_report *r)
     static u32 orphans[64];
     struct einode ei;
 
-    if (!enter()) {
-        return -ENODEV;
-    }
     memset(r, 0, sizeof(*r));
     r->block_bytes = block_size;
     r->was_dirty = was_unclean;
@@ -6273,6 +6358,7 @@ static struct fs_type ext2_fs = {
     .readdir = ext2_readdir,
     .statfs = ext2_statfs,
     .remount = ext2_remount,
+    .check_dev = ext2_check_dev,
     .sync = ext2_sync,
     .mkdir = ext2_mkdir,
     .rmdir = ext2_rmdir,
