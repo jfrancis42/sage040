@@ -20,6 +20,9 @@ cutc|cut -c2-4 fruit.txt
 tr1|tr a-z A-Z < fruit.txt
 trd|tr -d aeiou < fruit.txt
 trs|tr -s ' ' < text.txt
+trcr|tr -d '\r' < bytes.in
+traw|tr '\202' X < bytes.in
+trbyte|tr e '\202' < bytes.in
 uniq|uniq fruit.txt
 uniqc|~uniq -c fruit.txt
 uniqd|uniq -d fruit.txt

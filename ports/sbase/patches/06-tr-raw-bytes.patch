@@ -1,0 +1,159 @@
+sbase: tr passes bytes that are not UTF-8 through, and an octal escape
+is a byte.
+
+tr decoded its input as UTF-8 and wrote U+FFFD for every byte that was
+not part of a valid character -- including bytes no set mentioned, so
+`tr -d '\r'` damaged any binary file it was given. And `\202` in a set
+became U+FFFD too, where POSIX says an octal escape is the byte with
+that value: grep's invalid-multibyte-infloop test builds its input with
+`tr A '\202'` and got a valid UTF-8 file instead of an invalid one.
+
+Each such byte is carried as a private code point (0xDC00 + the byte,
+in the surrogate range valid UTF-8 cannot produce) and written back as
+the byte; sets are decoded the same way, so the escape and the input
+byte match. Valid UTF-8 is handled exactly as before.
+
+--- a/tr.c	2026-10-01 21:19:31.572807748 -0600
++++ b/tr.c	2026-10-01 21:19:43.116926176 -0600
+@@ -1,5 +1,7 @@
+ /* See LICENSE file for copyright and license details. */
++#include <stdio.h>
+ #include <stdlib.h>
++#include <string.h>
+ 
+ #include "utf.h"
+ #include "util.h"
+@@ -32,6 +34,98 @@
+ 	{ "xdigit", isxdigitrune },
+ };
+ 
++/*
++ * BYTES THAT ARE NOT UTF-8 pass through untouched, as in every other
++ * tr: each one is carried as a private code point, RAW + the byte, and
++ * written back out as that byte. Surrogates cannot come out of valid
++ * UTF-8, so nothing real is mistaken for one. A set gets the same
++ * decoding, so an octal escape like \202 is the BYTE 0x82, as POSIX
++ * says, and matches that byte in the input.
++ */
++#define RAW 0xDC00
++
++/* Decode one character from n bytes of s; *len is how many it used. */
++static Rune
++decode(const unsigned char *s, size_t n, size_t *len)
++{
++	Rune r;
++	size_t want, k;
++
++	*len = 1;
++	if (s[0] < 0x80)
++		return s[0];
++	want = s[0] >= 0xC2 && s[0] <= 0xDF ? 2 :
++	       s[0] >= 0xE0 && s[0] <= 0xEF ? 3 :
++	       s[0] >= 0xF0 && s[0] <= 0xF4 ? 4 : 0;
++	if (!want || want > n)
++		return RAW + s[0];
++	for (k = 1; k < want; k++)
++		if ((s[k] & 0xC0) != 0x80)
++			return RAW + s[0];
++	/* Runeerror is what an overlong or out-of-range sequence decodes
++	 * to -- and also U+FFFD itself, written properly, which is real. */
++	if (charntorune(&r, (const char *)s, want) != (int)want ||
++	    (r == Runeerror && !(s[0] == 0xEF && s[1] == 0xBF && s[2] == 0xBD)) ||
++	    (r >= 0xD800 && r <= 0xDFFF))
++		return RAW + s[0];
++	*len = want;
++	return r;
++}
++
++static size_t
++tostr(const char *str, size_t n, Rune *out)
++{
++	size_t i = 0, len, k = 0;
++
++	while (i < n) {
++		out[k++] = decode((const unsigned char *)str + i, n - i, &len);
++		i += len;
++	}
++	return k;
++}
++
++/* The input, with room to look ahead a character's worth of bytes. */
++static unsigned char inbuf[BUFSIZ];
++static size_t inpos, inlen;
++static int ineof;
++
++static int
++getrune(Rune *r)
++{
++	size_t len;
++
++	if (inlen - inpos < UTFmax && !ineof) {
++		size_t keep = inlen - inpos, got;
++
++		memmove(inbuf, inbuf + inpos, keep);
++		inpos = 0;
++		inlen = keep;
++		got = fread(inbuf + inlen, 1, sizeof(inbuf) - inlen, stdin);
++		if (got == 0) {
++			if (ferror(stdin))
++				eprintf("fread <stdin>:");
++			ineof = 1;
++		}
++		inlen += got;
++	}
++	if (inpos == inlen)
++		return 0;
++	*r = decode(inbuf + inpos, inlen - inpos, &len);
++	inpos += len;
++	return 1;
++}
++
++static void
++putrune(Rune r)
++{
++	if (r >= RAW + 0x80 && r <= RAW + 0xFF) {
++		if (putchar((int)(r - RAW)) == EOF)
++			eprintf("putchar <stdout>:");
++	} else {
++		efputrune(&r, stdout, "<stdout>");
++	}
++}
++
+ #define ISLOWERBIT 		   1U << 6
+ #define ISUPPERBIT 		   1U << 10
+ 
+@@ -91,9 +185,9 @@
+ 	int    factor, base;
+ 
+ 	/* rstr defines at most len ranges */
+-	unescape(str);
+-	rstr = ereallocarray(NULL, utflen(str) + 1, sizeof(*rstr));
+-	len = utftorunestr(str, rstr);
++	n = unescape(str);
++	rstr = ereallocarray(NULL, n + 1, sizeof(*rstr));
++	len = tostr(str, n, rstr);
+ 	*set = ereallocarray(NULL, len, sizeof(**set));
+ 
+ 	for (i = 0; i < len; i++) {
+@@ -225,7 +319,11 @@
+ 		}
+ 	}
+ read:
+-	if (!efgetrune(&r, stdin, "<stdin>")) {
++	/*
++	 * Read with fread, not one fgetc per character: tr streams whole
++	 * files, and a byte at a time through stdio's locking is slow.
++	 */
++	if (!getrune(&r)) {
+ 		ret |= fshut(stdin, "<stdin>") | fshut(stdout, "<stdout>");
+ 		return ret;
+ 	}
+@@ -312,7 +410,7 @@
+ 				goto read;
+ 		}
+ 	}
+-	efputrune(&r, stdout, "<stdout>");
++	putrune(r);
+ 	lastrune = r;
+ 	goto read;
+ }
