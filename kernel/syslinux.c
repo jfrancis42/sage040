@@ -330,6 +330,47 @@ static u32 limit_of(int res)
     }
 }
 
+/* A limit as it stands for this process: RLIMIT_CORE is the task's own,
+ * every other one the fact above, the same for soft and hard. */
+static void limit_get(int res, u32 *cur, u32 *max)
+{
+    if (res == RLIMIT_CORE) {
+        *cur = current->core_cur;
+        *max = current->core_max;
+        return;
+    }
+    *cur = *max = limit_of(res);
+}
+
+/*
+ * Linux's rules: soft no higher than hard (EINVAL), and only root may
+ * raise a hard limit (EPERM). RLIMIT_CORE is kept; for the others,
+ * asking for more than the fact is refused and anything else accepted
+ * and changes nothing.
+ */
+static s32 limit_set(int res, u32 cur, u32 max)
+{
+    u32 ocur, omax;
+
+    limit_get(res, &ocur, &omax);
+    if (max != RLIM_INFINITY && (cur == RLIM_INFINITY || cur > max)) {
+        return -EINVAL;
+    }
+    if (omax != RLIM_INFINITY &&
+        (max == RLIM_INFINITY || max > omax) && current->euid != 0) {
+        return -EPERM;
+    }
+    if (res == RLIMIT_CORE) {
+        current->core_cur = cur;
+        current->core_max = max;
+        return 0;
+    }
+    if (omax != RLIM_INFINITY && (max == RLIM_INFINITY || max > omax)) {
+        return -EPERM;          /* a fact cannot be raised, even by root */
+    }
+    return 0;
+}
+
 static s32 do_getrlimit(int res, u32 ubuf)
 {
     struct rlimit r;
@@ -337,20 +378,22 @@ static s32 do_getrlimit(int res, u32 ubuf)
     if (res < 0 || res >= RLIM_NLIMITS) {
         return -EINVAL;
     }
-    r.rlim_cur = r.rlim_max = limit_of(res);
+    limit_get(res, &r.rlim_cur, &r.rlim_max);
     return sys_store(ubuf, &r, sizeof(r));
 }
 
-/*
- * prlimit64 on this process only. Setting a limit is accepted and has
- * no effect -- every one of them is either a hard fact about the kernel
- * or unlimited -- except that asking for more than the maximum is
- * refused, as it would be for anyone on Linux.
- */
+/* A 64-bit limit as this kernel's 32: anything that does not fit is
+ * unlimited, which is what it means. */
+static u32 lim32(u64 v)
+{
+    return v >= RLIM_INFINITY ? RLIM_INFINITY : (u32)v;
+}
+
+/* prlimit64 on this process only: the old value first, then the new. */
 static s32 do_prlimit64(int pid, int res, u32 unew, u32 uold)
 {
     struct rlimit64 r;
-    u32 max;
+    u32 cur, max;
 
     if (pid != 0 && pid != current->pid) {
         return -ESRCH;
@@ -358,21 +401,21 @@ static s32 do_prlimit64(int pid, int res, u32 unew, u32 uold)
     if (res < 0 || res >= RLIM_NLIMITS) {
         return -EINVAL;
     }
-    max = limit_of(res);
+    limit_get(res, &cur, &max);
     if (unew) {
-        int err = fetch(&r, unew, sizeof(r));
+        s32 err = fetch(&r, unew, sizeof(r));
 
         if (err < 0) {
             return err;
         }
-        if (max != RLIM_INFINITY &&
-            (r.rlim_max > max || r.rlim_cur > r.rlim_max)) {
-            return -EPERM;
+        err = limit_set(res, lim32(r.rlim_cur), lim32(r.rlim_max));
+        if (err < 0) {
+            return err;
         }
     }
     if (uold) {
-        r.rlim_cur = r.rlim_max =
-            (max == RLIM_INFINITY) ? ~(u64)0 : (u64)max;
+        r.rlim_cur = cur == RLIM_INFINITY ? ~(u64)0 : (u64)cur;
+        r.rlim_max = max == RLIM_INFINITY ? ~(u64)0 : (u64)max;
         return sys_store(uold, &r, sizeof(r));
     }
     return 0;
@@ -1546,7 +1589,6 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
 
     case __NR_setrlimit: {
         struct rlimit r;
-        u32 max;
 
         if ((int)a1 < 0 || (int)a1 >= RLIM_NLIMITS) {
             return -EINVAL;
@@ -1555,12 +1597,7 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
         if (err < 0) {
             return err;
         }
-        max = limit_of((int)a1);
-        if (max != RLIM_INFINITY &&
-            (r.rlim_max > max || r.rlim_cur > r.rlim_max)) {
-            return -EPERM;
-        }
-        return 0;
+        return limit_set((int)a1, r.rlim_cur, r.rlim_max);
     }
 
     case __NR_prlimit64:

@@ -9,7 +9,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-PROGS := libctest inettest posixtest cryptest threadtest ptytest tlstest shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest sigcowtest ptracetest stracee gdbee jtest fsmanifest sesstest kstackprobe sysfuzz mnttest sigqtest devperm
+PROGS := libctest inettest posixtest cryptest threadtest ptytest tlstest shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest sigcowtest ptracetest stracee gdbee crashee jtest fsmanifest sesstest kstackprobe sysfuzz mnttest sigqtest devperm
 
 include $(TOPDIR)/libc/libc.mk
 
@@ -74,6 +74,7 @@ clean-so:
 # and without the optimiser moving its variables out of reach. A later
 # -O wins, so this one overrides libc.mk's -O2.
 gdbee: CFLAGS += -g -O0
+crashee: CFLAGS += -g -O0
 
 # ehtest: C++ exceptions, dynamic and static (libc/crtbegin-eh.s).
 # Not in PROGS: it is C++, built by cxx.sh rather than libc.mk's rule.

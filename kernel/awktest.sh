@@ -80,7 +80,7 @@ UPSTREAM=$(cd "$AWKSRC/bugs-fixed" && ls *.awk | sed 's/\.awk$//')
 # remove each when it can. `space` used to be listed (it wanted sort and
 # `LC_ALL=C cmd`, sbase's and bash's now: /bin/sh is bash on this disk).
 declare -A NEEDS=(
-    [system-status]="a core dump: its .ok expects WCOREDUMP for a SIGABRT, and this kernel writes no core files, so the status is 262, not 518 -- as on Linux with ulimit -c 0"
+    [system-status]="WCOREDUMP in <sys/wait.h>: its .ok expects 518 for a SIGABRT that dumped core, and awk adds the 256 for the core only #ifdef WCOREDUMP. The kernel writes cores and sets 0x80 now (coretest.sh); picolibc's header has no WCOREDUMP yet, so awk says 262"
 )
 cp ../ports/awk/tests/* "$WORK/tests/"
 OURS=$(cd ../ports/awk/tests && ls *.awk | sed 's/\.awk$//')

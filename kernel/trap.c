@@ -28,6 +28,7 @@
  */
 #include "kernel.h"
 #include "console.h"
+#include "coredump.h"
 #include "task.h"
 #include "signal.h"
 #include "vm.h"
@@ -364,6 +365,8 @@ int exception_handler(const u32 *regs, u16 *frame)
          * from user mode, so its stack is its own.
          */
         t->signalled = sig;
+        t->core_dumped = core_dump(t, sig, regs, frame[0], frame_pc(frame),
+                                   frame[3]);
         task_exit(128 + sig);
     }
 

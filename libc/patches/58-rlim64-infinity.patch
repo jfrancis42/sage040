@@ -1,0 +1,20 @@
+picolibc 1.8.12: on m68k, LINUX_RLIM64_INFINITY is 4294967295 -- the
+32-bit value -- where Linux's prlimit64 says unlimited with all 64 bits
+set. getrlimit() goes through prlimit64, so it never recognised
+unlimited and handed back 2^64-1: bash's ulimit printed
+18014398509481983 for every unlimited limit. setrlimit() sent
+4294967295 for RLIM_INFINITY, which Linux reads as 4 GB (this kernel
+already took anything that large as unlimited).
+
+diff -ru a/libos/linux/machine/m68k/linux/linux-resource.h b/libos/linux/machine/m68k/linux/linux-resource.h
+--- a/libos/linux/machine/m68k/linux/linux-resource.h	2026-10-01 21:08:51.761806325 -0600
++++ b/libos/linux/machine/m68k/linux/linux-resource.h	2026-10-01 21:08:51.775508998 -0600
+@@ -62,7 +62,7 @@
+ #define LINUX_RLIMIT_RTTIME     15
+ #define LINUX_RLIM_NLIMITS      16
+ #define LINUX_RLIM_INFINITY   4294967295U
+-#define LINUX_RLIM64_INFINITY 4294967295U
++#define LINUX_RLIM64_INFINITY 18446744073709551615ULL
+ #define LINUX_RLIM_SAVED_MAX  4294967295U
+ #define LINUX_RLIM_SAVED_CUR  4294967295U
+ 

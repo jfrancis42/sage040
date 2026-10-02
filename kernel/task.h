@@ -102,6 +102,7 @@ struct task {
 
     int   exit_status;
     int   signalled;            /* the signal that ended it, or 0      */
+    int   core_dumped;          /* and it left a core: WCOREDUMP       */
     struct task *parent;
     int   pgid;                 /* process group: what ctrl-C reaches  */
     int   sid;                  /* session: the groups a login holds   */
@@ -218,6 +219,10 @@ struct task {
     char  cwd_path[PATH_MAX];
     u32   umask;                /* kept and reported; FAT has no modes  */
     u32   personality;          /* personality(2): kept, inherited; 0 is PER_LINUX */
+    u32   core_cur, core_max;   /* RLIMIT_CORE: the one limit a program
+                                 * can change and that changes anything
+                                 * (coredump.c). Linux's defaults: no
+                                 * core until asked, any size allowed */
 
     /*
      * WHO THE TASK BELONGS TO.

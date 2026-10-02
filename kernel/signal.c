@@ -21,6 +21,7 @@
 #include "cache.h"
 #include "sysint.h"
 #include "poll.h"
+#include "coredump.h"
 #include "task.h"
 #include "wait.h"
 #include "ptregs.h"
@@ -1137,6 +1138,11 @@ void signal_deliver(struct pt_regs *regs)
         case SIG_TERM:
         default:
             t->signalled = sig;
+            /* d[8] then a[7]: pt_regs is packed, so they are the fifteen
+             * consecutive words core_dump wants. */
+            t->core_dumped = core_dump(t, sig, (const u32 *)(const void *)regs,
+                                       regs->sr, regs->pc,
+                                       regs->format);
             task_exit(128 + sig);       /* does not return */
         }
     }

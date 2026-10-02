@@ -251,6 +251,8 @@ void task_cwd_inherit(struct task *t, struct task *from)
         t->cwd_ino = 0;
         strcpy(t->cwd_path, "/");
         t->umask = 022;
+        t->core_cur = 0;
+        t->core_max = RLIM_INFINITY;
         return;
     }
     t->cwd_ino = from->cwd_ino;
@@ -258,6 +260,8 @@ void task_cwd_inherit(struct task *t, struct task *from)
     memcpy(t->cwd_path, from->cwd_path, sizeof(t->cwd_path));
     t->umask = from->umask;     /* inherited the same way, and as often */
     t->personality = from->personality;
+    t->core_cur = from->core_cur;
+    t->core_max = from->core_max;
 }
 
 /*
@@ -1234,8 +1238,9 @@ int task_wait(int pid, int *status, int options)
                 }
                 t->ptrace_exit_told = 1;
                 if (status) {
-                    *status = t->signalled ? t->signalled
-                                           : (t->exit_status & 0xff) << 8;
+                    *status = t->signalled
+                        ? t->signalled | (t->core_dumped ? 0x80 : 0)
+                        : (t->exit_status & 0xff) << 8;
                 }
                 return t->pid;
             }
@@ -1247,8 +1252,9 @@ int task_wait(int pid, int *status, int options)
                 int got = t->pid;
 
                 if (status) {
-                    *status = t->signalled ? t->signalled
-                                           : (t->exit_status & 0xff) << 8;
+                    *status = t->signalled
+                        ? t->signalled | (t->core_dumped ? 0x80 : 0)
+                        : (t->exit_status & 0xff) << 8;
                 }
                 current->waited_utime = t->utime + t->cutime;
                 current->waited_stime = t->stime + t->cstime;
@@ -1332,6 +1338,8 @@ void task_init(void)
      * everybody's -- came out writable by anyone. 022 is what Linux
      * starts init with. */
     current->umask = 022;
+    current->core_cur = 0;
+    current->core_max = RLIM_INFINITY;
     current->pgid = current->pid;
     current->sid = current->pid;
     current->tgid = current->pid;

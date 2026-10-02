@@ -740,6 +740,28 @@ and gdbserver driven over loopback.
 
 ---
 
+### Core files
+
+A program ended by SIGQUIT, SIGILL, SIGTRAP, SIGABRT, SIGBUS, SIGFPE,
+SIGSEGV, SIGSYS, SIGXCPU or SIGXFSZ -- Linux's "core" signals -- writes
+`core` in its working directory (`kernel/coredump.c`), mode 0600, as
+itself, and its parent's wait status has 0x80 (WCOREDUMP) set. Only if
+its `RLIMIT_CORE` allows: the default is Linux's, 0, so `ulimit -c
+unlimited` first. A limit smaller than the core cuts it off there, as
+on Linux, and it still counts as a core. A set-user-id or set-group-id
+program writes none, and an existing `core` is replaced only if it is
+the program's own regular file.
+
+The file is Linux/m68k's ELF core exactly -- NT_PRSTATUS (154 bytes),
+NT_FPREGSET (108) and NT_PRPSINFO (124), the sizes bfd recognises the
+format by -- then a PT_LOAD per run of pages `/proc/<pid>/maps` would
+list, with the contents of the writable ones; text is left for gdb to
+read from the files. So the machine's own gdb opens one:
+`gdb prog core` gives the signal, the backtrace and the variables.
+`RLIMIT_CORE` is the one limit kept per process; `getrlimit`,
+`setrlimit` and `prlimit64` read and set it, and only root raises a
+hard limit.
+
 ## System calls
 
 Forty of them. The convention and the numbers are Linux's; the calls
@@ -1831,6 +1853,7 @@ drive it over its serial line.
 | `kernel/procfstest.sh` | 73 | `/proc` against what a program knows for itself -- getpid, argv, environ, its own inode, sysinfo, where `main` and a local are -- and read by sbase's `cat`, `ls` and `readlink`; refusals, another user's process, stopped and zombie states, standing in `/proc` |
 | `kernel/procpstest.sh` | 19 | procps-ng on the machine: ps, top, free, pgrep, pkill, pidof, pmap, pwdx, vmstat, uptime, w and kill, checked against the pid the shell reported, the machine's memory, the shell's directory and a console login recorded in utmp (counted once, marked ended at logout); and sigqtest -- sigqueue's value and the sender's pid reaching a handler and sigwaitinfo, a nobody refused every way of signalling root's process |
 | `kernel/ptesttest.sh` | 15 | `ptest` and memctl(MEMCTL_PTEST): the 68040's own answer (PTESTR, MMUSR) against the kernel's software walk, on addresses whose answers are known another way -- a program's text read-only at 0x10000000, its stack top writable, address 0 absent, the supervisor map the identity, another process's text a different physical page -- and who may ask (another's address space and the supervisor's are root's). Negative control: not loading the target's URP is reported as DISAGREE |
+| `kernel/coretest.sh` | 19 | core files and RLIMIT_CORE: none at `ulimit -c 0`, one at unlimited, cut off at a small limit, SIGQUIT dumps and SIGTERM does not, WCOREDUMP seen by a waiting parent; the core read by two readers sharing no code -- the machine's gdb (signal, backtrace, a variable's value) and Python on the host (the value at its `nm` address, the PC inside the function that faulted) -- and readelf on the notes' sizes. And an ignored SIGQUIT, set or inherited across exec, does not cut a sleep short, short or 300 s |
 | `kernel/devmodetest.sh` | 13 | device modes enforced: as a user logged in on the console, the console is theirs and opens, ttyS0, nvram and vcsa are refused, klog only reads, null and /dev/tty open; as root afterwards the console is root's again and every open succeeds |
 | `kernel/fpsptest.sh` | 17 | the 68040's missing FPU instructions: 59 results from Motorola's FPSP (`fpsp-trap=on`) and from QEMU, each against the host's libm; two at once; F-line as SIGILL; enabled divide by zero, operand error, signalling NaN and BSUN each a SIGFPE with its si_code; FMOVEM's control-register order |
 | `kernel/edittest.sh` | 41 | the line editor, history, job control, command lists, scripts, shutdown |

@@ -403,6 +403,7 @@ is a 25 MHz 68040, and one of the suites waits for the wall clock.
 | `make fuzztest` | random system calls with hostile arguments; the machine, its memory and its disk come through |
 | `make procpstest` | procps-ng (ps, top, free, pgrep, pkill, vmstat, ...), login records in utmp, and who may signal whom |
 | `make ptesttest` | `ptest`: the MMU asked directly (PTESTR) about addresses with known answers, against the kernel's own walk |
+| `make coretest` | core files: `ulimit -c`, WCOREDUMP, and gdb on the machine reading one back |
 | `make devmodetest` | device modes enforced; a terminal belongs to whoever is logged in on it |
 | `make mounttest` | more than one volume: `mount`, `umount`, partitions, read-only, a journal replayed off the root |
 | `make uemacstest` `make vitest` | the editors |
