@@ -1092,6 +1092,13 @@ struct fsck_report {
  * the CALLER's addresses, and how many address spaces hold it. What a
  * test of sharing needs, and only about the caller's own memory -- a
  * physical address says nothing another process could use.
+ *
+ * memctl(MEMCTL_PTEST, sizeof(ptestinfo), &ptestinfo): ask the MMU
+ * itself (PTESTR, then MMUSR) what it makes of `va` in process `pid`'s
+ * address space (0: the caller's), or with `super` in the supervisor's
+ * map, and the descriptor the kernel's own walk finds there -- two
+ * independent answers to one question. Another process's, or the
+ * supervisor's, is root's.
  */
 #define __NR_memctl    1004
 
@@ -1173,6 +1180,27 @@ struct irqstats {
 };
 #define MEMCTL_STATS   1
 #define MEMCTL_PAGE    2
+#define MEMCTL_PTEST   3
+
+struct ptestinfo {
+    u32 pid;                    /* in: 0 for the caller               */
+    u32 va;                     /* in                                 */
+    u32 super;                  /* in: the supervisor's map instead   */
+    u32 mmusr;                  /* out: what the MMU said             */
+    u32 desc;                   /* out: the page descriptor the walk found,
+                                 * 0 when no table reaches it          */
+};
+
+/* MMUSR, 68040 (MC68040 User's Manual, 3.6). */
+#define MMUSR_R        0x0001   /* resident: the walk found a page    */
+#define MMUSR_T        0x0002   /* matched a transparent translation  */
+#define MMUSR_WP       0x0004
+#define MMUSR_M        0x0010
+#define MMUSR_CM       0x0060
+#define MMUSR_S        0x0080
+#define MMUSR_G        0x0400
+#define MMUSR_B        0x0800   /* bus error during the table walk    */
+#define MMUSR_PA       0xfffff000
 
 struct memstats {
     u32 pages_total, pages_free;

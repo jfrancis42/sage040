@@ -245,6 +245,11 @@ u32  vm_map(struct addrspace *as, u32 va, u32 pa, int flags);
  */
 u32  vm_translate(struct addrspace *as, u32 va, int write);
 
+/* PTESTR on `va` in `as` (or the supervisor's map): MMUSR, and in
+ * *desc the page descriptor the software walk finds there (vm.c). */
+u32  vm_ptest(struct addrspace *as, u32 va, int super, u32 *desc,
+               struct addrspace *back);
+
 /* Make this the address space user mode sees. Null means none, which is
  * what the kernel runs with when no program is loaded. */
 void vm_switch(struct addrspace *as);

@@ -226,7 +226,7 @@ the POSIX layer added to it.
 | `ports/sed`, `ports/grep` | GNU sed 4.10 and GNU grep 3.12 |
 | `ports/awk` | the one true awk |
 | `ports/uemacs`, `ports/vi` | uEmacs/PK and neatvi |
-| `system/` | the system's own programs: `ifconfig`, `ping`, `netstat`, `route`, `arp`, `host`, `ntpdate`, `fsck`, `swapon`, `nvram`, `irqs`, `stty`, `df`, `id`, `who`, `w`, `uptime`, and `msh`, the system shell (`/bin/sh` is bash) |
+| `system/` | the system's own programs: `ifconfig`, `ping`, `netstat`, `route`, `arp`, `host`, `ntpdate`, `fsck`, `swapon`, `nvram`, `irqs`, `ptest`, `stty`, `df`, `id`, `who`, `w`, `uptime`, and `msh`, the system shell (`/bin/sh` is bash) |
 | `apps/` | demonstrations and test programs: the graphics demos below, `httpd`, `fetch`, `fbmap`, `pagetest` |
 
 ### The graphics demos
@@ -402,6 +402,7 @@ is a 25 MHz 68040, and one of the suites waits for the wall clock.
 | `make grepsuite`, `make sedsuite` | GNU grep's and sed's own test suites, on the machine, against the host's run of them (hours; not in `make test`) |
 | `make fuzztest` | random system calls with hostile arguments; the machine, its memory and its disk come through |
 | `make procpstest` | procps-ng (ps, top, free, pgrep, pkill, vmstat, ...), login records in utmp, and who may signal whom |
+| `make ptesttest` | `ptest`: the MMU asked directly (PTESTR) about addresses with known answers, against the kernel's own walk |
 | `make devmodetest` | device modes enforced; a terminal belongs to whoever is logged in on it |
 | `make mounttest` | more than one volume: `mount`, `umount`, partitions, read-only, a journal replayed off the root |
 | `make uemacstest` `make vitest` | the editors |

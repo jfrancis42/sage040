@@ -2356,6 +2356,31 @@ static s32 do_syscall(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5,
             }
             return sys_store(a3, &m, a2 < sizeof(m) ? a2 : sizeof(m));
         }
+        if (a1 == MEMCTL_PTEST) {
+            struct ptestinfo pt;
+            struct task *t = current;
+            int err;
+
+            memset(&pt, 0, sizeof(pt));
+            err = fetch(&pt, a3, a2 < sizeof(pt) ? a2 : sizeof(pt));
+            if (err < 0) {
+                return err;
+            }
+            if ((pt.pid != 0 && pt.pid != (u32)current->pid) || pt.super) {
+                if (current->euid != 0) {
+                    return -EPERM;
+                }
+                if (pt.pid != 0 && !(t = task_find((int)pt.pid))) {
+                    return -ESRCH;
+                }
+            }
+            if (!pt.super && !t->as) {
+                return -ENODEV;         /* a kernel task has no user map */
+            }
+            pt.mmusr = vm_ptest(pt.super ? 0 : t->as, pt.va, pt.super, &pt.desc,
+                                current->as);
+            return sys_store(a3, &pt, a2 < sizeof(pt) ? a2 : sizeof(pt));
+        }
         if (a1 == MEMCTL_PAGE) {
             struct pageinfo pi;
 

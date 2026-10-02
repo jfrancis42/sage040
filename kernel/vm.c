@@ -52,6 +52,7 @@
 #include "console.h"
 #include "errno.h"
 #include "string.h"
+#include "wait.h"           /* irq_save, for vm_ptest */
 
 /* --- descriptor bits ----------------------------------------------- */
 
@@ -1649,6 +1650,67 @@ void vm_kernel_present(u32 va, int present)
         pt[PAGE_INDEX(va)] = 0;
     }
     pflusha();
+}
+
+/*
+ * ASK THE MMU, not the tables: PTESTR, then MMUSR.
+ *
+ * Everything else in this file believes the walk it does in software.
+ * This is the one place that asks the hardware the same question,
+ * independently, so a disagreement -- a descriptor written and not
+ * flushed, a table the walker sees differently from us -- can be seen
+ * rather than inferred from its consequences. It cannot replace the
+ * software walk: demand paging and swap keep their state in INVALID
+ * descriptors, and PTEST says nothing about those beyond "not resident".
+ *
+ * The READ form only. PTESTR sets the descriptors' used bits, as a read
+ * would; PTESTW would set the modified bit too, which is a write that
+ * never happened. `super` asks about the supervisor's map (SRP) rather
+ * than the address space's (URP).
+ *
+ * The address space is loaded for the length of the instruction, with
+ * interrupts masked, and `back` -- the caller's -- put back after. Nothing in between
+ * touches user memory, so borrowing URP is safe.
+ */
+static u32 walk_desc(u32 root_pa, u32 va)
+{
+    u32 d = table(root_pa)[ROOT_INDEX(va)];
+
+    if (!(d & UDT_RESIDENT)) {
+        return 0;
+    }
+    d = table(d & PTR_TABLE_MASK)[PTR_INDEX(va)];
+    if (!(d & UDT_RESIDENT)) {
+        return 0;
+    }
+    return table(d & PAGE_TABLE_MASK)[PAGE_INDEX(va)];
+}
+
+u32 vm_ptest(struct addrspace *as, u32 va, int super, u32 *desc,
+             struct addrspace *back)
+{
+    u32 mmusr, old_dfc;
+    u16 sr;
+
+    *desc = walk_desc(super || !as ? kernel_root : as->root, va);
+    sr = irq_save();
+    if (as) {
+        set_urp(as->root);
+        pflusha();
+    }
+    __asm__ volatile("movec %%dfc,%0\n\t"
+                     "movec %2,%%dfc\n\t"
+                     "ptestr (%3)\n\t"
+                     "movec %%mmusr,%1\n\t"
+                     "movec %0,%%dfc"
+                     : "=&d"(old_dfc), "=&d"(mmusr)
+                     : "d"(super ? 5 : 1), "a"(va)
+                     : "memory");
+    if (as) {
+        vm_switch(back);
+    }
+    irq_restore(sr);
+    return mmusr;
 }
 
 void vm_switch(struct addrspace *as)
