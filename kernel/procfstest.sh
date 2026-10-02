@@ -182,9 +182,10 @@ free_=$(awk '/^MemFree:/ {print $2}' "$WORK/meminfo.out")
 [ -n "$free_" ] && [ "$free_" -le "$total" ] && [ "$free_" -gt 0 ]
 check "  and MemFree is below it" $?
 
-# What filesystem the disk holds: the host made it.
-[ "$(head -1 "$WORK/mounts.out")" = "/dev/hda1 / ext2 rw 0 0" ]
-check "/proc/mounts says the root is the ext2 volume the host made" $?
+# What filesystem the disk holds: the host made it, with a journal
+# (fsimg's default), which Linux calls ext3.
+[ "$(head -1 "$WORK/mounts.out")" = "/dev/hda1 / ext3 rw 0 0" ]
+check "/proc/mounts says the root is the journaled (ext3) volume the host made" $?
 
 grep -qE '^[0-9a-f]{8}-[0-9a-f]{8} r-xp 00000000 03:01 [0-9]+ +/bin/cat$' \
     "$WORK/maps.out"

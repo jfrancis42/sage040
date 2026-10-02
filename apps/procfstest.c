@@ -513,7 +513,7 @@ static void machine(void)
 
     n = slurp("/proc/mounts", big, sizeof(big));
     report("mounts: the root volume, and /proc itself",
-           n > 0 && startswith(big, "/dev/hda1 / ext2 rw 0 0\n") &&
+           n > 0 && startswith(big, "/dev/hda1 / ext3 rw 0 0\n") &&
            strstr_(big, "proc /proc proc rw 0 0\n") != 0);
 
     n = slurp("/proc/cpuinfo", big, sizeof(big));

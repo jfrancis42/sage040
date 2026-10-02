@@ -6158,6 +6158,9 @@ static int ext2_mount_list(int i, struct mount_entry *m)
     memset(m, 0, sizeof(*m));
     strncpy(m->source, v->v_dev->name, sizeof(m->source) - 1);
     m->flags = v->rdonly ? MS_RDONLY : 0;
+    /* ext3's on-disk format is ext2's plus a journal, and Linux reports
+     * a volume by the format: df -T and findmnt read it from here. */
+    strcpy(m->type, v->v_journal_on ? "ext3" : "ext2");
     if (!v->parent) {
         strcpy(m->dir, "/");
         /* The root is mounted from the whole disk and lives in its

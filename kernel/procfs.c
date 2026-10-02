@@ -900,9 +900,9 @@ static void gen_vmstat(struct pbuf *b)
 
 /*
  * Every volume, from the root filesystem's own table (vfs_mount_list),
- * then the things that are not volumes. A volume whose type is ext2
- * with a journal is ext3 to Linux; it says ext2 here because that is
- * what the driver calls itself and what `mount -t` takes.
+ * then the things that are not volumes. A journaled volume says ext3,
+ * as on Linux -- the format, not the driver, which is the same one
+ * (`mount -t` takes either name).
  */
 static void gen_mounts(struct pbuf *b)
 {
@@ -915,7 +915,7 @@ static void gen_mounts(struct pbuf *b)
         puts_(b, " ");
         puts_(b, m.dir);
         puts_(b, " ");
-        puts_(b, vfs_fs_name());
+        puts_(b, m.type[0] ? m.type : vfs_fs_name());
         puts_(b, (m.flags & MS_RDONLY) ? " ro 0 0\n" : " rw 0 0\n");
     }
     puts_(b, "devtmpfs /dev devtmpfs rw 0 0\n");

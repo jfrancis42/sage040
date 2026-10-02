@@ -48,6 +48,8 @@ struct mount_entry {
     char source[16];            /* "hda2"                               */
     char dir[256];              /* where, as an absolute path           */
     u32  flags;                 /* MS_RDONLY                            */
+    char type[8];               /* "ext3" for a journaled ext2 volume, as
+                                 * Linux names it; empty: the driver's  */
 };
 
 struct fs_type {

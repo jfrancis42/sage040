@@ -172,8 +172,8 @@ while IFS= read -r line; do
 done < <(sed -n '/^mnttest: start/,/^mnttest: [0-9]* checks/p' "$CUR")
 grep -qE '^mnttest: [0-9]+ checks, 0 failed$' "$CUR"
 check "mnttest ran to the end, nothing failed" $?
-grep -qx '/dev/hda2 /mnt ext2 rw 0 0' "$CUR"
-check "mount(8) with no arguments lists hda2 on /mnt" $?
+grep -qx '/dev/hda2 /mnt ext3 rw 0 0' "$CUR"
+check "mount(8) with no arguments lists hda2 on /mnt, as ext3: it has a journal" $?
 grep -qE '^SAGE040 .*%  /$' "$CUR" && grep -qE '^DATA .*%  /mnt$' "$CUR"
 check "df prints a line for each volume, by label, with where it is mounted" $?
 # From the line that typed it (prompt and all) to its end marker.

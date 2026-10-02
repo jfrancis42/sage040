@@ -187,7 +187,7 @@ int main(void)
         printf("mnttest: %d checks, %d failed\n", checks, failures + 1);
         return 1;
     }
-    check("/proc/mounts lists it", has_line("/proc/mounts", "/dev/hda2 /mnt ext2 rw"));
+    check("/proc/mounts lists it", has_line("/proc/mounts", "/dev/hda2 /mnt ext3 rw"));   /* journaled */
     check("its file is there", file_is("/mnt/hello.txt", "hello from hda2\n"));
     check("and the directory's own file is hidden while it is",
           access("/mnt/shadow.txt", F_OK) != 0 && errno == ENOENT);
