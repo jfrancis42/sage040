@@ -123,6 +123,7 @@ system/swapon
 system/swapoff
 apps/limits
 system/irqs
+system/ptest
 apps/fsstress
 system/nvram
 libc/test/inettest
