@@ -380,16 +380,15 @@ program linked WITHOUT the specs -- by hand, with crt0 and nothing else
 ### That it is the same compiler
 
 The point of a native toolchain is not that it runs but that it is
-**the same compiler**. `kernel/nativetest.sh` (15 checks) compiles on
+**the same compiler**. `kernel/nativetest.sh` (22 checks) compiles on
 the machine and compares: the object files it produces, disassembled,
 are the cross compiler's -- same instructions, same order, for the same
 source at the same optimisation level.
 
-One genuine difference is worth knowing: **the raw object files are not
-byte-identical**. The native assembler leaves uninitialised bytes in
-section padding where the cross one writes zeroes, so `cmp` on two
-`.o` files fails while every section a tool reads is the same. Compare
-disassembly, or the linked output, not the bytes.
+**The object files are byte-identical**, and the suite checks that with
+`cmp`. They once differed in two bytes of padding, which BFD writes by
+seeking a byte or three past the end of the file: bytes the filesystem
+must read back as zero, and at the time did not.
 
 **It needs a bigger machine than the default.** gcc compiling anything
 real wants more than 64 MB, so the suite runs with `NATIVE_RAM_MB=256`.

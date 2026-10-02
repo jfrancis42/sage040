@@ -164,7 +164,11 @@ for f in libc.a libc.so liblinux.a libm.a; do
     fsimg put "$SAGE_LIBC/lib/$f" /usr/lib/
 done
 fsimg put "$("$CROSS_CC" -mcpu=68040 -print-libgcc-file-name)" /usr/lib/
-fsimg put ../libc/crt0.o ../libc/crt0-dyn.o /usr/lib/
+# Every start file the specs name: crtbegin-eh.o and crtend-eh.o too,
+# or every link fails with "cannot find crtbegin-eh.o" (libc/Makefile's
+# install-usr is the list to keep this in step with).
+make -s -C ../libc crt0.o crt0-dyn.o crtbegin-eh.o crtend-eh.o >/dev/null || exit 1
+fsimg put ../libc/crt0.o ../libc/crt0-dyn.o ../libc/crtbegin-eh.o ../libc/crtend-eh.o /usr/lib/
 fsimg put ../libc/sage040.ld /usr/lib/
 fsimg put ../libc/sage040.specs /usr/lib/
 # And the specs file gcc reads at startup, in its own version dir, so a
@@ -332,14 +336,13 @@ check "plain 'gcc -O2 maths.c' -- no flags -- builds floating point, and it runs
 # loosening -- it is the difference between comparing the compiler's
 # output and comparing the padding between sections.
 #
-# The raw files do differ, in two bytes: the alignment padding before
-# the section header table and before .comment. The native assembler
-# leaves 0x1b and 0x04 there where the cross one leaves zeroes, which
-# means one of them is writing whatever was in the buffer. It is
-# harmless -- nothing reads those bytes, and every section a tool
-# looks at is identical -- but it is worth knowing, because it also
-# means object files from this machine are not reproducible byte for
-# byte.
+# And then the raw files, byte for byte. They used to differ in two
+# bytes -- the padding before the section header table and before
+# .comment, 0x1b and 0x04 where the cross assembler left zeroes. BFD
+# writes those by seeking one to three bytes PAST the end of the file
+# and writing, so they are bytes the filesystem must read back as zero;
+# they now do (libctest's "seek past the end" checks), and the objects
+# are identical.
 OBJDUMP=${OBJDUMP:-$CROSS_BIN/m68k-elf-objdump}
 for f in hello maths; do
     if [ -s "$WORK/$f.native.o" ] && [ -s "$WORK/$f.host.o" ]; then
@@ -360,6 +363,8 @@ for f in hello maths; do
         b=$("$OBJDUMP" -t -r "$WORK/$f.host.o"   2>/dev/null | tail -n +3)
         [ "$a" = "$b" ]
         check "  and so are the symbols and the relocations" $?
+        cmp -s "$WORK/$f.native.o" "$WORK/$f.host.o"
+        check "  and the object FILE is byte-identical: reproducible" $?
     else
         check "$f.o: .text/.rodata/.data identical to the CROSS compiler's" 1
     fi
