@@ -1812,9 +1812,17 @@ static int do_setpgid(int pid, int pgid)
     if (pgid == 0) {
         pgid = t->pid;
     }
+    /*
+     * The group has to exist in this session -- and a ZOMBIE is still a
+     * member until it is reaped, as on Linux. bash puts a pipeline's
+     * stages into the first stage's group; when that stage is a builtin
+     * that has already finished (printf x | tr x y | cat), the later
+     * stages join a group whose only member is a zombie, and refusing
+     * them printed "child setpgid (16 to 15): Not owner" at the prompt.
+     */
     if (pgid != t->pid) {
         for (i = 0; (m = task_nth(i)) != 0; i++) {
-            if (m->pgid == pgid && m->sid == t->sid && m->state != TASK_ZOMBIE) {
+            if (m->pgid == pgid && m->sid == t->sid) {
                 break;
             }
         }

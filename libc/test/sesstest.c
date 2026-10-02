@@ -384,6 +384,67 @@ static void hup_setup(struct hup *h, int *master)
     pipe(h->ready);
 }
 
+/*
+ * A process group whose only member is a ZOMBIE still exists, for
+ * setpgid, until the zombie is reaped -- Linux's rule, and what bash
+ * relies on when a pipeline's first stage (a builtin) finishes before
+ * the later stages join its group. Exit status: 0 good, else which part.
+ */
+static int zombie_state(pid_t p)
+{
+    char path[32], buf[128], *c;
+    int fd;
+    ssize_t n;
+
+    snprintf(path, sizeof(path), "/proc/%d/stat", (int)p);
+    fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        return 0;
+    }
+    n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0) {
+        return 0;
+    }
+    buf[n] = '\0';
+    c = strrchr(buf, ')');
+    return c && c[1] == ' ' && c[2] == 'Z';
+}
+
+static int t_zombie_group(void *unused)
+{
+    pid_t a, b;
+    int st, i;
+
+    (void)unused;
+    a = fork();
+    if (a == 0) {
+        setpgid(0, 0);
+        _exit(0);
+    }
+    for (i = 0; i < 500 && !zombie_state(a); i++) {
+        usleep(10000);
+    }
+    if (!zombie_state(a)) {
+        return 1;                       /* never saw it a zombie */
+    }
+    b = fork();
+    if (b == 0) {
+        _exit(setpgid(0, a) == 0 ? 0 : 1);
+    }
+    waitpid(b, &st, 0);
+    if (!WIFEXITED(st) || WEXITSTATUS(st) != 0) {
+        return 2;                       /* refused: the bug */
+    }
+    waitpid(a, &st, 0);                 /* reaped: the group is gone */
+    b = fork();
+    if (b == 0) {
+        _exit(setpgid(0, a) < 0 && errno == EPERM ? 0 : 1);
+    }
+    waitpid(b, &st, 0);
+    return WIFEXITED(st) && WEXITSTATUS(st) == 0 ? 0 : 3;
+}
+
 int main(void)
 {
     struct pt p;
@@ -474,6 +535,11 @@ int main(void)
     p.master = new_pty(p.name, sizeof(p.name));
     check("setsid() leaves the old terminal behind", in_session(t_setsid_drops, &p) == 0);
     close(p.master);
+
+    r = in_session(t_zombie_group, 0);
+    printf("    (zombie group: %d)\n", r);
+    check("setpgid joins a group whose only member is a zombie; once reaped, EPERM",
+          r == 0);
 
     printf("sesstest: %d checks, %d failed\n", checks, failures);
     return failures != 0;
