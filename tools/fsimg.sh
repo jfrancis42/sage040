@@ -48,6 +48,18 @@
 #   fsimg.sh IMG fsck [-p]           check it; -p repairs
 #   fsimg.sh IMG batch               debugfs commands on stdin, one session
 #   fsimg.sh IMG offset              where the filesystem starts, in bytes
+#   fsimg.sh IMG ports               the ports installed, from their records
+#   fsimg.sh IMG uninstall NAME      remove what port NAME installed
+#
+# PORTS. With FSIMG_PORT=NAME in the environment -- disk.mk sets it for
+# every Makefile in ports/NAME/ -- each file and link that put and
+# symlink make is RECORDED in /var/lib/ports/NAME on the disk itself,
+# one path per line, which is what uninstall removes. A path belongs to
+# the LAST port that wrote it: recording it takes it off every other
+# port's list, so removing a port that replaced another's file (procps'
+# ps over sbase's) removes that file, which was already not the other
+# port's any more. Directories are not recorded; uninstall removes the
+# ones it leaves empty, except the system's own.
 #
 # The offset comes from PART_OFFSET in the environment, or from the
 # partition table in the image, or is zero for an image that is nothing
@@ -152,6 +164,48 @@ EOT
     done | debugfs -w -f - "$DEV" >/dev/null 2>&1
 }
 
+# RECORDING WHAT A PORT INSTALLED (see PORTS above). Three debugfs
+# sessions however many paths: list the records, dump them all, write
+# back the ones that changed.
+PORTS_DIR=/var/lib/ports
+record() {                      # paths on stdin, one per line
+    [ -n "${FSIMG_PORT:-}" ] || { cat >/dev/null; return 0; }
+    local w p changed=() n
+    w=$(mktemp -d) || die "record: no temporary directory"
+    grep . | LC_ALL=C sort -u > "$w/new"
+    [ -s "$w/new" ] || { rm -rf "$w"; return 0; }
+    fs_mkdir_p "$PORTS_DIR"
+    for n in $(dbg_ro "ls -p $PORTS_DIR" | dbg_clean | awk -F/ 'NF > 5 && $6 != "." && $6 != ".." { print $6 }'); do
+        echo "dump $PORTS_DIR/$n $w/$n"
+    done | debugfs -f - "$DEV" >/dev/null 2>&1
+    for p in "$w"/*; do
+        n=$(basename "$p")
+        [ "$n" = new ] && continue
+        if [ "$n" = "$FSIMG_PORT" ]; then
+            LC_ALL=C sort -u "$p" "$w/new" > "$p.x"
+        else
+            grep -vxF -f "$w/new" "$p" > "$p.x"
+        fi
+        cmp -s "$p" "$p.x" || changed+=("$n")
+        mv "$p.x" "$p"
+    done
+    if [ ! -f "$w/$FSIMG_PORT" ]; then
+        cp "$w/new" "$w/$FSIMG_PORT"
+        changed+=("$FSIMG_PORT")
+    fi
+    for n in ${changed[@]+"${changed[@]}"}; do
+        echo "rm $(q "$PORTS_DIR/$n")"
+        echo "write $(q "$w/$n") $(q "$PORTS_DIR/$n")"
+    done | debugfs -w -f - "$DEV" >/dev/null 2>&1
+    rm -rf "$w"
+}
+
+# Every file and link under a host directory, as the paths they get
+# under DST on the image.
+tree_paths() {                  # tree_paths SRCDIR DST
+    (cd "$1" && find . ! -type d) | sed "s|^\./|${2%/}/|"
+}
+
 fs_mkdir_p() {                  # every component, parents first
     local path=$1 acc=""
     local IFS=/
@@ -227,6 +281,7 @@ put)
         # 300 files is 300 process starts otherwise, and `make install`
         # does several of them.
         fs_put_tree "$SRC" "$DST"
+        tree_paths "$SRC" "$DST" | record
         exit 0
     fi
     if [ "${1:-}" = "-m" ]; then MODE=$2; shift 2; fi
@@ -247,6 +302,7 @@ put)
 
     cmds=()
     modes=()
+    put=()
     for SRC in "$@"; do
         #
         # A DIRECTORY AMONG THE SOURCES IS COPIED, not refused.
@@ -260,8 +316,10 @@ put)
         if [ -d "$SRC" ]; then
             if [ -n "$DSTDIR" ]; then
                 fs_put_tree "$SRC" "$DSTDIR/$(basename "$SRC")"
+                tree_paths "$SRC" "$DSTDIR/$(basename "$SRC")" | record
             else
                 fs_put_tree "$SRC" "$DST"
+                tree_paths "$SRC" "$DST" | record
             fi
             continue
         fi
@@ -277,6 +335,7 @@ put)
         fi
         # write refuses an existing name, so the old one goes first.
         cmds+=("rm $(q "$TARGET")" "write $(q "$SRC") $(q "$TARGET")")
+        put+=("$TARGET")
         # sif sets the WHOLE of i_mode, so the file-type bits have to be
         # part of it: a mode of plain 0755 leaves an inode that is not a
         # regular file, which e2fsck reports and the kernel will not run.
@@ -300,6 +359,7 @@ put)
         echo "$out" | dbg_clean >&2
         die "could not write into $DST"
     fi
+    printf '%s\n' ${put[@]+"${put[@]}"} | record
     ;;
 get)
     if [ "${1:-}" = "-r" ]; then
@@ -398,6 +458,7 @@ symlink)
     fi
     dbg "symlink $(q "$LNK") $(q "$TGT")" >/dev/null
     fs_exists "$LNK" || die "could not make $LNK"
+    printf '%s\n' "$LNK" | record
     ;;
 rmdir)
     D=${1:?rmdir: need a path}
@@ -508,6 +569,33 @@ batch)
     ;;
 offset)
     echo "$OFF"
+    ;;
+ports)
+    dbg_ro "ls -p $PORTS_DIR" | dbg_clean |
+        awk -F/ 'NF > 5 && $6 != "." && $6 != ".." { print $6 }' | sort
+    ;;
+uninstall)
+    NAME=${1:?uninstall: need a port name}
+    LIST=$(dbg_ro "cat $(q "$PORTS_DIR/$NAME")" | dbg_clean)
+    if [ -z "$LIST" ] || echo "$LIST" | grep -q 'File not found'; then
+        die "no record of a port called $NAME"
+    fi
+    # The files and links, in one session; then the record.
+    printf '%s\n' "$LIST" | while read -r p; do
+        [ -n "$p" ] && echo "rm $(q "$p")"
+    done | debugfs -w -f - "$DEV" >/dev/null 2>&1
+    dbg "rm $(q "$PORTS_DIR/$NAME")" >/dev/null
+    # The directories it leaves empty, deepest first. rmdir refuses one
+    # that is not empty, so trying is the test; the system's own are
+    # never tried.
+    printf '%s\n' "$LIST" | while read -r p; do
+        d=$(dirname "$p")
+        while [ "$d" != / ] && [ "$d" != . ]; do echo "$d"; d=$(dirname "$d"); done
+    done | sort -u | awk '{ print length, $0 }' | sort -rn | cut -d' ' -f2- |
+    grep -vxE '/(bin|sbin|lib|etc|usr|var|tmp|home|root|dev|proc|mnt|opt|srv)|/usr/(bin|sbin|lib|include|share|libexec|src|local)|/var/(lib|log|run|tmp|cache)|/var/lib/ports|/usr/share/(man|doc|info)' |
+    while read -r d; do echo "rmdir $(q "$d")"; done |
+        debugfs -w -f - "$DEV" >/dev/null 2>&1
+    echo "$NAME: $(printf '%s\n' "$LIST" | grep -c .) files removed"
     ;;
 *)
     die "unknown command: $CMD"

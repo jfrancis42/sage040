@@ -117,7 +117,15 @@ A single port, if that is all you want:
 
 ```bash
 make -C ports/bash install
+make -C ports/bash uninstall    # exactly what that install put there
 ```
+
+Every port's install is recorded on the machine itself, in
+`/var/lib/ports/NAME`: one path per line, each file and link the install
+wrote. A file belongs to the last port that wrote it, so removing a port
+that replaced another's file removes that file. `tools/fsimg.sh hd.img
+ports` lists what is recorded. A port installed before the records
+existed has none until it is installed again.
 
 A port finds the libraries other ports built through **`ports/pkg-config`**,
 which `ports/cross.sh` hands every configure script as `PKG_CONFIG`: the

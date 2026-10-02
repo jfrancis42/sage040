@@ -173,6 +173,52 @@ check "  and the deepest file in it is still right" $?
 e2fsck -fn "$IMG?offset=$OFF" >>"$LOG" 2>&1
 check "  and e2fsck finds no unconnected directory" $?
 
+# --- ports: what an install recorded, and uninstall ------------------
+# Two pretend ports. A puts two files, a tree and a link; B puts one
+# file and REPLACES one of A's. The record must follow the last writer,
+# and uninstalling A must take away exactly what is still A's.
+PT=$SCRATCH/fsimgtest.ports; rm -rf "$PT"; mkdir -p "$PT/tree/sub"
+echo a1 > "$PT/a1"; echo a2 > "$PT/a2"; echo b1 > "$PT/b1"
+echo t1 > "$PT/tree/t1"; echo "with space" > "$PT/tree/sub/name with space"
+echo keep > "$PT/keep"
+"$F" "$IMG" put "$PT/keep" /bin/keep                       # not a port's
+FSIMG_PORT=pa "$F" "$IMG" put "$PT/a1" "$PT/a2" /bin/ >>"$LOG" 2>&1
+FSIMG_PORT=pa "$F" "$IMG" put -r "$PT/tree" /usr/share/pa >>"$LOG" 2>&1
+FSIMG_PORT=pa "$F" "$IMG" symlink a1 /bin/a-link >>"$LOG" 2>&1
+FSIMG_PORT=pb "$F" "$IMG" put "$PT/b1" /bin/b1 >>"$LOG" 2>&1
+FSIMG_PORT=pb "$F" "$IMG" put "$PT/b1" /bin/a2 >>"$LOG" 2>&1  # over A's
+FSIMG_PORT=pa "$F" "$IMG" put "$PT/a1" /bin/a1 >>"$LOG" 2>&1  # again: no duplicate
+want_a="/bin/a-link
+/bin/a1
+/usr/share/pa/sub/name with space
+/usr/share/pa/t1"
+[ "$("$F" "$IMG" cat /var/lib/ports/pa)" = "$want_a" ]
+ok "A's record: its files, tree and link, once each, less the one B took"
+[ "$("$F" "$IMG" cat /var/lib/ports/pb)" = "$(printf '/bin/a2\n/bin/b1')" ]
+ok "B's record has the file it replaced"
+[ "$("$F" "$IMG" ports | tr '\n' ' ')" = "pa pb " ]
+ok "ports lists both"
+"$F" "$IMG" uninstall pa >>"$LOG" 2>&1
+ok "uninstall pa exits 0"
+gone=0
+for p in /bin/a1 /bin/a-link /usr/share/pa/t1 "/usr/share/pa/sub/name with space" \
+         /var/lib/ports/pa; do
+    "$F" "$IMG" exists "$p" && gone=1
+done
+[ $gone = 0 ]; ok "  and every path it recorded is gone, the record too"
+"$F" "$IMG" exists /usr/share/pa; notok "  and the directory it emptied"
+"$F" "$IMG" exists /bin/a2 && "$F" "$IMG" exists /bin/b1 && "$F" "$IMG" exists /bin/keep
+ok "  but B's files, and one no port installed, are untouched"
+"$F" "$IMG" isdir /usr/share; ok "  and a system directory left empty stays"
+"$F" "$IMG" uninstall pa >/dev/null 2>&1; notok "uninstalling it twice fails"
+"$F" "$IMG" put "$PT/a1" /bin/unrecorded >>"$LOG" 2>&1
+! "$F" "$IMG" cat /var/lib/ports/pb | grep -qx /bin/unrecorded &&
+  [ "$("$F" "$IMG" ports | tr '\n' ' ')" = "pb " ]
+ok "a put with no port is recorded nowhere"
+"$F" "$IMG" fsck >>"$LOG" 2>&1; ok "e2fsck: clean after all of it"
+"$F" "$IMG" uninstall pb >>"$LOG" 2>&1
+"$F" "$IMG" rm /bin/keep /bin/unrecorded
+
 # --- negative controls ------------------------------------------------
 # A suite that cannot fail is measuring nothing.
 "$F" "$IMG" exists /never-existed;  notok "exists reports a missing file as missing"

@@ -1857,7 +1857,7 @@ drive it over its serial line.
 | `kernel/journaltest.sh` | 30 | the journal: the machine stopped (a kernel knob) after a commit block and before one, each replayed by the host's e2fsck, by Linux mounting it and by this kernel; killed five times mid-storm, never needing more than the journal; the journal superblock and a commit block destroyed; and the control, the same storm with no journal, leaving damage e2fsck finds |
 | `kernel/linuxfstest.sh` | 31 | the volume handed back and forth with Linux's own ext3 driver (needs sudo): a tree of every size boundary, permission bit, owner (past 65535 too), link kind and name shape, listed by both down to inode, time and a hash of every byte; changed by sbase's tools here and coreutils there, each side's listing equal to the other's; setgid inheritance; and the same 3000-call storm on both, three seeds, every call's result and the final trees identical |
 | `kernel/fattest.sh` | 10 | the FAT16 fallback, which is no longer the machine's own filesystem |
-| `tools/fsimgtest.sh` | 40 | the host's end of the disk, which every other suite stages its files through |
+| `tools/fsimgtest.sh` | 51 | the host's end of the disk, which every other suite stages its files through; and the ports' install records -- each path once, owned by the last port to write it, a name with a space in it, and an uninstall that removes exactly what is still the port's and the directories it emptied, never a system one |
 | `kernel/uemacstest.sh` `kernel/vitest.sh` | 9, 9 | the two editors |
 | `kernel/awktest.sh` | 40 | awk's own regression tests, and eleven more against the host's awk |
 | `kernel/sedtest.sh` | 21 | sed, against the same sed built for the host |

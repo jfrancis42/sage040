@@ -44,17 +44,28 @@ TOTAL_SECTORS := $(shell expr $(DISK_MB) \* 2048)
 FS_SECTORS    := $(shell expr $(TOTAL_SECTORS) - $(PART_LBA))
 PART_OFFSET   := $(shell expr $(PART_LBA) \* 512)
 
+# A Makefile in ports/NAME/ IS the port NAME, and what its $(FSIMG)
+# installs is recorded on the disk in /var/lib/ports/NAME (tools/fsimg.sh,
+# PORTS) -- which is what `make -C ports/NAME uninstall` removes.
+PORT ?= $(if $(filter ports,$(notdir $(patsubst %/,%,$(dir $(CURDIR))))),$(notdir $(CURDIR)))
+
 # Everything that touches the filesystem goes through this.
-FSIMG := PART_OFFSET=$(PART_OFFSET) FS_BLOCK_SIZE=$(FS_BLOCK_SIZE) \
+FSIMG := FSIMG_PORT=$(PORT) PART_OFFSET=$(PART_OFFSET) FS_BLOCK_SIZE=$(FS_BLOCK_SIZE) \
          $(TOPDIR)/tools/fsimg.sh $(DISK)
 
 # The same thing in absolute terms, for a recipe that has cd'd into a
 # build directory: $(FSIMG) is relative to the project root and names
 # nothing once the shell has moved.
-ABS_FSIMG := PART_OFFSET=$(PART_OFFSET) FS_BLOCK_SIZE=$(FS_BLOCK_SIZE) \
+ABS_FSIMG := FSIMG_PORT=$(PORT) PART_OFFSET=$(PART_OFFSET) FS_BLOCK_SIZE=$(FS_BLOCK_SIZE) \
          $(abspath $(TOPDIR)/tools/fsimg.sh) $(abspath $(DISK))
 
 .PHONY: disk disk-ls disk-fsck disk-clean journal
+
+ifneq ($(PORT),)
+.PHONY: uninstall
+uninstall: $(DISK)
+	$(FSIMG) uninstall $(PORT)
+endif
 
 disk: $(DISK)
 
