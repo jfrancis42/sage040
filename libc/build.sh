@@ -238,14 +238,16 @@ cp "$HERE/picolibc/libc/include/stdio_ext.h" "$HERE/picolibc/libc/include/syslog
    "$HERE/picolibc/libc/include/link.h" "$HERE/picolibc/libc/include/features.h" \
    "$HERE/picolibc/libc/include/elf.h" \
    "$PREFIX/include/"
-# -ldl, -lrt, -lpthread, -lutil, -lcrypt: dlopen, clock_gettime and
-# shm_open, the threads, openpty and forkpty, and crypt are all in libc
+# -ldl, -lrt, -lpthread, -lutil, -lcrypt, -latomic: dlopen,
+# clock_gettime and shm_open, the threads, openpty and forkpty, crypt,
+# and the atomics the 68040 has no instruction for (atomic64.c: the
+# 8-byte, generic and __sync forms) are all in libc
 # itself, as in glibc 2.34 and musl, but a great many configure scripts
 # and Makefiles still name the old libraries. An empty archive makes
 # that true without meaning anything. Without librt, Perl's Time::HiRes
 # linked every probe with -lrt, every probe failed, and it decided
 # clockid_t did not exist.
-for l in dl rt pthread util crypt; do
+for l in dl rt pthread util crypt atomic; do
     rm -f "$PREFIX/lib/lib$l.a"
     "$BIN/m68k-elf-ar" rcs "$PREFIX/lib/lib$l.a"
 done

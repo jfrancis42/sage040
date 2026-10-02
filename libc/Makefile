@@ -70,7 +70,7 @@ install-usr: all crt0.o crt0-dyn.o crtbegin-eh.o crtend-eh.o $(DISK)
 	@$(FSIMG) mkdir /usr/lib
 	$(FSIMG) put -r $(SAGE_LIBC)/include /usr/include
 	@for f in libc.a libc.so liblinux.a libm.a libtermcap.a \
-	          libdl.a librt.a libpthread.a libutil.a libcrypt.a; do \
+	          libdl.a librt.a libpthread.a libutil.a libcrypt.a libatomic.a; do \
 	    $(FSIMG) put $(SAGE_LIBC)/lib/$$f /usr/lib/$$f; \
 	 done
 	$(FSIMG) put $(shell $(CC) -mcpu=68040 -print-libgcc-file-name) /usr/lib/libgcc.a

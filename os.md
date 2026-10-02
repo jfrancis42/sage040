@@ -1864,7 +1864,7 @@ drive it over its serial line.
 | `kernel/greptest.sh` | 37 | grep's own 329 pattern cases, and its options against the host's grep |
 | `kernel/sbasetest.sh` | 77 | the utilities, against the host's own, and what only the disk can say |
 | `kernel/bashtest.sh` | 16 + 1 known | the shell language against the host's bash, and part of bash's own suite, each test through its own `run-NAME` as bash's `run-all` does. `glob` is expected to fail and is reported `[KNOWN]`: it wants a zh_TW.big5 locale, and picolibc has no Big5. `type` and `varenv` used to be listed too, undiagnosed; both were the harness -- the runners were bypassed, and sbase's `cat` had no `-v`. One that starts PASSING is a loud failure |
-| `kernel/threadtest.sh` | 52 | threads: clone, futexes, and the pthread layer, with the lock's own negative control |
+| `kernel/threadtest.sh` | 61 | threads: clone, futexes, and the pthread layer, with the lock's own negative control; and the 64-bit atomics the 68040 has no instruction for (C11, `__sync` and the generic struct form), summed across the 2^32 carry, with a compare-and-swap loop that yields inside its window and must be refused |
 | `kernel/ptytest.sh` | 34 | pseudo-terminals, and that the pairs are given back |
 | `kernel/curstest.sh` | 28 | terminfo and curses, with the database renamed away as the control |
 | `kernel/lesstest.sh` | 12 | less, and a full-screen program on a terminal that cannot address its cursor |

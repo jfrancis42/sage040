@@ -192,8 +192,9 @@ Two things are deliberately absent.
 - **`dlopen`, `dlsym`, `dlclose`, `dlerror`, `dladdr` and
   `dl_iterate_phdr` are in libc itself** (`dl.c`), as in glibc 2.34 and
   musl; `-ldl` links an empty archive so that build systems that say it
-  still work -- and so do `-lrt`, `-lpthread`, `-lutil` and `-lcrypt`,
-  whose functions are in libc too (without `librt.a`, Perl's Time::HiRes
+  still work -- and so do `-lrt`, `-lpthread`, `-lutil`, `-lcrypt` and
+  `-latomic`, whose functions are in libc too (the atomics are
+  `atomic64.c`: 8-byte, generic-size and `__sync` forms over a lock table) (without `librt.a`, Perl's Time::HiRes
   linked every probe with `-lrt` and found nothing). The work is `ld.so`'s, which stays in the process and is
   reached through a table it hands the library at start. Differences
   from glibc: every library is loaded `RTLD_GLOBAL` whatever is asked,

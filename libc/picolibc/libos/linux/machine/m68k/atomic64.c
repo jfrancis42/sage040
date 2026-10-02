@@ -198,6 +198,85 @@ FETCH_OP(or,  old | val)
 FETCH_OP(xor, old ^ val)
 FETCH_OP(nand, ~(old & val))
 
+/* --- the legacy __sync forms, eight bytes ----------------------------- */
+
+/*
+ * The builtins before C11's: __sync_fetch_and_add and the rest, still
+ * the spelling of a great deal of portable code. Each is a full
+ * barrier, which taking the lock is. GCC's libatomic does not supply
+ * these and neither does m68k-linux's libgcc (it has 1, 2 and 4), so a
+ * program using them on a 64-bit object found nothing on Linux either;
+ * the lock table makes them as cheap to have here as the others.
+ */
+#define SYNC_OP(name, op)                                           \
+    uint64_t                                                        \
+    __sync_fetch_and_##name##_8(volatile void *ptr, uint64_t val)   \
+    {                                                               \
+        volatile int *l = lock_for(ptr);                            \
+        uint64_t old;                                               \
+                                                                    \
+        lock(l);                                                    \
+        old = *(volatile uint64_t *)ptr;                            \
+        *(volatile uint64_t *)ptr = op;                             \
+        unlock(l);                                                  \
+        return old;                                                 \
+    }                                                               \
+    uint64_t                                                        \
+    __sync_##name##_and_fetch_8(volatile void *ptr, uint64_t val)   \
+    {                                                               \
+        volatile int *l = lock_for(ptr);                            \
+        uint64_t old, new;                                          \
+                                                                    \
+        lock(l);                                                    \
+        old = *(volatile uint64_t *)ptr;                            \
+        new = op;                                                   \
+        *(volatile uint64_t *)ptr = new;                            \
+        unlock(l);                                                  \
+        return new;                                                 \
+    }
+
+SYNC_OP(add, old + val)
+SYNC_OP(sub, old - val)
+SYNC_OP(and, old & val)
+SYNC_OP(or,  old | val)
+SYNC_OP(xor, old ^ val)
+SYNC_OP(nand, ~(old & val))
+
+uint64_t
+__sync_val_compare_and_swap_8(volatile void *ptr, uint64_t expect,
+                              uint64_t desired)
+{
+    volatile int *l = lock_for(ptr);
+    uint64_t old;
+
+    lock(l);
+    old = *(volatile uint64_t *)ptr;
+    if (old == expect) {
+        *(volatile uint64_t *)ptr = desired;
+    }
+    unlock(l);
+    return old;
+}
+
+bool
+__sync_bool_compare_and_swap_8(volatile void *ptr, uint64_t expect,
+                               uint64_t desired)
+{
+    return __sync_val_compare_and_swap_8(ptr, expect, desired) == expect;
+}
+
+uint64_t
+__sync_lock_test_and_set_8(volatile void *ptr, uint64_t val)
+{
+    return __atomic_exchange_8(ptr, val, __ATOMIC_ACQUIRE);
+}
+
+void
+__sync_lock_release_8(volatile void *ptr)
+{
+    __atomic_store_8(ptr, 0, __ATOMIC_RELEASE);
+}
+
 /* --- the generic forms, for objects of any size ---------------------- */
 
 /*

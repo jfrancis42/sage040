@@ -25,6 +25,8 @@
 #include <pthread.h>
 #include <semaphore.h>
 #include <signal.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -170,6 +172,97 @@ test_concurrency(void)
 }
 
 /* --- what a thread shares, and what it does not ---------------------- */
+
+/*
+ * 64-BIT ATOMICS. The 68040's CAS stops at 32 bits, so every one of
+ * these is a CALL into atomic64.c's lock table -- the C11 forms, the
+ * older __sync forms, and the generic one gcc uses for a struct. The
+ * counters start just below 2^32 so the sums carry into the high word:
+ * an operation done as two 32-bit halves gets that wrong.
+ *
+ * The compare-and-swap loop reads, gives the processor away, and only
+ * then swaps -- the same window the unlocked control above loses
+ * updates through. A CAS that is not atomic loses them here too; a
+ * real one fails, and the loop goes round again.
+ */
+#define BASE64  0xFFFFF000ull
+
+static _Atomic uint64_t a64 = BASE64;
+static uint64_t         s64 = BASE64;
+static uint64_t         c64 = BASE64;
+static unsigned         cas_retries;
+
+struct triple { uint32_t a, b, c; };
+static struct triple    big;
+static unsigned         torn;
+
+static void *
+bump64(void *arg)
+{
+    int i;
+
+    (void)arg;
+    for (i = 0; i < BUMPS; i++) {
+        __atomic_fetch_add(&a64, 1, __ATOMIC_SEQ_CST);
+        __sync_fetch_and_add(&s64, 1);
+        for (;;) {
+            uint64_t old = __atomic_load_n(&c64, __ATOMIC_SEQ_CST);
+
+            sched_yield();
+            if (__sync_val_compare_and_swap(&c64, old, old + 1) == old) {
+                break;
+            }
+            __atomic_fetch_add(&cas_retries, 1, __ATOMIC_RELAXED);
+        }
+        /* Twelve bytes, through the generic __atomic_exchange: each
+         * writer stores three equal words, so a torn read shows. */
+        {
+            struct triple mine = { (uint32_t)i, (uint32_t)i, (uint32_t)i }, was;
+
+            __atomic_exchange(&big, &mine, &was, __ATOMIC_SEQ_CST);
+            if (was.a != was.b || was.b != was.c) {
+                torn++;
+            }
+        }
+    }
+    return 0;
+}
+
+static void
+test_atomic64(void)
+{
+    pthread_t t[WORKERS];
+    uint64_t want = BASE64 + WORKERS * BUMPS;
+    int i, ok = 1;
+
+    printf("=== 64-bit atomics, which the 68040 has no instruction for ===\n");
+    for (i = 0; i < WORKERS; i++) {
+        if (pthread_create(&t[i], 0, bump64, 0) != 0) {
+            ok = 0;
+        }
+    }
+    check("four threads started", ok);
+    for (i = 0; i < WORKERS; i++) {
+        pthread_join(t[i], 0);
+    }
+    printf("         want %#llx; C11 %#llx, __sync %#llx, CAS %#llx (%u retries)\n",
+           (unsigned long long)want, (unsigned long long)a64,
+           (unsigned long long)s64, (unsigned long long)c64, cas_retries);
+    check("__atomic_fetch_add on 64 bits: every one landed, carry and all",
+          a64 == want);
+    check("__sync_fetch_and_add on 64 bits: the same", s64 == want);
+    check("a compare-and-swap loop with a yield in its window: exact",
+          c64 == want);
+    check("  and the CAS did refuse stale values (the window was real)",
+          cas_retries > 0);
+    check("a 12-byte __atomic_exchange was never seen torn", torn == 0);
+    check("__sync_bool_compare_and_swap: a wrong expectation fails",
+          !__sync_bool_compare_and_swap(&s64, 1, 2) && s64 == want);
+    check("__sync_add_and_fetch returns the NEW value",
+          __sync_add_and_fetch(&s64, 0x100000000ull) == want + 0x100000000ull);
+    check("8 bytes are not lock-free, 4 are",
+          !__atomic_is_lock_free(8, 0) && __atomic_is_lock_free(4, 0));
+}
 
 static int   shared_fd = -1;
 static pid_t thread_pid, thread_tid;
@@ -629,6 +722,7 @@ main(void)
     printf("threadtest: threads on SuckOS\n");
     test_create_join();
     test_concurrency();
+    test_atomic64();
     test_sharing();
     test_condvar();
     test_primitives();
