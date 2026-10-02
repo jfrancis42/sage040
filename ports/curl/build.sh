@@ -140,5 +140,8 @@ cp "$BUILD/src/curl" "$OUT/bin/curl"
 cp "$BUILD/lib/.libs/libcurl.a" "$OUT/lib/"
 cp -r "$SRC/include/curl" "$OUT/include/"
 
+write_pc libcurl "$VERSION" -lcurl \
+    "libssl libcrypto zlib libzstd libbrotlidec libnghttp2 libidn2 libpsl"
+
 echo "curl $VERSION -> $OUT"
 "$CROSS_BIN/m68k-elf-size" "$OUT/bin/curl" | tail -1

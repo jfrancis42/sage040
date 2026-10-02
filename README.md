@@ -119,6 +119,12 @@ A single port, if that is all you want:
 make -C ports/bash install
 ```
 
+A port finds the libraries other ports built through **`ports/pkg-config`**,
+which `ports/cross.sh` hands every configure script as `PKG_CONFIG`: the
+host's pkgconf, looking only at the `.pc` files the library ports publish
+(`write_pc` in `cross.sh`) and at nothing of the host's. Every library is a
+static archive, so it always answers `--static`.
+
 ---
 
 ## The machine
@@ -383,6 +389,7 @@ is a 25 MHz 68040, and one of the suites waits for the wall clock.
 | `make localetest` | `locale(1)` against what setlocale actually accepts: 48 locales, no Big5 |
 | `make xxhtest` | xxHash's digests against the host's, and rsync's xxh128/xxh3/xxh64 |
 | `make compresstest` | gzip, bzip2, xz and zstd against the host's, both ways |
+| `make pccheck` | every library port's `.pc`: it resolves, and a program links with what it says (host only) |
 | `make pcretest` | PCRE2's own RunTest on the machine, and `grep -P` |
 | `make grepsuite`, `make sedsuite` | GNU grep's and sed's own test suites, on the machine, against the host's run of them (hours; not in `make test`) |
 | `make fuzztest` | random system calls with hostile arguments; the machine, its memory and its disk come through |

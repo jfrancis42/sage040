@@ -97,5 +97,8 @@ for h in readline.h chardefs.h keymaps.h history.h tilde.h rlstdc.h \
     cp "$SRC/$h" "$OUT/include/readline/"
 done
 
+write_pc readline "$VERSION" -lreadline tinfow
+write_pc history "$VERSION" -lhistory
+
 echo "readline $VERSION -> $OUT"
 "$CROSS_BIN/m68k-elf-size" -t "$OUT/lib/libreadline.a" 2>/dev/null | tail -1

@@ -53,4 +53,6 @@ if [ ! -f "$OUT/bin/xxhsum" ] || [ "$OUT/lib/libxxhash.a" -nt "$OUT/bin/xxhsum" 
         { tail -20 "$BUILD/xxhsum.log"; exit 1; }
     "$CROSS_BIN/m68k-elf-strip" "$OUT/bin/xxhsum"
 fi
+write_pc libxxhash "$VERSION" -lxxhash
+
 echo "xxHash $VERSION -> $OUT"

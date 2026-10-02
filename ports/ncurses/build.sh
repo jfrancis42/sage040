@@ -176,6 +176,14 @@ if [ -n "$dupes" ]; then
     exit 1
 fi
 
+for w in "" w; do
+    write_pc tinfo$w "$VERSION" -ltinfo$w
+    write_pc ncurses$w "$VERSION" -lncurses$w tinfo$w
+    for l in form menu panel; do
+        write_pc $l$w "$VERSION" -l$l$w ncurses$w
+    done
+done
+
 echo "ncurses $VERSION -> $OUT"
 echo "  $(find "$OUT/terminfo" -type f | wc -l) terminals, $(du -sk "$OUT/terminfo" | cut -f1) KB"
 "$CROSS_BIN/m68k-elf-size" "$OUT"/lib/libncursesw.a 2>/dev/null | tail -n +2 |

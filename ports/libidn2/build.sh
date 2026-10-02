@@ -111,5 +111,7 @@ cp "$BUILD/lib/.libs/libidn2.a" "$OUT/lib/"
 cp "$BUILD/lib/idn2.h" "$OUT/include/" 2>/dev/null || cp "$SRC/lib/idn2.h" "$OUT/include/"
 cp "$BUILD/src/idn2" "$OUT/bin/idn2"
 
+write_pc libidn2 "$VERSION" -lidn2 libunistring
+
 echo "libidn2 $VERSION -> $OUT"
 "$CROSS_BIN/m68k-elf-size" "$OUT/bin/idn2" | tail -1

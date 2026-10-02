@@ -55,5 +55,7 @@ cp "$BUILD/lib/.libs/libnghttp2.a" "$OUT/lib/"
 cp "$SRC/lib/includes/nghttp2/nghttp2.h" "$OUT/include/nghttp2/"
 cp "$BUILD/lib/includes/nghttp2/nghttp2ver.h" "$OUT/include/nghttp2/"
 
+write_pc libnghttp2 "$VERSION" -lnghttp2
+
 echo "nghttp2 $VERSION -> $OUT"
 "$CROSS_BIN/m68k-elf-size" -t "$OUT/lib/libnghttp2.a" | tail -1

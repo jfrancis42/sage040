@@ -104,5 +104,7 @@ rm -rf "$OUT/lib/pkgconfig"
 # --with-gmp=/--with-mpfr= path instead.
 rm -f "$OUT/lib"/*.la
 
+write_pc gmp "$VERSION" -lgmp
+
 echo "gmp $VERSION -> $OUT"
 "$CROSS_BIN/m68k-elf-size" -t "$OUT/lib/libgmp.a" 2>/dev/null | tail -1

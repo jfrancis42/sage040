@@ -1,0 +1,29 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Jeff Francis
+#
+# pkg-config for this machine, on the host: the host's pkgconf, told
+# to look at the ports' libraries and at nothing of the host's.
+#
+# Every library port publishes a .pc in its own output tree
+# ($SRCDIR/build-NAME-sage040/sage040/lib/pkgconfig, by write_pc in
+# cross.sh), and this searches all of them. PKG_CONFIG_LIBDIR REPLACES
+# the default search path rather than adding to it, which is the
+# point: a cross configure asking the host's pkg-config is told about
+# the host's libraries -- Python's said ncursesw was there and took the
+# host's link flags for it. PKG_CONFIG_PATH is cleared for the same
+# reason.
+#
+# --static always. Every library here is an archive, so a program
+# linking one has to name what that one needs (Libs.private and
+# Requires.private) or the link fails a long way from the cause.
+SRCDIR=${SAGE_SRC:-$HOME/m68k/src}
+dirs=
+for d in "$SRCDIR"/build-*-sage040/sage040/lib/pkgconfig; do
+    [ -d "$d" ] && dirs=$dirs${dirs:+:}$d
+done
+PKG_CONFIG_LIBDIR=${dirs:-/nonexistent}
+PKG_CONFIG_PATH=
+PKG_CONFIG_SYSROOT_DIR=
+export PKG_CONFIG_LIBDIR PKG_CONFIG_PATH PKG_CONFIG_SYSROOT_DIR
+exec pkgconf --static "$@"

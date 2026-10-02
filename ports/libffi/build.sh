@@ -74,5 +74,7 @@ cp -a "$BUILD/inst/usr/local/lib" "$BUILD/inst/usr/local/include" "$OUT/" \
     2>/dev/null || cp -a "$BUILD/inst"/*/lib "$BUILD/inst"/*/include "$OUT/"
 rm -rf "$OUT/lib/pkgconfig"
 
+write_pc libffi "$VERSION" -lffi
+
 echo "libffi $VERSION -> $OUT"
 "$CROSS_BIN/m68k-elf-size" -t "$OUT/lib/libffi.a" 2>/dev/null | tail -1

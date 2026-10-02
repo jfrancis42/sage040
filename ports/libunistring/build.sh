@@ -85,5 +85,7 @@ mkdir -p "$OUT"
 cp -a "$BUILD/inst/usr/lib" "$BUILD/inst/usr/include" "$OUT/"
 rm -f "$OUT"/lib/*.la
 
+write_pc libunistring "$VERSION" -lunistring
+
 echo "libunistring $VERSION -> $OUT"
 "$CROSS_BIN/m68k-elf-size" -t "$OUT/lib/libunistring.a" | tail -1

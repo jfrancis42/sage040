@@ -102,5 +102,7 @@ cp "$BUILD/src/.libs/libpsl.a" "$OUT/lib/"
 cp "$BUILD/include/libpsl.h" "$OUT/include/"
 cp "$BUILD/tools/psl" "$OUT/bin/psl"
 
+write_pc libpsl "$VERSION" -lpsl libidn2
+
 echo "libpsl $VERSION -> $OUT"
 "$CROSS_BIN/m68k-elf-size" "$OUT/bin/psl" | tail -1

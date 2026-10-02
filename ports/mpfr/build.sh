@@ -81,4 +81,6 @@ rm -rf "$OUT/lib/pkgconfig"
 # --with-gmp=/--with-mpfr= path instead.
 rm -f "$OUT/lib"/*.la
 
+write_pc mpfr "$VERSION" -lmpfr gmp
+
 echo "mpfr $VERSION -> $OUT"

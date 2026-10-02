@@ -59,5 +59,7 @@ cp "$SRC/src/liblzma/api/lzma.h" "$OUT/include/"
 cp "$SRC"/src/liblzma/api/lzma/*.h "$OUT/include/lzma/"
 [ -x "$BUILD/src/xz/xz" ] && cp "$BUILD/src/xz/xz" "$OUT/bin/xz"
 
+write_pc liblzma "$VERSION" -llzma
+
 echo "xz $VERSION -> $OUT"
 "$CROSS_BIN/m68k-elf-size" "$OUT/lib/liblzma.a" | tail -1

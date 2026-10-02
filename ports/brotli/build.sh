@@ -79,5 +79,9 @@ cp "$BUILD"/libbrotli*.a "$OUT/lib/"
 cp -r "$SRC/c/include/brotli" "$OUT/include/"
 cp "$BUILD/brotli" "$OUT/bin/brotli"
 
+write_pc libbrotlicommon "$VERSION" -lbrotlicommon
+write_pc libbrotlidec "$VERSION" -lbrotlidec libbrotlicommon
+write_pc libbrotlienc "$VERSION" -lbrotlienc libbrotlicommon
+
 echo "brotli $VERSION -> $OUT"
 "$CROSS_BIN/m68k-elf-size" "$OUT/bin/brotli" | tail -1

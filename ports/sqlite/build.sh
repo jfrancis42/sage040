@@ -92,5 +92,8 @@ cp "$BUILD/libsqlite3.a" "$OUT/lib/"
 cp "$SRC/sqlite3.h" "$SRC/sqlite3ext.h" "$OUT/include/"
 cp "$BUILD/sqlite3" "$OUT/bin/sqlite3"
 
+# 3530400 is 3.53.4
+write_pc sqlite3 "$((VERSION / 1000000)).$((VERSION / 10000 % 100)).$((VERSION / 100 % 100))" -lsqlite3
+
 echo "sqlite $VERSION -> $OUT"
 "$CROSS_BIN/m68k-elf-size" "$OUT/bin/sqlite3" | tail -1

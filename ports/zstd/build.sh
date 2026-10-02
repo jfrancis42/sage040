@@ -102,5 +102,7 @@ cp "$BUILD/src/lib/zstd.h" "$BUILD/src/lib/zstd_errors.h" \
    "$BUILD/src/lib/zdict.h" "$OUT/include/"
 cp "$BUILD/src/programs/zstd" "$OUT/bin/zstd"
 
+write_pc libzstd "$VERSION" -lzstd
+
 echo "zstd $VERSION -> $OUT"
 "$CROSS_BIN/m68k-elf-size" "$OUT/bin/zstd" | tail -1

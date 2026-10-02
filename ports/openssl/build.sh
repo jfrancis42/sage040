@@ -138,5 +138,9 @@ else
     tail -8 "$BUILD/apps.log" >&2
 fi
 
+write_pc libcrypto "$VERSION" -lcrypto
+write_pc libssl "$VERSION" -lssl libcrypto
+write_pc openssl "$VERSION" "" "libssl libcrypto"
+
 echo "openssl $VERSION -> $OUT"
 "$CROSS_BIN/m68k-elf-size" -t "$OUT/lib/libcrypto.a" 2>/dev/null | tail -1

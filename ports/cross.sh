@@ -149,6 +149,37 @@ keep_times() {
 }
 trap keep_times EXIT
 
+# PKG-CONFIG.
+#
+# A configure script run with nothing said finds the HOST's pkg-config,
+# which answers about the host's libraries. ports/pkg-config answers
+# about the ports' instead, and is what every configure from here gets.
+# A library port says what it is with write_pc, which puts a .pc where
+# that looks:
+#
+#     write_pc NAME VERSION LIBS [REQUIRES] [LIBS.PRIVATE]
+#
+# The prefix is ${pcfiledir}/../.., so the file is right wherever the
+# output tree is, and keep_times keeps its mtime when nothing changed.
+export PKG_CONFIG=$TOP/ports/pkg-config
+write_pc() {
+    local out=${OUT:-$BUILD/sage040}
+    mkdir -p "$out/lib/pkgconfig"
+    cat > "$out/lib/pkgconfig/$1.pc" <<PC
+prefix=\${pcfiledir}/../..
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+
+Name: $1
+Description: $1, built for the Sage040
+Version: $2
+Requires: ${4:-}
+Libs: -L\${libdir} $3
+Libs.private: ${5:-}
+Cflags: -I\${includedir}
+PC
+}
+
 
 # ---------------------------------------------------------------------
 # THE GCC SOURCE, AND THE SECOND CROSS COMPILER BUILT FROM IT

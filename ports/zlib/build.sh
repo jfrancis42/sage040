@@ -52,6 +52,8 @@ mkdir -p "$BUILD/sage040/lib" "$BUILD/sage040/include"
 cp "$BUILD/src/libz.a" "$BUILD/sage040/lib/"
 cp "$BUILD/src/zlib.h" "$BUILD/src/zconf.h" "$BUILD/sage040/include/"
 
+write_pc zlib "$VERSION" -lz
+
 echo "zlib $VERSION -> $BUILD/sage040"
 "$CROSS_BIN/m68k-elf-size" "$BUILD/sage040/lib/libz.a" | tail -n +2 |
     awk '{ t += $1 } END { printf "  %d bytes of text\n", t }'

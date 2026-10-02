@@ -58,5 +58,7 @@ cp "$BUILD/src/libbz2.a" "$OUT/lib/"
 cp "$BUILD/src/bzlib.h" "$OUT/include/"
 cp "$BUILD/bzip2" "$OUT/bin/bzip2"
 
+write_pc bzip2 "$VERSION" -lbz2
+
 echo "bzip2 $VERSION -> $OUT"
 "$CROSS_BIN/m68k-elf-size" "$OUT/bin/bzip2" | tail -1
