@@ -28,10 +28,9 @@
 # preference for compression, and the library is built for this
 # machine.
 #
-# --disable-xxhash only because there is no xxhash port yet. It is a
-# checksum, not a feature -- rsync falls back to MD5 and transfers the
-# same bytes, more slowly. xxhash is one C file and would be an easy
-# port, and has not been done yet.
+# xxhash is ON, from ports/xxhash: rsync negotiates xxh128, xxh3 and
+# xxh64 for its checksums before MD5. It used to be built without, for
+# want of the port, and fell back to MD5 -- the same bytes, more slowly.
 #
 # The bundled zlib and popt are used rather than ports/zlib: rsync's
 # zlib carries its own patches for the protocol's history, and using a
@@ -52,6 +51,7 @@ URL=https://download.samba.org/pub/rsync/src/rsync-$VERSION.tar.gz
 SRC=$SRCDIR/rsync-$VERSION
 BUILD=$SRCDIR/build-rsync-sage040
 ZSTDOUT=$SRCDIR/build-zstd-sage040/sage040
+XXHOUT=$SRCDIR/build-xxhash-sage040/sage040
 
 if [ ! -d "$SRC" ]; then
     mkdir -p "$SRCDIR"
@@ -75,7 +75,12 @@ if [ ! -d "$SRC" ]; then
     done
 fi
 
+"$HERE/../xxhash/build.sh" > /dev/null
 libc_fresh "$BUILD" || true
+# A build configured before xxhash was looked for is configured again.
+if [ -f "$BUILD/config.h" ] && ! grep -q 'define SUPPORT_XXHASH 1' "$BUILD/config.h"; then
+    rm -f "$BUILD/Makefile"
+fi
 if [ ! -f "$BUILD/Makefile" ]; then
     mkdir -p "$BUILD"
     (cd "$BUILD" && "$SRC/configure" \
@@ -88,17 +93,16 @@ if [ ! -f "$BUILD/Makefile" ]; then
         --disable-iconv-open \
         --disable-md2man \
         --disable-lz4 \
-        --disable-xxhash \
         --disable-openssl \
         --with-included-zlib=yes \
         --with-included-popt=yes \
         --with-rsh="ssh" \
         CC="$CROSS_CC $CROSS_CFLAGS $CROSS_CPPFLAGS $SPECS_CFLAGS \
--I$ZSTDOUT/include" \
+-I$ZSTDOUT/include -I$XXHOUT/include" \
         CC_FOR_BUILD=cc \
         AR="$CROSS_BIN/m68k-elf-ar" \
         RANLIB="$CROSS_BIN/m68k-elf-ranlib" \
-        LDFLAGS="-L$ZSTDOUT/lib" \
+        LDFLAGS="-L$ZSTDOUT/lib -L$XXHOUT/lib" \
         > configure.log 2>&1) || { tail -30 "$BUILD/configure.log"; exit 1; }
 fi
 

@@ -292,7 +292,11 @@ put)
         fi
     done
     out=$(dbg "${cmds[@]}" ${modes[@]+"${modes[@]}"})
-    if echo "$out" | grep -qiE "error|could not"; then
+    # debugfs ECHOES each command, file names and all, so the echo lines
+    # go before the output is searched: a file merely CALLED
+    # encoding-error (grep's test suite has one) made every put of that
+    # directory "fail".
+    if echo "$out" | dbg_clean | grep -qiE "error|could not"; then
         echo "$out" | dbg_clean >&2
         die "could not write into $DST"
     fi
@@ -415,7 +419,7 @@ mv)
     # An `if`, not `cmd && { ... }`: the && form leaves the status of the
     # grep as the script's own, so a rename that worked exited 1 and
     # every caller chaining on && silently stopped there.
-    if echo "$out" | grep -qi "error"; then
+    if echo "$out" | dbg_clean | grep -qi "error"; then
         echo "$out" | dbg_clean >&2
         die "could not rename $FROM"
     fi

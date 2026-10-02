@@ -132,6 +132,7 @@ int              getnameinfo(const struct sockaddr *sa, socklen_t salen,
                              char *host, socklen_t hostlen,
                              char *serv, socklen_t servlen, int flags);
 struct hostent  *gethostbyname(const char *name);
+struct hostent  *gethostbyaddr(const void *addr, socklen_t len, int type);
 struct servent  *getservbyname(const char *name, const char *proto);
 struct servent  *getservbyport(int port, const char *proto);
 const char      *hstrerror(int err);

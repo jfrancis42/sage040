@@ -1,0 +1,44 @@
+sbase: fgetrune puts back the byte after an invalid sequence, and says
+Runeerror for one cut short by the end of the file.
+
+An invalid sequence ends at the first byte that is not a continuation;
+fgetrune had read that byte and kept it, so it vanished from the input:
+printf "\351\n" | tr "\351" x printed x and no newline. A sequence cut
+short by EOF left the rune unset, and tr printed a NUL. gnulib's test
+harness checks exactly this (LC_ALL=C tr "\351" x) to decide whether a
+shell environment is usable, and every grep and sed test skipped.
+
+--- a/libutf/fgetrune.c	2026-10-01 17:36:31.835336823 -0600
++++ b/libutf/fgetrune.c	2026-10-01 17:36:31.836394477 -0600
+@@ -12,13 +12,30 @@
+ 	char buf[UTFmax];
+ 	int  i = 0, c;
+ 
++	int n = 0;
++
+ 	while (i < UTFmax && (c = fgetc(fp)) != EOF) {
+ 		buf[i++] = c;
+-		if (charntorune(r, buf, i) > 0)
++		if ((n = charntorune(r, buf, i)) > 0)
+ 			break;
+ 	}
+ 	if (ferror(fp))
+ 		return -1;
++	/*
++	 * An invalid sequence ends at the first byte that is not a
++	 * continuation, and that byte -- the last one read -- belongs to
++	 * what follows: put it back. Keeping it swallowed the newline after
++	 * a stray byte (printf '\351\n' | tr '\351' x lost the \n).
++	 */
++	if (n > 0 && n < i)
++		ungetc((unsigned char)buf[--i], fp);
++	/*
++	 * End of file in the middle of a sequence: what there is is not a
++	 * character, and says so, rather than leaving *r unset -- which
++	 * printed a NUL for a lone \351.
++	 */
++	if (n <= 0 && i > 0)
++		*r = Runeerror;
+ 
+ 	return i;
+ }

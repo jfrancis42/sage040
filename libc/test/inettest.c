@@ -177,11 +177,37 @@ static void test_names(void)
         sin.sin_addr.s_addr = htonl(0x0a010203);
         r = getnameinfo((struct sockaddr *)&sin, sizeof(sin), host, sizeof(host),
                         serv, sizeof(serv), 0);
-        report("getnameinfo: the address, and the service by name",
-               r == 0 && strcmp(host, "10.1.2.3") == 0 && strcmp(serv, "http") == 0);
-        report("  and NI_NAMEREQD, with no reverse DNS, is EAI_NONAME",
+        report("getnameinfo: the name from a PTR record, and the service by name",
+               r == 0 && strcmp(host, "foo.sage.test") == 0 && strcmp(serv, "http") == 0);
+        r = getnameinfo((struct sockaddr *)&sin, sizeof(sin), host, sizeof(host),
+                        0, 0, NI_NUMERICHOST);
+        report("  NI_NUMERICHOST: the number, without asking",
+               r == 0 && strcmp(host, "10.1.2.3") == 0);
+        sin.sin_addr.s_addr = htonl(0x0a010263);       /* 10.1.2.99: no PTR */
+        r = getnameinfo((struct sockaddr *)&sin, sizeof(sin), host, sizeof(host),
+                        0, 0, 0);
+        report("  an address with no name comes back as its number",
+               r == 0 && strcmp(host, "10.1.2.99") == 0);
+        report("  and NI_NAMEREQD for it is EAI_NONAME",
                getnameinfo((struct sockaddr *)&sin, sizeof(sin), host, sizeof(host),
                            0, 0, NI_NAMEREQD) == EAI_NONAME);
+        sin.sin_addr.s_addr = htonl(0x0a040506);       /* /etc/hosts' myhost */
+        r = getnameinfo((struct sockaddr *)&sin, sizeof(sin), host, sizeof(host),
+                        0, 0, NI_NAMEREQD);
+        report("  /etc/hosts answers first", r == 0 && strcmp(host, "myhost") == 0);
+    }
+    {
+        unsigned char a[4] = { 10, 1, 2, 3 }, lo[4] = { 127, 0, 0, 1 },
+                      none[4] = { 10, 1, 2, 99 };
+
+        he = gethostbyaddr(a, 4, AF_INET);
+        report("gethostbyaddr: a PTR record's name",
+               he && strcmp(he->h_name, "foo.sage.test") == 0 &&
+               memcmp(he->h_addr, a, 4) == 0);
+        he = gethostbyaddr(lo, 4, AF_INET);
+        report("  127.0.0.1 is localhost", he && strcmp(he->h_name, "localhost") == 0);
+        report("  no name: HOST_NOT_FOUND",
+               gethostbyaddr(none, 4, AF_INET) == 0 && h_errno == HOST_NOT_FOUND);
     }
 }
 

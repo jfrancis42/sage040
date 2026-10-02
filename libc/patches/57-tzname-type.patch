@@ -1,0 +1,28 @@
+tzname is char *[2], as POSIX declares it, not char * const [2].
+
+A program that declares it itself, as POSIX allows and Perl's
+configure does, conflicted with the header and failed to compile; Perl
+worked around it. The strings are still tzset's buffers.
+
+--- a/libc/include/time.h	2026-10-01 17:22:04.197331176 -0600
++++ b/libc/include/time.h	2026-10-01 17:22:04.205331191 -0600
+@@ -179,7 +179,7 @@
+ #endif
+ 
+ #if __POSIX_VISIBLE
+-extern __picolibc_export char * const tzname[2];
++extern __picolibc_export char *tzname[2];
+ #endif /* __POSIX_VISIBLE */
+ 
+ char *asctime(const struct tm *_tblock) __picolibc_export;
+--- a/libc/time/tzvars.c	2026-10-01 17:22:04.199331179 -0600
++++ b/libc/time/tzvars.c	2026-10-01 17:22:04.208973567 -0600
+@@ -6,7 +6,7 @@
+ /* Default timezone to GMT */
+ char         __tzname_std[TZNAME_MAX + 2] = "GMT";
+ char         __tzname_dst[TZNAME_MAX + 2] = "GMT";
+-char * const tzname[2] = { __tzname_std, __tzname_dst };
++char        *tzname[2] = { __tzname_std, __tzname_dst };
+ int          daylight;
+ long         timezone;
+ 

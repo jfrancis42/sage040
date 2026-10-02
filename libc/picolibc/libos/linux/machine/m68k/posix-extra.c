@@ -107,6 +107,26 @@ sigqueue(pid_t pid, int sig, const union sigval value)
     return syscall(LINUX_SYS_rt_sigqueueinfo, pid, k.si_signo, &k);
 }
 
+/*
+ * login_tty: make `fd` the controlling terminal of a new session and the
+ * caller's standard input, output and error -- what a program does in
+ * the child of a fork before it runs something on a terminal of its
+ * own (forkpty is built on it). glibc's, in <utmp.h>. Perl's configure
+ * looks for it.
+ */
+int
+login_tty(int fd)
+{
+    setsid();
+    if (syscall(LINUX_SYS_ioctl, fd, 0x540E /* TIOCSCTTY */, 0) < 0)
+        return -1;
+    if (dup2(fd, 0) < 0 || dup2(fd, 1) < 0 || dup2(fd, 2) < 0)
+        return -1;
+    if (fd > 2)
+        close(fd);
+    return 0;
+}
+
 /* Linux's execution domain; see <sys/personality.h>. */
 int
 personality(unsigned long persona)

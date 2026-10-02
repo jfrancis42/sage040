@@ -281,6 +281,33 @@ static int hosts_lookup(const char *name, uint32_t *addr)
     return 0;
 }
 
+/* The first name /etc/hosts gives `addr` (network order), into out. */
+static int hosts_reverse(uint32_t addr, char *out, size_t outlen)
+{
+    char *p = filebuf;
+
+    if (slurp("/etc/hosts") < 0) {
+        return 0;
+    }
+    while (*p) {
+        char *w;
+        size_t len;
+        uint32_t a;
+
+        w = word(&p, &len);
+        if (w && quad(w, len, &a) && a == addr) {
+            w = word(&p, &len);
+            if (w && len < outlen) {
+                memcpy(out, w, len);
+                out[len] = '\0';
+                return 1;
+            }
+        }
+        next_line(&p);
+    }
+    return 0;
+}
+
 struct server {
     uint32_t addr;              /* network order */
     uint16_t port;
@@ -397,9 +424,52 @@ static uint32_t get32(const unsigned char *p)
            (uint32_t)p[2] << 8 | p[3];
 }
 
-/* 1 with *addr and *ttl, 0 for "no such name", -1 for no answer. */
-static int ask(const struct server *sv, const char *name, uint32_t *addr,
-               uint32_t *ttl)
+/*
+ * A name out of a packet into `out`, dotted, following compression
+ * pointers (a bounded number of them, so a looping one cannot hang the
+ * caller). Returns 0, or -1 for a malformed name or one too long.
+ */
+static int get_name(const unsigned char *p, int off, int end, char *out,
+                    size_t outlen)
+{
+    size_t n = 0;
+    int hops = 0;
+
+    while (off < end) {
+        unsigned char len = p[off];
+
+        if (len == 0) {
+            if (n == 0) {
+                return -1;              /* the root names no host */
+            }
+            out[n - 1] = '\0';          /* the last dot */
+            return 0;
+        }
+        if ((len & 0xc0) == 0xc0) {
+            if (off + 1 >= end || ++hops > 16) {
+                return -1;
+            }
+            off = ((len & 0x3f) << 8) | p[off + 1];
+            continue;
+        }
+        if ((len & 0xc0) || off + 1 + len > end || n + len + 2 > outlen) {
+            return -1;
+        }
+        memcpy(out + n, p + off + 1, len);
+        n += len;
+        out[n++] = '.';
+        off += 1 + len;
+    }
+    return -1;
+}
+
+/*
+ * Ask one server about `name`: an A record (qtype 1) into *addr, or a
+ * PTR (12) into `ptr`. 1 with the answer and *ttl, 0 for "no such
+ * name", -1 for no answer.
+ */
+static int ask_type(const struct server *sv, const char *name, unsigned qtype,
+                    uint32_t *addr, char *ptr, size_t ptrlen, uint32_t *ttl)
 {
     struct sockaddr_in to, from;
     struct timeval tv;
@@ -434,7 +504,7 @@ static int ask(const struct server *sv, const char *name, uint32_t *addr,
             return 0;                       /* not a name at all */
         }
         pkt[12 + qlen] = 0;
-        pkt[13 + qlen] = 1;                 /* A  */
+        pkt[13 + qlen] = (unsigned char)qtype;  /* A, or PTR */
         pkt[14 + qlen] = 0;
         pkt[15 + qlen] = 1;                 /* IN */
         queries_sent++;
@@ -487,8 +557,13 @@ static int ask(const struct server *sv, const char *name, uint32_t *addr,
                 if (off + (int)rdlen > n) {
                     break;
                 }
-                if (type == 1 && cls == 1 && rdlen == 4) {
+                if (qtype == 1 && type == 1 && cls == 1 && rdlen == 4) {
                     memcpy(addr, pkt + off, 4);
+                    *ttl = t;
+                    return 1;
+                }
+                if (qtype == 12 && type == 12 && cls == 1 &&
+                    get_name(pkt, off, (int)n, ptr, ptrlen) == 0) {
                     *ttl = t;
                     return 1;
                 }
@@ -499,6 +574,12 @@ static int ask(const struct server *sv, const char *name, uint32_t *addr,
     }
     close(fd);
     return -1;
+}
+
+static int ask(const struct server *sv, const char *name, uint32_t *addr,
+               uint32_t *ttl)
+{
+    return ask_type(sv, name, 1, addr, 0, 0, ttl);
 }
 
 /*
@@ -732,6 +813,46 @@ const char *gai_strerror(int err)
     }
 }
 
+/*
+ * The name of an address (network order): /etc/hosts, then localhost
+ * for 127/8, then a PTR query for d.c.b.a.in-addr.arpa. 0 with the name,
+ * or EAI_NONAME, EAI_AGAIN or EAI_OVERFLOW.
+ */
+static int reverse(uint32_t addr, char *out, size_t outlen)
+{
+    struct server sv[MAX_SERVERS];
+    const unsigned char *b = (const unsigned char *)&addr;
+    char q[32];
+    uint32_t ttl;
+    int n, i, r;
+
+    if (hosts_reverse(addr, out, outlen)) {
+        return 0;
+    }
+    if (b[0] == 127) {
+        if (outlen < 10) {
+            return EAI_OVERFLOW;
+        }
+        strcpy(out, "localhost");
+        return 0;
+    }
+    snprintf(q, sizeof(q), "%u.%u.%u.%u.in-addr.arpa", b[3], b[2], b[1], b[0]);
+    n = servers(sv);
+    if (n == 0) {
+        return EAI_AGAIN;
+    }
+    for (i = 0; i < n; i++) {
+        r = ask_type(&sv[i], q, 12, 0, out, outlen, &ttl);
+        if (r == 1) {
+            return 0;
+        }
+        if (r == 0) {
+            return EAI_NONAME;
+        }
+    }
+    return EAI_AGAIN;
+}
+
 int getnameinfo(const struct sockaddr *sa, socklen_t salen, char *host,
                 socklen_t hostlen, char *serv, socklen_t servlen, int flags)
 {
@@ -741,13 +862,21 @@ int getnameinfo(const struct sockaddr *sa, socklen_t salen, char *host,
         return EAI_FAMILY;
     }
     if (host && hostlen) {
-        /* No reverse DNS: the address is its own name, unless a name
-         * was required. */
-        if (flags & NI_NAMEREQD) {
-            return EAI_NONAME;
+        /* The name, unless only the number was asked for; the number
+         * when there is no name, unless a name was required. */
+        int r = (flags & NI_NUMERICHOST) ? EAI_NONAME
+              : reverse(sin->sin_addr.s_addr, host, hostlen);
+
+        if (r == EAI_OVERFLOW) {
+            return r;
         }
-        if (!inet_ntop(AF_INET, &sin->sin_addr, host, hostlen)) {
-            return EAI_OVERFLOW;
+        if (r != 0) {
+            if (flags & NI_NAMEREQD) {
+                return r;
+            }
+            if (!inet_ntop(AF_INET, &sin->sin_addr, host, hostlen)) {
+                return EAI_OVERFLOW;
+            }
         }
     }
     if (serv && servlen) {
@@ -781,6 +910,36 @@ struct hostent *gethostbyname(const char *name)
         return 0;
     }
     strncpy(namebuf, name, sizeof(namebuf) - 1);
+    addrs[0] = (char *)&addr;
+    addrs[1] = 0;
+    aliases[0] = 0;
+    he.h_name = namebuf;
+    he.h_aliases = aliases;
+    he.h_addrtype = AF_INET;
+    he.h_length = 4;
+    he.h_addr_list = addrs;
+    return &he;
+}
+
+/* By address: AF_INET only, as everything else here. */
+struct hostent *gethostbyaddr(const void *a, socklen_t len, int type)
+{
+    static struct hostent he;
+    static char namebuf[256];
+    static uint32_t addr;
+    static char *addrs[2], *aliases[1];
+    int err;
+
+    if (type != AF_INET || len != 4) {
+        h_errno = NO_RECOVERY;
+        return 0;
+    }
+    memcpy(&addr, a, 4);
+    err = reverse(addr, namebuf, sizeof(namebuf));
+    if (err) {
+        h_errno = err == EAI_NONAME ? HOST_NOT_FOUND : TRY_AGAIN;
+        return 0;
+    }
     addrs[0] = (char *)&addr;
     addrs[1] = 0;
     aliases[0] = 0;

@@ -1,0 +1,22 @@
+poll(): revents translated for EVERY entry, not the first ret.
+
+ret is how many entries are ready, not which: with a ready entry after
+an idle one, the ready entry's revents went back untranslated. Only the
+bits m68k moves differ (POLLWRNORM, POLLWRBAND), so it showed only to a
+program asking for those. ppoll (the m68k backend's events.c) maps every
+entry already.
+
+--- a/libos/linux/poll.c	2026-10-01 17:21:43.585293378 -0600
++++ b/libos/linux/poll.c	2026-10-01 17:21:43.622019818 -0600
+@@ -133,8 +133,9 @@
+     for (n = 0; n < nfds; n++)
+         fds[n].events = linux_to_picolibc(fds[n].events);
+ 
+-    if (ret > 0) {
+-        for (n = 0; n < (nfds_t)ret; n++)
++    /* Every entry: ret is how many are READY, not which. */
++    if (ret >= 0) {
++        for (n = 0; n < nfds; n++)
+             fds[n].revents = linux_to_picolibc(fds[n].revents);
+     }
+     return ret;

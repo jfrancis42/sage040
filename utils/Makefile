@@ -3,14 +3,16 @@
 #
 # Small utilities built against PICOLIBC, where system/ builds against
 # lib/ulib: what they do is the C library's to answer (locale(1) is
-# setlocale and nl_langinfo, and nothing else).
+# setlocale and nl_langinfo, and nothing else), or they are the tools a
+# ported test suite expects and nothing else here has (timeout(1), as
+# coreutils', which grep's suite asks for by name).
 
 TOPDIR := ..
 include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-PROGS := locale
+PROGS := locale timeout
 
 include $(TOPDIR)/libc/libc.mk
 

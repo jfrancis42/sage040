@@ -48,7 +48,9 @@ into both `libc.a` and `libc.so`:
 - **`inet_aton`, `inet_addr`, `inet_ntoa`, `inet_pton`, `inet_ntop`**,
   IPv4.
 - **The resolver**: `getaddrinfo`, `freeaddrinfo`, `gai_strerror`,
-  `getnameinfo` (numeric: there is no reverse DNS), `gethostbyname`,
+  `getnameinfo` and `gethostbyaddr` (reverse: `/etc/hosts`, `localhost`
+  for 127/8, then a PTR query; the number when there is no name unless
+  `NI_NAMEREQD`), `gethostbyname`,
   `getservbyname`/`getservbyport` (a small built-in table), `h_errno`.
   Numeric names, then `/etc/hosts`, then `localhost`, then a cache, then
   DNS to `/etc/resolv.conf`'s servers or DHCP's. Answers are cached
@@ -155,6 +157,10 @@ Two things are deliberately absent.
   ISO-8859s, the DOS and Windows code pages, KOI8, JIS, EUC-JP and
   Shift-JIS (`mb-extended-charsets`); the part before the dot is ignored.
   No Big5, GBK or EUC-KR. `locale -a` (utils/) lists them.
+- **`login_tty`** (in `<utmp.h>`), and **`tzname` is `char *[2]`** as
+  POSIX declares it (patches/57; a program that declares it itself now
+  compiles). `poll()` translates every entry's `revents`, not the first
+  `ret` of them (patches/56).
 - **No real-time signals.** picolibc's signal set is 32 bits, so there is
   no `SIGRTMIN`; a program that wants one has to do without.
 - **`statvfs` and `fstatvfs` work**, on the kernel's `statfs64`, for

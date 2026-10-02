@@ -29,6 +29,10 @@ ZONE = {
     "chain.sage.test": ("CNAME", "alias.sage.test"),
     "UPPER.sage.test": ("A", "10.9.9.9"),
     "spoof.sage.test": ("A", "10.7.7.7"),
+    # Reverse: 10.1.2.3 is foo.sage.test. Answered as a PTR, with the
+    # name compressed against the question, as real servers do -- the
+    # resolver has to follow the pointer.
+    "3.2.1.10.in-addr.arpa": ("PTR", "foo.sage.test"),
 }
 # Answered twice: first with the wrong ID and 6.6.6.6, as a forger racing
 # the real server would, then properly. A resolver that believes the
@@ -74,6 +78,11 @@ def dns_answer(pkt):
         if rec is None:
             break
         kind, value = rec
+        if kind == "PTR":
+            # The owner name as a pointer to the question (offset 12).
+            answers.append(b"\xc0\x0c" + struct.pack(">HHIH", 12, 1, 60,
+                           len(encode(value))) + encode(value))
+            break
         if kind == "CNAME":
             answers.append(encode(cur) + struct.pack(">HHIH", 5, 1, 60,
                            len(encode(value))) + encode(value))

@@ -381,6 +381,8 @@ is a 25 MHz 68040, and one of the suites waits for the wall clock.
 | `make stacktest` | a kernel stack overflow is reported (task, function, return addresses), not a double fault |
 | `make panictest` | a panic is kept in the NVRAM and reported by the next boot |
 | `make localetest` | `locale(1)` against what setlocale actually accepts: 48 locales, no Big5 |
+| `make xxhtest` | xxHash's digests against the host's, and rsync's xxh128/xxh3/xxh64 |
+| `make grepsuite`, `make sedsuite` | GNU grep's and sed's own test suites, on the machine, against the host's run of them (hours; not in `make test`) |
 | `make fuzztest` | random system calls with hostile arguments; the machine, its memory and its disk come through |
 | `make procpstest` | procps-ng (ps, top, free, pgrep, pkill, vmstat, ...), login records in utmp, and who may signal whom |
 | `make devmodetest` | device modes enforced; a terminal belongs to whoever is logged in on it |

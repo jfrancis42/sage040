@@ -103,5 +103,6 @@ struct utmp *getutid(const struct utmp *ut);
 struct utmp *getutline(const struct utmp *ut);
 struct utmp *pututline(const struct utmp *ut);
 void updwtmp(const char *file, const struct utmp *ut);
+int login_tty(int fd);           /* posix-extra.c */
 
 #endif /* _SYS_UTMP_H_ */
