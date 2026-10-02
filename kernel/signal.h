@@ -45,6 +45,8 @@ int  signal_kill(int pid, int sig);
 struct task;
 int  signal_may(const struct task *t, int sig);
 int  signal_send_user(struct task *t, int sig, s32 code, u32 value);
+/* The same, with no permission check: for the kernel's own notices. */
+int  signal_send_info(struct task *t, int sig, s32 code, u32 value);
 
 /* To every user task in process group `pgid`. -ESRCH if there are none;
  * signal 0 only asks whether there are. */

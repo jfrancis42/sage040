@@ -146,6 +146,7 @@ libc/test/ptracetest
 libc/test/stracee
 libc/test/gdbee
 libc/test/crashee
+libc/test/mqtest
 libc/test/ehtest
 libc/test/ehtest.static
 libc/test/jtest

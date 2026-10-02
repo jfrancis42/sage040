@@ -1794,6 +1794,17 @@ struct sigcontext {
 #define __NR_clock_getres  261
 #define __NR_statfs64      263
 #define __NR_fstatfs64     264
+
+/* POSIX message queues (mqueue.c). The name is given WITHOUT its
+ * leading slash, as Linux's call takes it; the C library strips it. */
+#define __NR_mq_open           271
+#define __NR_mq_unlink         272
+#define __NR_mq_timedsend      273
+#define __NR_mq_timedreceive   274
+#define __NR_mq_notify         275
+#define __NR_mq_getsetattr     276
+#define __NR_mq_timedsend_time64    418
+#define __NR_mq_timedreceive_time64 419
 #define __NR_openat        288
 #define __NR_mkdirat       289
 #define __NR_unlinkat      294
@@ -1979,6 +1990,7 @@ struct siginfo {
 #define SI_KERNEL   0x80
 #define SI_QUEUE    (-1)
 #define SI_TKILL    (-6)
+#define SI_MESGQ    (-3)            /* a message queue's mq_notify     */
 
 /* si_code for a signal raised by a fault in the program -- Linux's. */
 #define ILL_ILLOPC  1               /* SIGILL: illegal opcode         */

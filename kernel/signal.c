@@ -127,6 +127,21 @@ int signal_send_user(struct task *t, int sig, s32 code, u32 value)
     return send_src(t, sig, &src);
 }
 
+/* The kernel raising a signal on someone's behalf -- a message queue's
+ * notification, sent by whoever wrote the message: Linux records the
+ * sender, and asks no permission (the receiver registered for it). */
+int signal_send_info(struct task *t, int sig, s32 code, u32 value)
+{
+    struct sigsrc src;
+
+    src.code = code;
+    src.pid = current ? current->tgid : 0;
+    src.uid = current ? current->uid : 0;
+    src.value = value;
+    src.set = 1;
+    return send_src(t, sig, &src);
+}
+
 static int send_src(struct task *t, int sig, const struct sigsrc *src)
 {
     u32 bit;

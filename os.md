@@ -762,6 +762,21 @@ read from the files. So the machine's own gdb opens one:
 `setrlimit` and `prlimit64` read and set it, and only root raises a
 hard limit.
 
+### Message queues
+
+POSIX message queues are the kernel's (`kernel/mqueue.c`): Linux's
+mq_open, mq_unlink, mq_timedsend, mq_timedreceive (and their _time64
+forms), mq_notify and mq_getsetattr, with Linux's name convention (the
+system call takes the name without its leading slash) and Linux's
+default limits (10 messages of 8192 bytes; root up to 64 of 65536).
+Messages come out highest priority first, first in first out within a
+priority; sends and receives block when full or empty, under an
+absolute CLOCK_REALTIME timeout, or fail with EAGAIN under O_NONBLOCK;
+mq_notify raises one registered process's signal (si_code SI_MESGQ,
+with its value) when an empty queue gets a message nobody was waiting
+for, and is then spent; a descriptor polls. An unlinked queue lives
+until its last descriptor closes. The C library has no wrappers yet.
+
 ## System calls
 
 Forty of them. The convention and the numbers are Linux's; the calls
@@ -1854,6 +1869,7 @@ drive it over its serial line.
 | `kernel/procpstest.sh` | 19 | procps-ng on the machine: ps, top, free, pgrep, pkill, pidof, pmap, pwdx, vmstat, uptime, w and kill, checked against the pid the shell reported, the machine's memory, the shell's directory and a console login recorded in utmp (counted once, marked ended at logout); and sigqtest -- sigqueue's value and the sender's pid reaching a handler and sigwaitinfo, a nobody refused every way of signalling root's process |
 | `kernel/ptesttest.sh` | 15 | `ptest` and memctl(MEMCTL_PTEST): the 68040's own answer (PTESTR, MMUSR) against the kernel's software walk, on addresses whose answers are known another way -- a program's text read-only at 0x10000000, its stack top writable, address 0 absent, the supervisor map the identity, another process's text a different physical page -- and who may ask (another's address space and the supervisor's are root's). Negative control: not loading the target's URP is reported as DISAGREE |
 | `kernel/coretest.sh` | 19 | core files and RLIMIT_CORE: none at `ulimit -c 0`, one at unlimited, cut off at a small limit, SIGQUIT dumps and SIGTERM does not, WCOREDUMP seen by a waiting parent; the core read by two readers sharing no code -- the machine's gdb (signal, backtrace, a variable's value) and Python on the host (the value at its `nm` address, the PC inside the function that faulted) -- and readelf on the notes' sizes. And an ignored SIGQUIT, set or inherited across exec, does not cut a sleep short, short or 300 s |
+| `kernel/mqueuetest.sh` | 27 | message queues through the raw calls: priority order, the size and priority limits, O_NONBLOCK both ways, poll, absolute timeouts that really wait (both timespec layouts), a receiver and a sender blocked in other processes and woken, mq_notify's signal with SI_MESGQ and its value and spent after one, EBUSY for a second registrant, EEXIST/ENOENT/EACCES, another user refused, unlink while open, and an 8192-byte message across two pages |
 | `kernel/devmodetest.sh` | 13 | device modes enforced: as a user logged in on the console, the console is theirs and opens, ttyS0, nvram and vcsa are refused, klog only reads, null and /dev/tty open; as root afterwards the console is root's again and every open succeeds |
 | `kernel/fpsptest.sh` | 17 | the 68040's missing FPU instructions: 59 results from Motorola's FPSP (`fpsp-trap=on`) and from QEMU, each against the host's libm; two at once; F-line as SIGILL; enabled divide by zero, operand error, signalling NaN and BSUN each a SIGFPE with its si_code; FMOVEM's control-register order |
 | `kernel/edittest.sh` | 41 | the line editor, history, job control, command lists, scripts, shutdown |

@@ -11,6 +11,7 @@
  * is wrong is far harder to see than a simple one.
  */
 #include "ctty.h"
+#include "mqueue.h"
 #include "task.h"
 #include "ptrace.h"
 #include "events.h"
@@ -1077,6 +1078,7 @@ void task_exit(int status)
 
     /* Before anything is taken apart: a tracer asked to see it go. */
     ptrace_exit_event(t->signalled ? t->signalled : (status & 0xff) << 8);
+    mq_task_exit(t);            /* an mq_notify it held goes with it */
     t->exit_status = status;
     t->exiting = 1;
     /* A session leader takes its terminal with it: the foreground job

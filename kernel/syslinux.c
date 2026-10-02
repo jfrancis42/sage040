@@ -30,6 +30,7 @@
 #include "vfs.h"
 #include "task.h"
 #include "futex.h"
+#include "mqueue.h"
 #include "signal.h"
 #include "timer.h"
 #include "random.h"
@@ -1529,6 +1530,23 @@ s32 syscall_linux(u32 nr, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 a6,
      * may not claim to be the kernel or kill(2) -- a non-negative
      * si_code, or SI_TKILL -- to anybody but itself.
      */
+    case __NR_mq_open:
+        return sys_mq_open(a1, (int)a2, a3, a4);
+    case __NR_mq_unlink:
+        return sys_mq_unlink(a1);
+    case __NR_mq_timedsend:
+    case __NR_mq_timedsend_time64:
+        return sys_mq_timedsend((int)a1, a2, a3, a4, a5,
+                                nr == __NR_mq_timedsend_time64);
+    case __NR_mq_timedreceive:
+    case __NR_mq_timedreceive_time64:
+        return sys_mq_timedreceive((int)a1, a2, a3, a4, a5,
+                                   nr == __NR_mq_timedreceive_time64);
+    case __NR_mq_notify:
+        return sys_mq_notify((int)a1, a2);
+    case __NR_mq_getsetattr:
+        return sys_mq_getsetattr((int)a1, a2, a3);
+
     case __NR_rt_sigqueueinfo:
     case __NR_rt_tgsigqueueinfo: {
         int tgid = (int)a1;

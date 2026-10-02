@@ -52,6 +52,7 @@ loadavg.c
 wait.c
 signal.c
 coredump.c
+mqueue.c
 ptrace.c
 futex.c
 random.c
