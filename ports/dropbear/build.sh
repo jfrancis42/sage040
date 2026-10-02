@@ -43,6 +43,8 @@ set -eu
 cd "$(dirname "$0")"
 HERE=$(pwd)
 . ../cross.sh
+# What this build reads the output of (zlib for compression on the wire).
+need_ports zlib
 
 VERSION=2026.94
 # Fetched over TLS from the project's own release directory.

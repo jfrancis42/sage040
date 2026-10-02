@@ -133,6 +133,12 @@ host's pkgconf, looking only at the `.pc` files the library ports publish
 (`write_pc` in `cross.sh`) and at nothing of the host's. Every library is a
 static archive, so it always answers `--static`.
 
+A port that reads another's output says so at the top of its `build.sh`
+-- `need_ports zlib openssl` -- which builds any of them that has never
+been built. `tools/portdeps.py check` (part of `make test`) fails on a
+port that uses another's output without declaring it, and `make ports`
+installs in the order the declarations give.
+
 ---
 
 ## The machine
@@ -398,6 +404,7 @@ is a 25 MHz 68040, and one of the suites waits for the wall clock.
 | `make xxhtest` | xxHash's digests against the host's, and rsync's xxh128/xxh3/xxh64 |
 | `make compresstest` | gzip, bzip2, xz and zstd against the host's, both ways |
 | `make pccheck` | every library port's `.pc`: it resolves, and a program links with what it says (host only) |
+| `make portdeps` | every port that uses another's output declares it (host only) |
 | `make pcretest` | PCRE2's own RunTest on the machine, and `grep -P` |
 | `make grepsuite`, `make sedsuite` | GNU grep's and sed's own test suites, on the machine, against the host's run of them (hours; not in `make test`) |
 | `make fuzztest` | random system calls with hostile arguments; the machine, its memory and its disk come through |

@@ -57,6 +57,8 @@ set -eu
 cd "$(dirname "$0")"
 HERE=$(pwd)
 . ../cross.sh
+# What this build reads the output of (the arithmetic libraries the native compiler links).
+need_ports gmp mpfr mpc
 
 VERSION=$GCC_VERSION      # cross.sh; shared with libstdcxx and the cross g++
 BUILD=$SRCDIR/build-gcc-native

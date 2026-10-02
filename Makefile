@@ -31,7 +31,7 @@ include $(TOPDIR)/disk.mk
 
 .DEFAULT_GOAL := all
 
-.PHONY: pagecheck autoinccheck pccheck shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest linetest gfxtest fpsptest faulttest procfstest tlstest logintest fsimgtest fattest all boot run install src qemu world libc-if-missing toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest qemutest libc cube programs clean distclean perl shebangtest shtest difftest gittest ptracetest stracetest gdbtest journaltest linuxfstest sesstest mounttest bootjtest stacktest fuzztest procpstest ptesttest coretest devmodetest panictest localetest xxhtest compresstest pcretest grepsuite sedsuite perltest
+.PHONY: pagecheck autoinccheck pccheck portdeps shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest linetest gfxtest fpsptest faulttest procfstest tlstest logintest fsimgtest fattest all boot run install src qemu world libc-if-missing toolchain ports pylibs python etc test tests cryptotest fstest edittest vmtest nettest apitest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest bashsuite threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest qemutest libc cube programs clean distclean perl shebangtest shtest difftest gittest ptracetest stracetest gdbtest journaltest linuxfstest sesstest mounttest bootjtest stacktest fuzztest procpstest ptesttest coretest devmodetest panictest localetest xxhtest compresstest pcretest grepsuite sedsuite perltest
 
 # EVERY PORT, in the order they need each other: what `ports`, `python`, `perl`
 # and `toolchain` install, in the order they install it. One list, so
@@ -158,46 +158,15 @@ programs:
 #
 # This is the one command that puts the lot on hd.img. Each port builds
 # first if it has not been built.
+# The ports `make ports` installs -- a SET: the order is worked out from
+# what each build.sh declares (need_ports, and the builds it runs), by
+# tools/portdeps.py. It used to be kept by hand here.
+PORTS := sbase make diffutils patch awk sed pcre2 grep bash ncurses less uemacs vi bzip2 gzip xz zstd sqlite openssl ca-certs brotli nghttp2 libunistring libidn2 libpsl curl wget lynx readline libffi dropbear xxhash rsync libiconv gettext git strace gdb procps
+
 ports:
-	$(MAKE) -C ports/sbase install
-	$(MAKE) -C ports/make install
-	$(MAKE) -C ports/diffutils install
-	$(MAKE) -C ports/patch install
-	$(MAKE) -C ports/awk install
-	$(MAKE) -C ports/sed install
-	$(MAKE) -C ports/pcre2 install
-	$(MAKE) -C ports/grep install
-	$(MAKE) -C ports/bash install
-	$(MAKE) -C ports/ncurses install
-	$(MAKE) -C ports/less install
-	$(MAKE) -C ports/uemacs install
-	$(MAKE) -C ports/vi install
-	$(MAKE) -C ports/bzip2 install
-	$(MAKE) -C ports/gzip install
-	$(MAKE) -C ports/xz install
-	$(MAKE) -C ports/zstd install
-	$(MAKE) -C ports/sqlite install
-	$(MAKE) -C ports/openssl install
-	$(MAKE) -C ports/ca-certs install
-	$(MAKE) -C ports/brotli install
-	$(MAKE) -C ports/nghttp2 install
-	$(MAKE) -C ports/libunistring install
-	$(MAKE) -C ports/libidn2 install
-	$(MAKE) -C ports/libpsl install
-	$(MAKE) -C ports/curl install
-	$(MAKE) -C ports/wget install
-	$(MAKE) -C ports/lynx install
-	$(MAKE) -C ports/readline install
-	$(MAKE) -C ports/libffi install
-	$(MAKE) -C ports/dropbear install
-	$(MAKE) -C ports/xxhash install
-	$(MAKE) -C ports/rsync install
-	$(MAKE) -C ports/libiconv install
-	$(MAKE) -C ports/gettext install
-	$(MAKE) -C ports/git install
-	$(MAKE) -C ports/strace install
-	$(MAKE) -C ports/gdb install
-	$(MAKE) -C ports/procps install
+	@for p in $$(tools/portdeps.py order $(PORTS)); do \
+	    $(MAKE) -C ports/$$p install || exit 1; \
+	done
 	@echo
 	@echo "Python is not in the list above -- it is 45 MB and 2,244 files,"
 	@echo "and copying it takes minutes. 'make python' installs it, and"
@@ -326,7 +295,7 @@ qemu:
 run:
 	$(MAKE) -C kernel run
 
-test: autoinccheck pagecheck pccheck fsimgtest tests cryptotest fstest fattest apitest fpsptest faulttest procfstest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest tlstest shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest linetest gfxtest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest logintest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest shebangtest shtest difftest gittest ptracetest stracetest gdbtest journaltest linuxfstest sesstest mounttest bootjtest stacktest fuzztest procpstest ptesttest coretest devmodetest panictest localetest xxhtest compresstest pcretest perltest qemutest
+test: autoinccheck pagecheck pccheck portdeps fsimgtest tests cryptotest fstest fattest apitest fpsptest faulttest procfstest edittest vmtest nettest vttest libctest fscktest uemacstest vitest dnstest tcptest sotest tlstest shmaptest tmpfstest eventtest locktest fifotest devdirtest xfertest linetest gfxtest pagetest devtest lotest awktest sedtest greptest sbasetest bashtest threadtest curstest logtest lesstest crontest ptytest pytest pylibtest dftest usertest logintest linktest sshtest whotest uptimetest routetest homeenvtest ttytest catest curltest wgettest lynxtest nativetest shebangtest shtest difftest gittest ptracetest stracetest gdbtest journaltest linuxfstest sesstest mounttest bootjtest stacktest fuzztest procpstest ptesttest coretest devmodetest panictest localetest xxhtest compresstest pcretest perltest qemutest
 
 # Code and data on separate pages, in everything built for the machine
 # (tools/pagecheck.py says why). First, and cheap: what it catches never
@@ -343,6 +312,9 @@ pagecheck:
 
 pccheck:
 	tools/pccheck.sh
+
+portdeps:
+	tools/portdeps.py check
 
 # The host's end of the disk, before anything that uses it: every suite
 # below stages its files through tools/fsimg.sh, so a fault in it does

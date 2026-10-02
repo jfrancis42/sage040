@@ -33,6 +33,8 @@ set -eu
 cd "$(dirname "$0")"
 HERE=$(pwd)
 . ../cross.sh
+# What this build reads the output of (the modules' libraries: _bz2, _ctypes, _ssl and _hashlib, readline, _sqlite3, _lzma, _zstd).
+need_ports bzip2 libffi openssl readline sqlite xz zstd
 
 VERSION=3.14.7
 SHA256=3b48dac8fb59f62eaa67ac83c1eb12bda1b7a08406dd286e252c11a66be27f81

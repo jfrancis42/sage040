@@ -42,6 +42,8 @@ set -eu
 cd "$(dirname "$0")"
 HERE=$(pwd)
 . ../cross.sh
+# What this build reads the output of (compression; xxhash is built below).
+need_ports zstd
 
 VERSION=3.4.1
 # Checked against Andrew Tridgell's signature on the release

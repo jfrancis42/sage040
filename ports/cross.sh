@@ -14,6 +14,10 @@
 # conservative guesses, and replacements where it is unsure.
 
 TOP=${TOP:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
+# Which port is sourcing this: every build.sh is in its own directory
+# when it does (it sources ../cross.sh), and $0 is relative to wherever
+# it was started, which is not there.
+PORT_NAME=$(basename "$PWD")
 M68K_PREFIX=${M68K_PREFIX:-$HOME/m68k/install}
 SRCDIR=${SAGE_SRC:-$HOME/m68k/src}
 SAGE_LIBC=${SAGE_LIBC:-$HOME/m68k/sage040-libc}
@@ -145,9 +149,37 @@ keep_times() {
     if [ "$st" -eq 0 ] && [ -n "${BUILD:-}" ] && [ -d "$out" ]; then
         python3 "$KEEPTIMES" "$out" "$out.times"
     fi
+    # And that this port has been built, for need_ports below.
+    if [ "$st" -eq 0 ] && [ "$(basename "$0")" = build.sh ]; then
+        mkdir -p "$SRCDIR/.ports-built"
+        touch "$SRCDIR/.ports-built/$PORT_NAME"
+    fi
     return "$st"
 }
 trap keep_times EXIT
+
+# DECLARED DEPENDENCIES.
+#
+#     need_ports NAME...
+#
+# The ports whose OUTPUT this one's build reads -- headers, archives,
+# .pc files -- built first if they never have been. A port whose build
+# reads another's output without saying so builds on the machine where
+# that one happened to be built already, and fails (or quietly leaves a
+# module out: Python without _ssl) everywhere else. tools/portdeps.py
+# check finds any that are not declared; `make ports` is ordered by
+# what is declared here and by the build.sh calls ports already make.
+need_ports() {
+    local p
+    for p in "$@"; do
+        [ -f "$SRCDIR/.ports-built/$p" ] && continue
+        echo "$PORT_NAME: building $p first" >&2
+        "$TOP/ports/$p/build.sh" >/dev/null || {
+            echo "need_ports: ports/$p/build.sh failed" >&2
+            exit 1
+        }
+    done
+}
 
 # PKG-CONFIG.
 #
